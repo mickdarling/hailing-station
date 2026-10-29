@@ -3,29 +3,6 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-/// Each blocking actor call uses its own queue, leaving the cooperative pool free to retire and release it.
-final class PolicyWriteGate: Sendable {
-    let executor = RecipientPublicationExecutor()
-    private let gate = RecipientPublicationGate(timeout: .seconds(15))
-
-    func suspend() {
-        guard executor.isExecuting else {
-            Issue.record("A synchronous policy test hook must run on its dedicated executor")
-            return
-        }
-        if !gate.block(onDedicatedQueue: true) {
-            Issue.record("The policy test hook timed out before release; the race is inconclusive")
-        }
-    }
-
-    func waitUntilSuspended() async throws {
-        try await gate.waitEntered()
-        try #require(!gate.timedOut)
-    }
-
-    func fire() { gate.release() }
-}
-
 private struct PolicyInspectingSink: AmbientAudioSink {
     let authority: TargetPolicyAuthority
     let recording: RecordingAmbientSink
@@ -68,10 +45,9 @@ private struct PolicyBlockingSink: AmbientAudioSink {
         }
         try await started.waitUntilSuspended()
         let denied: Bool = try await rig.host.deny("tmux:a")
+        let result: HostSessionResult = try await started.finish(receiving)
         #expect(denied)
         #expect(rig.store.stored.targets["tmux:a"] == nil)
-        started.fire()
-        let result: HostSessionResult = await receiving.value
         let controls: [FramePayload] = result.frames.map(\.payload)
         let expected: FramePayload = .control(.error(code: .notAllowed, message: "ambient target_policy_changed"))
         let active: UUID? = await gate.activeStream
@@ -100,8 +76,7 @@ private struct PolicyBlockingSink: AmbientAudioSink {
         }
         try await blocked.waitUntilSuspended()
         _ = try await rig.host.deny("tmux:a")
-        blocked.fire()
-        let result: HostSessionResult = await receiving.value
+        let result: HostSessionResult = try await blocked.finish(receiving)
         let controls: [FramePayload] = result.frames.map(\.payload)
         let expected: FramePayload = .control(.error(code: .notAllowed, message: "ambient target_policy_changed"))
         #expect(controls == [expected])
@@ -109,8 +84,8 @@ private struct PolicyBlockingSink: AmbientAudioSink {
         #expect(recording.endings == [.notAllowed])
     }
 
-    @Test(arguments: ["tmux:a", "tmux:b"])
-    func admissionDuringSuspendedPersist(_ target: String) async throws {
+    @Test(arguments: ["tmux:a", "tmux:b"], [false, true])
+    func admissionDuringSuspendedPersist(_ target: String, _ externalChange: Bool) async throws {
         let persist = PolicyWriteGate()
         defer { persist.fire() }
         let rig = try await AmbientPolicyRig.make(beforeUpdate: { persist.suspend() })
@@ -118,9 +93,16 @@ private struct PolicyBlockingSink: AmbientAudioSink {
         try await persist.waitUntilSuspended()
         // The store has entered update, but its policy has not changed and persistence cannot finish yet.
         let stored: Policy = rig.store.stored
-        #expect(stored.targets[target]?.tier == .open)
+        if externalChange {
+            // Force the backstop to reload while the daemon's target is retired but persistence is suspended.
+            var changed = stored
+            changed.deliveriesPerMinute += 1
+            rig.store.overwrite(changed)
+        }
         let next: HostSessionResult = await rig.segment(1)
         let active: UUID? = await rig.gate.activeStream
+        let changed: Bool = try await persist.finish(writing)
+        #expect(stored.targets[target]?.tier == .open)
         if target == "tmux:a" {
             let controls: [FramePayload] = next.frames.map(\.payload)
             let expected: FramePayload = .control(.error(code: .notAllowed, message: "ambient target_policy_changed"))
@@ -135,8 +117,6 @@ private struct PolicyBlockingSink: AmbientAudioSink {
             #expect(rig.sink.endings.isEmpty)
             #expect(active == rig.stream)
         }
-        persist.fire()
-        let changed: Bool = try await writing.value
         #expect(changed)
     }
 

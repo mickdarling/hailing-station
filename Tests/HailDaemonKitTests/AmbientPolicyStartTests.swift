@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import HailProtocol
 import Testing
@@ -11,6 +12,66 @@ private struct PolicyRestartSink: AmbientAudioSink {
     func ambientAudio(_ event: AmbientAudioEvent) {
         recording.ambientAudio(event)
         if case .started(let id, _, _) = event, id == stream { waiting.suspend() }
+    }
+}
+
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPolicyFreshStartTests {
+    @Test func secondProcessAllowAdmitsFirstFreshStart() async throws {
+        let rig: AmbientPolicyProcessRig = try await AmbientPolicyProcessRig.make(startStream: false)
+        defer { rig.cleanUp() }
+        try await rig.write("deny")
+        let previous: TargetPolicyGeneration = rig.host.targetPolicy.snapshot(for: "tmux:a")
+        previous.observePolicy()
+        let denied: TargetPolicyGeneration = rig.host.targetPolicy.snapshot(for: "tmux:a")
+        try #require(!denied.wasGranted)
+        try await rig.write("allow", tier: "open")
+        // No listing, reselection or intervening refresh after the separate CLI allows A.
+        try await firstStartFlows(rig)
+    }
+
+    @Test(arguments: ["missing", "unreadable"])
+    func secondProcessRepairAdmitsFirstFreshStart(_ failure: String) async throws {
+        let rig: AmbientPolicyProcessRig = try await AmbientPolicyProcessRig.make(startStream: false)
+        defer { rig.cleanUp() }
+        let previous: TargetPolicyGeneration = rig.host.targetPolicy.snapshot(for: "tmux:a")
+        if failure == "missing" {
+            try FileManager.default.removeItem(at: rig.file.path)
+        } else {
+            try #require(chmod(rig.file.path.path, 0o000) == 0)
+        }
+        previous.observePolicy()
+        let denied: TargetPolicyGeneration = rig.host.targetPolicy.snapshot(for: "tmux:a")
+        try #require(!denied.wasGranted)
+        if failure == "missing" {
+            #expect(throws: HostError.denied(.notAllowed("tmux:a"))) { try denied.requireCurrent() }
+        }
+        let failed: HostSessionResult = await rig.segment(0)
+        let control: ControlPayload = try onlyControl(failed)
+        #expect(control == .error(code: .notAllowed,
+                                 message: "ambient target is not allowed — run haild targets allow on the Mac"))
+        #expect(rig.sink.events.isEmpty)
+        if failure == "unreadable" {
+            try #require(chmod(rig.file.path.path, 0o600) == 0)
+            try await rig.write("deny")
+        }
+        // A real second process writes the repaired policy, without a host refresh before startup.
+        try await rig.write("allow", tier: "open")
+        try await firstStartFlows(rig)
+        let revived: Bool = previous.performIfCurrent({ true }) == true
+        #expect(!revived, "Recovery must not revive the retired grant")
+    }
+
+    private func firstStartFlows(_ rig: AmbientPolicyProcessRig) async throws {
+        let start: HostSessionResult = await rig.segment(0)
+        #expect(start.frames.isEmpty)
+        #expect(start.disposition == .keepOpen)
+        #expect(rig.sink.segments == [0])
+        let next: HostSessionResult = await rig.segment(1)
+        let active: UUID? = await rig.gate.activeStream
+        #expect(next.frames.isEmpty)
+        #expect(rig.sink.segments == [0, 1])
+        #expect(rig.sink.endings.isEmpty)
+        #expect(active == rig.stream)
     }
 }
 
@@ -71,9 +132,8 @@ private struct PolicyRestartSink: AmbientAudioSink {
         // A synchronous child startup refusal arrives before the session's admission await returns.
         let frame: Frame? = await session.ambientFailureFrame("ambient stopped: synthetic startup")
         let expected: FramePayload = .control(.error(code: .notAllowed, message: "ambient stopped: synthetic startup"))
+        let result: HostSessionResult = try await waiting.finish(receiving)
         #expect(frame?.payload == expected)
-        waiting.fire()
-        let result: HostSessionResult = await receiving.value
         #expect(result.frames.isEmpty)
         await gate.end(connection: session.connectionID)
     }

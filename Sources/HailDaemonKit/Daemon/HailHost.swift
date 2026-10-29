@@ -48,7 +48,7 @@ public actor HailHost {
     private let window: Duration
     private var policy: Policy
     private var policyRevision = UUID()
-    nonisolated let targetPolicy = TargetPolicyAuthority()
+    nonisolated let targetPolicy: TargetPolicyAuthority
     private let replyPublicationAuthority = ReplyPublicationAuthority()
     private var evaluator: PolicyEvaluator
     private var limiter = RateLimiter()
@@ -65,6 +65,7 @@ public actor HailHost {
         dispatchSanitizing = sanitizing.widened(to: Self.localPromptSanitizing)
         pasteSanitizing = sanitizing.widened(to: Self.pastedSanitizing)
         self.store = store
+        targetPolicy = TargetPolicyAuthority(store: store)
         window = confirmationWindow
         var loaded = Policy()
         do {
@@ -208,6 +209,7 @@ extension HailHost {
     /// Only fresh inputs retry a failed policy read; retained grants remain retired after recovery (#1028).
     func inputPolicyGeneration(for target: String) -> TargetPolicyGeneration {
         try? requirePolicy()
+        try? targetPolicy.refreshIfChanged()
         return targetPolicy.snapshot(for: target)
     }
 
@@ -401,10 +403,12 @@ extension HailHost {
     }
     private func refreshPolicy() throws {
         do {
-            let next = try store.load()
+            let tracking = store as? any PolicyChangeTracking
+            let read = try tracking?.loadStable(comparedTo: targetPolicy.appliedPolicy)
+            let next = try read?.policy ?? store.load()
             let compiled = try PolicyEvaluator(policy: next)
             if next != policy { revokeAuthority() }
-            targetPolicy.update(next)
+            targetPolicy.update(next, retiring: read?.changedTargets ?? [])
             policy = next
             evaluator = compiled
             policyFailure = nil
@@ -482,25 +486,71 @@ final class TargetPolicyAuthority: Sendable {
         var generation: UInt64 = 0
         var policy: Policy?
         var targets: [String: UInt64] = [:]
+        var retiring: Set<String> = []
     }
     private let state = Mutex(State())
+    // No observation differs from a successful observation of an absent policy file.
+    private let observation = Mutex<PolicyObservation?>(nil)
+    private let store: any PolicyStore
 
-    /// Removing the grant also refuses fresh snapshots until the transaction has been adopted.
-    func retire(_ target: String) {
-        state.withLock { state in
-            state.generation += 1
-            state.targets[target] = nil
+    init(store: any PolicyStore) { self.store = store }
+
+    var appliedPolicy: Policy? { state.withLock { $0.policy } }
+
+    /// File I/O uses a separate lock, never the compare-and-admit lock. Daemon transactions do not hold
+    /// this lock while persisting, so unrelated segment admission can continue during a suspended write.
+    func refreshIfChanged() throws {
+        guard let tracking = store as? any PolicyChangeTracking else { return }
+        try observation.withLock { observed in
+            do {
+                let location = try tracking.observation()
+                if let observed, observed == location { return }
+                // First creation has no directory identity to retain; an observed directory must stay the same.
+                if let directory = observed?.directory, directory != location.directory {
+                    throw HostError.policyUnavailable("policy_directory_changed")
+                }
+                let read = try tracking.loadStable(after: location, comparedTo: appliedPolicy)
+                _ = try PolicyEvaluator(policy: read.policy)
+                apply(read.policy, completingWrite: false, retiring: read.changedTargets)
+                observed = read.observation
+            } catch {
+                apply(nil, completingWrite: false)
+                observed = nil
+                throw HostError.policyUnavailable("\(error)")
+            }
         }
     }
 
-    func update(_ policy: Policy?) {
+    /// Removing the grant also refuses fresh snapshots until the transaction has been adopted.
+    func retire(_ target: String) {
+        observation.withLock { _ in
+            state.withLock { state in
+                state.generation += 1
+                state.targets[target] = nil
+                state.retiring.insert(target)
+            }
+        }
+    }
+
+    func update(_ policy: Policy?, retiring changedTargets: Set<String> = []) {
+        observation.withLock { observed in
+            // An actor read/transaction may predate a concurrent observation; never cache its stamp for that view.
+            if state.withLock({ $0.policy != policy }) { observed = nil }
+            apply(policy, completingWrite: true, retiring: changedTargets)
+        }
+    }
+
+    private func apply(_ policy: Policy?, completingWrite: Bool, retiring changedTargets: Set<String> = []) {
         state.withLock { state in
+            if completingWrite { state.retiring.removeAll() }
             state.generation += 1
             var generations: [String: UInt64] = [:]
-            for (target, allowed) in policy?.targets ?? [:] {
+            for (target, allowed) in policy?.targets ?? [:] where !state.retiring.contains(target) {
                 let unchanged = state.policy?.targets[target] == allowed
                 generations[target] = unchanged ? state.targets[target] ?? state.generation : state.generation
             }
+            // A restored final grant cannot resurrect a generation revoked by an earlier read.
+            for target in changedTargets where generations[target] != nil { generations[target] = state.generation }
             state.targets = generations
             state.policy = policy
         }
@@ -535,7 +585,11 @@ struct TargetPolicyGeneration: Sendable {
         try authority.performIfCurrent(self, operation: operation)
     }
 
+    /// Admission calls this in the gate's own turn; failures retire grants before its normal refusal check.
+    func observePolicy() { try? authority.refreshIfChanged() }
+
     func requireCurrent() throws {
+        try authority.refreshIfChanged()
         guard performIfCurrent({ true }) == true else { throw HostError.denied(.notAllowed(target)) }
     }
 }
