@@ -26,6 +26,7 @@ func assertPolicyStopped(_ rig: CallReconnectRig, starts: Int) async throws {
 
 actor CallPolicyRefusingSocket: WebSocketTransport {
     let base: ScriptedSocket
+    let sendGate = SleepGate()
     private(set) var resumedAttempts = 0
     private(set) var refused = false
 
@@ -40,6 +41,7 @@ actor CallPolicyRefusingSocket: WebSocketTransport {
             resumedAttempts += 1
             refused = true
             try await base.push(.error(code: .notAllowed, message: "ambient target is not allowed"))
+            try await sendGate.sleep(.zero)
         }
     }
 

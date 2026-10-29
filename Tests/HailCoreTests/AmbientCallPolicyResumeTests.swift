@@ -16,10 +16,11 @@ import Testing
         let before = try await audioFrames(rig.socket).count
         rig.interruptionEnded()
         await rig.controller.update(binding: try rig.currentBinding(), scene: .active)
-        // One 200 ms input supplies the encoder's held segment and exactly one admitting segment.
-        try rig.capture.yield(sineBuffer(frames: 9_600))
+        // The held first send lets the refusal discard every queued segment deterministically.
+        try rig.capture.yield(sineBuffer(frames: 19_200))
         try await callEventually { await host.refused }
         try await callEventually { await MainActor.run { !rig.controller.isOn } }
+        await host.sendGate.fire()
         await rig.microphoneRetry.release()
         await rig.controller.update(binding: try rig.currentBinding(), scene: .active)
         rig.interruptionEnded()
