@@ -152,15 +152,18 @@ unannounced host deny during the pause, a real deny retained from before it, and
 The latter three allow one admitting segment, then require capture stopped, a visible reason, no retry,
 reconnect or fallback, and no subsequent PCM. The real host sink receives none of the refused segment.
 The suites also cover both transient prefixes, a no-prior-audio refusal and the helper's code/prefix truth table.
-`Package.swift` adds only a test dependency on the daemon for real gate evidence. The PR has four files under
-PR-shape's production-count rules, including the capture file changed in previous rounds.
+The host-backed `AmbientCallPolicyAdmissionTests` suite lives in `Tests/HailCoachingCommandTests`, whose existing
+dependencies already provide HailCore and HailDaemonKit. Its local `CallPolicyHostRig` support copies only the
+single-host start, pause, capture, transport and refusal seams these tests exercise. HailCoreTests has no daemon
+dependency. `Package.swift` is byte-identical to main; the PR has three production files under PR-shape's rules:
+Capture.swift, AmbientListeningReconnect.swift and HostConnectionStore.swift.
 
 Against unchanged input production sources, seven functions ran: cases 1 and 2 plus the no-prior-audio refusal
 failed with fourteen assertions. Cases 3, 4 and 5 already passed, as did both transient arguments.
 After implementation, all nine functions in four suites passed, including the helper tests.
 The initial fixture compile error and synchronous readiness watchdog were corrected before counting the baseline.
-Readiness now crosses the host actor. All test ordering uses signals, receive barriers and held sends, with no
-elapsed-time sleeps. The focused command uses the CLT framework/linker flags documented above plus:
+The moved host-backed fixture now waits on a latched input signal for startup readiness. Other test ordering
+uses signals, receive barriers and held sends, with no elapsed-time sleeps. The focused command uses the CLT framework/linker flags documented above plus:
 
 ```text
 swift test -j 4 -Xswiftc -j1 --disable-automatic-resolution -Xswiftc -warnings-as-errors
@@ -172,8 +175,10 @@ The fixed run adds `|AmbientRefusalPolicyTests` to the filter. Exact commands an
 `taskpolicy -b` and an individual 590-second bound.
 
 Host source confirmation, without host source edits: receipt at `WebSocketPeer.swift:154` reaches
-`HostSession.swift:264` and `HostSession+Routing.swift:79`. Policy refusal at `AmbientAudioGate.swift:335`
-publishes no segment; a grant retired during admission is checked again at line 359 before publication at 373.
+`HostSession.swift:264` and `HostSession+Routing.swift:81`. Policy refusal at `AmbientAudioGate.swift:337`
+publishes no segment; a grant retired during admission is checked again at line 361 before publication at 375.
+The merged policy observation at routing line 77 and gate line 323 calls `HailHost.swift:589,502`, which receive
+no audio and perform policy metadata reads before comparing the grant.
 The refused PCM is never transcribed or forwarded to RightyO or an agent: `WebSocketListener.swift:977` feeds
 RightyO only for a segment event. It cannot reach the child write at `RightyoAmbientPipeline.swift:372`, so the
 refused segment is never written to disk. Receipt at `WebSocketPeer.swift:153` and refusal construction at
@@ -185,3 +190,21 @@ The first broad sweep exposed `AmbientListeningRecoveryTests.onlyHostEndedStream
 `ambient unavailable:` as terminal. Its existing truth table is aligned with the brief's explicit recoverable
 classification, retaining its assertions for busy, unselected and malformed failures. Full verification is
 repeated after this test-only alignment; the production source stays unchanged.
+
+## Round 3 dependency follow-up
+
+Part of #982. Main `13ab143c668e9685b5d81af581d5a5a682e8439c` was merged normally, without conflicts.
+The three host-backed files (AmbientCallPolicyAdmissionTests, AmbientCallPolicyHost and
+AmbientCallPolicyHostSupport) moved to HailCoachingCommandTests. Their own support files are CallPolicyHostRig,
+CallPolicyHostRig+Refusal, CallPolicyHostTransport and CallPolicyHostAudio. No dependency edge was added.
+The suite includes a real gate policy stop delivered during a pause and both transient notices, so the three
+policy mutations can be checked entirely in the destination target.
+
+The moved suite was copied onto `deb5de62` in a detached scratch worktree, leaving all production files and
+Package.swift unchanged. Four functions ran: both first-segment denial functions and both transient arguments
+passed; `deliveredGatePolicyStopWhilePausedVetoesAdmission` failed four assertions (listening remained on,
+the veto was absent, capture restarted, and the visible policy reason was missing). An earlier cold-start
+polling probe is retained separately and is excluded from this product fail-before result.
+Exact baseline command/results: host-local `hs-982-evidence/r4-moved-fail-before.log`.
+The refreshed four-point host trace is recorded above and in `r4-source-trace.txt`; only the main merge changed
+host production files. All subsequent verification is synthetic macOS SwiftPM execution.

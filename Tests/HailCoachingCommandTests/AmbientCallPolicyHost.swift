@@ -6,23 +6,25 @@ import Testing
 @testable import HailDaemonKit
 
 actor CallPolicyHost: WebSocketTransport {
-    let base: ScriptedSocket
+    let base: CallPolicySocket
     let host: HailHost
     let session: HostSession
     let sink: CallPolicySink
-    let sendGate = SleepGate()
+    let sendGate = CallPolicySignal()
+    private let inputArrived = CallPolicySignal()
+    private var lastAudio: Frame?
     private(set) var firstRefusal: String?
     private(set) var refusals = 0
     private(set) var resumedAttempts = 0
 
-    init(base: ScriptedSocket, host: HailHost, session: HostSession, sink: CallPolicySink) {
+    init(base: CallPolicySocket, host: HailHost, session: HostSession, sink: CallPolicySink) {
         self.base = base
         self.host = host
         self.session = session
         self.sink = sink
     }
 
-    static func make(base: ScriptedSocket, target: String) async throws -> CallPolicyHost {
+    static func make(base: CallPolicySocket, target: String) async throws -> CallPolicyHost {
         let registry = Registry()
         try await registry.register(CallPolicyAdapter())
         var policy = Policy()
@@ -48,6 +50,7 @@ actor CallPolicyHost: WebSocketTransport {
         guard case .audio(let audio) = frame.payload else {
             return
         }
+        lastAudio = frame
         if audio.isResume {
             resumedAttempts += 1
         }
@@ -61,14 +64,41 @@ actor CallPolicyHost: WebSocketTransport {
             }
             refusals += 1
             try await base.push(.targets([callPolicyBarrier]))
+            await inputArrived.fire()
             if refusals == 1 {
-                try await sendGate.sleep(.zero)
+                await sendGate.wait()
             }
+        } else {
+            await inputArrived.fire()
         }
     }
 
-    func inputReady() -> Bool {
-        sink.segmentCount > 0 || refusals > 0
+    func refuseRetainedStream() async throws {
+        let previous = try #require(lastAudio)
+        guard case .audio(let audio) = previous.payload else {
+            throw CancellationError()
+        }
+        let pending = AudioPayload(
+            codec: audio.codec, sampleRate: audio.sampleRate, channels: audio.channels,
+            sequence: audio.sequence + 1, streamID: audio.streamID, bytes: audio.bytes
+        )
+        let result = await session.receive(Frame(
+            timestamp: 1, target: previous.target, source: "synthetic", payload: .audio(pending)
+        ))
+        try #require(result.frames.contains {
+            if case .control(.error(.notAllowed, let message, _)) = $0.payload {
+                return message.hasPrefix("ambient target_policy_changed")
+            }
+            return false
+        })
+        for response in result.frames {
+            try await base.push(FrameCoding.encode(response))
+        }
+        try await base.push(.targets([callPolicyBarrier]))
+    }
+
+    func awaitInput() async {
+        await inputArrived.wait()
     }
 
     func receive() async throws -> Data {
