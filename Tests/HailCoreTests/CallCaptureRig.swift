@@ -41,7 +41,8 @@ final class CallCaptureRig {
             streamers.append(streamer)
             return streamer
         }, releaseSession: { [weak self] in self?.releases += 1 },
-        sleep: { [retry] in await retry.sleep($0) }, now: { [clock] in clock.now() }, send: { [sent] audio, _ in await sent.send(audio) }
+        sleep: { [retry] in await retry.sleep($0) }, now: { [clock] in clock.now() },
+        send: { [sent] audio, _ in await sent.send(audio) }
         )
     }
 
