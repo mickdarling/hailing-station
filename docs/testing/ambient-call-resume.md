@@ -87,8 +87,8 @@ the union of `Ambient|Capture|Interruption|Resume|HostConnection|Privacy`, with 
 Part of #982. Review input head: `84b3023556bfe59fccd2bfcf6dada1fd08e04a28`.
 
 P1-1: the route classification window now closes capture admission as soon as an ending route is evaluated.
-An interruption closes it on the notification thread, before an actor hop. Main-thread ending signals run
-synchronously; no callback can slip PCM through a queued main-actor notification. The shared admission epoch
+An unconditional ending closes it on the notification thread, before the queued main-actor ending decision.
+No callback can slip PCM through that actor hop. The shared admission epoch
 also rejects already queued capture, converter output and sends. Ambient's pause marker closes admission for
 capture wrappers too. Capture retains only its observer and ending decision for the 200 ms window; gap PCM is
 never retained for later replay. The original route guards and isolated-route terminal reason still apply.
@@ -100,9 +100,13 @@ That added ordering failed against the first review correction before the per-ru
 `interruptionImmediatelyDiscardsPCMFromAYieldingTap` covers the immediate interruption boundary. Signals that
 end even a running engine close admission on the notification thread. Startup keeps the original post-start
 engine-running guard: synchronous startup's transient stopped state cannot end or gate a healthy new run.
+The same queued decision also preserves a stall heal's post-restart running guard; no startup-only flag is needed.
 `startupSignalsUseTheRunningStateAfterEngineStart` feeds PCM after startup category and engine-configuration
 notifications. Both cases failed against the initial synchronous dispatch (three issues in
 `review-startup-fail-before.log`) and now require a live tap, sent PCM and no system-end notice.
+`stallHealKeepsThePostRestartRunningGuard` hand-steps the watchdog, observes the real ending decision and requires
+PCM after a successful heal, with no terminal system-end notice. The synchronous dispatcher failed both assertions
+(`review-heal-fail-before.log`); the original queued ending decision passes them while admission stays immediate.
 
 P1-2: an already-private host deliberately sends no notice for a duplicate same-socket privacy-on request.
 After that socket has streamed, its gate also declines pre-arm. Private call recovery therefore replaces that

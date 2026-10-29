@@ -92,7 +92,6 @@ public final class AVAudioEngineCapture: AudioCapturing {
     /// A system-ending run stays shut even if transport restoration reopens its shared admission.
     private var endingAdmission: AudioCaptureAdmission?
     private var hasTap = false
-    private var starting = false
     private var observer: AudioCaptureEndingObserver?
     /// Read when a run starts; set it before `start` to watch that run for stalls (#443).
     var stallPolicy: StallPolicy?
@@ -135,8 +134,6 @@ public final class AVAudioEngineCapture: AudioCapturing {
 
     public func start() throws -> AsyncStream<AudioCaptureBuffer> {
         guard !operations.isRunning(engine), continuation == nil else { throw AudioCaptureError.alreadyRunning }
-        starting = true
-        defer { starting = false }
 
         let pair = AsyncStream<AudioCaptureBuffer>.makeStream(bufferingPolicy: .unbounded)
         let streamContinuation = pair.continuation
@@ -177,20 +174,9 @@ public final class AVAudioEngineCapture: AudioCapturing {
                 endingAdmission?.setPaused(true)
                 admission?.setPaused(true)
             }
-            if Thread.isMainThread {
-                MainActor.assumeIsolated { self?.systemSignalAfterStart(signal, observer: id) }
-            } else {
-                Task { @MainActor in self?.systemSignal(signal, observer: id) }
-            }
+            // Keep ending decisions queued: startup and stall healing must finish before the running guard.
+            Task { @MainActor in self?.systemSignal(signal, observer: id) }
         }
-    }
-
-    private func systemSignalAfterStart(_ signal: AudioCaptureEndingSignal, observer id: UUID) {
-        guard !starting else {
-            Task { @MainActor [weak self] in self?.systemSignal(signal, observer: id) }
-            return
-        }
-        systemSignal(signal, observer: id)
     }
 
     public func stop() {

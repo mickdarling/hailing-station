@@ -37,6 +37,9 @@ import Testing
         let tap = try #require(rig.fakes[0].tap)
         rig.interruption(true)
         for _ in 0..<20 { tap(try sineBuffer(), AVAudioTime(hostTime: 0)) }
+        try await callEventually { await MainActor.run {
+            rig.controller.pausedReason != nil && !rig.controller.isListening
+        } }
         await rig.streamers[0].stop()
         #expect(await rig.sent.payloads.isEmpty)
         #expect(rig.controller.isOn && rig.controller.pausedReason != nil)
