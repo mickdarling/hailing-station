@@ -163,6 +163,9 @@ public enum ControlPayload: Sendable, Equatable {
     /// only to a device that advertises `SessionUpdateCard.capability`. It grants no authority and selects nothing.
     /// The host fills `session` from the live registry target the update was submitted for, never from caller text.
     case sessionUpdate(update: UUID, session: String, priority: String, text: String, card: String? = nil)
+    /// Retire only the named proactive audio, preserving ordinary replies and the transcript card.
+    /// Sent only to a peer advertising `SessionUpdateCard.audioCapability`.
+    case sessionUpdateCancel(update: UUID)
     /// Device to host (#614): ask for the host's health summary. Only `command`; sent only to a host that advertises
     /// `HostHealth.capability`.
     case health
@@ -198,6 +201,7 @@ extension ControlPayload: Codable {
         case ambientHeard = "ambient_heard", ambientOverheard = "ambient_overheard", overheardScope = "overheard_scope"
         case setReplyMute = "set_reply_mute", ownerVoice = "owner_voice", ambientInput = "ambient_input"
         case replyYield = "reply_yield", sessionUpdate = "session_update"
+        case sessionUpdateCancel = "session_update_cancel"
         case health, healthReport = "health_report"
         case mediaMode = "media_mode", duckMode = "duck_mode", setPrivacy = "set_privacy"
     }
@@ -238,6 +242,9 @@ extension ControlPayload: Codable {
         case .ownerVoice: self = try Self.ownerVoice(from: decoder)
         case .ambientInput: self = try Self.ambientInput(from: decoder)
         case .sessionUpdate: self = try Self.sessionUpdate(from: decoder)
+        case .sessionUpdateCancel:
+            try Self.requireOnly(["command", "update"], "session_update_cancel", decoder)
+            self = .sessionUpdateCancel(update: try container.decode(UUID.self, forKey: .update))
         case .health, .healthReport: self = try Self.health(from: decoder)
         case .mediaMode: self = try Self.mediaMode(from: decoder)
         case .duckMode, .setPrivacy: self = try Self.duckMode(from: decoder)
@@ -548,6 +555,9 @@ extension ControlPayload: Codable {
                                  forKey: .priority)
             try container.encode(text, forKey: .text)
             try container.encodeIfPresent(card, forKey: .card)
+        case .sessionUpdateCancel(let update):
+            try container.encode(Command.sessionUpdateCancel, forKey: .command)
+            try container.encode(update, forKey: .update)
         case .mediaMode(let on, let reason, let expires):
             try container.encode(Command.mediaMode, forKey: .command)
             try container.encode(on, forKey: .on)
@@ -590,6 +600,9 @@ public enum RequestRefusals {
 /// it (#371). The device advertises `capability` in its `hello`; a host never sends `session_update` to a device
 /// without it, because an older device refuses an unknown command as malformed.
 public enum SessionUpdateCard {
+    /// Proactive PCM is accepted only by a device with a current local activity admission gate.
+    /// The reply id must equal an update card accepted on that same connection generation.
+    public static let audioCapability = "session_update_audio"
     public static let capability = "session_update"
     public static let priorities = ["info", "action"]
 
@@ -1243,6 +1256,17 @@ extension Schema {
                     "type": .string("string"), "minLength": .integer(1),
                     "maxLength": .integer(Int64(PayloadLimits.maxTextBytes))
                 ])
+            ])
+        ])
+    ])
+
+    static let sessionUpdateCancelPayloadRule: JSONValue = .object([
+        "if": .object(["properties": .object(["command": .object(["const": .string("session_update_cancel")])])]),
+        "then": .object([
+            "additionalProperties": .bool(false),
+            "properties": .object([
+                "command": .object([:]),
+                "update": .object(["type": .string("string"), "format": .string("uuid")])
             ])
         ])
     ])

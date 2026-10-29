@@ -307,8 +307,13 @@ public enum Fixtures {
             id: id(212), timestamp: 1_758_200_050_900, source: "terminal",
             payload: .control(.ambientInput(route: "usb_audio"))
         )),
+        Example(name: "control-session-update-cancel", frame: Frame(
+            id: id(236), timestamp: 1_758_200_051_100,
+            target: "tmux:codex-hail", source: "host",
+            payload: .control(.sessionUpdateCancel(update: id(214)))
+        )),
         Example(name: "control-session-update", frame: Frame(
-            id: id(213), timestamp: 1_758_200_051_000, source: "host",
+            id: id(213), timestamp: 1_758_200_051_000, target: "tmux:codex-hail", source: "host",
             payload: .control(.sessionUpdate(
                 update: id(214), session: "Voice Work", priority: "action", text: "The build failed; it needs you.",
                 card: "Build log: see PR #1"
