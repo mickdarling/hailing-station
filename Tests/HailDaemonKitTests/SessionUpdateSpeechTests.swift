@@ -1,4 +1,5 @@
 import Foundation
+import HailProtocol
 import Synchronization
 import Testing
 @testable import HailDaemonKit
@@ -42,6 +43,43 @@ private struct SyntheticSessionUpdateSpeech: SessionUpdateSpeechRendering {
         await fence.joinSpeech()
         #expect(sends.withLock { $0 } == 2 && renders.withLock { $0 } == 1)
         await rig.listener.stop()
+    }
+
+    @Test func actualCardAudioAndCancellationRetainOneWireSourceAndTarget() async throws {
+        let rig = try await RecipientTestRig.make()
+        let listener = try WebSocketListener(bindAddress: "127.0.0.1", port: 0, host: rig.host,
+            authorizer: PersonalTerminalAuthorizer(), hostName: "mac-test")
+        await listener.enableSessionUpdates()
+        await listener.configureSessionUpdateSpeech(SyntheticSessionUpdateSpeech())
+        let port = try await listener.start()
+        do {
+            let (client, socket) = try recipientSocket(port: port)
+            defer { socket.cancel(with: .normalClosure, reason: nil); client.invalidateAndCancel() }
+            try await recipientSocketSend(helloFrame(capabilities:
+                [SessionUpdateCard.capability, SessionUpdateCard.audioCapability]), on: socket)
+            _ = try await recipientSocketReceive(on: socket)
+            try await recipientSocketSend(sessionFrame(payload: .control(.select(
+                targetID: RecipientTestRig.target))), on: socket)
+            try await recipientSocketBarrier(on: socket, step: "selected speech destination")
+            try await recipientSocketSend(sessionFrame(target: RecipientTestRig.target,
+                payload: .text(TextPayload(text: "Synthetic input"))), on: socket)
+            try await recipientSocketBarrier(on: socket, step: "accepted synthetic input")
+            #expect(await listener.sessionUpdate(request()).outcome == .delivered)
+            let card = try await recipientSocketReceive(on: socket)
+            let audio = try await recipientSocketReceive(on: socket)
+            guard case .control(.sessionUpdate(let update, _, _, _, _)) = card.payload,
+                  case .audio(let pcm) = audio.payload else {
+                Issue.record("expected actual update card then PCM"); await listener.stop(); return
+            }
+            #expect(card.source == "haild" && audio.source == card.source && pcm.reply?.hostID == card.source)
+            #expect(card.target == RecipientTestRig.target && audio.target == card.target)
+            #expect(pcm.reply?.targetID == card.target && pcm.reply?.sessionUpdateID == update)
+            _ = await listener.sessionUpdate(.init(action: .quietOn))
+            let cancellation = try await recipientSocketReceive(on: socket)
+            #expect(cancellation.source == card.source && cancellation.target == card.target)
+            #expect(cancellation.payload == .control(.sessionUpdateCancel(update: update)))
+        } catch { await listener.stop(); throw error }
+        await listener.stop()
     }
 
     @Test func privacyOnOffDuringRenderCannotPublishOldAudio() async throws {
