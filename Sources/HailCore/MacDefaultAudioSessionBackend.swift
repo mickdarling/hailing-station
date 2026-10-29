@@ -9,13 +9,19 @@ public final class MacDefaultAudioSessionBackend: AudioSessionBackend {
     private let events: AsyncStream<AudioSessionBackendEvent>
     private var properties: [(AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
     private var listenerFailure = false
-    private let readRoute: (Bool) -> AudioSessionDiagnostics
+    private let readRoute: (Bool) -> (route: AudioSessionDiagnostics, inputReadFailed: Bool)
+    private var lastRoute: AudioSessionDiagnostics?
     private let continuation: AsyncStream<AudioSessionBackendEvent>.Continuation
 
-    public convenience init() { self.init(readRoute: Self.currentRoute, observe: true) }
+    public convenience init() { self.init(readRouteResult: Self.currentRoute, observe: true) }
 
-    init(readRoute: @escaping (Bool) -> AudioSessionDiagnostics, observe: Bool = false) {
-        self.readRoute = readRoute
+    convenience init(readRoute: @escaping (Bool) -> AudioSessionDiagnostics, observe: Bool = false) {
+        self.init(readRouteResult: { (readRoute($0), false) }, observe: observe)
+    }
+
+    init(readRouteResult: @escaping (Bool) -> (route: AudioSessionDiagnostics, inputReadFailed: Bool),
+         observe: Bool = false) {
+        self.readRoute = readRouteResult
         let pair = AsyncStream<AudioSessionBackendEvent>.makeStream(bufferingPolicy: .bufferingNewest(16))
         events = pair.stream
         continuation = pair.continuation
@@ -45,44 +51,64 @@ public final class MacDefaultAudioSessionBackend: AudioSessionBackend {
     public func setActive(_ active: Bool) async throws {}
 
     public func availableInputs() async -> [AudioPort] {
-        readRoute(false).input.map { [$0] } ?? []
+        route(isActive: false).input.map { [$0] } ?? []
     }
 
     public func selectInput(id: AudioPort.ID?) async throws {
         // Accept only the actual default: no pretend selection and no system-default setter.
-        if let id, readRoute(false).input?.id != id {
+        if let id, route(isActive: false).input?.id != id {
             throw AudioInputSelectionError.unavailable(id)
         }
     }
 
-    public func diagnostics(isActive: Bool) async -> AudioSessionDiagnostics { readRoute(isActive) }
+    public func diagnostics(isActive: Bool) async -> AudioSessionDiagnostics { route(isActive: isActive) }
 
-    private static func currentRoute(_ isActive: Bool) -> AudioSessionDiagnostics {
-        let input = Self.defaultDevice(kAudioHardwarePropertyDefaultInputDevice)
-        let output = Self.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice)
-        return AudioSessionDiagnostics(isActive: isActive, input: input?.port,
-            outputs: output.map { [$0.port] } ?? [], sampleRate: input?.sampleRate ?? 0)
+    private func route(isActive: Bool) -> AudioSessionDiagnostics {
+        let reading = readRoute(isActive)
+        if !reading.inputReadFailed {
+            lastRoute = reading.route // A successful no-input read clears the cache too.
+            return reading.route
+        }
+        return AudioSessionDiagnostics(isActive: isActive, input: lastRoute?.input,
+            outputs: reading.route.outputs, sampleRate: lastRoute?.sampleRate ?? 0)
+    }
+
+    private static func currentRoute(_ isActive: Bool)
+        -> (route: AudioSessionDiagnostics, inputReadFailed: Bool) {
+        let input: (port: AudioPort, sampleRate: Double)?
+        var inputReadFailed = false
+        do {
+            input = try Self.defaultDevice(kAudioHardwarePropertyDefaultInputDevice)
+        } catch {
+            input = nil
+            inputReadFailed = true
+        }
+        let output = try? Self.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice)
+        return (AudioSessionDiagnostics(isActive: isActive, input: input?.port,
+            outputs: output.map { [$0.port] } ?? [], sampleRate: input?.sampleRate ?? 0), inputReadFailed)
     }
 
     public func eventStream() async -> AsyncStream<AudioSessionBackendEvent> { events }
 
+    private enum RouteReadFailure: Error { case unavailable }
+
     private static func defaultDevice(_ selector: AudioObjectPropertySelector)
-        -> (port: AudioPort, sampleRate: Double)? {
+        throws -> (port: AudioPort, sampleRate: Double)? {
         var property = AudioObjectPropertyAddress(mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         var device: AudioDeviceID = 0
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
                                                &property, 0, nil, &size, &device)
-        guard status == noErr,
-              size == MemoryLayout<AudioDeviceID>.size, device != kAudioObjectUnknown,
-              let uid = string(device, selector: kAudioDevicePropertyDeviceUID),
-              let name = string(device, selector: kAudioObjectPropertyName) else { return nil }
+        guard status == noErr, size == MemoryLayout<AudioDeviceID>.size else { throw RouteReadFailure.unavailable }
+        guard device != kAudioObjectUnknown else { return nil }
+        guard let uid = string(device, selector: kAudioDevicePropertyDeviceUID),
+              let name = string(device, selector: kAudioObjectPropertyName) else { throw RouteReadFailure.unavailable }
         var sampleRate: Double = 0
         property.mSelector = kAudioDevicePropertyNominalSampleRate
         size = UInt32(MemoryLayout<Double>.size)
         guard AudioObjectGetPropertyData(device, &property, 0, nil, &size, &sampleRate) == noErr,
-              size == MemoryLayout<Double>.size else { return nil }
+              size == MemoryLayout<Double>.size else { throw RouteReadFailure.unavailable }
         return (AudioPort(id: uid, name: name, kind: kind(device)), sampleRate)
     }
 
