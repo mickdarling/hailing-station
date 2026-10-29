@@ -55,6 +55,12 @@ the injected retry and cross the foreground resume entry point. Both require off
 capture start, an owner-stop veto, and no audio on the replacement socket. The owner-stop assertion is retained
 and strengthened, not converted into a resume expectation.
 
+An initial version of that new owner-stop probe used the fixture's single-waiter `SleepGate`. Owner stop cancels
+ambient pacing and creates an ordinary transport retry while the cancelled injected wait is still held; a single
+continuation slot can lose or release the wrong wait. The probe now uses the existing indexed `AmbientRetrySteps`,
+waits for both registrations, releases only the ordinary retry to reconnect, and then releases the cancelled
+ambient wait late. No production change or longer watchdog was needed for that fixture failure.
+
 Every Swift command uses `taskpolicy -b`, `-j 4 -Xswiftc -j1`, a shared-process gate for `swift-build`, `swift-test`
 and `xcodebuild`, and a 590-second process-group kill bound. Commands run to completion. SwiftPM automatic resolution
 is disabled. The already-installed Command Line Tools Testing framework requires these additional flags:

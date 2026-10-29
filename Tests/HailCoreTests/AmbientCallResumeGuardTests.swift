@@ -8,9 +8,11 @@ import Testing
 @Suite(.serialized) struct AmbientCallResumeGuardTests {
     @Test(arguments: [false, true])
     func ownerStopDuringTransportGapNeverResumes(interruptedFirst: Bool) async throws {
-        let rig = try CallReconnectRig()
+        let steps = AmbientRetrySteps()
+        let rig = try CallReconnectRig(retrySleep: { try await steps.sleep($0) })
         try await rig.start()
-        try await rig.drop()
+        await rig.socket.fail()
+        try await callEventually { await steps.started == 1 }
         if interruptedFirst { try await rig.interrupt() }
         await rig.controller.turnOff()
         if !interruptedFirst {
@@ -22,8 +24,16 @@ import Testing
         #expect(!rig.controller.reconnect.isPending)
         #expect(rig.notices.map(\.reason) == [.ownerStop])
         #expect(rig.notices.map(\.outcome) == [.blocked])
-        try await rig.reconnect()
+        // Owner stop cancels ambient pacing and starts a separate ordinary transport wait. Keep both
+        // continuations: the single-waiter SleepGate cannot distinguish the cancelled and current waits.
+        try await callEventually { await steps.started == 2 }
+        rig.socket = ScriptedSocket()
+        await rig.connector.enqueue(.socket(rig.socket), for: rig.endpoint.url)
+        await steps.release(1)
+        try await rig.handshake(rig.socket)
+        try await rig.select(restoring: true)
         rig.interruptionEnded()
+        await steps.release(0) // A late cancelled ambient wait also must not restart capture.
         await rig.microphoneRetry.release()
         await rig.controller.update(binding: try rig.currentBinding(), scene: .active)
         #expect(!rig.controller.isOn && !rig.controller.isListening && rig.controller.pausedReason == nil)
@@ -32,6 +42,7 @@ import Testing
             if case .audio = $0.payload { return false }; return true
         })
         await rig.close()
+        await steps.releaseAll()
     }
 
     @Test func transportDropRetainsPausedIntentThroughBackgroundSelectionAndResume() async throws {

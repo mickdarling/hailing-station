@@ -5,12 +5,13 @@ import Testing
 @testable import HailCore
 
 /// Scheduling watchdog only: protocol time advances exclusively through injected waits and signals.
-func callEventually(_ condition: @escaping @Sendable () async throws -> Bool) async throws {
+func callEventually(file: StaticString = #fileID, line: UInt = #line,
+                    _ condition: @escaping @Sendable () async throws -> Bool) async throws {
     for _ in 0..<100_000 {
         if try await condition() { return }
         await Task.yield()
     }
-    Issue.record("Call fixture did not reach its signalled state")
+    Issue.record("Call fixture did not reach its signalled state at \(file):\(line)")
     throw CancellationError()
 }
 
