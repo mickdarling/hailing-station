@@ -214,8 +214,9 @@ extension HostConnection {
             }
         } catch {
             pendingPings.removeValue(forKey: nonce)
-            if error as? HostConnectionFailure == .notReady,
-               isCurrent(token), wantsConnection, snapshot.connectionGeneration == connection,
+            // A cancelled owner still owns cancellation, even if teardown has recorded a refusal.
+            try Task.checkCancellation()
+            if isCurrent(token), wantsConnection, snapshot.connectionGeneration == connection,
                let failure = roundTripSocket?.terminalFailure {
                 throw failure
             }
@@ -265,8 +266,9 @@ enum HostNoticeOrigin {
 }
 
 extension HostConnection {
-    /// Told the socket's bound generation (and whether a send found it); only CancellationError and
-    /// HostConnectionFailure are ignored. Transport-caused drops report before close or reconnect publication.
+    /// Told the socket's bound generation (and whether a send found it). CancellationError, HostConnectionFailure,
+    /// and teardown after a recorded terminal failure are ignored. Transport-caused drops report before close
+    /// or reconnect publication.
     /// Explicit disconnect or loop replacement can interrupt receive and report after `.disconnected`, so
     /// callers must veto explicit disconnects before calling disconnect(), as HostConnectionStore does.
     public typealias TransportLossObserver = @Sendable (_ generation: UUID, _ sending: Bool) async -> Void
@@ -293,6 +295,7 @@ struct HostLossReportingConnector: WebSocketConnecting {
 actor HostLossReportingSocket: WebSocketTransport {
     let base: any WebSocketTransport
     let observer: HostConnection.TransportLossObserver
+    nonisolated let roundTripFailure = HostRoundTripFailure()
     private var generation: UUID?
     init(base: any WebSocketTransport, observer: @escaping HostConnection.TransportLossObserver) {
         self.base = base
@@ -316,7 +319,9 @@ actor HostLossReportingSocket: WebSocketTransport {
         }
     }
     private func report(_ error: any Error, sending: Bool) async {
-        guard !(error is CancellationError), !(error is HostConnectionFailure), let generation else { return }
+        // A recorded protocol failure already owns teardown and publication; its close is not another drop.
+        guard roundTripFailure.value == nil, !(error is CancellationError),
+              !(error is HostConnectionFailure), let generation else { return }
         await observer(generation, sending)
     }
     func close() async { await base.close() }
@@ -326,17 +331,25 @@ actor HostLossReportingSocket: WebSocketTransport {
 /// The wrapper forwards transport calls unchanged; loss reporting remains bound to its underlying socket.
 final class HostRoundTripSocket: WebSocketTransport {
     let base: any WebSocketTransport
-    private let failure = Mutex<HostConnectionFailure?>(nil)
+    private let failure: HostRoundTripFailure
 
-    init(base: any WebSocketTransport) { self.base = base }
-
-    var terminalFailure: HostConnectionFailure? { failure.withLock { $0 } }
-
-    func recordTerminalFailure(_ error: HostConnectionFailure) {
-        failure.withLock { $0 = error }
+    init(base: any WebSocketTransport) {
+        self.base = base
+        failure = (base as? HostLossReportingSocket)?.roundTripFailure ?? HostRoundTripFailure()
     }
+
+    var terminalFailure: HostConnectionFailure? { failure.value }
+
+    func recordTerminalFailure(_ error: HostConnectionFailure) { failure.record(error) }
 
     func send(_ data: Data) async throws { try await base.send(data) }
     func receive() async throws -> Data { try await base.receive() }
     func close() async { await base.close() }
+}
+
+/// Shared by the round-trip waiter and optional loss reporter for one opened transport.
+final class HostRoundTripFailure: Sendable {
+    private let failure = Mutex<HostConnectionFailure?>(nil)
+    var value: HostConnectionFailure? { failure.withLock { $0 } }
+    func record(_ error: HostConnectionFailure) { failure.withLock { $0 = error } }
 }
