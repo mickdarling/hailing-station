@@ -27,8 +27,15 @@ private struct PolicyRestartSink: AmbientAudioSink {
         #expect(active == rig.stream)
     }
 
-    @Test func neverGrantedStartDoesNotClaimPolicyChanged() async throws {
-        let host = try HailHost(registry: Registry(), store: InMemoryPolicyStore())
+    @Test(arguments: [false, true])
+    func neverGrantedStartDoesNotClaimPolicyChanged(_ unreadable: Bool) async throws {
+        let store = InMemoryPolicyStore()
+        let host = try HailHost(registry: Registry(), store: store)
+        if unreadable {
+            store.setLoadError(PolicyFileError.unwritable("synthetic"))
+            let policy: Policy? = await host.refreshedPolicy()
+            #expect(policy == nil)
+        }
         let sink = RecordingAmbientSink()
         let gate = ambientGate(sink: sink, clock: AmbientTestClock())
         let generation = host.targetPolicy.snapshot(for: "tmux:a")
@@ -37,7 +44,8 @@ private struct PolicyRestartSink: AmbientAudioSink {
             selection: AmbientSelection(target: "tmux:a"), connection: UUID(), device: nil,
             policyGeneration: generation
         )
-        #expect(result == .refused(.notAllowed, "ambient target is not allowed"))
+        let message = "ambient target is not allowed — run haild targets allow on the Mac"
+        #expect(result == .refused(.notAllowed, message))
         #expect(sink.events.isEmpty)
     }
 

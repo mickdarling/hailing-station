@@ -333,7 +333,8 @@ extension AmbientAudioGate {
                                   connection: connection, device: device)
         } else {
             let changed = expected?.target == target && expected?.wasGranted == true
-            let message = changed ? "ambient target_policy_changed" : "ambient target is not allowed"
+            let message = changed ? "ambient target_policy_changed"
+                : "ambient target is not allowed — run haild targets allow on the Mac"
             let refusal = refuse(.notAllowed, message, connection: connection)
             result = .refused(refusal.0, refusal.1)
         }
