@@ -8,6 +8,10 @@ beyond what Status lists**, and implementation waits for Mick's answers to the o
 
 ## Status
 
+The connected task/update source candidate is described in [proactive-task-candidate.md](proactive-task-candidate.md).
+It does not install or enable delivery, qualify physical hearing, or implement the approved-key/APNs ladder below.
+The historical merged-foundation inventory follows.
+
 | Piece | State |
 | --- | --- |
 | Held-update queue and policy: per-session rate limit, quiet, expiry | Merged (#617, #629–#631). Not deployed. |
