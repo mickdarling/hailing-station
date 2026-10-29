@@ -32,6 +32,7 @@ TIMING_SUITES=(
   TmuxDeliveryCommit AmbientWiring RightyoInput RightyoChildProcess SFSpeechRecognizerTranscriber
   TmuxPrePaste TmuxStaleInput TmuxCursorInput TmuxSubmitConfirmation TmuxIntegration TmuxPasteAgent TmuxPasteEnter
   CoachingTransportRegression AmbientSharedAudit CoachingStartupEvent DiagnosticComposition CodexAppServer
+  SessionUpdate TaskProgress Proactive
 )
 TIMING_PATTERN="($(IFS='|'; echo "${TIMING_SUITES[*]}"))"
 CORE_PATTERN='^HailCoreTests\.'
