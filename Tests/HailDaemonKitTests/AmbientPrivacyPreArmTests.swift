@@ -21,16 +21,24 @@ struct AmbientPrivacyPreArmTests {
     }
 
     /// Waits up to ten seconds for the queued notice, draining with pings. Pongs do not drain the notice task chain.
-    static func until(_ control: ControlPayload, on socket: URLSessionWebSocketTask, step: String) async throws {
+    /// An optional invariant must hold on each drain round and after the requested frame arrives.
+    static func until(_ control: ControlPayload, on socket: URLSessionWebSocketTask, step: String,
+                      invariant: (() -> Bool)? = nil, invariantDescription: String = "wait invariant") async throws {
         let deadline = ContinuousClock.now + .seconds(10)
+        let checkInvariant = {
+            if let invariant { #expect(invariant(), "\(step): invariant failed: \(invariantDescription)") }
+        }
         var received = false, count = 0
         while !received, ContinuousClock.now < deadline {
+            checkInvariant()
             let replies = try await AmbientPrivacySwitchTests.untilPong(
                 socket, step: step, within: ContinuousClock.now.duration(to: deadline))
             count += replies.count
             received = replies.contains(.control(control))
+            checkInvariant()
             if !received { try await Task.sleep(for: .milliseconds(10)) }
         }
+        if received { checkInvariant() }
         try #require(received, "\(step): frames=\(count)")
     }
 

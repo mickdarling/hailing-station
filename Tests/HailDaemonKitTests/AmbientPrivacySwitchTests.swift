@@ -163,7 +163,9 @@ import Testing
         try await Self.send(true, on: rig.socket)
         _ = try await Self.untilWords(rig.socket, step: "privacy on")
         try await Self.send(false, on: other)
-        try await AmbientPrivacyPreArmTests.until(.duckMode(on: false, reason: "device"), on: other, step: "other off")
+        try await AmbientPrivacyPreArmTests.until(.duckMode(on: false, reason: "device"), on: other, step: "other off",
+                                                invariant: { router.duckMode(connection: connection) },
+                                                invariantDescription: "rig connection must stay private")
         #expect(router.duckMode(connection: connection))
         await rig.finish()
         #expect(rig.details("ambient_duck") == ["on=true reason=device reported=1",
