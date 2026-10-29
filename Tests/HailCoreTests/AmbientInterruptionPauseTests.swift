@@ -57,20 +57,26 @@ import Testing
         await controller.turnOff()
     }
 
-    @Test func afterTheLastRetryListeningTurnsOffAndSaysWhy() async throws {
+    @Test func aBusyMicKeepsListeningIntentBeyondTheBackoffSchedule() async throws {
         let harness = Harness()
         let controller = harness.controller
         await controller.turnOn(for: try binding())
         harness.micBusy = true
         harness.interruption(began: true)
-        for _ in AmbientListeningController.resumeBackoff {
+        for _ in 0..<(AmbientListeningController.resumeBackoff.count + 3) {
             try await harness.waitForBackoff()
             await harness.steps.release()
         }
-        try await waitUntil { await MainActor.run { !controller.isOn } }
+        try await harness.waitForBackoff()
+        #expect(controller.isOn && !controller.isListening)
+        #expect(controller.pausedReason == AmbientListeningController.pausedStatus)
+        #expect(controller.stopReason == nil && harness.unexpected.isEmpty)
+        #expect(await harness.steps.durations.suffix(3) == [.seconds(60), .seconds(60), .seconds(60)])
+        harness.micBusy = false
+        await harness.steps.release()
+        try await waitUntil { await MainActor.run { controller.isListening } }
         #expect(controller.pausedReason == nil)
-        #expect(controller.stopReason == AmbientListeningController.resumeGaveUp)
-        #expect(harness.unexpected == [AmbientListeningController.resumeGaveUp])
+        await controller.turnOff()
     }
 
     @Test func turningOffWhilePausedCancelsEveryResume() async throws {
@@ -120,5 +126,43 @@ import Testing
         await controller.update(binding: try binding(target: "tmux:other"), scene: .active)
         #expect(!controller.isOn)
         #expect(controller.pausedReason == nil)
+    }
+}
+
+/// #850: every wait is injected; background deferrals never advance microphone retry pacing or revoke intent.
+@MainActor
+@Suite struct AmbientInterruptionForegroundRetryTests {
+    @Test func backgroundDeferralsKeepTheirRetrySlotAndForegroundResumesWithoutWaiting() async throws {
+        let harness = InterruptionPauseHarness()
+        let controller = harness.controller
+        let current = try binding()
+        await controller.turnOn(for: current)
+        harness.interruption(began: true)
+        try await harness.waitForBackoff()
+        await controller.update(binding: current, scene: .background)
+        for _ in 0..<(AmbientListeningController.resumeBackoff.count + 3) {
+            await harness.steps.release()
+            try await waitUntil {
+                if await harness.steps.pending > 0 { return true }
+                return await MainActor.run { !controller.isOn }
+            }
+            try #require(controller.isOn)
+            #expect(!controller.isListening && harness.fakes.count == 1)
+            #expect(controller.pausedReason == AmbientListeningController.foregroundPausedStatus)
+        }
+        #expect(await harness.steps.durations.allSatisfy { $0 == .seconds(2) })
+        #expect(controller.stopReason == nil && harness.unexpected.isEmpty && harness.activity == [true])
+        // A real foreground failure may advance pacing, but cannot turn off the owner's listening intent.
+        harness.micBusy = true
+        await controller.update(binding: current, scene: .active)
+        await harness.steps.release()
+        try await harness.waitForBackoff()
+        #expect(await harness.steps.durations.last == .seconds(5))
+        harness.micBusy = false
+        await controller.update(binding: current, scene: .active)
+        #expect(controller.isOn && controller.isListening && harness.fakes.count == 2)
+        #expect(controller.pausedReason == nil && harness.activity == [true])
+        await controller.turnOff()
+        await harness.steps.release()
     }
 }

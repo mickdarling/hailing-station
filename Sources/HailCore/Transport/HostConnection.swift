@@ -27,7 +27,7 @@ public actor HostConnection {
     let connector: any WebSocketConnecting
     let schedule: ReconnectSchedule
     let deviceName: String
-    let sleep: Sleep
+    private let injectedSleep: Sleep
     let jitter: Jitter
     let observer: Observer
     let replyObserver: ReplyObserver
@@ -49,6 +49,8 @@ public actor HostConnection {
     var negotiationDeadlineID: UInt64 = 0
     var generation: UInt64 = 0
     var wantsConnection = false
+    var reconnectPacing: (@Sendable () async -> AmbientReconnectPacing?)?
+    var ambientPacing: AmbientReconnectPacing?
     var pendingPings: [String: ContinuousClock.Instant] = [:]
     var desiredTargetID: String?
     /// The ambient stream last sent (#203), the socket generation it is bound to, and a gate refusal for it.
@@ -95,7 +97,7 @@ public actor HostConnection {
         }
         self.monotonicNow = monotonicNow
         self.wallNow = wallNow
-        self.sleep = sleep
+        self.injectedSleep = sleep
         self.jitter = jitter
         self.observer = observer
         self.replyObserver = replyObserver
@@ -123,7 +125,9 @@ public actor HostConnection {
         wantsConnection = true
         switch snapshot.state {
         case .connecting, .negotiating, .ready, .reconnecting: return
-        case .disconnected, .failed: await replaceLoop()
+        case .disconnected, .failed:
+            ambientPacing = nil
+            await replaceLoop()
         }
     }
 
@@ -161,22 +165,108 @@ public actor HostConnection {
         await publish(.disconnected, token: token)
         return handoff
     }
+}
 
-    /// Called when the app becomes active. Healthy sockets get a ping; reconnect waits are skipped immediately.
+extension HostConnection {
+    /// Healthy sockets get a ping; ambient recovery replaces its wait with a fresh fast retry.
     public func foregrounded() async {
         guard wantsConnection else { return }
+        await resetAmbientPacing()
         switch snapshot.state {
         case .ready:
             do {
                 try await sendPing(generation: generation, requiresDeadline: true)
             } catch {
-                await replaceLoop()
+                await resetAmbientPacing()
+                await reconnectAfterNudge()
             }
         case .connecting, .negotiating:
-            if negotiationHasExpired() { await replaceLoop() }
+            if negotiationHasExpired() {
+                await reconnectAfterNudge()
+            }
         case .disconnected, .reconnecting, .failed:
-            await replaceLoop()
+            await reconnectAfterNudge()
         }
+    }
+}
+
+extension HostConnection {
+    func setReconnectPacing(_ pacing: @escaping @Sendable () async -> AmbientReconnectPacing?) {
+        reconnectPacing = pacing
+    }
+
+    func networkPathChanged() async {
+        guard wantsConnection else { return }
+        await resetAmbientPacing()
+        if case .reconnecting = snapshot.state { await reconnectAfterNudge(minimumWait: true) }
+    }
+
+    private func resetAmbientPacing() async {
+        let pacing = await reconnectPacing?()
+        ambientPacing = pacing?.isCancelled == false ? pacing : nil
+        ambientPacing?.reset()
+    }
+
+    private func reconnectAfterNudge(minimumWait: Bool = false) async {
+        guard wantsConnection else { return }
+        await replaceLoop(reconnectAttempt: minimumWait || ambientPacing != nil ? 1 : nil)
+    }
+
+    /// Called only by the existing generation-checked reconnect loop, including selection-transport flaps.
+    func sleep(_ fallback: Duration) async throws {
+        try Task.checkCancellation()
+        let token = generation
+        let candidate = await reconnectPacing?()
+        try checkRetry(token: token)
+        let pacing = candidate?.isCancelled == false ? candidate : nil
+        ambientPacing = pacing
+        if let pacing, case .reconnecting(let attempt, _) = snapshot.state {
+            let delay = pacing.delay(jitterUnit: jitter())
+            let duration = Duration.milliseconds(Int64((delay * 1_000).rounded()))
+            await publish(.reconnecting(attempt: attempt, nextDelay: delay), token: token)
+            try checkRetry(token: token)
+            do { try await waitForAmbientRetry(duration, pacing: pacing) } catch {
+                try checkRetry(token: token)
+                guard pacing.isCancelled else { throw error }
+            }
+            try checkRetry(token: token)
+            if !pacing.isCancelled { return }
+            // The ambient owner ended. The same loop now spends its ordinary transport wait.
+            ambientPacing = nil
+            let parts = fallback.components
+            let ordinaryDelay = Double(parts.seconds) + Double(parts.attoseconds) / 1e18
+            await publish(.reconnecting(attempt: attempt, nextDelay: ordinaryDelay), token: token)
+        }
+        try checkRetry(token: token)
+        try await ambientSleep(for: fallback, injected: injectedSleep)
+        try checkRetry(token: token)
+    }
+
+    private func checkRetry(token: UInt64) throws {
+        guard isCurrent(token), wantsConnection, !Task.isCancelled else {
+            throw CancellationError()
+        }
+    }
+}
+
+extension HostConnection {
+    /// Cancellation completes the wait even when an injected sleeper ignores cancellation and returns late.
+    private func waitForAmbientRetry(_ duration: Duration, pacing: AmbientReconnectPacing) async throws {
+        let completion = AsyncThrowingStream<Void, any Error>.makeStream()
+        let waiter = UUID()
+        let task = Task { [injectedSleep] in
+            await withTaskCancellationHandler {
+                do {
+                    try await ambientSleep(for: duration, injected: injectedSleep)
+                    completion.continuation.finish()
+                } catch { completion.continuation.finish(throwing: error) }
+            } onCancel: { completion.continuation.finish(throwing: CancellationError()) }
+        }
+        defer { task.cancel(); pacing.release(waiter) }
+        guard pacing.register(task, id: waiter) else { throw CancellationError() }
+        try await withTaskCancellationHandler {
+            for try await _ in completion.stream {}
+        } onCancel: { task.cancel() }
     }
 }
 

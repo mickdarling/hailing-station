@@ -3,7 +3,7 @@ import HailCore
 import Speech
 import SwiftUI
 
-struct ConversationDestinationID: Hashable {
+struct StationConversationDestinationID: Hashable {
     let endpointID: HostEndpoint.Identifier
     let targetID: String
 }
@@ -14,10 +14,15 @@ struct SelectedReplyPlaybackObservation: Equatable {
 }
 
 /// Audio-first capture surface shared by compact and regular-width station layouts.
-struct TranscriptionLabView: View {
+#if !SWIFT_PACKAGE
+typealias ConversationDestinationID = StationConversationDestinationID
+typealias TranscriptionLabView = StationTranscriptionView
+#endif
+
+struct StationTranscriptionView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
     let destinationLabel: String?
-    let destinationID: ConversationDestinationID?
+    let destinationID: StationConversationDestinationID?
     let replyIDs: Set<String>
     let replyPlaybackStatus: String?
     let selectedReplyID: String?
@@ -33,8 +38,9 @@ struct TranscriptionLabView: View {
     let pasteOffer: PasteOffer
     let onEscape: (@MainActor () async throws -> Void)?
 
-    @State var capture: any AudioCapturing
-    @State var transcriber: any Transcriber
+    @StateObject var audio: StationSceneState<TranscriptionResources>
+    var capture: any AudioCapturing { audio.value.capture }
+    var transcriber: any Transcriber { audio.value.transcriber }
     @State var isRecording = false
     @State var finalText = ""
     @State var volatileText = ""
@@ -48,7 +54,7 @@ struct TranscriptionLabView: View {
     @State var isForcedTeardown = false
     @State var captureOwnerID = UUID()
     @State var pendingSendID: UUID?
-    @State var pendingDestinationID: ConversationDestinationID?
+    @State var pendingDestinationID: StationConversationDestinationID?
     /// The send a reply arrival ended while it was still in flight (#636): a placed reply can beat its request's send,
     /// so if that send then fails, its failure still shows rather than the arrival's "Reply received".
     @State var answeredSendID: UUID?
@@ -76,10 +82,10 @@ struct TranscriptionLabView: View {
 
     init(
         audioSession: any AudioSessionDiagnosticsProviding,
-        capture: any AudioCapturing = AVAudioEngineCapture(),
+        capture: @autoclosure @escaping () -> any AudioCapturing = AVAudioEngineCapture(),
         transcriber: (any Transcriber)? = nil,
         destinationLabel: String? = nil,
-        destinationID: ConversationDestinationID? = nil,
+        destinationID: StationConversationDestinationID? = nil,
         replyIDs: Set<String> = [],
         replyPlaybackStatus: String? = nil,
         selectedReplyID: String? = nil,
@@ -107,8 +113,9 @@ struct TranscriptionLabView: View {
         self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
         (self.onFinalized, self.onEscape) = (onFinalized, onEscape)
         self.pasteOffer = pasteOffer
-        _capture = State(initialValue: capture)
-        _transcriber = State(initialValue: transcriber ?? Self.defaultTranscriber())
+        _audio = StateObject(wrappedValue: StationSceneState {
+            TranscriptionResources(capture: capture(), transcriber: transcriber ?? Self.defaultTranscriber())
+        })
     }
 
     var body: some View {
@@ -181,7 +188,7 @@ struct TranscriptionLabView: View {
     }
 }
 
-extension TranscriptionLabView {
+extension StationTranscriptionView {
     var selectedReplyPlaybackObservation: SelectedReplyPlaybackObservation {
         SelectedReplyPlaybackObservation(id: selectedReplyID, status: replyPlaybackStatus)
     }
