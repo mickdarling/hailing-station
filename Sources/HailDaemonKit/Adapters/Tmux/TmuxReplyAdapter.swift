@@ -1,9 +1,6 @@
 import Foundation
 import HailProtocol
 
-// #1028 part 4 removes this opt-in when TmuxAdapter checks authority at paste and Enter.
-extension TmuxAdapter: CheckedHandoffDelivering {}
-
 public enum TmuxReplyAdapterError: Error, Sendable, Equatable {
     case invalidConfiguration, contextRequired, invalidText
 }
