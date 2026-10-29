@@ -97,7 +97,12 @@ fully drains the streamer and requires zero sent frames, with both interruption 
 reopens the transport gate during the held window: a separate per-capture-run veto keeps that ended capture shut.
 That added ordering failed against the first review correction before the per-run veto was added
 (`review-window-reopen-fail-before.log`); an ending route must not be undone by a fast transport restore.
-`interruptionImmediatelyDiscardsPCMFromAYieldingTap` covers the immediate interruption boundary.
+`interruptionImmediatelyDiscardsPCMFromAYieldingTap` covers the immediate interruption boundary. Signals that
+end even a running engine close admission on the notification thread. Startup keeps the original post-start
+engine-running guard: synchronous startup's transient stopped state cannot end or gate a healthy new run.
+`startupSignalsUseTheRunningStateAfterEngineStart` feeds PCM after startup category and engine-configuration
+notifications. Both cases failed against the initial synchronous dispatch (three issues in
+`review-startup-fail-before.log`) and now require a live tap, sent PCM and no system-end notice.
 
 P1-2: an already-private host deliberately sends no notice for a duplicate same-socket privacy-on request.
 After that socket has streamed, its gate also declines pre-arm. Private call recovery therefore replaces that
