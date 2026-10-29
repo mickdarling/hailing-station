@@ -116,7 +116,6 @@ func callEventually(file: StaticString = #fileID, line: UInt = #line,
         #expect(!rig.controller.isOn && rig.fakes.isEmpty)
         await rig.close()
     }
-
 }
 
 extension AmbientCallResumeTests {

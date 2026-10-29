@@ -109,7 +109,6 @@ final class CallReconnectRig {
         try await handshake(socket, mode: mode)
         if selectTarget {
             try await select(restoring: true)
-
         }
     }
 
