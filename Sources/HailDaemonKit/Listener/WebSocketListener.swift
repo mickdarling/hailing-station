@@ -550,7 +550,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var onMeetingChange: (@Sendable (MeetingChange) -> Void)?
         /// The wall clock that meeting and media expiries are fixed and restored on (MM-E). Tests only change it.
         var now: @Sendable () -> Date = { Date() }
-        /// Awaited by each acknowledgement just before its clip is sent. Nil in the daemon, so nothing waits: tests only
+        /// Awaited by each acknowledgement just before its clip is sent. Nil in the daemon, so nothing waits: tests
+        /// only
         /// set it, to hold an acknowledgement and show a not-sent notice waits for it (#894 review).
         var acknowledgementHold: (@Sendable () async -> Void)?
         /// Called with the connection once a "Nothing was sent." clip is queued on its privacy clip chain. Nil in the
@@ -817,7 +818,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     public func stop(connection: UUID) { stop(connection: connection, device: nil) }
 
-    /// Teardown parks a meeting or media mode still on (MM-E), or privacy (#941), before removing it, for the next start
+    /// Teardown parks a meeting or media mode still on (MM-E), or privacy (#941), before removing it, for the next
+    /// start
     /// to restore.
     public func stop(connection: UUID, device: AmbientPeerDevice?) {
         let streams = state.withLock { state -> [UUID] in
@@ -1200,7 +1202,8 @@ extension AmbientRightyoRouter {
     /// it always precedes that run's `ambient_ended`, even when a child exits at once beside another live run (#273).
     /// A reload's run (#405) emits `ambient_reloaded` first for the same reason: a new child that fails at once must
     /// leave its failure, not the reload, as the last event. A child whose connection was torn down while it was made
-    /// is registered like any other: `closed`, recorded by `stop(connection:)`, already refuses its mode entries (#735).
+    /// is registered like any other: `closed`, recorded by `stop(connection:)`, already refuses its mode entries
+    /// (#735).
     func register(_ pipeline: RightyoAmbientPipeline, stream: UUID, connection: UUID, reload: Bool = false,
                   in state: inout State) -> UUID {
         let id = UUID()
@@ -1741,7 +1744,8 @@ extension AmbientRightyoRouter {
     /// Tells the device that said a request that sent nothing (#636 slice 5c, #894), on its child's one notice chain:
     /// after `acknowledgement`, the latest acknowledgement when the refusal came (an un-routed request is acknowledged
     /// before it is typed, so the speaker hears the acknowledgement first), the refusal line, then "Nothing was sent.".
-    /// Returns the line's and the clip's outcome tokens. A connection already gone (`no_connection`) gets no clip either.
+    /// Returns the line's and the clip's outcome tokens. A connection already gone (`no_connection`) gets no clip
+    /// either.
     private func tellNotSent(
         _ line: String, after acknowledgement: Task<Void, Never>?, on connection: UUID, listener: WebSocketListener?,
         request: UUID? = nil, persona: String = AmbientStopConfirmation.notSent
@@ -1755,13 +1759,15 @@ extension AmbientRightyoRouter {
     }
 
     /// "Nothing was sent." unless the connection is private (#894, Jarvis: privacy wins). Queued on the connection's
-    /// privacy clip chain, so it can never follow a "Privacy on." decided before it. Privacy (`duck`, its internal name)
+    /// privacy clip chain, so it can never follow a "Privacy on." decided before it. Privacy (`duck`, its internal
+    /// name)
     /// is read when it is queued and again just before it plays: `suppressed_privacy` if on at either. A privacy
     /// decision landing after that last check is caught by the connection's privacy reply hold (#913), which the entry
     /// sets with the decision and the clip's enqueue checks once, under the hold's own lock, for all its frames: none
     /// is sent once privacy is decided, also `suppressed_privacy`. A connection already marked torn down gets no clip
     /// and no chain: `no_connection`.
-    /// One whose teardown lands just before the chain is taken (its mark already pruned) gets a chain; once the clip has
+    /// One whose teardown lands just before the chain is taken (its mark already pruned) gets a chain; once the clip
+    /// has
     /// run, a connection with no peer left has that entry dropped, as `stop(connection:)` does, so none is left behind.
     /// A connection id never comes back, so no live connection loses its chain or a clip.
     private func confirmNotSent(
@@ -1849,7 +1855,8 @@ extension AmbientRightyoRouter {
     /// Turns duck mode on or off for `connection` (#735), as `setMedia` does, and returns how many children took it.
     /// Only a child whose RightyO advertised duck mode takes it; when none does (an older RightyO) duck mode is not
     /// entered at all, nothing else changes, and the caller tells the owner. An entry no child took while duck mode is
-    /// already on (a reloaded child not started yet) leaves it on, timeout unchanged. Duck mode taken leaves media mode.
+    /// already on (a reloaded child not started yet) leaves it on, timeout unchanged. Duck mode taken leaves media
+    /// mode.
     @discardableResult
     func setDuck(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
         setDuck(on, connection: connection, reason: reason) { expected == nil || $0 == expected } ?? 0
@@ -2158,7 +2165,8 @@ extension AmbientRightyoRouter {
         state.withLock { $0.duck[connection] != nil && $0.privacy[connection]?.heardOn == true }
     }
 
-    /// Queues the clip `work` builds, given whether privacy is on, on `connection`'s chain, under the lock that reads it.
+    /// Queues the clip `work` builds, given whether privacy is on, on `connection`'s chain, under the lock that reads
+    /// it.
     func enqueuePrivacyClip(_ connection: UUID, _ work: (Bool) -> @Sendable () async -> Void) {
         state.withLock { state in
             Self.clipChain(connection, in: &state).enqueue(work(state.duck[connection] != nil))

@@ -4,7 +4,8 @@ import Foundation
 // Privacy survives drops until the owner clears parked state (#941, #1041).
 
 /// Privacy a dropped connection held (#941): where it was, its arming (`token`), its Hello claims (nil when unknown),
-/// when it was parked, and whether the owner had heard it announced there (`heardOn`), so a restored connection's status
+/// when it was parked, and whether the owner had heard it announced there (`heardOn`), so a restored connection's
+/// status
 /// answers the same. Unlike a parked mode it has no expiry, since privacy has none (Mick, round 2), and it is never
 /// consumed by a start: while it is held, every fresh ambient stream on any connection starts private (the claims and
 /// its age are logged), until the owner's own privacy-off clears it. In RAM only, so a haild restart restores nothing.

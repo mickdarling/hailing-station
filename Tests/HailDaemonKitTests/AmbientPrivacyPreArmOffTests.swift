@@ -4,7 +4,8 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-/// #904 (Jarvis, #967 round 1): a pre-armed connection's own off is the owner's off, exactly as #941 rules it. It clears
+/// #904 (Jarvis, #967 round 1): a pre-armed connection's own off is the owner's off, exactly as #941 rules it. It
+/// clears
 /// every existing park and the overflow; every other private connection keeps contributing (#1041). Any other
 /// private connection keeps its privacy, its reply hold and its children as they are. Real loopback listener and fake
 /// RightyO; every device claim is synthetic, every wait bounded.
