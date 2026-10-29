@@ -187,6 +187,7 @@ final class AudioDiagnosticsSession {
             guard ownsActivation else { return }
             ownsActivation = false
             guard !captureOwnsSession() else { return }
+            await model.deactivate()
         }
     }
 }
