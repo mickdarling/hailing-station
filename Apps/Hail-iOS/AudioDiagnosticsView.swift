@@ -8,7 +8,6 @@ struct AudioDiagnosticsView: View {
     @State var session = AudioDiagnosticsSession()
     @AppStorage(AudioInputPreferences.bluetoothHFPDefaultsKey) private var allowsBluetoothHFP = false
     @State private var bluetoothHFPFailure: String?
-
     var body: some View {
         List {
             Section("Session") {
@@ -57,7 +56,6 @@ struct AudioDiagnosticsView: View {
                 }
                 .disabled(!model.diagnostics.isActive || model.inputs.isEmpty)
                 .accessibilityLabel(model.inputAccessibilityLabel)
-
                 if let preferredStateDescription = model.preferredStateDescription {
                     LabeledContent("Preferred", value: preferredStateDescription)
                         .font(.caption)
@@ -118,7 +116,6 @@ private extension AudioDiagnosticsView {
             }
         }
     }
-
     private func routeControlLabel(title: String, value: String, systemImage: String) -> some View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
@@ -142,7 +139,6 @@ struct AudioOutputRoutePicker: UIViewRepresentable {
         picker.accessibilityHint = "Opens the system audio output list."
         return picker
     }
-
     func updateUIView(_ view: AVRoutePickerView, context: Context) {}
 }
 #else
@@ -170,7 +166,6 @@ final class AudioDiagnosticsSession {
     private(set) var activation: Task<Void, Never>?
     private(set) var disappearance: Task<Void, Never>?
     private var ownsActivation = false
-
     func activate(_ model: AudioRouteModel) {
         let previous = activation
         activation = Task {

@@ -27,12 +27,7 @@ import Testing
         try await rig.drop()
         await host.render()
         #expect(root.ambientDestinationBinding == nil && rig.controller.reconnect.isPending)
-        switch change {
-        case .deselectTarget: root.selectedTargetID = nil
-        case .deselectHost: root.selectedHostID = nil
-        case .changeTarget: root.selectedTargetID = "tmux:other"
-        case .changeHost: root.selectedHostID = "synthetic-other-host"
-        }
+        applyOwnerChange(change, to: root)
         await host.render()
         #expect(root.ambientDestinationBinding == nil)
         #expect(!rig.controller.isOn && !rig.controller.isListening && !rig.controller.reconnect.isPending)
@@ -86,6 +81,15 @@ import Testing
         await host.render()
         #expect(rig.controller.isListening && rig.capture.startCount == 1)
         await rig.close()
+    }
+
+    private func applyOwnerChange(_ change: OwnerChange, to root: StationRootView) {
+        switch change {
+        case .deselectTarget: root.selectedTargetID = nil
+        case .deselectHost: root.selectedHostID = nil
+        case .changeTarget: root.selectedTargetID = "tmux:other"
+        case .changeHost: root.selectedHostID = "synthetic-other-host"
+        }
     }
 
     private func makeHost(_ rig: AmbientReconnectRig, _ probe: NativeSceneAmbientProbe,
