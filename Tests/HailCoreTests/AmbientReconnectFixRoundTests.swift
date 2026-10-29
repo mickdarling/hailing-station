@@ -51,7 +51,7 @@ import Testing
         await rig.close()
     }
 
-    @Test func transportCloseMustNotDelayDiscardOrStartOfDeadline() async throws {
+    @Test func transportCloseKeepsDiscardingThroughoutALongOutage() async throws {
         let rig = try AmbientReconnectRig()
         let closing = AmbientClosingSocket(base: rig.socket)
         let clock = TestInstantClock()
@@ -64,8 +64,8 @@ import Testing
         for _ in 0..<6 { try rig.capture.yield(sineBuffer()) }
         #expect(rig.capture.discardedCount == before + 6, "Known transport gap admitted capture frames")
         clock.advance(by: .seconds(61))
-        #expect(!rig.controller.reconnect.withinDeadline(), "60-second deadline is not armed at transport loss")
-        #expect(!rig.controller.isListening)
+        #expect(rig.controller.reconnect.status == "Reconnecting…")
+        #expect(rig.controller.isListening && rig.controller.isOn)
         await closing.gate.fire()
         try await waitUntil { await rig.retry.isWaiting() }
         try await rig.reconnect()

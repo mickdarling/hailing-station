@@ -49,11 +49,11 @@ final class AmbientReconnectRig {
     )
     }
 
-    init() throws {
+    init(retrySleep: HostConnection.Sleep? = nil, jitter: @escaping HostConnection.Jitter = { 0.5 }) throws {
         endpoint = try makeReconnectEndpoint()
         let retry = retry
         store = HostConnectionStore(connector: connector, deadlineSleep: { _ in throw CancellationError() },
-                                    sleep: { delay in try await retry.sleep(delay) })
+                                    sleep: retrySleep ?? { delay in try await retry.sleep(delay) }, jitter: jitter)
     }
 
     func start(listening: Bool = true) async throws {

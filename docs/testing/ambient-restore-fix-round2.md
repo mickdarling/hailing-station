@@ -1558,3 +1558,118 @@ Final app-head build logs are `<scratch>/r2-final-build.log` and
 `r2-final-build-tests.log`; the scratch build directory is removed afterward.
 Validation uses synthetic transport/capture, not the host's loaded Swift 6.2.4
 gate or physical audio/UI. Independent approval of these heads remains pending.
+
+
+## N1 refusal during ping send, round 3 (PR #1016)
+
+Part of #904, ask 3. The production baseline is
+`69a9585a3ef45b5ae27d024cfad447f1794c10ea`. Round 3 changes only
+`HostConnection+Protocol.swift` in production. The startup wait added to
+`PastedDraftTests` at that baseline is removed by a separate new commit so it can
+travel independently. `HostConnection.swift`, `HostConnectionStore.swift`, and
+`AmbientListeningReconnect.swift` remain byte-for-byte unchanged from the baseline.
+
+A recorded terminal socket failure now takes precedence over every ping-send or
+pong-wait error while the token, connection generation, and connection intent
+remain current. `Task.checkCancellation()` runs first in the catch path, after
+pending-ping cleanup: genuine cancellation of the caller remains cancellation,
+including when an owner stop and a recorded refusal overlap. It cannot be
+converted into an authorization refusal.
+
+The optional loss reporter and round-trip wrapper share one mutex-protected
+terminal-failure record per transport. A close-induced `URLError.cancelled`
+otherwise reports a transport flap before the round-trip catch can translate its
+error. Once a terminal protocol failure owns teardown, the reporter suppresses
+that redundant loss report; ordinary transport failures retain their existing
+reporting and retry behavior.
+
+`AmbientReconnectSendRefusalTests` injects both `CancellationError` and
+`URLError.cancelled` into a held selection-ping send. Both waiter-before-publication
+and publication-before-waiter orders must return the authorization failure and
+retain exactly one blocked notice, `reauthorizationNeeded`, its diagnostic token,
+and the enabled destination action. Owner-stop/cancelled-send cases and a
+cancelled pong waiter independently require `CancellationError`. Tests use held
+continuations and the existing injected clock, with no new timing sleeps.
+
+`AmbientReconnectSocketIdentityTests.sameSocketSendAndReceiveLossCountOnceAndDifferentSocketFlaps`
+uses the actual store/connection wrappers. A send loss followed by a receive loss
+on the first socket leaves one pending recovery and no interrupted notice; a
+second socket has a different connection-generation UUID and its drop emits one
+interrupted notice. The comparison in the coordinator is the bound generation,
+not wrapper object identity. Negotiation binds the underlying loss wrapper before
+any transport calls; both loss paths therefore report the same generation.
+
+Tests were committed before the production change. With production still identical
+to the baseline, `fail-before-send.log` exits 1: both send-error ordering methods
+fail for both injected errors, and the cancellation-boundary checks also expose
+the old behavior. The corrected identity probe passes on that same production.
+The combined invocation runs 5 tests in 2 suites and records 26 assertion issues.
+
+`mutation.log` removes the new send-error preference and terminal-loss suppression,
+retaining the explicit caller-cancellation check. Both send-order methods fail in
+all four cases: 4 tests in 1 suite, 24 assertion issues, exit 1; cancellation cases
+still pass. `mutation-loss-report.log` removes only terminal-loss suppression:
+the early URL-cancellation case produces the extra interrupted notice, with 8
+assertion issues, exit 1. Both mutations finish normally and are restored before
+final verification. The restored pass-after run passes 8 tests in 3 suites.
+
+All commands are local and use the same launch prefix:
+
+```text
+taskpolicy -b swift <action> -j 4 -Xswiftc -j1
+-Xswiftc -F/Library/Developer/CommandLineTools/Library/Developer/Frameworks
+-Xswiftc -plugin-path -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing
+-Xlinker -rpath -Xlinker /Library/Developer/CommandLineTools/Library/Developer/Frameworks
+-Xlinker -rpath -Xlinker /Library/Developer/CommandLineTools/Library/Developer/usr/lib
+--disable-automatic-resolution --skip-update
+```
+
+Every invocation waits for no other `swift-build`, `swift-test`, `swift-frontend`,
+or `xcodebuild` process, then has a 590-second process-group kill bound and cleanup.
+Runtime commands use `--disable-xctest --no-parallel --skip DiagnosticReplyComposition`.
+Fail-before, pass-after, and mutation commands use `test -Xswiftc -warnings-as-errors
+--filter <selection>`; their selections are the named suites above, with AuthOrder
+also included in pass-after. The suppression-only mutation selects the first send-order
+method. Final builds use `build -Xswiftc -warnings-as-errors`,
+`build --build-tests -Xswiftc -warnings-as-errors`, and `build -c release`.
+Final runtime commands add `--skip-build -Xswiftc -warnings-as-errors`.
+Logs and the exact argument-vector manifest remain outside version control.
+
+Final runtime selections (the launch prefix and common runtime flags above apply):
+
+```text
+--filter 'AmbientReconnect|SendOrigin|HostConnection|AmbientRecovery|AmbientRestore'
+--filter 'AmbientReconnect.*(AuthRefusal|AuthOrder|ClosingPong|Flapping|SelectFailure|SendRefusal|SocketIdentity)'
+```
+
+The first selection runs three times. The second runs in 30 separate sequential
+Swift invocations and includes both Flapping suites, every new send-error and
+cancellation case, and the socket-identity regression. Fail-before uses
+`--filter 'AmbientReconnectSendRefusalTests|AmbientReconnectSocketIdentityTests'`;
+pass-after adds `|AmbientReconnectAuthOrderTests` to that filter. The first mutation
+uses `--filter AmbientReconnectSendRefusalTests`; the suppression-only mutation uses
+`--filter sendErrorBeforeFailurePublicationKeepsAuthorizationRefusal`.
+
+
+Final round-3 results on the committed production change (documentation only follows):
+
+| Phase | Result | Elapsed seconds |
+| --- | --- | --- |
+| final-build | passed | 2.868 |
+| final-build-tests | passed | 3.049 |
+| final-release | passed | 33.531 |
+| broad-1 | 210 tests / 75 suites / 303 cases passed | 338.239 |
+| broad-2 | 210 tests / 75 suites / 303 cases passed | 337.835 |
+| broad-3 | 210 tests / 75 suites / 303 cases passed | 341.694 |
+| focused loop, 30 invocations | 30/30 passed; 570 test executions / 750 cases | 1397.949 total |
+
+Every focused invocation passes 19 tests in 8 suites, including all four send-error
+ordering cases, the three caller-cancellation cases, and the identity test. Logs
+are `broad-1.log` through `broad-3.log` and `loop-1.log` through `loop-30.log` in
+local evidence scratch. No runtime test follows the completed 30-run loop.
+`git diff --check` and scoped declaration/line-length checks pass; no new lint
+suppression is added. These are synthetic macOS SwiftPM transport/capture tests,
+not physical-device, captured-output, simulator, CI, or independent-review proof.
+Network access, tool installation, pushes, and GitHub actions are not used. The
+package-local scratch `.build` is removed for delivery; logs remain outside the
+repository. The delivery bundle starts after the supplied baseline commit.
