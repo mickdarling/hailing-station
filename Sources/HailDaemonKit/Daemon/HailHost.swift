@@ -48,6 +48,7 @@ public actor HailHost {
     private let window: Duration
     private var policy: Policy
     private var policyRevision = UUID()
+    nonisolated let targetPolicy = TargetPolicyAuthority()
     private let replyPublicationAuthority = ReplyPublicationAuthority()
     private var evaluator: PolicyEvaluator
     private var limiter = RateLimiter()
@@ -74,6 +75,7 @@ public actor HailHost {
         }
         policy = loaded
         evaluator = try PolicyEvaluator(policy: loaded)
+        targetPolicy.update(policyFailure == nil ? loaded : nil)
     }
     /// Every adapter's targets, merged and sorted (#10 item 2).
     public func targets() async throws -> [TargetInfo] { try await registry.targets() }
@@ -117,13 +119,16 @@ public actor HailHost {
         let confirmedHash: String?
         let expectedBinding: String?
         let turn: ProviderTurnContext?
+        var policyGeneration: TargetPolicyGeneration?
     }
 
     private func dispatch(_ text: String, request dispatch: DispatchRequest) async throws -> SendOutcome {
         let id = dispatch.target
         try requireSendPreflight()
+        try dispatch.policyGeneration?.requireCurrent()
         var lines = try sanitizedLines(text)
         let listed = try await dispatchListing(dispatch, lineCount: lines.count)
+        try dispatch.policyGeneration?.requireCurrent()
         // Commit the first dispatch attempt after policy I/O, before consuming one-shot confirmation.
         // No further cancellation observation occurs before its adapter handoff; later lines may stop.
         try Task.checkCancellation()
@@ -136,7 +141,7 @@ public actor HailHost {
         let confirmedRevision = policyRevision
         var delivered: [String] = []
         for (index, line) in lines.enumerated() {
-            try requireUncancelledLaterLine(delivered, index: index)
+            try requireCurrentLine(delivered, index: index, policyGeneration: dispatch.policyGeneration)
             request.lines = Array(lines[index...])
             var decision = evaluator.evaluate(request, lockdown: lockdown.isOn, limiter: limiter, now: clock.now)
             // A confirmation turns a read-back into delivery and nothing else: every denial stands.
@@ -179,14 +184,14 @@ public actor HailHost {
     public func allow(_ id: String, tier: Tier = .confirm, capture: Bool = false) async throws -> TargetPolicy {
         try requirePolicy()
         guard let binding = try await listed(id).binding else { throw HostError.denied(.unbound(id)) }
-        try commit { try $0.allow(id, binding: binding, tier: tier, capture: capture) }
+        try commit(target: id) { try $0.allow(id, binding: binding, tier: tier, capture: capture) }
         return TargetPolicy(tier: tier, capture: capture, binding: binding)
     }
     /// Returns false when `id` was not allowed, so a CLI can say so; a deny of the unknown is not an error.
     public func deny(_ id: String) throws -> Bool {
         try requirePolicy()
         var wasAllowed = false
-        try commit { policy in
+        try commit(target: id) { policy in
             wasAllowed = policy.targets[id] != nil
             policy.deny(id)
         }
@@ -195,11 +200,28 @@ public actor HailHost {
     public func setTier(_ tier: Tier, for id: String) throws -> Bool {
         try requirePolicy()
         var wasAllowed = false
-        try commit { wasAllowed = $0.setTier(tier, for: id) }
+        try commit(target: id) { wasAllowed = $0.setTier(tier, for: id) }
         return wasAllowed
     }
 }
 extension HailHost {
+    /// Only fresh inputs retry a failed policy read; retained grants remain retired after recovery (#1028).
+    func inputPolicyGeneration(for target: String) -> TargetPolicyGeneration {
+        try? requirePolicy()
+        return targetPolicy.snapshot(for: target)
+    }
+
+    func sendAuthorized(
+        _ text: String, policyGeneration: TargetPolicyGeneration, from device: String,
+        expectedBinding: String?, context: ProviderTurnContext?
+    ) async throws -> SendOutcome {
+        try await dispatch(text, request: DispatchRequest(
+            target: policyGeneration.target, device: device, confirmedHash: nil,
+            expectedBinding: expectedBinding ?? policyGeneration.binding, turn: context,
+            policyGeneration: policyGeneration
+        ))
+    }
+
     /// The draft in a tmux target's prompt (#894), read only, for `haild targets flush`; gated exactly as `escape`.
     public func promptDraft(_ id: String) async throws -> TmuxPromptDraft {
         let binding = try await controlBinding(id)
@@ -312,7 +334,15 @@ extension HailHost {
         return listed
     }
 
-    private func requireUncancelledLaterLine(_ delivered: [String], index: Int) throws {
+    private func requireCurrentLine(
+        _ delivered: [String], index: Int, policyGeneration: TargetPolicyGeneration?
+    ) throws {
+        do {
+            try policyGeneration?.requireCurrent()
+        } catch {
+            guard !delivered.isEmpty else { throw error }
+            throw HostError.partial(delivered: delivered, reason: "target_policy_changed")
+        }
         guard index > 0, Task.isCancelled else { return }
         throw preservingPartial(CancellationError(), delivered: delivered)
     }
@@ -337,7 +367,9 @@ extension HailHost {
     }
     /// One store transaction: applied to what is stored now (not this process's snapshot), compiled
     /// before it is written, then adopted here; memory never holds a policy the store does not.
-    private func commit(_ change: (inout Policy) throws -> Void) throws {
+    private func commit(target: String, _ change: (inout Policy) throws -> Void) throws {
+        // Retire before store I/O; admission shares this short lock, never the transaction or its validation.
+        targetPolicy.retire(target)
         let update: PolicyUpdate
         do {
             update = try store.update { policy in
@@ -357,10 +389,12 @@ extension HailHost {
             compiled = try PolicyEvaluator(policy: update.policy)
         } catch {
             revokeAuthority()
+            targetPolicy.update(nil)
             policyFailure = "\(error)"
             throw error
         }
         revokeAuthority()
+        targetPolicy.update(update.policy)
         policy = update.policy
         evaluator = compiled
         if let failure = update.durabilityFailure { throw failure }
@@ -370,11 +404,13 @@ extension HailHost {
             let next = try store.load()
             let compiled = try PolicyEvaluator(policy: next)
             if next != policy { revokeAuthority() }
+            targetPolicy.update(next)
             policy = next
             evaluator = compiled
             policyFailure = nil
         } catch {
             revokeAuthority()
+            targetPolicy.update(nil)
             policyFailure = "\(error)"
             throw HostError.policyUnavailable("\(error)")
         }
@@ -437,6 +473,70 @@ extension HailHost {
         let screened = try PastedContent.screen(lines, with: evaluator, spoken: sanitizing)
         lines = screened.lines
         return screened.guardLines
+    }
+}
+
+/// Per-target generations survive unrelated writes; revocation and sink admission share this lock (#1028).
+final class TargetPolicyAuthority: Sendable {
+    private struct State {
+        var generation: UInt64 = 0
+        var policy: Policy?
+        var targets: [String: UInt64] = [:]
+    }
+    private let state = Mutex(State())
+
+    /// Removing the grant also refuses fresh snapshots until the transaction has been adopted.
+    func retire(_ target: String) {
+        state.withLock { state in
+            state.generation += 1
+            state.targets[target] = nil
+        }
+    }
+
+    func update(_ policy: Policy?) {
+        state.withLock { state in
+            state.generation += 1
+            var generations: [String: UInt64] = [:]
+            for (target, allowed) in policy?.targets ?? [:] {
+                let unchanged = state.policy?.targets[target] == allowed
+                generations[target] = unchanged ? state.targets[target] ?? state.generation : state.generation
+            }
+            state.targets = generations
+            state.policy = policy
+        }
+    }
+
+    func snapshot(for target: String) -> TargetPolicyGeneration {
+        state.withLock { state in
+            TargetPolicyGeneration(authority: self, target: target, generation: state.targets[target],
+                                   policy: state.policy?.targets[target])
+        }
+    }
+
+    fileprivate func performIfCurrent<Result>(
+        _ expected: TargetPolicyGeneration, operation: () throws -> Result
+    ) rethrows -> Result? {
+        try state.withLock { state in
+            guard let generation = expected.generation, state.targets[expected.target] == generation else { return nil }
+            return try operation()
+        }
+    }
+}
+
+struct TargetPolicyGeneration: Sendable {
+    fileprivate let authority: TargetPolicyAuthority
+    let target: String
+    fileprivate let generation: UInt64?
+    fileprivate let policy: TargetPolicy?
+    var binding: String? { policy?.binding }
+    var wasGranted: Bool { generation != nil }
+
+    func performIfCurrent<Result>(_ operation: () throws -> Result) rethrows -> Result? {
+        try authority.performIfCurrent(self, operation: operation)
+    }
+
+    func requireCurrent() throws {
+        guard performIfCurrent({ true }) == true else { throw HostError.denied(.notAllowed(target)) }
     }
 }
 

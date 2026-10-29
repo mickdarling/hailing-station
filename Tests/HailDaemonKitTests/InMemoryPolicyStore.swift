@@ -14,11 +14,14 @@ final class InMemoryPolicyStore: PolicyStore {
 
     private let state: Mutex<State>
     let summary = "memory (unsigned)"
+    private let beforeUpdate: @Sendable () -> Void
 
     init(
         _ policy: Policy = Policy(), loadError: (any Error)? = nil, saveError: (any Error)? = nil,
-        durabilityFailure: PolicyFileError? = nil, returnedPolicy: Policy? = nil
+        durabilityFailure: PolicyFileError? = nil, returnedPolicy: Policy? = nil,
+        beforeUpdate: @escaping @Sendable () -> Void = {}
     ) {
+        self.beforeUpdate = beforeUpdate
         state = Mutex(State(
             policy: policy, loadError: loadError, saveError: saveError,
             durabilityFailure: durabilityFailure, returnedPolicy: returnedPolicy
@@ -36,7 +39,8 @@ final class InMemoryPolicyStore: PolicyStore {
     }
 
     func update(_ change: (inout Policy) throws -> Void) throws -> PolicyUpdate {
-        try state.withLock { state in
+        beforeUpdate()
+        return try state.withLock { state in
             if let error = state.loadError { throw error }
             var policy = state.policy
             try change(&policy)
