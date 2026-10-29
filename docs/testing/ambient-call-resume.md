@@ -81,3 +81,40 @@ that obsolete binary is counted as a completed sweep. The requested family selec
 suite into disjoint groups to keep every serial command within its 590-second bound. Each completed sweep covers
 the union of `Ambient|Capture|Interruption|Resume|HostConnection|Privacy`, with only
 `DiagnosticReplyComposition` excluded. This preserves all selected tests without overlapping test processes.
+
+## PR 1034 independent-review corrections
+
+Part of #982. Review input head: `84b3023556bfe59fccd2bfcf6dada1fd08e04a28`.
+
+P1-1: the route classification window now closes capture admission as soon as an ending route is evaluated.
+An interruption closes it on the notification thread, before an actor hop. Main-thread ending signals run
+synchronously; no callback can slip PCM through a queued main-actor notification. The shared admission epoch
+also rejects already queued capture, converter output and sends. Ambient's pause marker closes admission for
+capture wrappers too. Capture retains only its observer and ending decision for the 200 ms window; gap PCM is
+never retained for later replay. The original route guards and isolated-route terminal reason still apply.
+`endingSignalDiscardsPCMThroughoutRouteWindow` feeds a saved fake tap before and during the held window, then
+fully drains the streamer and requires zero sent frames, with both interruption and expiry outcomes.
+`interruptionImmediatelyDiscardsPCMFromAYieldingTap` covers the immediate interruption boundary.
+
+P1-2: an already-private host deliberately sends no notice for a duplicate same-socket privacy-on request.
+After that socket has streamed, its gate also declines pre-arm. Private call recovery therefore replaces that
+transport through the existing paced reconnect path, retaining the same host, target and selection authorization.
+The fresh generation reauthorizes the destination, reasserts privacy and waits for its real pre-arm confirmation
+before opening capture. It never uses the old socket's cached privacy state as permission to send PCM.
+`privateSameSocketUsesFreshTransportAndConfirmedPreArm` starts with an actual synthetic PCM stream, pauses on
+that socket, advances the injected clock beyond five seconds, and confirms recovery only on the replacement
+transport. Held confirmation admits zero PCM; confirmation resumes a fresh stream without a spurious stop.
+Existing privacy, late-confirmation, owner-stop and refusal tests now drive that normal replacement path.
+
+P1-3: any URL change of the bound host during a call pause vetoes recovery before endpoint refresh can retain it.
+The appended `callAddressChanged` stop reason preserves all prior numeric values and displays exactly
+`listening stopped: host address changed during call`, in both the stop status and a pending-recovery notice.
+`URLChangeDuringCallStopsWithVisibleReason` covers a live socket and a transport gap while backgrounded. Both
+require listening off, the visible reason, one original capture start and no PCM on either destination, including
+after interruption-ended, late retry release and foreground entry. An owner must restart listening by hand.
+
+All evidence is synthetic SwiftPM verification on macOS; this does not establish a physical-device call round trip.
+The new tests were committed before production edits. Against unchanged reviewed production, the three initial
+regression functions failed (five parameterized cases, eight issues): route PCM escaped, same-socket recovery
+never reached a fresh transport, and both URL-change paths kept listening intent. Evidence remains host-local in
+`hs-982-evidence/review-fail-before.log`. The earlier baseline fail-before evidence remains recorded above.

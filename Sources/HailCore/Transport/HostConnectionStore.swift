@@ -1200,6 +1200,7 @@ extension AmbientListeningController {
 
     func markPaused(_ current: UUID) {
         guard session == current, isOn, pausedReason == nil else { return }
+        streamer?.suspendTransport()
         reconnect.capturePaused()
         pausedReason = Self.pausedStatus
         diagnostics?.record(.ambientStop, [.reason: .token("system_interruption")])
@@ -1395,11 +1396,13 @@ extension AmbientListeningController {
         streamer.resumeTransport()
         return true
     }
-    func cancelTransportRestore() {
+    func cancelTransportRestore(reason: AmbientListeningReconnect.Reason? = nil) {
         streamer?.discardCapture()
         isListening = false
         let current = session
-        Task { await end(current, reason: nil, cause: "binding_changed") }
+        let message = reason == .callAddressChanged
+            ? "listening stopped: host address changed during call" : nil
+        Task { await end(current, reason: message, cause: "binding_changed") }
     }
     static func isTransportError(_ error: any Error) -> Bool {
         !(error is HostConnectionFailure) || (error as? HostConnectionFailure) == .notReady

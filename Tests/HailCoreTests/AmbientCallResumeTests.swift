@@ -148,25 +148,23 @@ extension AmbientCallResumeTests {
         let old = rig.controller.binding
         try await rig.interrupt()
         if reconnecting { try await rig.drop() }
-        let host = AmbientPrivacyHost(base: reconnecting ? ScriptedSocket() : rig.socket)
-        if reconnecting {
-            rig.socket = host.base
-            await rig.connector.enqueue(.socket(host), for: rig.endpoint.url)
-            await rig.retry.fire()
-            try await rig.handshake(rig.socket, mode: .duckMode(on: true)) // Park restored by the host.
-            try await rig.confirmAutomaticSelection()
+        let host = AmbientPrivacyHost(base: ScriptedSocket())
+        if !reconnecting {
+            rig.interruptionEnded()
+            try await callEventually { await rig.retry.isWaiting() }
         }
+        rig.socket = host.base
+        await rig.connector.enqueue(.socket(host), for: rig.endpoint.url)
+        await rig.retry.fire()
+        try await rig.handshake(rig.socket, mode: .duckMode(on: true))
+        try await rig.confirmAutomaticSelection()
         rig.interruptionEnded()
-        // Same-socket requests are observed on the scripted socket; the reconnect uses a held host response.
-        try await callEventually {
-            if reconnecting { return await host.receivedRequest() }
-            return try await rig.socket.sentFrames().filter { $0.payload == .control(.setPrivacy(on: true)) }.count == 2
-        }
+        try await callEventually { await host.receivedRequest() }
         #expect(!rig.controller.isListening && rig.capture.startCount == 1)
-        if reconnecting { try await host.answer() } else { try await rig.socket.push(.duckMode(on: true)) }
+        try await host.answer()
         try await callEventually { await MainActor.run { rig.controller.isListening } }
         #expect(rig.store.privacySwitch(rig.endpoint.id).isPrivate)
-        if reconnecting { #expect(rig.controller.binding?.connectionGeneration != old?.connectionGeneration) }
+        #expect(rig.controller.binding?.connectionGeneration != old?.connectionGeneration)
         try await rig.feed()
         try await callEventually { try await rig.socket.sentFrames().contains { if case .audio = $0.payload {
             return true
@@ -176,7 +174,7 @@ extension AmbientCallResumeTests {
             if case .audio(let audio) = frame.payload { return audio }; return nil
         }.first)
         #expect(first.isResume && first.sequence == 0)
-        if reconnecting { await #expect(host.audioBeforeConfirmation() == 0) }
+        await #expect(host.audioBeforeConfirmation() == 0)
         await rig.close()
         await privacyWait.release()
     }

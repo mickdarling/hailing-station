@@ -29,32 +29,45 @@ import Testing
         await rig.close()
     }
 
+    @Test func interruptionImmediatelyDiscardsPCMFromAYieldingTap() async throws {
+        let rig = CallCaptureRig()
+        await rig.controller.turnOn(for: try binding())
+        let tap = try #require(rig.fakes[0].tap)
+        rig.interruption(true)
+        for _ in 0..<20 { tap(try sineBuffer(), AVAudioTime(hostTime: 0)) }
+        await rig.streamers[0].stop()
+        #expect(await rig.sent.payloads.isEmpty)
+        #expect(rig.controller.isOn && rig.controller.pausedReason != nil)
+        await rig.close()
+    }
+
     @Test func privateSameSocketUsesFreshTransportAndConfirmedPreArm() async throws {
         let rig = try CallReconnectRig()
         let deadline = BackoffSteps()
         rig.controller.reconnect.sleep = { await deadline.sleep($0) }
         try await rig.start()
+        try await rig.feed()
         try await rig.confirmPrivacy()
         let oldSocket = rig.socket
         let old = try rig.currentBinding()
         try await rig.interrupt()
+        let sentAtPause = try await audioFrames(oldSocket).count
         rig.interruptionEnded()
         // A real already-private host sends no reply to a repeated same-socket set_privacy.
+        try await callEventually { await MainActor.run {
+            rig.controller.isListening || rig.controller.reconnect.isPending
+        } }
+        try #require(!rig.controller.isListening && rig.capture.startCount == 1)
         try await callEventually { await rig.retry.isWaiting() }
         #expect(rig.controller.isOn && !rig.controller.isListening && rig.capture.startCount == 1)
         rig.clock.advance(by: .seconds(6))
         let host = AmbientPrivacyHost(base: ScriptedSocket())
-        rig.socket = host.base
-        await rig.connector.enqueue(.socket(host), for: rig.endpoint.url)
-        await rig.retry.fire()
-        try await rig.handshake(rig.socket, mode: .duckMode(on: true))
-        try await rig.confirmAutomaticSelection()
-        try await callEventually { await host.receivedRequest() }
+        try await replaceTransport(rig, with: host)
         let discarded = rig.capture.discardedCount
         for _ in 0..<20 { try rig.capture.yield(sineBuffer()) }
         #expect(rig.capture.discardedCount == discarded + 20)
         #expect(rig.controller.isOn && !rig.controller.isListening && rig.capture.startCount == 1)
-        #expect(try await audioFrames(oldSocket).isEmpty)
+        #expect(try await audioFrames(oldSocket).count == sentAtPause)
         #expect(try await audioFrames(rig.socket).isEmpty)
         try await host.answer()
         try await callEventually { await MainActor.run { rig.controller.isListening } }
@@ -92,5 +105,14 @@ import Testing
         #expect(try await audioFrames(oldSocket).isEmpty)
         #expect(try await audioFrames(newSocket).isEmpty)
         await rig.close()
+    }
+
+    private func replaceTransport(_ rig: CallReconnectRig, with host: AmbientPrivacyHost) async throws {
+        rig.socket = host.base
+        await rig.connector.enqueue(.socket(host), for: rig.endpoint.url)
+        await rig.retry.fire()
+        try await rig.handshake(rig.socket, mode: .duckMode(on: true))
+        try await rig.confirmAutomaticSelection()
+        try await callEventually { await host.receivedRequest() }
     }
 }

@@ -167,6 +167,15 @@ extension CallReconnectRig {
         } }
     }
 
+    /// A call's already-used socket cannot pre-arm privacy. Drive the ordinary replacement and selection.
+    func reconnectPrivateCall() async throws {
+        try await callEventually { await self.retry.isWaiting() }
+        try await reconnect(mode: .duckMode(on: true))
+        try await callEventually { try await self.socket.sentFrames().contains {
+            $0.payload == .control(.setPrivacy(on: true))
+        } }
+    }
+
     func selectionPing(after count: Int) async throws -> String? {
         let frames = Array(try await socket.sentFrames().dropFirst(count))
         guard let index = frames.firstIndex(where: { if case .control(.select) = $0.payload {

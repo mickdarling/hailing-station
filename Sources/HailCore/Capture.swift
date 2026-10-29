@@ -145,16 +145,9 @@ public final class AVAudioEngineCapture: AudioCapturing {
             }
         }
 
-        admission = AudioCaptureAdmission.current
+        admission = AudioCaptureAdmission.current ?? AudioCaptureAdmission()
         installTap(streamContinuation)
-        // Observe before starting, so a call or route change that lands while the engine starts is not lost. Its
-        // signal is handled on the main actor after `start` returns, against the engine's state at that point.
-        observer = AudioCaptureEndingObserver(
-            center: notificationCenter, engine: engine, inputChanged: routeInputChanged,
-            overrideWindow: routeOverrideWindow
-        ) { [weak self] signal, id in
-            Task { @MainActor in self?.systemSignal(signal, observer: id) }
-        }
+        observeEndingSignals()
         do {
             try operations.start(engine)
         } catch {
@@ -163,6 +156,25 @@ public final class AVAudioEngineCapture: AudioCapturing {
         }
         if let stallPolicy { watchdog = watch(stallPolicy) }
         return pair.stream
+    }
+
+    private func observeEndingSignals() {
+        // Observe before starting, so a call or route change that lands while the engine starts is not lost. Its
+        // ending signal closes admission immediately; engine teardown is confined to the main actor.
+        observer = AudioCaptureEndingObserver(
+            center: notificationCenter, engine: engine, inputChanged: routeInputChanged,
+            overrideWindow: routeOverrideWindow
+        ) { [weak self, admission] signal, id in
+            // Interruption admission closes on the notification thread, before a main-actor hop.
+            if signal == .interruptionBegan {
+                admission?.setPaused(true)
+            }
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { self?.systemSignal(signal, observer: id) }
+            } else {
+                Task { @MainActor in self?.systemSignal(signal, observer: id) }
+            }
+        }
     }
 
     public func stop() {
@@ -190,6 +202,8 @@ public final class AVAudioEngineCapture: AudioCapturing {
         // still decide whether a route needs an end at all.
         if case .routeChanged = signal {
             guard routeEnd == nil else { return }
+            // Discard tap PCM and retire already queued epochs throughout the decision window.
+            admission?.setPaused(true)
             routeEnd = Task { @MainActor [weak self, sleep, routeInterruptionWindow] in
                 guard (try? await sleep(routeInterruptionWindow)) != nil, !Task.isCancelled,
                       let self, self.observer?.id == id else { return }

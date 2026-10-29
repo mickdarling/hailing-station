@@ -101,9 +101,7 @@ import Testing
         try await rig.confirmPrivacy()
         try await rig.interrupt()
         rig.interruptionEnded()
-        try await callEventually { try await rig.socket.sentFrames().filter {
-            $0.payload == .control(.setPrivacy(on: true))
-        }.count == 2 }
+        try await rig.reconnectPrivateCall()
         #expect(!rig.controller.isListening && rig.capture.startCount == 1)
         if stop { await rig.controller.turnOff() } else {
             try await rig.store.setPrivacy(on: false, host: rig.endpoint.id)
@@ -126,9 +124,7 @@ import Testing
         try await rig.confirmPrivacy()
         try await rig.interrupt()
         rig.interruptionEnded()
-        try await callEventually { try await rig.socket.sentFrames().filter {
-            $0.payload == .control(.setPrivacy(on: true))
-        }.count == 2 }
+        try await rig.reconnectPrivateCall()
         if timeout {
             try await callEventually { await deadline.pending == 1 }
             rig.clock.advance(by: .seconds(5))

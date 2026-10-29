@@ -156,6 +156,7 @@ public final class AmbientListeningReconnect {
     public enum Reason: Int64, Sendable {
         case ownerStop = 1, ownerSelection, endpointChanged, explicitDisconnect, privacy, modeChanged
         case bindingChanged, targetChanged, startFailed, nonTransport, timedOut, movedAway, reauthorizationNeeded
+        case callAddressChanged
     }
     public enum Outcome: Sendable { case applied, blocked, failed, interrupted }
     public struct Notice: Equatable, Sendable {
@@ -172,6 +173,9 @@ public final class AmbientListeningReconnect {
             return outcome == .applied ? "Hailing Station reconnected" : "Hailing Station stopped listening"
         }
         public var text: String {
+            if reason == .callAddressChanged {
+                return "listening stopped: host address changed during call"
+            }
             if reason == .reauthorizationNeeded {
                 return "Listening stopped; re-authorization needed. Choose a destination to continue."
             }
@@ -227,7 +231,7 @@ public final class AmbientListeningReconnect {
         privacyConfirmation.cancel()
         let stopping = isPending || controller?.pausedReason != nil
         if isPending { finish(.blocked, reason: veto) }
-        if stopping { controller?.cancelTransportRestore() }
+        if stopping { controller?.cancelTransportRestore(reason: veto) }
     }
     func drop(_ snapshot: HostConnectionSnapshot, store: HostConnectionStore) {
         guard let controller, controller.isOn, controller.isListening || controller.pausedReason != nil,
@@ -292,7 +296,12 @@ extension AmbientListeningReconnect {
             return block(reason.hasPrefix("host error: unauthorized:") ? .reauthorizationNeeded : .nonTransport)
         }
         if snapshot.state == .disconnected { return block(.explicitDisconnect) }
-        if snapshot.endpoint != intent.endpoint { return block(.endpointChanged) }
+        if snapshot.endpoint != intent.endpoint {
+            if snapshot.endpoint.url != intent.endpoint.url, controller?.pausedReason != nil {
+                return block(.callAddressChanged)
+            }
+            return block(.endpointChanged)
+        }
         guard snapshot.state == .ready, snapshot.receivedTargetList else { return }
         if !snapshot.capabilities.contains(HostConnection.streamAudioCapability) { return block(.bindingChanged) }
         if !snapshot.targets.contains(where: { $0 == intent.target && $0.alive }) { return block(.targetChanged) }
@@ -440,6 +449,11 @@ extension AmbientListeningReconnect {
     func refreshEndpoint(_ endpoint: HostEndpoint, previous: HostConnectionSnapshot?,
                          store: HostConnectionStore) -> Bool {
         guard let previous, previous.id == endpoint.id else { return false }
+        if previous.endpoint.url != endpoint.url, controller?.pausedReason != nil,
+           controller?.binding?.hostID == endpoint.id {
+            block(.callAddressChanged)
+            return false
+        }
         if !isPending { drop(previous, store: store) }
         guard !(previous.endpoint.url.scheme?.lowercased() == "wss" && endpoint.url.scheme?.lowercased() == "ws")
         else { return false }
@@ -527,6 +541,9 @@ extension AmbientListeningReconnect {
         guard captureRequiresPrivacy || privateNow else { return true }
         if capturePrivacyBinding == current { return true }
         guard let store else { return false }
+        if reopenPrivateCaptureTransport(current, store: store) {
+            return false
+        }
         privacyConfirmation.sleep = sleep
         privacyConfirmation.now = now
         privacyConfirmation.begin(current, store: store) { [weak self] confirmed in
@@ -540,5 +557,16 @@ extension AmbientListeningReconnect {
             self.controller?.retryPausedCapture()
         }
         return false
+    }
+
+    private func reopenPrivateCaptureTransport(_ current: AmbientAudioBinding, store: HostConnectionStore) -> Bool {
+        guard current == controller?.binding, !isPending,
+              let snapshot = store.snapshots[current.hostID],
+              snapshot.connectionGeneration == current.connectionGeneration else { return false }
+        // An already-private host sends no same-socket confirmation. Its pre-arm only accepts a
+        // fresh connection: retain call intent and use the ordinary paced reconnect/selection path.
+        drop(snapshot, store: store)
+        retrySelectionTransport(snapshot, store: store)
+        return true
     }
 }
