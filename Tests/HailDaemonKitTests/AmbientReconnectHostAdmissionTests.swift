@@ -16,15 +16,10 @@ struct AmbientReconnectHostAdmissionTests {
         let (socket, connection) = try await rig.connect(capabilities: [DuckMode.capability])
         #expect(rig.router.activeStream == nil && rig.parked == nil)
         try await AmbientPrivacySwitchTests.send(true, on: socket)
-        // The notice is posted from the router's notice queue, so it can follow the next pong: wait, bounded, as
-        // `offWorksAfterTheStreamEndedOnDoesNot` does.
-        var replies: [FramePayload] = []
-        for _ in 0..<20 where !replies.contains(.control(.duckMode(on: true, reason: "device"))) {
-            replies += try await AmbientPrivacySwitchTests.untilPong(socket, step: "no-stream privacy re-assert")
-        }
+        // The notice can follow pongs while the router's notice task chain waits.
+        try await AmbientPrivacyPreArmTests.until(.duckMode(on: true, reason: "device"), on: socket,
+                                                step: "no-stream privacy re-assert")
         #expect(rig.router.activeStream == nil, "privacy re-assert must not start capture")
-        try #require(replies.contains(.control(.duckMode(on: true, reason: "device"))),
-                     "No-stream set_privacy on must confirm duck_mode on; observed replies: \(replies)")
         try #require(rig.router.duckMode(connection: connection), "privacy must be held before resume")
         try await recipientSocketSend(RestoreRig.segment(UUID(), 0, fill: 0x11, resume: true), on: socket)
         #expect(await eventually { rig.router.activeConnection() == connection }, "resume start processed")

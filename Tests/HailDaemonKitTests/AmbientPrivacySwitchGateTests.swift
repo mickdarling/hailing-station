@@ -83,11 +83,7 @@ import Testing
         _ = try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "stream ended")
         #expect(router.duckMode(connection: connection))
         try await AmbientPrivacySwitchTests.send(false, on: rig.socket)
-        var off: [FramePayload] = []
-        for _ in 0..<20 where !off.contains(.control(.duckMode(on: false, reason: "device"))) {
-            off += try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "off")
-        }
-        #expect(off.contains(.control(.duckMode(on: false, reason: "device"))))
+        try await AmbientPrivacyPreArmTests.until(.duckMode(on: false, reason: "device"), on: rig.socket, step: "off")
         #expect(!router.duckMode(connection: connection))
         try await AmbientPrivacySwitchTests.send(true, on: rig.socket)
         #expect(try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "on without a stream").isEmpty)

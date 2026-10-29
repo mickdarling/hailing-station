@@ -20,13 +20,26 @@ struct AmbientPrivacyPreArmTests {
         return (socket, connection)
     }
 
-    /// Waits, bounded, for `control` on `socket`, a ping at a time.
-    static func until(_ control: ControlPayload, on socket: URLSessionWebSocketTask, step: String) async throws {
-        var replies: [FramePayload] = []
-        for _ in 0..<20 where !replies.contains(.control(control)) {
-            replies += try await AmbientPrivacySwitchTests.untilPong(socket, step: step)
+    /// Waits up to ten seconds for the queued notice, draining with pings. Pongs do not drain the notice task chain.
+    /// An optional invariant must hold on each drain round and after the requested frame arrives.
+    static func until(_ control: ControlPayload, on socket: URLSessionWebSocketTask, step: String,
+                      invariant: (() -> Bool)? = nil, invariantDescription: String = "wait invariant") async throws {
+        let deadline = ContinuousClock.now + .seconds(10)
+        let checkInvariant = {
+            if let invariant { #expect(invariant(), "\(step): invariant failed: \(invariantDescription)") }
         }
-        try #require(replies.contains(.control(control)), "\(step): \(replies)")
+        var received = false, count = 0
+        while !received, ContinuousClock.now < deadline {
+            checkInvariant()
+            let replies = try await AmbientPrivacySwitchTests.untilPong(
+                socket, step: step, within: ContinuousClock.now.duration(to: deadline))
+            count += replies.count
+            received = replies.contains(.control(control))
+            checkInvariant()
+            if !received { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        if received { checkInvariant() }
+        try #require(received, "\(step): frames=\(count)")
     }
 
     /// A normal start after the pre-arm is launched start-private, the agent's replies are held from the pre-arm on,

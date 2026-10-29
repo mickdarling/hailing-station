@@ -13,20 +13,24 @@ final class StationSceneState<Value>: ObservableObject {
 /// Each window owns a complete station, including its native route model.
 @MainActor
 struct StationResources {
-    let connections = HostConnectionStore()
+    let connections: HostConnectionStore
     let audioSession: ManagedAudioSession
     let audioRoutes: AudioRouteModel
     let playback: ReplyPlaybackController
     let echoGuard: AmbientReplyEchoGuard
     let keepalive: BackgroundKeepalive
-    let diagnostics = DeviceDiagnostics()
+    let diagnostics: DeviceDiagnostics
     var announcementBanners = AnnouncementBanners()
 
     init(
+        connections: HostConnectionStore = HostConnectionStore(),
         backend: any AudioSessionBackend = StationPlatform.audioSessionBackend(),
         player: any ReplyAudioPlaying = PCM16AudioPlayer(),
-        keepaliveRenderer: any BackgroundKeepaliveRendering = StationPlatform.keepaliveRenderer()
+        keepaliveRenderer: any BackgroundKeepaliveRendering = StationPlatform.keepaliveRenderer(),
+        diagnostics: DeviceDiagnostics = DeviceDiagnostics()
     ) {
+        self.connections = connections
+        self.diagnostics = diagnostics
         let session = ManagedAudioSession(backend: backend)
         audioSession = session
         audioRoutes = AudioRouteModel(controller: session)

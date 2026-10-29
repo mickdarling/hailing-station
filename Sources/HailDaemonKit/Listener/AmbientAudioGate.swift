@@ -319,6 +319,8 @@ extension AmbientAudioGate {
         // Continue under the stream's original grant, never a replacement obtained after a write (#1028).
         let retained = active.flatMap { $0.id == audio.streamID && $0.connection == connection ? $0 : nil }
         let expected = retained?.policyGeneration ?? policyGeneration
+        // Observe after the admission hop, outside the generation lock; no suspension precedes the compare.
+        expected?.observePolicy()
         let result: AmbientAdmission
         // Compare and commit only gate state/events under the lock; no sink, child validation, spawn or await.
         if let expected, expected.target == target, let admitted = expected.performIfCurrent({

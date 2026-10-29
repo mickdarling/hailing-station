@@ -8,7 +8,7 @@ typealias RootView = StationRootView
 #endif
 
 /// Shared station state for the adaptive iPhone and iPad interface.
-struct StationRootView: View {
+struct StationRootView: View, AmbientDestinationOwner {
     private static let savedHostsKey = "hailing-station.host-endpoints.v1"
     let selectionStore: any DestinationSelectionStoring
     @StateObject var station: StationSceneState<StationResources>
@@ -49,11 +49,16 @@ struct StationRootView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            content
-        }
+        NavigationStack { content }
+        .environment(connections)
         .modifier(StationMenuStatusPublisher(connections: connections, destination: destination?.label))
         .modifier(ReplySegmentNotices(connections: connections, banners: $station.value.announcementBanners))
+        .onChange(of: [selectedHostID, selectedTargetID]) { _, _ in
+            Task { await reconcileAmbientDestination() }
+        }
+        .onChange(of: ambientDestinationBinding) { _, _ in
+            Task { await reconcileAmbientDestination() }
+        }
         .onChange(of: scenePhase) { _, phase in
             scenePhaseRevision &+= 1
             selectionRevision &+= 1
@@ -157,5 +162,35 @@ struct StationRootView: View {
         guard let rememberedSelection,
               !endpoints.contains(where: rememberedSelection.matches(endpoint:)) else { return }
         Task { await forgetSelection() }
+    }
+}
+
+/// Destination lifetime belongs to the root, including while navigation covers the station card.
+@MainActor
+protocol AmbientDestinationOwner {
+    var connections: HostConnectionStore { get }
+    var selectedHostID: HostEndpoint.Identifier? { get }
+    var selectedTargetID: String? { get }
+}
+
+extension AmbientDestinationOwner {
+    var ambientDestinationBinding: AmbientAudioBinding? {
+        selectedHostID.flatMap { host in
+            selectedTargetID.flatMap { connections.ambientBinding(host: host, targetID: $0) }
+        }
+    }
+
+    func reconcileAmbientDestination() async {
+        guard let controller = connections.ambientController, controller.isOn else { return }
+        if controller.reconnect.isPending {
+            // A transport gap alone preserves capture. An owner change must veto the pending restore
+            // and retain the destination-loss cause and visible stop reason.
+            guard let binding = controller.reconnect.binding,
+                  selectedHostID != binding.hostID || selectedTargetID != binding.targetID else { return }
+            await controller.ownerChangedDestination()
+            return
+        }
+        guard controller.binding != ambientDestinationBinding else { return }
+        await controller.destinationLost()
     }
 }

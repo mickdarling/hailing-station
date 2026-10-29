@@ -71,9 +71,11 @@ extension HostSession {
         }
         // A stream this segment opens keeps the selection generation it opened on (#636).
         let selection = AmbientSelection(target: selectedTarget, generation: selectionGeneration)
-        let policyGeneration = host.targetPolicy.snapshot(for: gate.target)
         let retained = ambientPolicyGeneration
         let opening = audio.sequence == 0 && audio.streamID != ambientPolicyStream
+        // Refresh before minting an opening grant; the gate still rechecks after the actor hop (#1028).
+        if opening { host.targetPolicy.snapshot(for: gate.target).observePolicy() }
+        let policyGeneration = host.targetPolicy.snapshot(for: gate.target)
         // A child can refuse startup before admission returns; its error belongs to this attempt's grant.
         if opening { ambientPolicyGeneration = policyGeneration.wasGranted ? policyGeneration : nil }
         switch await gate.admission(
