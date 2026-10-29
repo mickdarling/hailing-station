@@ -15,6 +15,8 @@ import Testing
         // The fake engine keeps delivering even after the ending signal, before any actor hop.
         for _ in 0..<20 { tap(try sineBuffer(), AVAudioTime(hostTime: 0)) }
         try await callEventually { await rig.routeWait.pending == 1 }
+        // A fast same-host transport restore must not reopen this ending capture run.
+        rig.streamers[0].resumeTransport()
         for _ in 0..<20 { tap(try sineBuffer(), AVAudioTime(hostTime: 0)) }
         if interrupted {
             rig.interruption(true)
