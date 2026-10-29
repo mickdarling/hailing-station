@@ -38,19 +38,23 @@ import Testing
         await rig.close()
     }
 
-    @Test func privacyConfirmationCannotExtendOverallSixtySecondDeadline() async throws {
+    @Test func privacyConfirmationHasItsOwnFiveSecondsAfterALongOutage() async throws {
         let rig = try AmbientReconnectRig()
         let clock = TestInstantClock()
         rig.controller.reconnect.now = { clock.now() }
         try await rig.start()
         try await rig.confirmInitialPrivacy()
         try await rig.drop()
-        clock.advance(by: .seconds(58))
+        clock.advance(by: .seconds(3_600))
+        let old = rig.controller.binding
         let host = try await rig.privateReconnect()
         clock.advance(by: .seconds(2))
         try await host.answer()
-        try await rig.expectStopped(.timedOut)
-        try await rig.expectNoRestoredPCM()
+        try await waitUntil { await MainActor.run { rig.controller.binding != old } }
+        try await rig.feed()
+        #expect(rig.notices.map(\.outcome) == [.applied])
+        #expect(rig.controller.isListening && rig.capture.startCount == 1)
+        await host.expectExactlyOnePrivacyOn()
         await rig.close()
     }
 
