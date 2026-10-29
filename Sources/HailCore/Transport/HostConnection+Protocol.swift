@@ -1,5 +1,6 @@
 public import Foundation
 public import HailProtocol
+import Synchronization
 
 // The frame dispatch and its ambient and request-refusal cases stay together with negotiation.
 // swiftlint:disable file_length
@@ -9,7 +10,8 @@ extension HostConnection {
         on opened: any WebSocketTransport, token: UInt64
     ) async throws -> (version: Int, capabilities: [String]) {
         let connectionGeneration = snapshot.connectionGeneration
-        if let reporting = opened as? HostLossReportingSocket {
+        let reportingSocket = (opened as? HostRoundTripSocket)?.base ?? opened
+        if let reporting = reportingSocket as? HostLossReportingSocket {
             await reporting.bind(connectionGeneration)
         }
         try await send(
@@ -197,6 +199,8 @@ extension HostConnection {
     /// protocol-version change that would break terminals already installed through TestFlight.
     /// A caller that supplies `nonce` can ask `hasPong` whether this ping's pong was already received.
     func confirmRoundTrip(generation token: UInt64, nonce: String) async throws {
+        let roundTripSocket = socket as? HostRoundTripSocket
+        let connection = snapshot.connectionGeneration
         pendingPings[nonce] = monotonicNow()
         do {
             try await send(.ping(nonce: nonce), generation: token)
@@ -210,6 +214,11 @@ extension HostConnection {
             }
         } catch {
             pendingPings.removeValue(forKey: nonce)
+            if error as? HostConnectionFailure == .notReady,
+               isCurrent(token), wantsConnection, snapshot.connectionGeneration == connection,
+               let failure = roundTripSocket?.terminalFailure {
+                throw failure
+            }
             throw error
         }
     }
@@ -310,5 +319,24 @@ actor HostLossReportingSocket: WebSocketTransport {
         guard !(error is CancellationError), !(error is HostConnectionFailure), let generation else { return }
         await observer(generation, sending)
     }
+    func close() async { await base.close() }
+}
+
+/// Retain the receive loop's terminal error for waiters on this exact socket, before teardown clears its pings.
+/// The wrapper forwards transport calls unchanged; loss reporting remains bound to its underlying socket.
+final class HostRoundTripSocket: WebSocketTransport {
+    let base: any WebSocketTransport
+    private let failure = Mutex<HostConnectionFailure?>(nil)
+
+    init(base: any WebSocketTransport) { self.base = base }
+
+    var terminalFailure: HostConnectionFailure? { failure.withLock { $0 } }
+
+    func recordTerminalFailure(_ error: HostConnectionFailure) {
+        failure.withLock { $0 = error }
+    }
+
+    func send(_ data: Data) async throws { try await base.send(data) }
+    func receive() async throws -> Data { try await base.receive() }
     func close() async { await base.close() }
 }
