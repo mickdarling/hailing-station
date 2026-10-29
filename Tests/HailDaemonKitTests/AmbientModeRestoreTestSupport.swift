@@ -83,7 +83,6 @@ final class RestoreRig: Sendable {
         }, now: { clock.now() }), onEvent: { event in events.list.withLock { $0.append(event) } },
                                    childMade: childMade)
     }
-
 }
 
 extension RestoreRig {
