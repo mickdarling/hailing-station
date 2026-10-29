@@ -82,7 +82,9 @@ struct ConversationChatView: View {
 
     /// The reply the player controls now, else the newest reply.
     private var controlledReplyID: String? {
-        playback.presentationForControls?.id ?? entries.last { $0.speaker == .haili && !$0.notice }?.id
+        playback.presentationForControls?.id ?? entries.last {
+            $0.speaker == .haili && !$0.notice && $0.updatePriority == nil
+        }?.id
     }
 
     /// A host's refusal of one request (#608, #636): a system line, not a message. The store announces it once.
@@ -106,7 +108,7 @@ struct ConversationChatView: View {
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true) // The bubble's own label says it.
                 } else if let source = Self.placedSource(entry, thread: threadTargetID) {
-                    // Another session answered a request addressed to it from this thread (#636).
+                    // Every proactive card is attributed; addressed replies also name their session (#609, #636).
                     Label(source, systemImage: "arrow.turn.down.right")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
