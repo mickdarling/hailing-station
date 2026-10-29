@@ -8,7 +8,7 @@ typealias RootView = StationRootView
 #endif
 
 /// Shared station state for the adaptive iPhone and iPad interface.
-struct StationRootView: View {
+struct StationRootView: View, AmbientDestinationOwner {
     private static let savedHostsKey = "hailing-station.host-endpoints.v1"
     let selectionStore: any DestinationSelectionStoring
     @StateObject var station: StationSceneState<StationResources>
@@ -159,5 +159,27 @@ struct StationRootView: View {
         guard let rememberedSelection,
               !endpoints.contains(where: rememberedSelection.matches(endpoint:)) else { return }
         Task { await forgetSelection() }
+    }
+}
+
+/// Destination lifetime belongs to the root, including while navigation covers the station card.
+@MainActor
+protocol AmbientDestinationOwner {
+    var connections: HostConnectionStore { get }
+    var selectedHostID: HostEndpoint.Identifier? { get }
+    var selectedTargetID: String? { get }
+}
+
+extension AmbientDestinationOwner {
+    var ambientDestinationBinding: AmbientAudioBinding? {
+        selectedHostID.flatMap { host in
+            selectedTargetID.flatMap { connections.ambientBinding(host: host, targetID: $0) }
+        }
+    }
+
+    func reconcileAmbientDestination() async {
+        guard let controller = connections.ambientController, controller.isOn,
+              controller.binding != ambientDestinationBinding else { return }
+        await controller.destinationLost()
     }
 }

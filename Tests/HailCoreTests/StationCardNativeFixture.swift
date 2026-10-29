@@ -25,10 +25,6 @@ func makeNativeAmbientCard(rig: AmbientReconnectRig, diagnostics: DeviceDiagnost
     func replaceQueue(with payloads: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?) {}
 }
 
-@MainActor enum StationPlatform {
-    static var ambientCaptureMode: AmbientCaptureMode { .plain }
-}
-
 func requestMicrophonePermission() async -> Bool { true }
 
 @MainActor enum AmbientStopNotifier {

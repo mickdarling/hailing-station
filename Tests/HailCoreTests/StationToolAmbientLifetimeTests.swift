@@ -87,15 +87,6 @@ import SwiftUI
         await rig.close()
     }
 
-    @Test func nativeRootObservesBindingWhileToolsCoverTheCard() throws {
-        let source = try appSource("RootView.swift")
-        #expect(source.contains(".onChange(of: ambientDestinationBinding) { _, _ in\n"
-            + "            Task { await reconcileAmbientDestination() }"))
-        let stack = try #require(source.range(of: "NavigationStack { content }"))
-        let observer = try #require(source.range(of: ".onChange(of: ambientDestinationBinding)"))
-        #expect(stack.upperBound < observer.lowerBound)
-    }
-
     private func makeLog() throws -> (DeviceDiagnostics, () -> Void) {
         let suite = "hail-station-tool-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -104,9 +95,4 @@ import SwiftUI
         return (log, { defaults.removePersistentDomain(forName: suite) })
     }
 
-    private func appSource(_ name: String) throws -> String {
-        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-        return try String(contentsOf: repo.appendingPathComponent("Apps/Hail-iOS/\(name)"), encoding: .utf8)
-    }
 }

@@ -156,6 +156,10 @@ extension RootView {
         ])
     }
 
+}
+#endif
+
+extension StationRootView {
     /// Ambient listening (#203) appears only for a confirmed destination whose host advertises `stream_audio`.
     @ViewBuilder
     var ambientListeningSurface: some View {
@@ -167,6 +171,10 @@ extension RootView {
                         connections: connections, audioSession: audioRoutes, playback: playback,
                         echoGuard: echoGuard, diagnostics: diagnostics
                     ))
+            }
+            if ambientPresentation == nil, let reason = connections.ambientController?.stopReason {
+                Text(reason).font(.footnote).foregroundStyle(.red)
+                    .accessibilityIdentifier("station.ambient-stop-reason")
             }
             reconnectNotice
         }
@@ -202,7 +210,18 @@ extension RootView {
     }
 }
 
-#endif
+/// The shipped card's native disappearance forwards to the destination owner, not an owner stop.
+struct AmbientListeningCard<Content: View>: View {
+    let connections: HostConnectionStore
+    let reconcileDestination: @MainActor () async -> Void
+    let content: Content
+
+    var controller: AmbientListeningController? { connections.ambientController }
+
+    var body: some View {
+        content.onDisappear { Task { await reconcileDestination() } }
+    }
+}
 
 /// The toggle starts off on launch. It starts only in the foreground, keeps capture alive through the background
 /// and guarded transport restore (#904), and stops on a real destination loss or the owner's off. Card disappearance

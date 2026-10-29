@@ -4,7 +4,7 @@ import HailProtocol
 
 /// Compile the actual app extension against a state shell without loading the native audio/SwiftUI surface.
 @MainActor
-final class RootView {
+final class RootView: AmbientDestinationOwner {
     enum Phase { case active, inactive, background }
     let connections: HostConnectionStore
     let selectionStore: any DestinationSelectionStoring

@@ -2,7 +2,6 @@
 import Foundation
 import HailCore
 import HailProtocol
-import SwiftUI
 
 extension RootView {
     var availableDestinations: [Destination] {
@@ -248,23 +247,6 @@ extension RootView {
     }
 }
 
-extension RootView {
-    /// Independent of card visibility and foreground authorization, including a live background restore.
-    var ambientDestinationBinding: AmbientAudioBinding? {
-        selectedHostID.flatMap { host in
-            selectedTargetID.flatMap { connections.ambientBinding(host: host, targetID: $0) }
-        }
-    }
-
-    /// Re-read the root's binding when the task runs; a tool push has not relinquished the destination.
-    @MainActor
-    func reconcileAmbientDestination() async {
-        guard let controller = connections.ambientController, controller.isOn,
-              controller.binding != ambientDestinationBinding else { return }
-        await controller.destinationLost()
-    }
-}
-
 struct Destination: Identifiable, Equatable {
     let endpoint: HostEndpoint
     let target: TargetInfo
@@ -272,20 +254,4 @@ struct Destination: Identifiable, Equatable {
     var hostID: HostEndpoint.Identifier { endpoint.id }
     var id: String { "\(hostID)|\(target.id)" }
     var label: String { "\(endpoint.name) · \(target.name)" }
-}
-
-/// The shipped card's navigation lifetime, separate from its audio controls and presentation.
-/// Root destination observation continues to deliver real binding loss while this view is covered.
-struct AmbientListeningCard<Content: View>: View {
-    let connections: HostConnectionStore
-    let reconcileDestination: @MainActor () async -> Void
-    let content: Content
-
-    var controller: AmbientListeningController? { connections.ambientController }
-
-    var body: some View {
-        content.onDisappear {
-            Task { await reconcileDestination() }
-        }
-    }
 }

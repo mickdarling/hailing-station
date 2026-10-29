@@ -6,6 +6,7 @@ import SwiftUI
 // the owner, the resource construction, and the native view bodies compile from symlinked app sources.
 @MainActor
 enum StationPlatform {
+    static var ambientCaptureMode: AmbientCaptureMode { .plain }
     static var voiceOverRunning: Bool { false }
     static func announce(_ text: String) {}
     static func audioSessionBackend() -> any AudioSessionBackend { FakeAudioSessionBackend(inputs: []) }
@@ -24,11 +25,15 @@ struct ReplySegmentNotices: ViewModifier {
     func body(content: Content) -> some View { content }
 }
 
-struct SceneTestDestination { let label: String }
-
 extension StationRootView {
-    var content: some View { Text("Station") }
-    var destination: SceneTestDestination? { nil }
+    var content: some View { NativeSceneStationContent(root: self) }
+    var destination: Destination? {
+        guard let binding = ambientDestinationBinding, let host = connections.snapshots[binding.hostID],
+              let target = host.targets.first(where: { $0.id == binding.targetID }) else { return nil }
+        return Destination(endpoint: host.endpoint, target: target)
+    }
+    func acceptAppliedAmbientRestore() -> Bool { false }
+    func performAmbientNoticeAction(_ action: AmbientRestorePresentation.NoticeAction) {}
     func reconcileRememberedSelection() async {}
     func restoreSelectionOnce() async {}
     func withLocalHost(_ hosts: [HostEndpoint]?) async -> [HostEndpoint]? { nil }
