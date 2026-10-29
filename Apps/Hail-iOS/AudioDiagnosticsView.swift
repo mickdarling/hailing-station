@@ -177,7 +177,12 @@ final class AudioDiagnosticsSession {
             await previous?.value
             await model.refresh()
             guard !model.diagnostics.isActive else { return }
-            do { try await model.activate(); ownsActivation = true } catch { ownsActivation = false }
+            do {
+                try await model.activate()
+                ownsActivation = true
+            } catch {
+                ownsActivation = false
+            }
         }
     }
 
