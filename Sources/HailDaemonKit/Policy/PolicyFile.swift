@@ -55,14 +55,12 @@ extension PolicyChangeTracking {
         var changedTargets: Set<String> = []
         // Stay in this synchronous observation turn, outside the generation lock. No sleeps or stale admission.
         for attempt in 0..<3 {
-            guard reloadNow < deadline else { break }
+            guard attempt == 0 || reloadNow < deadline else { break }
             var read = try loadObserved()
             let targets = Set(grants.keys).union(read.policy.targets.keys)
             changedTargets.formUnion(targets.filter { grants[$0] != read.policy.targets[$0] })
-            // A synchronous read cannot be preempted; do no further I/O once its budget has elapsed.
-            guard reloadNow < deadline else { break }
+            // Always finish checking a started attempt: elapsed time cannot invalidate a stable read.
             let after = try observation()
-            guard reloadNow < deadline else { break }
             // Retain the original directory across retries, including a swap between two observations.
             if let directory,
                read.observation.directory != directory || after.directory != directory { break }
@@ -70,8 +68,9 @@ extension PolicyChangeTracking {
                 read.changedTargets = changedTargets
                 return read
             }
-            guard reloadNow < deadline else { break }
-            if attempt < 2 { before = try observation() }
+            // The budget gates only retries, including their extra initial observation.
+            guard attempt < 2, reloadNow < deadline else { break }
+            before = try observation()
         }
         throw HostError.policyUnavailable("policy_changed_during_reload")
     }

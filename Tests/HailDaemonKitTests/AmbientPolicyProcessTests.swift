@@ -52,6 +52,40 @@ import Testing
         #expect(outcome == .delivered(request: nil))
     }
 
+    @Test func slowUnchangedDispatchReadKeepsStreamAndDeliversRequest() async throws {
+        let hook = PolicyReloadStore.Hook()
+        let rig = try await AmbientPolicyProcessRig.make(reload: hook)
+        defer { rig.cleanUp() }
+        let retained = ["tmux:a", "tmux:b"].map { rig.host.targetPolicy.snapshot(for: $0) }
+        let original = try rig.file.observation()
+        let before = hook.loads
+        let decoded = PolicyWriteGate()
+        defer { decoded.fire() }
+        hook.arm(decoded)
+        let delivering = Task(executorPreference: decoded.executor) {
+            let input = try await rig.input()
+            return await rig.session.deliver(input)
+        }
+        try await decoded.waitUntilSuspended()
+        #expect(await rig.adapter.deliveries.isEmpty)
+        #expect(rig.sink.segments == [0])
+        #expect(rig.sink.endings.isEmpty)
+        for grant in retained { #expect(grant.performIfCurrent({ true }) == true) }
+        hook.clock.advance(.milliseconds(60))
+        let outcome = try await decoded.finish(delivering)
+        #expect(outcome == .delivered(request: nil))
+        #expect(hook.loads == before + 1, "Dispatch must reread even an unchanged policy")
+        #expect(try rig.file.observation() == original)
+        #expect(await rig.host.policyFailure == nil)
+        #expect(await rig.adapter.deliveries == [.init(target: "a", text: "synthetic", binding: "$1@1/%1:1")])
+        for grant in retained { #expect(grant.performIfCurrent({ true }) == true) }
+        let result = await rig.segment(1)
+        #expect(result.frames.isEmpty)
+        #expect(rig.sink.segments == [0, 1])
+        #expect(rig.sink.endings.isEmpty)
+        #expect(await rig.gate.activeStream == rig.stream)
+    }
+
     @Test func coalescedSecondProcessDenyAllowKeepsStream() async throws {
         let rig = try await AmbientPolicyProcessRig.make()
         defer { rig.cleanUp() }
