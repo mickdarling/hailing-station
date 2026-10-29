@@ -790,25 +790,53 @@ When privacy is taken, a reply playing on the connection is stopped first, throu
 
 Privacy ends only on the owner's exit (RightyO's `exit`, or the app's switch, S-6, below). When the connection ends it is parked for the next stream (#941, below), never ended. **There is no auto-end** (Mick, round 2): no timer runs and the device notice carries no expiry. `ambient.duckTimeout` in `host.json` and `--ambient-duck-timeout` are still accepted but no longer apply to privacy; they are reserved for a future session-mode auto-stop. An entry while already private answers "still on" with `confirm-privacy-on/`, once every child still proves it (S-8 HS-C), else `confirm-privacy-unavailable/`. Entering privacy leaves media mode, but **media mode never ends privacy**: while private, a media-mode entry from any source is refused (`ambient_media on=true … refused=private`), nothing changes or reaches the child, and the spoken one hears `confirm-privacy-status/`. A device that advertised `duck_mode` is told each change (`ambient_duck_device`), and sees "on" only once a child took it.
 
-#### A dropped connection (#941)
+#### A dropped connection (#941, #1041)
 
-A network drop never turns privacy into public (Mick, 2026-10-22). When a private connection ends, its privacy is parked, the way a meeting or media mode is (MM-E). Every fresh ambient stream starts private while privacy is parked, or while any other connection still holds it: haild has no keepalive, so after a silent drop the phone's old connection can still be open, and private, when it reconnects and starts listening (MM-E's `live` source):
+A network drop never turns privacy into public. A private connection's teardown parks privacy; every fresh ambient
+stream starts private while any connection holds privacy, any park exists, or overflow is set. There is no listener
+keepalive: a silently dropped phone's old private connection may still exist when it reconnects.
 
-- **Parked on teardown.** The connection's privacy is parked as it is torn down, with its Hello claims, its arming and the time, as that connection's own park (#961): a later drop never replaces another connection's park (`ambient_privacy_parked parks=<n> overflow=<bool>`). At most 16 parks, daemon-wide, in memory only: a haild restart restores nothing. Past 16, the oldest park is evicted (`ambient_park_discarded reason=overflow mode=privacy`) and an overflow is set. While it is set every fresh stream starts private, so an eviction never opens privacy, and only the owner's off clears it.
-- **Restored at a fresh start.** A fresh stream, a normal start or a `resume` start, on a connection that is not already private, takes privacy (from another live connection that holds it, else from the newest park, else from the overflow) before its child is made, so the child is launched start-private (`--start-private`, S-2b) and hears no audio until its `started` confirms it. In that same step, as a privacy entry does, the host's privacy state and the agent's reply hold are set together and the connection's pending replies are dropped (`ambient_privacy_replies dropped=<n>`), and a meeting or media mode the connection held ends (it is never in both). When the child then registers, a parked meeting or media mode is discarded (`ambient_park_discarded reason=privacy`), as for any private start. A device that advertised `duck_mode` is told on with reason `device`: its own start after the reconnect changed it, and the protocol's reasons are only `voice`, `timeout` and `device` (a device refuses any other). Logged `ambient_privacy_restored source=<live|park> from=<connection|overflow> to=<connection> device_match=<bool>`, with `age=<seconds>` for a park. No clip plays.
-- **Fail closed.** It is not consumed by a start and has no expiry: another device's start, or one long after the drop, starts private too. The claims and the age are logged only, never compared to decide anything, since Hello claims are not authentication and a park could only ever make a stream quieter. A child made public while another connection took privacy or a park landed meanwhile, or whose restore lost to a teardown, never hears its stream (`ambient_refused private`).
-- **Only the owner's own off clears it.** The voice exit or the app's switch off, on any private connection (a restored one included), clears every park and the overflow daemon-wide, whatever device each came from (`ambient_park_discarded reason=off mode=privacy count=<n> overflow=<bool>`): a park has no expiry, so only an off can clear it, and a parked device is not listening. A restored connection also records the live connection its privacy was taken from (its source) and that connection's arming. An owner's off on it judges that source stale only when all of these hold (Jarvis, #945 round 2):
-  - it is the same class of device, matched as MM-E matches. Every app sends the Hello name `hail terminal`, so in practice this is the class (`phone`, `pad` or `mac`); a per-install device id is #950;
-  - it still holds the arming the restore recorded;
-  - it does not answer a WebSocket ping within three seconds. A peer already closing is not pinged (nothing follows its close frame) and counts as not answering. The app sends no frame while it is idle, so silence cannot tell a dead socket from an idle device. A ping can, because the app's `URLSessionWebSocketTask` answers pings itself.
+- **Parked on teardown.** Each dropped private connection keeps its own park (#961), including its Hello claims,
+  arming, time and heard state. A later drop never replaces another connection's park. At most 16 parks are held
+  daemon-wide, in RAM only; a daemon restart restores nothing. Past the cap, the oldest park is evicted and sticky
+  overflow is set. Overflow keeps every fresh start private until owner-off. Logs: `ambient_privacy_parked parks=<n>
+  overflow=<bool>` and `ambient_park_discarded reason=overflow mode=privacy`.
+- **Restored at a fresh start.** Both normal and `resume` starts take privacy before making a child: from another
+  private holder first, else the newest park, else overflow. The child launches `--start-private` and hears no audio
+  until its private `started` confirms it. Under one lock, privacy and the reply hold are set, pending replies are
+  dropped, and the connection's meeting or media mode ends. A private child's registration discards parked
+  meeting/media modes. A capable device receives `duck_mode` on with reason `device`; no clip plays. Logged
+  `ambient_privacy_restored source=<live|park> from=<connection|overflow> to=<connection> device_match=<bool>`, with
+  `age=<seconds>` for a park.
+- **Fail closed.** Restoration consumes nothing. Hello claims are not authentication: only the match boolean and park
+  age are logged, and neither permits a public start. A child made public while privacy was taken elsewhere or parked
+  meanwhile, or whose restore lost to teardown, never hears its stream (`ambient_refused private`). There is no
+  privacy timeout or automatic expiry.
+- **Owner-off clears existing parks, never another holder (#1041).** Voice exit or the app's switch off on a private
+  connection clears its own privacy and reply hold, and every existing park and overflow daemon-wide, whatever device
+  each came from. Logged `ambient_park_discarded reason=off mode=privacy count=<n> overflow=<bool>`. It never probes,
+  marks, excludes or withdraws another connection's privacy contribution, even when their Hello claims match. Every
+  other holder stays private, with its replies held and its children and device unchanged, and keeps making fresh
+  streams private.
+- **Privacy can return after off (known, fail closed).** An older connection lingering after a reconnect still
+  contributes privacy. A later fresh stream can therefore become private again after an off. When that older holder
+  eventually tears down it parks privacy again, without expiry. Once no holders remain, a second deliberate owner-off
+  clears the parks and overflow; a capable unarmed connection can do that through the snapshot path below. Until then
+  further holders may keep contributing or park later. Transport cleanup is not a privacy timeout. Never send an
+  automatic off on reconnect to counter this behavior.
+- **Status and words.** Restore plays no clip. Each park carries whether privacy was announced (`heardOn`); a status
+  question plays `confirm-privacy-status/` if any park or live holder carried that fact, otherwise nothing. Overflow
+  alone never counts as heard. Until private `started`, no audio reaches the child; afterwards its words and requests
+  reach no relay, agent or device. The child hears audio in RAM only.
+- **Multiple devices.** Every other private connection contributes, including a suspended or silent device. A stream
+  already running in public elsewhere, and its reload, are unchanged: neither is a fresh start. A restored private
+  connection that drops parks privacy again.
 
-  A stale verdict clears only the source's contribution (Jarvis, #945 round 3): it stops counting as a privacy source for new streams, in both the restore's pick and the admission check, and its teardown parks nothing. If its teardown already parked it with the arming judged, that one park is dropped (`ambient_park_discarded reason=stale mode=privacy parks=<n> overflow=<bool>`); any other connection's park is kept, including one parked while the probe ran (#961). The source's own privacy is left alone: it stays ducked, its replies stay held, its children and its device are told nothing, and its ledger is kept. A source still streaming (a child of it listening) is alive whatever its ping, and keeps counting (`live`).
+An off while privacy was not on changes nothing unless the connection advertised `mode_snapshot` (below). An off that
+is not the owner's changes nothing. **Known limit (#946):** until RightyO supports it, a start-private child refuses
+voice exit because it cannot bind the owner while private. The app switch remains the way out; nothing becomes public
+meanwhile.
 
-  **The verdict is provisional.** A source judged stale is marked, in memory, with the arming judged. If it then shows a sign of life (a start, a resume or a take-over, or a segment of its stream, seen under the lock the gate's events are taken under, before the event is handled or queued; or a pong that came after the probe's three seconds), it counts as a source again, logged `ambient_privacy_source_restored reason=false_stale`. Its own start is private anyway, since it was never made public. The mark goes with the connection's teardown and with the owner's own privacy action on it. So a source wrongly judged stale (a suspended iOS app, or a pong slower than three seconds) simply stays private on its own connection: nothing sent to it can leak, and its indicator stays private. A brand-new connection from that phone starts by the normal rules. Any other private connection keeps counting, which fails closed. Logged `ambient_privacy_off_scoped cleared=<n> kept=<n>`, then `<connection>=<reason>` for each: `stale` (no longer counts), `live` (it answered), `class` (another or unknown class), `armed` (re-armed or ended since), `unprobed` (it could not be probed) or `not_source` (another private connection). An off while privacy was not on changes nothing unless the connection advertised `mode_snapshot` (below); an off that is not the owner's changes nothing. The restored connection is private exactly as an entry leaves it on the host, and the app's switch turns it off as usual. **Known limit (#946):** until RightyO is fixed, its start-private child refuses a voice exit (no owner binding can be made while private), so a restored privacy can be ended only from the app's switch, not by voice. It fails closed: nothing is heard publicly meanwhile.
-- **Status, and no clip.** No clip plays on a restore (silent in v1). A status question on a restored connection answers as on any private connection: each park carries whether the owner had heard privacy announced on the dropped connection (`heardOn`), so `confirm-privacy-status/` plays when they had heard it for any park, and nothing when they had not. The overflow alone never counts as heard (nothing announced is never claimed).
-- **Words.** The restored child is a private child like any other: until its private `started` no audio reaches it, and after it its words and requests reach no relay, no agent and no device. It hears audio in RAM only (rightyo S-1).
-- **Multi-device (known, fail closed).** While any park or the overflow is held, or any connection holds privacy, every fresh stream on any device starts private, including a device that was never private, until the owner's off. A device that answers pings (live) keeps its privacy through another device's off, so fresh streams stay private until it is turned off itself. A suspended iOS app may not answer a ping, so it can be judged stale: it then stops counting as a source for other streams, but stays private itself, and counts again as soon as it starts listening. A stream already running in public on another device, and its reload, are not touched, since neither is a fresh stream.
-- A restored connection that drops again parks its privacy again.
 
 #### Effective modes after hello (#941 PR B, host side)
 
@@ -819,9 +847,9 @@ hashes. This is an observation under the router's state lock: it does not pre-ar
 parks, extend an expiry or start a child.
 
 - Privacy `on` means this connection's next fresh stream starts private: its own duck/pre-arm is set, or the existing
-  `privacySource` selection finds a counting live holder, a park, or the overflow. Stale-excluded sources do not count
-  for other connections. The start still re-evaluates privacy and launches `--start-private` before RightyO may hear
-  audio; a snapshot is no substitute for the child's private `started` confirmation.
+  `privacySource` selection finds any other private holder, a park, or the overflow. Every holder contributes,
+  regardless of its claims or responsiveness. The start re-evaluates privacy and launches `--start-private` before
+  RightyO may hear audio; a snapshot is no substitute for the child's private `started` confirmation.
 - Media `on` with its original Unix-millisecond expiry means an unexpired held or parked media mode would carry to
   the first start. The latest arming wins across media and meeting, and privacy wins over both. Expired modes report
   off. **Meeting gap:** there is no device frame for meeting state, so none is sent; media off does not prove meeting
@@ -832,8 +860,8 @@ parks, extend an expiry or start a child.
   it re-evaluates effective privacy with the snapshot's rule. If another counting live holder still applies, it sends
   `duck_mode {on:true, reason:"held_elsewhere"}`; otherwise off with reason `device`. This never arms the connection,
   holds its replies or starts a child. The initial after-hello snapshot still has no reason (#993).
-  Its own armed privacy still takes the existing switch exit. Other live holders keep their
-  existing scoped-off rules. A stopping host, closed router connection or ended peer refuses the new off path.
+  Its own armed privacy still takes the existing switch exit. Other holders keep their privacy and contribution.
+  A stopping host, closed router connection or ended peer refuses the new off path.
   Older connections retain their existing off behavior. Never send a reflexive off on reconnect.
 
 This host implementation is covered synthetically by `ModeSnapshotTests` and `ModeSnapshotMediaTests`; it is not
@@ -842,16 +870,55 @@ pre-arm's stopping, closed, streamed and gate-ended refusals (#967) remain in pl
 
 #### Privacy re-asserted before a stream (#904)
 
-A haild restart parks nothing, so after one no park can keep a dropped phone private. The device keeps it instead: after a reconnect, the app sends `set_privacy` on over the new connection before any stream (its `resume` start included), waits about five seconds for `duck_mode` on, and otherwise fails closed. No new capability or token: an older host never answers, so the app fails closed.
+A haild restart parks nothing, so after one no park can keep a dropped phone private. The device keeps it instead:
+after a reconnect, the app sends `set_privacy` on over the new connection before any stream (its `resume` start
+included), waits about five seconds for `duck_mode` on, and otherwise fails closed. No new capability or token: an
+older host never answers, so the app fails closed.
 
-- **Only before the connection's first stream** (Jarvis, R1). The host takes an on from a connection that has not opened a stream as its pre-arm. A connection whose stream ended still has its on refused, as before (S-6, below). The pre-arm needs the same trust as the switch: a negotiated session whose authorizer admits `set_privacy`.
-- **Private as a restore leaves it** (#941, above). If another live connection holds privacy, or any park is held (or one was evicted, #961), the connection takes privacy from it exactly as a fresh start restores it, with its source, whether the owner heard it announced, and its log (`ambient_privacy_restored`). Otherwise it is armed with no source. Either way, under one lock, the host's privacy state and the agent's reply hold are set together, pending replies are dropped (`ambient_privacy_replies dropped=<n>`), a meeting or media mode the connection held ends, and a device that advertised `duck_mode` is told on with reason `device` (`ambient_duck_device`). No clip plays and nothing is announced, so a status question on a pre-arm with no source answers nothing (nothing announced is never claimed). Logged `ambient_privacy_prearmed source=<none|live|park>`.
-- **Its first start is private.** A normal or `resume` start keeps the arming and launches its child start-private (`--start-private`, S-2b). No audio reaches the child before its private `started`. A `resume` still never takes listening over (#373).
-- **Refused, fail closed.** A connection that already started a stream, and any connection while haild is stopping, are refused (`ambient_privacy_prearmed refused=<streamed|stopping>`, or `closed` while the router's teardown record of it is held). So is a connection the gate has already ended: a `set_privacy` on still in flight when its transport dropped reaches the gate after its teardown, and is refused as `ended` (#967), so no privacy is ever armed for a connection that is gone. The gate keeps the last ended connection ids for this, with the same bound and oldest-first eviction as its ended stream ids. Behind that, an arming whose `duck_mode` notice finds no connection leaves that connection, only while it is still that arming: its privacy, its reply hold and the source it recorded go. A pre-arm with no source is parked first, through the same park its teardown would make (privacy wins ties, Jarvis: the device may already hold its confirmation), so the next fresh start anywhere is private until the owner's off. A restore's arming is only dropped, since its park or live source is never consumed. Logged `ambient_privacy_disarmed reason=no_connection parked=<bool>`, with the park's own `ambient_privacy_parked`. Nothing changes and nothing is sent back for a refusal, so the app fails closed. A pre-arm on a connection already private does nothing at all, as a switch to the state already held.
-- **Teardown parks it** (R2). A pre-armed connection that drops, streaming or not, parks its privacy as any private connection does, so the next fresh start on any device is private until the owner's off. That holds even when its device was already gone when its notice was sent: the backstop above parks it then, and its teardown, if still to come, parks nothing more. Nothing of the connection itself is kept.
-- **Its own off is the owner's off.** The app's switch off on the pre-armed connection clears its privacy and reply hold and, as any owner's off does, every park daemon-wide (#941, #961). **The app must never send a reflexive off on reconnect**: that off would clear every park.
-- **Known: a live privacy source** (fail closed). Like any private connection, a pre-armed one counts as privacy held elsewhere, so every other connection's fresh stream starts private (#941's multi-device rule) until it is turned off or judged stale.
-- **Known: another device already listening** (R3). A pre-arm is taken while another device streams in public. That stream is left alone, public and listening, until its next start, which is private. A start still being made when the pre-arm lands is not left alone: its child, made public, is refused as `private` (`ambient unavailable: private` to the device, `ambient_refused private`; #941's fail-closed admission). The app treats that as final, so listening stops on that device until the owner starts it again, and that start is private. The pre-armed device's own `resume` is refused with the moved message while the other device holds listening.
+- **Only before the connection's first stream** (Jarvis, R1). The host takes an on from a connection that has not
+  opened a stream as its pre-arm. A connection whose stream ended still has its on refused, as before (S-6, below).
+  The pre-arm needs the same trust as the switch: a negotiated session whose authorizer admits `set_privacy`.
+- **Private as a restore leaves it** (#941, above). If another live connection holds privacy, or any park is held (or
+  one was evicted, #961), the connection takes privacy from it exactly as a fresh start restores it, with the same
+  heard state and restore log (`ambient_privacy_restored`). Otherwise it is armed with no source. Either way, under
+  one lock, the host's privacy state and the agent's reply hold are set together, pending replies are dropped
+  (`ambient_privacy_replies dropped=<n>`), a meeting or media mode the connection held ends, and a device that
+  advertised `duck_mode` is told on with reason `device` (`ambient_duck_device`). No clip plays and nothing is
+  announced, so a status question on a pre-arm with no source answers nothing (nothing announced is never claimed).
+  Logged `ambient_privacy_prearmed source=<none|live|park>`.
+- **Its first start is private.** A normal or `resume` start keeps the arming and launches its child start-private
+  (`--start-private`, S-2b). No audio reaches the child before its private `started`. A `resume` still never takes
+  listening over (#373).
+- **Refused, fail closed.** A connection that already started a stream, and any connection while haild is stopping,
+  are refused (`ambient_privacy_prearmed refused=<streamed|stopping>`, or `closed` while the router's teardown record
+  of it is held). So is a connection the gate has already ended: a `set_privacy` on still in flight when its transport
+  dropped reaches the gate after its teardown, and is refused as `ended` (#967), so no privacy is ever armed for a
+  connection that is gone. The gate keeps the last ended connection ids for this, with the same bound and oldest-first
+  eviction as its ended stream ids. Behind that, an arming whose `duck_mode` notice finds no connection leaves that
+  connection, only while it is still that arming: its privacy and reply hold go. A pre-arm with no source is parked
+  first, through the same park its teardown would make (privacy wins ties, Jarvis: the device may already hold its
+  confirmation), so the next fresh start anywhere is private until the owner's off. A restore's arming is only
+  dropped, since its park or live source is never consumed. Logged `ambient_privacy_disarmed reason=no_connection
+  parked=<bool>`, with the park's own `ambient_privacy_parked`. Nothing changes and nothing is sent back for a
+  refusal, so the app fails closed. A pre-arm on a connection already private does nothing at all, as a switch to the
+  state already held.
+- **Teardown parks it** (R2). A pre-armed connection that drops, streaming or not, parks its privacy as any private
+  connection does, so the next fresh start on any device is private until the owner's off. That holds even when its
+  device was already gone when its notice was sent: the backstop above parks it then, and its teardown, if still to
+  come, parks nothing more. Nothing of the connection itself is kept.
+- **Its own off is the owner's off.** The app's switch off on the pre-armed connection clears its privacy and reply
+  hold and, as any owner's off does, every park daemon-wide (#941, #961). **The app must never send a reflexive off on
+  reconnect**: that off would clear every park.
+- **Known: a live privacy source** (fail closed). Like any private connection, a pre-armed one counts as privacy held
+  elsewhere, so every other connection's fresh stream starts private (#941's multi-device rule) until its own
+  owner-off or teardown; teardown parks it again.
+- **Known: another device already listening** (R3). A pre-arm is taken while another device streams in public. That
+  stream is left alone, public and listening, until its next start, which is private. A start still being made when
+  the pre-arm lands is not left alone: its child, made public, is refused as `private` (`ambient unavailable: private`
+  to the device, `ambient_refused private`; #941's fail-closed admission). The app treats that as final, so listening
+  stops on that device until the owner starts it again, and that start is private. The pre-armed device's own `resume`
+  is refused with the moved message while the other device holds listening.
+
 
 #### The app's privacy switch (#735 S-6)
 

@@ -18,7 +18,7 @@ struct ModeSnapshotTests {
         #expect(!rig.router.duckMode(connection: peer.connection))
         #expect(await !rig.env.listener.replyHold.holds(peer.connection))
         #expect(rig.router.activeStream == nil)
-        #expect(rig.router.state.withLock { $0.privacySources[peer.connection] == nil })
+        #expect(rig.router.state.withLock { $0.duck.isEmpty && $0.parks.isEmpty })
         await rig.finish()
     }
 
@@ -90,11 +90,11 @@ struct ModeSnapshotTests {
         let live = try await SnapshotPeer(rig)
         defer { live.close() }
         #expect(live.modes.first == .control(.duckMode(on: true)))
-        rig.router.state.withLock { $0.staleCleared[source] = token }
-        let stale = try await SnapshotPeer(rig)
-        defer { stale.close() }
-        #expect(stale.modes.first == .control(.duckMode(on: false)))
-        // A stale holder still reports its own next start private, as admission does.
+        rig.clock.advance(5 * 3600)
+        let later = try await SnapshotPeer(rig)
+        defer { later.close() }
+        #expect(later.modes.first == .control(.duckMode(on: true)), "a holder's privacy never times out")
+        #expect(!AmbientRightyoRouter.admitsPrivacy(later.connection, in: rig.router.state.withLock { $0 }))
         #expect(rig.router.modeSnapshot(connection: source).first == .duckMode(on: true))
         await rig.finish()
     }
