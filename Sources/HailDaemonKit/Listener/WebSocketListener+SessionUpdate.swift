@@ -82,6 +82,7 @@ extension WebSocketListener {
     public func drainSessionUpdates(
         _ trigger: SessionUpdateDrainTrigger, connection: UUID? = nil, only id: UUID? = nil
     ) async -> Set<UUID> {
+        await refreshTaskProgressEnvironment()
         guard sessionUpdates.policy.enabled, !stopped, !sessionUpdatesDelivering else { return [] }
         purgePrivateSessionUpdates()
         guard !sessionUpdatesPrivate else { return [] }
