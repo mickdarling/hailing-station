@@ -71,12 +71,17 @@ extension HostSession {
         }
         // A stream this segment opens keeps the selection generation it opened on (#636).
         let selection = AmbientSelection(target: selectedTarget, generation: selectionGeneration)
+        let policyGeneration = host.targetPolicy.snapshot(for: gate.target)
+        if ambientPolicyGeneration == nil { ambientPolicyGeneration = policyGeneration }
         switch await gate.admission(
-            audio, frameTarget: target, selection: selection, connection: connectionID, device: peerDeviceKind
+            audio, frameTarget: target, selection: selection, connection: connectionID, device: peerDeviceKind,
+            policyGeneration: policyGeneration
         ) {
         case .admitted:
+            if audio.sequence == 0 { ambientPolicyGeneration = policyGeneration }
             return HostSessionResult(frames: [])
         case .tookOver(let from):
+            ambientPolicyGeneration = policyGeneration
             guard peerCapabilities.contains(AmbientTakeOver.capability) else { return HostSessionResult(frames: []) }
             return HostSessionResult(frames: [response(.ambientMovedHere(from: from), version: version)])
         case .refused(let code, let message):
@@ -128,6 +133,7 @@ extension HostSession {
             return .refused(.notAllowed, "select the destination before speaking")
         }
         do {
+            try input.policyGeneration.requireCurrent()
             let generation = selectionGeneration
             let owner = try await replyOwnership(for: input, generation: generation)
             // Legacy generic input has no retained record, so the captured selection is checked here and
@@ -200,16 +206,17 @@ extension HostSession {
     }
 
     private func send(_ input: borrowing AuthorizedInput, owner: HostReplyOwnership?) async throws -> SendOutcome {
-        let (text, target, device) = (input.text, input.target, input.device)
+        let (text, device) = (input.text, input.device)
         let expectedBinding = owner?.context.binding.sessionID ?? input.expectedBinding
+        let policyGeneration = input.policyGeneration
         do {
             // A framed paste (#608) gets the paste line cap; every other gate is the same.
             return try await HailHost.$pastedIngress.withValue(input.carriesPaste) {
-                if let owner, owner.contextual {
-                    return try await host.send(text, context: owner.context, from: device)
-                }
-                // Legacy generic input. An unleased ambient record (#230) pins the exact binding it was minted for.
-                return try await host.send(text, to: target, from: device, expectedBinding: expectedBinding)
+                // Keep the authorization generation and exact binding across host preflight suspensions (#1028).
+                return try await host.sendAuthorized(
+                    text, policyGeneration: policyGeneration, from: device, expectedBinding: expectedBinding,
+                    context: owner.flatMap { $0.contextual ? $0.context : nil }
+                )
             }
         } catch {
             if let owner { dropUncommitted(owner.context.id) }

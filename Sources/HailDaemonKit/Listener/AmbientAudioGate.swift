@@ -66,7 +66,8 @@ extension AmbientAudioSink {
 /// tolerated). Rate: a 40 KB/s token bucket with a 10 s burst, so a network stall that delivers
 /// queued audio at once passes (#330). Within a stream an over-rate segment is dropped silently and
 /// counted (a dropped final segment still ends the stream), and the stream ends only when it stays over
-/// the rate for `overRateGrace`; any other violation ends it at once. The connection stays open. A recently ended stream id is never reopened: the last `endedStreamCapacity` ended ids are
+/// the rate for `overRateGrace`; any other violation ends it at once. The connection stays open. A recently ended
+/// stream id is never reopened: the last `endedStreamCapacity` ended ids are
 /// kept and the oldest is evicted first (FIFO), so reuse is possible only for an id that ended thousands of
 /// streams ago. A start is charged against the bucket before anything is announced or recorded, so a refused
 /// start leaves no trace and cannot burn identities.
@@ -77,7 +78,8 @@ extension AmbientAudioSink {
 /// Only a connection this daemon negotiated, whose authorizer admitted the audio frame and whose selection names
 /// this gate's target, can take over, and only with a start that passes every check here; a refused start disturbs
 /// nothing. A `resume` start (#373), a device's automatic restart, never takes over: it opens a stream only when no
-/// other connection holds one, and is otherwise refused with the moved message. The gate belongs to one daemon and its one target, so nothing is taken over across hosts.
+/// other connection holds one, and is otherwise refused with the moved message. The gate belongs to one daemon
+/// and its one target, so nothing is taken over across hosts.
 public actor AmbientAudioGate {
     public static let sampleRate = 16_000
     public static let maxSegmentBytes = 8 * 1024
@@ -112,6 +114,7 @@ public actor AmbientAudioGate {
         var lastActivity: ContinuousClock.Instant
         /// The session's selection generation when the stream opened (#636), nil from a caller that tracks none.
         var selection: UUID?
+        var policyGeneration: TargetPolicyGeneration?
     }
 
     /// The single target an ambient stream may feed; the session's selection must also name it.
@@ -119,6 +122,8 @@ public actor AmbientAudioGate {
     /// Ends a stream opened before the owner selected away and back (#636).
     static let reselectedMessage = "ambient stopped: the destination was selected again"
     private let sink: any AmbientAudioSink
+    /// Gate state commits under the generation lock; callbacks run after it releases (#1028).
+    private var admissionEvents: [AmbientAudioEvent]?
     /// Each live connection's last reported input route kind (rightyo#164), dropped when it disconnects.
     private var inputRoutes: [UUID: String] = [:]
     /// Live connections that opened a stream here (#904), dropped when they disconnect: only one not in it may pre-arm
@@ -238,13 +243,13 @@ public actor AmbientAudioGate {
     private func end(_ reason: AmbientStreamEndReason) {
         guard let current = active else { return }
         active = nil
-        // A stream boundary (rightyo#164): the route the next stream starts with is noted, and reaches its child, again.
+        // A stream boundary (rightyo#164): the next stream's route is noted and reaches its child again.
         inputRoutes[current.connection] = nil
         (overRateSince, lastOverRate) = (nil, nil)
         remember(current.id)
         sweeper?.cancel()
         sweeper = nil
-        sink.ambientAudio(.ended(stream: current.id, reason: reason))
+        emit(.ended(stream: current.id, reason: reason))
     }
 
     private func remember(_ id: UUID) {
@@ -307,6 +312,66 @@ extension AmbientAudioGate {
 
     /// The same, with the session's selection generation, which a stream this segment opens keeps (#636).
     func admission(
+        _ audio: AudioPayload, frameTarget: String?, selection: AmbientSelection, connection: UUID, device: String?,
+        policyGeneration: TargetPolicyGeneration? = nil
+    ) -> AmbientAdmission {
+        admissionEvents = []
+        // Continue under the stream's original grant, never a replacement obtained after a write (#1028).
+        let retained = active.flatMap { $0.id == audio.streamID && $0.connection == connection ? $0 : nil }
+        let expected = retained?.policyGeneration ?? policyGeneration
+        let result: AmbientAdmission
+        // Compare and commit only gate state/events under the lock; no sink, child validation, spawn or await.
+        if let expected, expected.target == target, expected.permitsAmbient, let admitted = expected.performIfCurrent({
+            let result = admitCurrent(audio, frameTarget: frameTarget, selection: selection,
+                                      connection: connection, device: device)
+            if active?.id == audio.streamID, active?.connection == connection { active?.policyGeneration = expected }
+            return result
+        }) {
+            result = admitted
+        } else if expected == nil {
+            result = admitCurrent(audio, frameTarget: frameTarget, selection: selection,
+                                  connection: connection, device: device)
+        } else {
+            let refusal = refuse(.notAllowed, "ambient target_policy_changed", connection: connection)
+            result = .refused(refusal.0, refusal.1)
+        }
+        return publishAdmission(result, expected: expected, stream: audio.streamID, connection: connection)
+    }
+
+    private func emit(_ event: AmbientAudioEvent) {
+        if admissionEvents != nil { admissionEvents?.append(event) } else { sink.ambientAudio(event) }
+    }
+
+    private func publishAdmission(
+        _ result: AmbientAdmission, expected: TargetPolicyGeneration?, stream: UUID?, connection: UUID
+    ) -> AmbientAdmission {
+        let events = admissionEvents ?? []
+        admissionEvents = nil
+        defer { if active != nil { startSweeper() } }
+        // In particular, .started may validate/spawn a child synchronously. The generation lock is released.
+        for event in events {
+            switch event {
+            case .started: break
+            case .segment(let id, _, _), .ended(let id, _):
+                if let expected, id == stream {
+                    let current: Bool = expected.performIfCurrent({ true }) == true
+                    if !current {
+                        if active?.id == id, active?.connection == connection {
+                            end(.notAllowed)
+                        } else {
+                            // A final packet already cleared active while staging: replace its unpublished end.
+                            sink.ambientAudio(.ended(stream: id, reason: .notAllowed))
+                        }
+                        return .refused(.notAllowed, "ambient target_policy_changed")
+                    }
+                }
+            }
+            sink.ambientAudio(event)
+        }
+        return result
+    }
+
+    private func admitCurrent(
         _ audio: AudioPayload, frameTarget: String?, selection: AmbientSelection, connection: UUID, device: String?
     ) -> AmbientAdmission {
         expireIdle()
@@ -352,7 +417,7 @@ extension AmbientAudioGate {
         }
         active?.lastSequence = audio.sequence
         active?.lastActivity = clock()
-        sink.ambientAudio(.segment(stream: stream, sequence: audio.sequence, bytes: audio.bytes))
+        emit(.segment(stream: stream, sequence: audio.sequence, bytes: audio.bytes))
         if audio.isFinal { end(.final) }
         return nil
     }
@@ -381,8 +446,7 @@ extension AmbientAudioGate {
         active = Stream(id: stream, connection: connection, device: device, lastSequence: -1, lastActivity: clock(),
                         selection: selection)
         streamed.insert(connection)
-        sink.ambientAudio(.started(stream: stream, connection: connection, selection: selection))
-        startSweeper()
+        emit(.started(stream: stream, connection: connection, selection: selection))
         return nil
     }
 }

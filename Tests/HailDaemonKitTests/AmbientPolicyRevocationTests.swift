@@ -3,7 +3,7 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-private enum AmbientPolicyWrite: String, CaseIterable, Sendable {
+enum AmbientPolicyWrite: String, CaseIterable, Sendable {
     case allow, deny, confirm, locked, rebound
 
     static let revocations: [Self] = [.deny, .confirm, .locked, .rebound]
@@ -23,7 +23,7 @@ private actor PolicyHandoffSleepGate {
     }
 }
 
-private struct AmbientPolicyRig {
+struct AmbientPolicyRig {
     let adapter: FakeAdapter
     let store: InMemoryPolicyStore
     let host: HailHost
@@ -33,7 +33,7 @@ private struct AmbientPolicyRig {
     let sink: RecordingAmbientSink
     let stream: UUID
 
-    static func make(allowB: Bool = true) async throws -> Self {
+    static func make(allowB: Bool = true, beforeUpdate: @escaping @Sendable () -> Void = {}) async throws -> Self {
         let adapter = FakeAdapter(kind: "tmux", targets: [
             AdapterTarget(name: "a", binding: "binding-a"), AdapterTarget(name: "b", binding: "binding-b")
         ])
@@ -42,7 +42,7 @@ private struct AmbientPolicyRig {
         var policy = Policy()
         try policy.allow("tmux:a", binding: "binding-a", tier: .open)
         if allowB { try policy.allow("tmux:b", binding: "binding-b", tier: .open) }
-        let store = InMemoryPolicyStore(policy)
+        let store = InMemoryPolicyStore(policy, beforeUpdate: beforeUpdate)
         let host = try HailHost(registry: registry, store: store)
         let externalWriter = try HailHost(registry: registry, store: store)
         let sink = RecordingAmbientSink()
@@ -90,13 +90,13 @@ private struct AmbientPolicyRig {
         }
         try #require(store.stored != before)
         if externally {
-            // Observe the external write at the existing reload boundary, ahead of the audio hot path.
+            // PR 2 adds a policy-file stat backstop that removes this explicit refreshedPolicy() dependency.
             let refreshed: Policy? = await host.refreshedPolicy()
             try #require(refreshed == store.stored)
         }
     }
 
-    func pendingHandoff(_ sleep: PolicyHandoffSleepGate) async throws -> HostDeliveryOutcome {
+    fileprivate func pendingHandoff(_ sleep: PolicyHandoffSleepGate) async throws -> HostDeliveryOutcome {
         let frame: Frame = sessionFrame(target: "tmux:a", payload: .text(TextPayload(text: "synthetic")))
         let input: AuthorizedInput = try await authorizedInput(session, frame, device: "test")
         await sleep.sleep()
@@ -126,9 +126,8 @@ private struct AmbientPolicyRig {
         let deliveries: [FakeAdapter.Delivery] = await rig.adapter.deliveries
         #expect(deliveries.isEmpty)
 
-        // Proposed wire reason: absent on this base. A bare token avoids the device's recoverable
-        // `ambient stopped:` prefix; the device presentation will be "listening stopped: target permission changed".
-        let expected: ControlPayload = .error(code: .notAllowed, message: "target_policy_changed")
+        // The ambient prefix preserves the connection; omitting `stopped:` makes the refusal non-transient.
+        let expected: ControlPayload = .error(code: .notAllowed, message: "ambient target_policy_changed")
         let controls: [ControlPayload] = refused.frames.compactMap { frame in
             guard case .control(let control) = frame.payload else { return nil }
             return control

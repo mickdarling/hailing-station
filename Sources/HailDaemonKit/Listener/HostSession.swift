@@ -20,7 +20,7 @@ public protocol HostSessionAuthorizing: Sendable {
     /// The host's read-only health summary when haild runs with `--host-health` (#614); nil otherwise.
     var health: (@Sendable () async -> HostHealth)? { get }
     #if os(macOS)
-    /// The owner's named voice routes when haild runs with `--voice-routes` (#636), which requires the file; nil otherwise.
+    /// The owner's named voice routes when haild runs with `--voice-routes` (#636), requiring the file; nil otherwise.
     var voiceRoutes: VoiceRoutes? { get }
     #endif
     /// Must be free of side effects and give the same answer for the same frame: the session may ask about one frame
@@ -132,13 +132,16 @@ struct AuthorizedInput: ~Copyable, Sendable {
     /// True when `text` is a spoken request framed with a paste by `PastedContent` (#608): the host then applies the
     /// paste line cap, and nothing else changes.
     let carriesPaste: Bool
+    let policyGeneration: TargetPolicyGeneration
 
     fileprivate init(
-        text: String, target: String, frame: Frame, device: String, version: Int, carriesPaste: Bool = false
+        text: String, policyGeneration: TargetPolicyGeneration, frame: Frame, device: String,
+        version: Int, carriesPaste: Bool = false
     ) {
         self.text = text
         self.carriesPaste = carriesPaste
-        self.target = target
+        target = policyGeneration.target
+        self.policyGeneration = policyGeneration
         utteranceID = frame.id
         self.device = device
         self.version = version
@@ -219,6 +222,7 @@ public actor HostSession {
     var recordStoppedReply: @Sendable (UUID) -> Void = { _ in }
     var replyEvent: @Sendable (WebSocketListenerEvent) -> Void = { _ in }
     var selectedTarget: String?
+    var ambientPolicyGeneration: TargetPolicyGeneration?
     /// Which overheard turns this connection asked for (#398), one of `AmbientOverheard.scopes`. Every connection
     /// starts at `off`, so nothing overheard is sent until the device asks on this connection.
     var overheardScope = "off"
@@ -298,7 +302,8 @@ public actor HostSession {
             guard let target = frame.target else { return .untargetedText }
             guard let pasted = text.pasted else {
                 return .input(AuthorizedInput(
-                    text: text.text, target: target, frame: frame, device: device, version: version
+                    text: text.text, policyGeneration: await host.inputPolicyGeneration(for: target),
+                    frame: frame, device: device, version: version
                 ))
             }
             return await admitPaste(pasted, spoken: text.text, frame: frame, device: device, version: version)
@@ -315,6 +320,7 @@ public actor HostSession {
         _ pasted: PastedText, spoken: String, frame: Frame, device: String, version: Int
     ) async -> AdmittedFrame {
         guard let target = frame.target else { return .untargetedText }
+        let policyGeneration = await host.inputPolicyGeneration(for: target)
         if await host.currentLockdown.isOn { return .lockedDownPaste }
         let kind = String(target.prefix { $0 != ":" })
         guard PastedContent.acceptsPaste(targetKind: kind) else { return .refusedPaste(PastedContent.agentOnlyRefusal) }
@@ -322,7 +328,7 @@ public actor HostSession {
             let limit = PastedContent.maxFramedBytes(forTargetKind: kind)
             return .input(AuthorizedInput(
                 text: try PastedContent.frame(spoken: spoken, pasted: pasted.text, limit: limit),
-                target: target, frame: frame, device: device, version: version, carriesPaste: true
+                policyGeneration: policyGeneration, frame: frame, device: device, version: version, carriesPaste: true
             ))
         } catch {
             return .refusedPaste(PastedContent.refusal(error))
@@ -386,7 +392,16 @@ extension HostSession {
     }
 
     func response(_ control: ControlPayload, version: Int) -> Frame {
-        Frame(version: version, timestamp: now(), source: "haild", payload: .control(control))
+        var control = control
+        // A retired child can fail after the gate stopped it (#1028). Its late error must stay terminal too.
+        if case .error(let code, let message, let turn) = control, code == .notAllowed,
+           message.hasPrefix("ambient stopped:"), let generation = ambientPolicyGeneration {
+            let current: Bool = generation.performIfCurrent({ true }) == true
+            if !current {
+                control = .error(code: .notAllowed, message: "ambient target_policy_changed", turn: turn)
+            }
+        }
+        return Frame(version: version, timestamp: now(), source: "haild", payload: .control(control))
     }
 }
 
