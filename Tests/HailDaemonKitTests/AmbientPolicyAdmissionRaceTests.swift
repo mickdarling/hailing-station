@@ -3,31 +3,27 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-/// Injected synchronous waits for the store and sink; the production generation lock must be released first.
-final class PolicyWriteGate: @unchecked Sendable {
-    private let condition = NSCondition()
-    private var waiting = false
-    private var released = false
-
-    var isWaiting: Bool {
-        condition.lock()
-        defer { condition.unlock() }
-        return waiting
-    }
+/// Each blocking actor call uses its own queue, leaving the cooperative pool free to retire and release it.
+final class PolicyWriteGate: Sendable {
+    let executor = RecipientPublicationExecutor()
+    private let gate = RecipientPublicationGate(timeout: .seconds(15))
 
     func suspend() {
-        condition.lock()
-        defer { condition.unlock() }
-        waiting = true
-        while !released { condition.wait() }
+        guard executor.isExecuting else {
+            Issue.record("A synchronous policy test hook must run on its dedicated executor")
+            return
+        }
+        if !gate.block(onDedicatedQueue: true) {
+            Issue.record("The policy test hook timed out before release; the race is inconclusive")
+        }
     }
 
-    func fire() {
-        condition.lock()
-        defer { condition.unlock() }
-        released = true
-        condition.broadcast()
+    func waitUntilSuspended() async throws {
+        try await gate.waitEntered()
+        try #require(!gate.timedOut)
     }
+
+    func fire() { gate.release() }
 }
 
 private struct PolicyInspectingSink: AmbientAudioSink {
@@ -53,7 +49,7 @@ private struct PolicyBlockingSink: AmbientAudioSink {
     }
 }
 
-@Suite(.frozenGuardBudget) struct AmbientPolicyAdmissionRaceTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPolicyAdmissionRaceTests {
     @Test(arguments: [false, true])
     func retirementDuringStartedDropsStagedPCM(_ isFinal: Bool) async throws {
         let rig = try await AmbientPolicyRig.make()
@@ -67,10 +63,10 @@ private struct PolicyBlockingSink: AmbientAudioSink {
         _ = await session.receive(sessionFrame(payload: .control(.select(targetID: "tmux:a"))))
         let stream = UUID()
         let audio: AudioPayload = ambientSegment(stream: stream, sequence: 0, isFinal: isFinal)
-        let receiving = Task {
+        let receiving = Task(executorPreference: started.executor) {
             await session.receive(sessionFrame(target: "tmux:a", payload: .audio(audio)))
         }
-        while !started.isWaiting { await Task.yield() }
+        try await started.waitUntilSuspended()
         let denied: Bool = try await rig.host.deny("tmux:a")
         #expect(denied)
         #expect(rig.store.stored.targets["tmux:a"] == nil)
@@ -99,10 +95,10 @@ private struct PolicyBlockingSink: AmbientAudioSink {
         _ = await session.receive(helloFrame())
         _ = await session.receive(sessionFrame(payload: .control(.select(targetID: "tmux:a"))))
         let audio: AudioPayload = ambientSegment(stream: UUID(), sequence: 0, isFinal: true)
-        let receiving = Task {
+        let receiving = Task(executorPreference: blocked.executor) {
             await session.receive(sessionFrame(target: "tmux:a", payload: .audio(audio)))
         }
-        while !blocked.isWaiting { await Task.yield() }
+        try await blocked.waitUntilSuspended()
         _ = try await rig.host.deny("tmux:a")
         blocked.fire()
         let result: HostSessionResult = await receiving.value
@@ -116,9 +112,10 @@ private struct PolicyBlockingSink: AmbientAudioSink {
     @Test(arguments: ["tmux:a", "tmux:b"])
     func admissionDuringSuspendedPersist(_ target: String) async throws {
         let persist = PolicyWriteGate()
+        defer { persist.fire() }
         let rig = try await AmbientPolicyRig.make(beforeUpdate: { persist.suspend() })
-        let writing = Task { try await rig.host.deny(target) }
-        while !persist.isWaiting { await Task.yield() }
+        let writing = Task(executorPreference: persist.executor) { try await rig.host.deny(target) }
+        try await persist.waitUntilSuspended()
         // The store has entered update, but its policy has not changed and persistence cannot finish yet.
         let stored: Policy = rig.store.stored
         #expect(stored.targets[target]?.tier == .open)

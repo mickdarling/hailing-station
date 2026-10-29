@@ -14,7 +14,7 @@ private struct PolicyRestartSink: AmbientAudioSink {
     }
 }
 
-@Suite(.frozenGuardBudget) struct AmbientPolicyStartTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPolicyStartTests {
     @Test(arguments: [Tier.open, Tier.confirm, Tier.locked])
     func allowedTierStartsAndStreamsWithoutAWrite(_ tier: Tier) async throws {
         let rig = try await AmbientPolicyRig.make(tier: tier)
@@ -64,10 +64,10 @@ private struct PolicyRestartSink: AmbientAudioSink {
         _ = await session.receive(sessionFrame(target: "tmux:a", payload: .audio(previous)))
         _ = try await rig.host.allow("tmux:a", tier: .open)
         let audio: AudioPayload = ambientSegment(stream: stream, sequence: 0)
-        let receiving = Task {
+        let receiving = Task(executorPreference: waiting.executor) {
             await session.receive(sessionFrame(target: "tmux:a", payload: .audio(audio)))
         }
-        while !waiting.isWaiting { await Task.yield() }
+        try await waiting.waitUntilSuspended()
         // A synchronous child startup refusal arrives before the session's admission await returns.
         let frame: Frame? = await session.ambientFailureFrame("ambient stopped: synthetic startup")
         let expected: FramePayload = .control(.error(code: .notAllowed, message: "ambient stopped: synthetic startup"))
