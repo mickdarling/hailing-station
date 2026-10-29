@@ -20,7 +20,9 @@ import Testing
         try await rig.start()
         if !denyBeforePause {
             try await rig.feed()
-            try await callEventually { host.sink.segmentCount > 0 }
+            try await callEventually { await host.inputReady() }
+            let refusal = await host.firstRefusal
+            try #require(host.sink.segmentCount > 0, "Initial synthetic stream refused: \(refusal ?? "none")")
         }
         if denyBeforePause {
             _ = try await host.host.deny(rig.target.id)

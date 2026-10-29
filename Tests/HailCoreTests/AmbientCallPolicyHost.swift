@@ -11,6 +11,7 @@ actor CallPolicyHost: WebSocketTransport {
     let session: HostSession
     let sink: CallPolicySink
     let sendGate = SleepGate()
+    private(set) var firstRefusal: String?
     private(set) var refusals = 0
     private(set) var resumedAttempts = 0
 
@@ -53,12 +54,19 @@ actor CallPolicyHost: WebSocketTransport {
             try await base.push(FrameCoding.encode(response))
         }
         if !result.frames.isEmpty {
+            if case .control(.error(_, let message, _)) = result.frames.first?.payload {
+                firstRefusal = firstRefusal ?? message
+            }
             refusals += 1
             try await base.push(.targets([callPolicyBarrier]))
             if refusals == 1 {
                 try await sendGate.sleep(.zero)
             }
         }
+    }
+
+    func inputReady() -> Bool {
+        sink.segmentCount > 0 || refusals > 0
     }
 
     func receive() async throws -> Data {
