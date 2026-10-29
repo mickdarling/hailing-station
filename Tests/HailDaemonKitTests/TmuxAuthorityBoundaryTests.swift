@@ -35,7 +35,7 @@ import Testing
         let sending = Task { try await rig.send() }
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
-        await #expect(throws: HostError.denied(.notAllowed(TmuxAuthorityRig.target))) {
+        await #expect(throws: PolicyRetiredDelivery.pastedUnsent) {
             try await rig.runner.gate.finish(sending)
         }
         #expect(rig.runner.pasted == ["synthetic input"])
@@ -56,7 +56,7 @@ import Testing
         }
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
-        await #expect(throws: HostError.denied(.notAllowed(TmuxAuthorityRig.target))) {
+        await #expect(throws: PolicyRetiredDelivery.possiblySubmitted) {
             try await rig.runner.gate.finish(sending)
         }
         #expect(rig.runner.enters == 1)
@@ -76,7 +76,7 @@ import Testing
         try await rig.runner.gate.waitUntilSuspended()
         rig.runner.collapsePaste()
         try await rig.retire()
-        await #expect(throws: HostError.denied(.notAllowed(TmuxAuthorityRig.target))) {
+        await #expect(throws: PolicyRetiredDelivery.pastedUnsent) {
             try await rig.runner.gate.finish(sending)
         }
         #expect(!rig.runner.input.isEmpty)
@@ -99,7 +99,11 @@ import Testing
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
         let outcome = try await rig.runner.gate.finish(sending)
-        #expect(outcome == .refused(.notAllowed, "target action was refused"))
+        #expect(outcome == .refused(
+            .notAllowed,
+            "a line was pasted but not sent — clear it on the Mac; "
+                + "hand-offs to this target are paused until haild restarts"
+        ))
         #expect(rig.runner.enters == 0)
         #expect(!rig.runner.input.isEmpty)
     }

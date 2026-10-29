@@ -25,7 +25,7 @@ import Testing
         let sending = Task { try await rig.send() }
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
-        await #expect(throws: HostError.denied(.notAllowed(TmuxAuthorityRig.target))) {
+        await #expect(throws: PolicyRetiredDelivery.pastedUnsent) {
             try await rig.runner.gate.finish(sending)
         }
         #expect(rig.runner.pasted == ["synthetic input"])
@@ -35,7 +35,7 @@ import Testing
         #expect(rig.log.all.filter { $0.event == "tmux_policy_retired_unsent" } == [
             TmuxDeliveryEvidence(event: "tmux_policy_retired_unsent", detail: "")
         ])
-        await #expect(throws: AdapterError.inputPending(reason: .tainted)) {
+        await #expect(throws: PolicyRetiredDelivery.pastedUnsent) {
             let adapter: any Adapter = rig.adapter
             try await adapter.deliver(
                 "later input", to: "codex", binding: TmuxAuthorityRig.binding,
@@ -59,18 +59,21 @@ import Testing
         }
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
-        await #expect(throws: HostError.denied(.notAllowed(TmuxAuthorityRig.target))) {
+        await #expect(throws: retry ? PolicyRetiredDelivery.possiblySubmitted : .pastedUnsent) {
             try await rig.runner.gate.finish(sending)
         }
         #expect(rig.runner.pasted == [text])
         #expect(rig.runner.input == text + (retry ? "\n  " : ""))
         #expect(rig.runner.enters == (retry ? 1 : 0))
-        await #expect(throws: AdapterError.inputPending(reason: .tainted)) {
+        await #expect {
             let adapter: any Adapter = rig.adapter
             try await adapter.deliver(
                 "later input", to: "codex", binding: TmuxAuthorityRig.binding,
                 authority: rig.host.targetPolicy.snapshot(for: TmuxAuthorityRig.target).deliveryAuthority
             )
+        } throws: { error in
+            if retry { return (error as? AdapterError) == .inputPending(reason: .tainted) }
+            return (error as? PolicyRetiredDelivery) == .pastedUnsent
         }
         #expect(rig.runner.pasted == [text])
         #expect(rig.runner.enters == (retry ? 1 : 0))
@@ -86,7 +89,7 @@ import Testing
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
         rig.runner.rebind()
-        await #expect(throws: HostError.denied(.notAllowed(TmuxAuthorityRig.target))) {
+        await #expect(throws: PolicyRetiredDelivery.pastedUnsent) {
             try await rig.runner.gate.finish(sending)
         }
         #expect(rig.runner.enters == 0)
