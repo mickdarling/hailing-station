@@ -7,8 +7,8 @@ Spike tooling for [#1076](https://github.com/mickdarling/hailing-station/issues/
 - Run on the Mac, in a scratch directory outside any repository, for example `~/hail-spike-acp/scratch-claude`.
 - Install adapters into a private prefix (`npm install --prefix ~/hail-spike-acp/node …`, or a downloaded binary under `~/hail-spike-acp/bin`). Never install globally, and never change `~/.claude` or `~/.codex` configuration.
 - The probe removes credential variables (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_API_KEY`) from the agent's environment, so the harness must use its own stored login. That is the seat principle (#1074).
-- It advertises no file or terminal access, and rejects every permission request it receives. The second default prompt asks for a file write, to capture the permission flow. `probe_file_written` should be `false`. If it is `true`, the harness's own settings let it write without asking (for example an accept-edits or bypass mode, or Codex with approvals off): the probe can only reject requests it is sent. Record the mode from `session_modes`.
-- Paste only stdout. Never paste `--show-text` stderr or `agent-stderr.log`.
+- It advertises no file or terminal access, and rejects every permission request it receives. The second and third default prompts ask for a file write and a shell `touch`, to capture the permission flow; `actions_ran` reports whether either happened (`write`, `execute`). In an asking mode both should be `false`. If one is `true`, the harness's own settings let it act without asking (for example an accept-edits or bypass mode, or Codex with approvals off): the probe can only reject requests it is sent. Record the mode from `session_modes`, and use `--mode` to choose an asking one. If `--mode` cannot be applied, the probe stops before sending any prompt (exit 5).
+- Paste only stdout. Never paste `--show-text` stderr, `agent-stderr.log` or `agent-stderr-resume.log`.
 
 ## Usage
 

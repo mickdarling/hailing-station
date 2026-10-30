@@ -20,7 +20,8 @@ What it does:
 - Prints one JSON line per observation to stdout: method names, update kinds, keys, lengths and timings.
   Message text appears only as character counts. --show-text prints agent text to stderr, for synthetic
   prompts only; never paste it.
-- The agent's own stderr goes to <cwd>/agent-stderr.log, which is never printed: it may hold private detail.
+- The agent's own stderr goes to <cwd>/agent-stderr.log (agent-stderr-resume.log for the --load process), which is
+  never printed: it may hold private detail.
 
 Standard library only; Python 3.9+.
 """
@@ -77,10 +78,10 @@ def text_of(content: Any) -> str:
 
 
 class Agent:
-    def __init__(self, command: list, cwd: str):
+    def __init__(self, command: list, cwd: str, log_name: str = "agent-stderr.log"):
         environment = dict(os.environ)
         self.removed = sorted(name for name in CREDENTIAL_VARIABLES if environment.pop(name, None) is not None)
-        self.stderr = open(os.path.join(cwd, "agent-stderr.log"), "wb")
+        self.stderr = open(os.path.join(cwd, log_name), "wb")
         # Its own process group, so close() also stops a harness that an npx or node wrapper started.
         self.process = subprocess.Popen(
             command, cwd=cwd, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr,
@@ -252,19 +253,17 @@ class Probe:
                 return message, timings
 
 
-def start(command: list, cwd: str, show_text: bool) -> tuple[Agent, Probe, Optional[dict]]:
-    """Start the agent and initialize it. Returns the agent, its probe and the initialize result (None on failure)."""
-    agent = Agent(command, cwd)
-    emit("credential_variables_removed", agent.removed)
-    probe = Probe(agent, show_text)
+def initialize(probe: Probe) -> Optional[dict]:
+    """Initialize the agent. Returns the initialize result, or None on failure."""
+    emit("credential_variables_removed", probe.agent.removed)
     response, timings = probe.call("initialize", {
         "protocolVersion": PROTOCOL_VERSION,
         "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}, "terminal": False},
         "clientInfo": {"name": "hailing-station-acp-probe", "version": "0.2"},
     }, 60)
     if not response or "error" in response:
-        emit("initialize_failed", (response or {}).get("error"))
-        return agent, probe, None
+        emit("initialize_failed", outcome_of(response))
+        return None
     result = response.get("result") or {}
     emit("initialize", {
         "protocolVersion": result.get("protocolVersion"),
@@ -274,7 +273,7 @@ def start(command: list, cwd: str, show_text: bool) -> tuple[Agent, Probe, Optio
                         for method in result.get("authMethods") or []],
         "seconds": timings.get("response"),
     })
-    return agent, probe, result
+    return result
 
 
 def outcome_of(response: Optional[dict]) -> Any:
@@ -329,9 +328,10 @@ def main() -> int:
         emit("refused", {"reason": "marker files already exist; use a fresh scratch directory", "markers": stale})
         return 4
 
-    agent, probe, initialized = start(command, cwd, args.show_text)
+    agent = Agent(command, cwd)
+    probe = Probe(agent, args.show_text)
     try:
-        if initialized is None:
+        if initialize(probe) is None:
             return 2
         response, timings = probe.call("session/new", {"cwd": cwd, "mcpServers": []}, 120)
         if not response or "error" in response:
@@ -343,12 +343,18 @@ def main() -> int:
         available = report_modes(session)
 
         if args.mode:
+            # Without the requested mode, any permission evidence would be misattributed, and the agent's own mode
+            # might run the write and shell prompts unasked: stop before prompting.
             if args.mode not in available:
-                emit("set_mode_skipped", {"mode": args.mode, "reason": "not offered by the agent"})
-            else:
-                response, timings = probe.call("session/set_mode", {"sessionId": session_id, "modeId": args.mode}, 30)
-                emit("set_mode", {"mode": args.mode, "outcome": "ok" if response and "result" in response
-                                  else outcome_of(response), "seconds": timings.get("response")})
+                emit("set_mode_skipped", {"mode": args.mode, "reason": "not offered by the agent; no prompts sent"})
+                return 5
+            response, timings = probe.call("session/set_mode", {"sessionId": session_id, "modeId": args.mode}, 30)
+            applied = bool(response and "result" in response)
+            emit("set_mode", {"mode": args.mode, "outcome": "ok" if applied else outcome_of(response),
+                              "seconds": timings.get("response")})
+            if not applied:
+                emit("prompts_skipped", "the requested mode was not applied")
+                return 5
 
         for index, text in enumerate(args.prompt or DEFAULT_PROMPTS, 1):
             prompt(probe, session_id, index, text, args.timeout)
@@ -360,7 +366,8 @@ def main() -> int:
             sessions = result.get("sessions") or []
             emit("session_list", {"outcome": "ok" if response and "result" in response else outcome_of(response),
                                   "result_shape": shape(result, 2), "count": len(sessions),
-                                  "contains_this_session": any(item.get("sessionId") == session_id for item in sessions),
+                                  "contains_this_session": any(isinstance(item, dict) and item.get("sessionId") == session_id
+                                                               for item in sessions),
                                   "seconds": timings.get("response")})
         emit("update_kind_counts", probe.update_kinds)
     finally:
@@ -374,8 +381,10 @@ def main() -> int:
 def resume(command: list, cwd: str, args, session_id: Any) -> None:
     """A fresh agent process resumes the session, then answers a question that needs the earlier turns."""
     emit("resume", "starting a fresh agent process")
-    agent, probe, initialized = start(command, cwd, args.show_text)
+    agent = Agent(command, cwd, log_name="agent-stderr-resume.log")
+    probe = Probe(agent, args.show_text)
     try:
+        initialized = initialize(probe)
         if initialized is None:
             return
         if not (initialized.get("agentCapabilities") or {}).get("loadSession"):
