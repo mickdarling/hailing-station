@@ -17,6 +17,7 @@ Safety rules this script keeps:
 Run with python3 (3.9+, the macOS system Python is fine); no packages needed.
 
 Subcommands:
+  token      token expiry and scopes only, from the Keychain; no network call (needs no --session)
   info       token status (expiry, scopes) and the session's metadata shape
   history    shapes of the newest events in the session
   send       documented CLI send only; records the JSON result or refusal (use on an archived session)
@@ -291,6 +292,16 @@ def command_info(client: Client, args, credentials) -> None:
     emit("metadata", {key: flat.get(key) for key in keep if isinstance(flat, dict) and key in flat})
 
 
+def command_token(credentials) -> None:
+    _, expires_at, organization, scopes = credentials
+    emit("token", {
+        "minutes_left": round((expires_at - time.time()) / 60, 1) if expires_at else None,
+        "expires_at_utc": time.strftime("%H:%M:%S", time.gmtime(expires_at)) if expires_at else None,
+        "scopes": scopes,
+        "organization": redact(organization),
+    })
+
+
 def command_history(client: Client, args, _credentials) -> None:
     session_id, _ = resolve_session(client, args.session)
     events = newest_events(client, session_id, args.limit)
@@ -363,15 +374,20 @@ def command_roundtrip(client: Client, args, _credentials) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("subcommand", choices=("info", "history", "send", "roundtrip"))
-    parser.add_argument("--session", required=True, help="cloud session ID (session_… or cse_…) or its claude.ai/code URL")
+    parser.add_argument("subcommand", choices=("token", "info", "history", "send", "roundtrip"))
+    parser.add_argument("--session", required=False, help="cloud session ID (session_… or cse_…) or its claude.ai/code URL")
     parser.add_argument("--text", default=SYNTHETIC_TEXT, help="synthetic message for send/roundtrip")
     parser.add_argument("--limit", type=int, default=20, help="events for history")
     parser.add_argument("--timeout", type=float, default=300, help="roundtrip deadline in seconds")
     parser.add_argument("--show-text", action="store_true", help="print assistant text to stderr (synthetic only)")
     args = parser.parse_args()
 
+    if args.subcommand != "token" and not args.session:
+        parser.error("--session is required for " + args.subcommand)
     try:
+        if args.subcommand == "token":
+            command_token(load_credentials())
+            return 0
         if args.subcommand == "send":
             command_send(None, args, None)
             return 0
