@@ -283,8 +283,11 @@ def command_info(client: Client, args, credentials) -> None:
     session_id, metadata = resolve_session(client, args.session)
     emit("session_id_form", session_id.split("_", 1)[0])
     emit("metadata_shape", shape(metadata))
-    flat = metadata.get("data", metadata) if isinstance(metadata, dict) else {}
-    keep = ("session_status", "status", "environment_kind", "origin", "created_at", "updated_at")
+    flat = {}
+    if isinstance(metadata, dict):
+        flat = metadata.get("response_shape") or metadata.get("data") or metadata
+    keep = ("status", "status_bucket", "worker_status", "connection_status", "environment_kind",
+            "created_at", "updated_at")
     emit("metadata", {key: flat.get(key) for key in keep if isinstance(flat, dict) and key in flat})
 
 
