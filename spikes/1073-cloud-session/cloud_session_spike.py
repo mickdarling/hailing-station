@@ -35,6 +35,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from typing import Any, Iterator, Optional
 
 API = "https://api.anthropic.com"
@@ -56,9 +57,18 @@ def redact(value: Optional[str]) -> str:
     return f"{prefix}…{value[-4:]}" if len(value) > 8 else "<redacted>"
 
 
-# ---------------------------------------------------------------- credentials (read-only, never refreshed)
+# ---------------------------------------------------------------- stored login (read-only, never refreshed)
 
-def load_credentials() -> tuple[str, float, Optional[str], list]:
+@dataclass(frozen=True)
+class LoginStatus:
+    """Facts about the stored claude.ai login that are safe to print. It never holds the token itself, which
+    travels separately and only into the Authorization header."""
+    expires_at: float
+    organization: Optional[str]
+    scopes: tuple
+
+
+def read_login() -> tuple[str, LoginStatus]:
     raw = None
     if sys.platform == "darwin":
         found = subprocess.run(
@@ -74,11 +84,11 @@ def load_credentials() -> tuple[str, float, Optional[str], list]:
                 raw = handle.read()
     if raw is None:
         raise SpikeError("no Claude Code credentials found; run `claude auth login` first")
-    credentials = json.loads(raw)
-    oauth = credentials.get("claudeAiOauth") or {}
-    token = oauth.get("accessToken")
-    if not token:
-        raise SpikeError("credentials hold no claude.ai OAuth access token (API-key logins cannot use this API)")
+    stored = json.loads(raw)
+    oauth = stored.get("claudeAiOauth") or {}
+    access = oauth.get("accessToken")
+    if not access:
+        raise SpikeError("the stored login holds no claude.ai OAuth access token (API-key logins cannot use this API)")
     expires = float(oauth.get("expiresAt") or 0)
     expires_at = expires / 1000 if expires > 1e12 else expires
     organization = None
@@ -87,8 +97,9 @@ def load_credentials() -> tuple[str, float, Optional[str], list]:
             organization = (json.load(handle).get("oauthAccount") or {}).get("organizationUuid")
     except (OSError, ValueError):
         pass
-    organization = organization or credentials.get("organizationUuid")
-    return token, expires_at, organization, list(oauth.get("scopes") or [])
+    organization = organization or stored.get("organizationUuid")
+    scopes = tuple(scope for scope in oauth.get("scopes") or [] if isinstance(scope, str))
+    return access, LoginStatus(expires_at=expires_at, organization=organization, scopes=scopes)
 
 
 def require_fresh(expires_at: float) -> None:
@@ -274,13 +285,18 @@ def cli_send(session: str, text: str) -> tuple[dict, float]:
     return result, elapsed
 
 
-def command_info(client: Client, args, credentials) -> None:
-    _, expires_at, organization, scopes = credentials
-    emit("token", {
+def login_summary(status: LoginStatus) -> dict:
+    expires_at = status.expires_at
+    return {
         "minutes_left": round((expires_at - time.time()) / 60, 1) if expires_at else None,
-        "scopes": scopes,
-        "organization": redact(organization),
-    })
+        "expires_at_utc": time.strftime("%H:%M:%S", time.gmtime(expires_at)) if expires_at else None,
+        "scopes": list(status.scopes),
+        "organization": redact(status.organization),
+    }
+
+
+def command_info(client: Client, args, status: LoginStatus) -> None:
+    emit("token", login_summary(status))
     session_id, metadata = resolve_session(client, args.session)
     emit("session_id_form", session_id.split("_", 1)[0])
     emit("metadata_shape", shape(metadata))
@@ -292,17 +308,11 @@ def command_info(client: Client, args, credentials) -> None:
     emit("metadata", {key: flat.get(key) for key in keep if isinstance(flat, dict) and key in flat})
 
 
-def command_token(credentials) -> None:
-    _, expires_at, organization, scopes = credentials
-    emit("token", {
-        "minutes_left": round((expires_at - time.time()) / 60, 1) if expires_at else None,
-        "expires_at_utc": time.strftime("%H:%M:%S", time.gmtime(expires_at)) if expires_at else None,
-        "scopes": scopes,
-        "organization": redact(organization),
-    })
+def command_token(status: LoginStatus) -> None:
+    emit("token", login_summary(status))
 
 
-def command_history(client: Client, args, _credentials) -> None:
+def command_history(client: Client, args, _status) -> None:
     session_id, _ = resolve_session(client, args.session)
     events = newest_events(client, session_id, args.limit)
     if events:
@@ -311,13 +321,13 @@ def command_history(client: Client, args, _credentials) -> None:
         emit("event", summarize(event)[0])
 
 
-def command_send(_client: Optional[Client], args, _credentials) -> None:
+def command_send(_client: Optional[Client], args, _status) -> None:
     result, elapsed = cli_send(args.session, args.text)
     emit("cli_send", result)
     emit("cli_send_seconds", round(elapsed, 2))
 
 
-def command_roundtrip(client: Client, args, _credentials) -> None:
+def command_roundtrip(client: Client, args, _status) -> None:
     session_id, _ = resolve_session(client, args.session)
     before = newest_events(client, session_id, 1)
     cursor = sequence(before[0]) if before else 0
@@ -386,16 +396,16 @@ def main() -> int:
         parser.error("--session is required for " + args.subcommand)
     try:
         if args.subcommand == "token":
-            command_token(load_credentials())
+            command_token(read_login()[1])
             return 0
         if args.subcommand == "send":
             command_send(None, args, None)
             return 0
-        credentials = load_credentials()
-        require_fresh(credentials[1])
-        client = Client(credentials[0], credentials[2])
+        access, status = read_login()
+        require_fresh(status.expires_at)
+        client = Client(access, status.organization)
         {"info": command_info, "history": command_history, "roundtrip": command_roundtrip}[args.subcommand](
-            client, args, credentials)
+            client, args, status)
         return 0
     except SpikeError as error:
         print(f"spike: {error}", file=sys.stderr)
