@@ -16,7 +16,18 @@ Spike tooling for [#1076](https://github.com/mickdarling/hailing-station/issues/
 python3 acp_probe.py --cwd ~/hail-spike-acp/scratch-claude -- <adapter command and args>
 ```
 
-The default prompts are a one-sentence reply and a refused file write. Add `--prompt TEXT` to replace them.
+The default prompts are a one-sentence reply, a file write and a shell command (`touch`). The last two leave marker files if they run, and `actions_ran` reports them. Add `--prompt TEXT` to replace the defaults. Each run needs a fresh scratch directory; the probe refuses one that already holds marker files.
+
+## Round 2: permission requests, listing and resume
+
+```sh
+python3 acp_probe.py --cwd ~/hail-spike-acp/r2-claude --mode default --list --load -- <claude adapter>
+python3 acp_probe.py --cwd ~/hail-spike-acp/r2-codex --mode read-only --list --load -- <codex adapter>
+```
+
+- `--mode` switches the new session into a mode that asks before acting (`session/set_mode`), so `permission_request` lines show the request's shape: tool kind, option kinds, and the keys of the tool's input. The probe answers each request with a reject option, so `actions_ran` should report `false` for both.
+- `--list` calls `session/list` and reports whether this session is listed.
+- `--load` restarts the agent, resumes the session with `session/load` (which replays history as updates), then asks one question that needs the earlier turns.
 
 ## Claude Code's own structured mode, for comparison
 

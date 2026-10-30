@@ -2,7 +2,12 @@
 """Spike for #1076: drive an ACP (Agent Client Protocol) agent the way a haild plug would, and record shapes.
 
 Usage:
-  python3 acp_probe.py --cwd <scratch dir> [--prompt TEXT ...] [--show-text] -- <agent command and args>
+  python3 acp_probe.py --cwd <scratch dir> [--mode MODE] [--list] [--load] [--prompt TEXT ...] [--show-text]
+                       -- <agent command and args>
+
+Round 2 (#1076): --mode switches the new session into a mode that asks before acting (session/set_mode), so the
+permission requests can be recorded; --list calls session/list; --load restarts the agent and resumes the
+session with session/load, then asks one question that needs the earlier turns.
 
 What it does:
 - Starts the agent with stdio pipes and an environment with provider credential variables removed, so the
@@ -42,7 +47,11 @@ CREDENTIAL_VARIABLES = (
 DEFAULT_PROMPTS = (
     "Hailing Station ACP spike #1076. Reply with one short sentence and use no tools.",
     "Create a file named acp-probe.txt containing the word hello in the current directory.",
+    "Run the shell command `touch acp-exec-probe.txt` in the current directory.",
 )
+# Marker files the write and shell prompts would create; if either exists afterwards, the action ran.
+MARKERS = {"write": "acp-probe.txt", "execute": "acp-exec-probe.txt"}
+RESUME_PROMPT = "In one short sentence, what was the first thing I asked you in this session? Use no tools."
 
 
 def emit(label: str, value: Any) -> None:
@@ -116,13 +125,18 @@ class Agent:
             self.process.wait(timeout=5)
         except Exception:
             pass
+        # The direct child may already be reaped while a grandchild lives on, so signal the whole group, give it
+        # a moment, then make sure with SIGKILL. A group that is already gone raises ProcessLookupError.
+        for sig, pause in ((signal.SIGTERM, 1.0), (signal.SIGKILL, 0)):
+            try:
+                os.killpg(self.process.pid, sig)
+            except (ProcessLookupError, PermissionError):
+                break
+            time.sleep(pause)
         try:
-            os.killpg(self.process.pid, signal.SIGTERM)
             self.process.wait(timeout=5)
-        except (ProcessLookupError, PermissionError):
-            pass
         except subprocess.TimeoutExpired:
-            os.killpg(self.process.pid, signal.SIGKILL)
+            pass
         self.stderr.close()
 
 
@@ -137,11 +151,15 @@ class Probe:
         if method == "session/request_permission":
             params = message.get("params") or {}
             options = params.get("options") or []
+            tool_call = params.get("toolCall") or {}
             emit("permission_request", {
-                "tool_call_keys": sorted((params.get("toolCall") or {}).keys()),
-                "tool_kind": (params.get("toolCall") or {}).get("kind"),
-                "options": [{"kind": option.get("kind"), "name_chars": len(option.get("name", ""))}
-                            for option in options],
+                "params_keys": sorted(params.keys()),
+                "tool_call_keys": sorted(tool_call.keys()),
+                "tool_kind": tool_call.get("kind"),
+                "tool_title_chars": len(tool_call.get("title") or ""),
+                "raw_input_shape": shape(tool_call.get("rawInput"), 1),
+                "options": [{"kind": option.get("kind"), "name_chars": len(option.get("name", "")),
+                             "option_id_chars": len(str(option.get("optionId", "")))} for option in options],
             })
             chosen = next((option for kind in ("reject_once", "reject_always")
                            for option in options if option.get("kind") == kind), None)
@@ -178,7 +196,8 @@ class Probe:
 
     def drain(self, request_id: int, seconds: float) -> None:
         """After session/cancel, wait for the cancelled prompt's response so its late updates do not land in
-        the next prompt's timings. Agent requests are still answered; updates are counted, not timed."""
+        the next prompt's timings. Agent requests are still answered; updates are counted under their kind, with
+        timings discarded."""
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             try:
@@ -190,6 +209,8 @@ class Probe:
                 return
             if "method" in message and "id" in message:
                 self.answer_agent_request(message)
+            elif message.get("method") == "session/update":
+                self.note_update(message.get("params") or {}, time.monotonic(), {})
             elif message.get("id") == request_id:
                 emit("cancelled_prompt_response", (message.get("result") or {}).get("stopReason"))
                 return
@@ -231,10 +252,69 @@ class Probe:
                 return message, timings
 
 
+def start(command: list, cwd: str, show_text: bool) -> tuple[Agent, Probe, Optional[dict]]:
+    """Start the agent and initialize it. Returns the agent, its probe and the initialize result (None on failure)."""
+    agent = Agent(command, cwd)
+    emit("credential_variables_removed", agent.removed)
+    probe = Probe(agent, show_text)
+    response, timings = probe.call("initialize", {
+        "protocolVersion": PROTOCOL_VERSION,
+        "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}, "terminal": False},
+        "clientInfo": {"name": "hailing-station-acp-probe", "version": "0.2"},
+    }, 60)
+    if not response or "error" in response:
+        emit("initialize_failed", (response or {}).get("error"))
+        return agent, probe, None
+    result = response.get("result") or {}
+    emit("initialize", {
+        "protocolVersion": result.get("protocolVersion"),
+        "agentInfo": result.get("agentInfo"),
+        "agentCapabilities": result.get("agentCapabilities"),
+        "authMethods": [{"id": method.get("id"), "name": method.get("name")}
+                        for method in result.get("authMethods") or []],
+        "seconds": timings.get("response"),
+    })
+    return agent, probe, result
+
+
+def outcome_of(response: Optional[dict]) -> Any:
+    if response is None:
+        return None
+    if "error" in response:
+        error = response.get("error") or {}
+        return {"error": error.get("code"), "message_chars": len(str(error.get("message", "")))}
+    return (response.get("result") or {}).get("stopReason")
+
+
+def prompt(probe: Probe, session_id: Any, index: Any, text: str, timeout: float) -> None:
+    if probe.agent.exited:
+        emit("prompt_skipped", {"prompt": index, "reason": "agent exited"})
+        return
+    response, timings = probe.call("session/prompt", {
+        "sessionId": session_id, "prompt": [{"type": "text", "text": text}]}, timeout)
+    emit("prompt_done", {"prompt": index, "stopReason": outcome_of(response), "timings": timings})
+
+
+def report_modes(session: dict) -> list:
+    modes = session.get("modes") or {}
+    available = [mode.get("id") for mode in modes.get("availableModes") or []]
+    emit("session_modes", {"current": modes.get("currentModeId"), "available": available})
+    models = session.get("models") or {}
+    emit("session_models", {"current": models.get("currentModelId"),
+                            "available_count": len(models.get("availableModels") or [])})
+    options = session.get("configOptions")
+    if options is not None:
+        emit("config_options_shape", shape(options, 2))
+    return available
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cwd", required=True, help="scratch directory the agent session runs in")
-    parser.add_argument("--prompt", action="append", help="prompt text (repeatable); defaults to two probes")
+    parser.add_argument("--prompt", action="append", help="prompt text (repeatable); defaults to three probes")
+    parser.add_argument("--mode", help="switch the new session into this mode (session/set_mode) before prompting")
+    parser.add_argument("--list", action="store_true", help="call session/list after the prompts")
+    parser.add_argument("--load", action="store_true", help="restart the agent and resume the session (session/load)")
     parser.add_argument("--timeout", type=float, default=180)
     parser.add_argument("--show-text", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="-- then the agent command")
@@ -244,60 +324,71 @@ def main() -> int:
         parser.error("give the agent command after --")
     cwd = os.path.abspath(args.cwd)
     os.makedirs(cwd, exist_ok=True)
+    stale = [kind for kind, name in MARKERS.items() if os.path.exists(os.path.join(cwd, name))]
+    if stale:
+        emit("refused", {"reason": "marker files already exist; use a fresh scratch directory", "markers": stale})
+        return 4
 
-    agent = Agent(command, cwd)
-    emit("credential_variables_removed", agent.removed)
-    probe = Probe(agent, args.show_text)
+    agent, probe, initialized = start(command, cwd, args.show_text)
     try:
-        response, timings = probe.call("initialize", {
-            "protocolVersion": PROTOCOL_VERSION,
-            "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}, "terminal": False},
-            "clientInfo": {"name": "hailing-station-acp-probe", "version": "0.1"},
-        }, 60)
-        if not response or "error" in response:
-            emit("initialize_failed", (response or {}).get("error"))
+        if initialized is None:
             return 2
-        result = response.get("result") or {}
-        emit("initialize", {
-            "protocolVersion": result.get("protocolVersion"),
-            "agentInfo": result.get("agentInfo"),
-            "agentCapabilities": result.get("agentCapabilities"),
-            "authMethods": [{"id": method.get("id"), "name": method.get("name")}
-                            for method in result.get("authMethods") or []],
-            "seconds": timings.get("response"),
-        })
-
         response, timings = probe.call("session/new", {"cwd": cwd, "mcpServers": []}, 120)
         if not response or "error" in response:
-            error = (response or {}).get("error") or {}
-            emit("session_new_failed", {"code": error.get("code"), "message": error.get("message")})
+            emit("session_new_failed", outcome_of(response))
             return 3
         session = response.get("result") or {}
+        session_id = session.get("sessionId")
         emit("session_new", {"result_shape": shape(session), "seconds": timings.get("response")})
-        modes = session.get("modes") or {}
-        models = session.get("models") or {}
-        emit("session_modes", {"current": modes.get("currentModeId"),
-                               "available": [mode.get("id") for mode in modes.get("availableModes") or []]})
-        emit("session_models", {"current": models.get("currentModelId"),
-                                "available": [model.get("modelId") for model in models.get("availableModels") or []]})
+        available = report_modes(session)
+
+        if args.mode:
+            if args.mode not in available:
+                emit("set_mode_skipped", {"mode": args.mode, "reason": "not offered by the agent"})
+            else:
+                response, timings = probe.call("session/set_mode", {"sessionId": session_id, "modeId": args.mode}, 30)
+                emit("set_mode", {"mode": args.mode, "outcome": "ok" if response and "result" in response
+                                  else outcome_of(response), "seconds": timings.get("response")})
 
         for index, text in enumerate(args.prompt or DEFAULT_PROMPTS, 1):
-            if agent.exited:
-                emit("prompt_skipped", {"prompt": index, "reason": "agent exited"})
-                continue
-            response, timings = probe.call("session/prompt", {
-                "sessionId": session.get("sessionId"),
-                "prompt": [{"type": "text", "text": text}],
-            }, args.timeout)
-            outcome = None
-            if response is not None:
-                outcome = (response.get("result") or {}).get("stopReason") if "result" in response \
-                    else {"error": (response.get("error") or {}).get("code")}
-            emit("prompt_done", {"prompt": index, "stopReason": outcome, "timings": timings})
-        probe_file = os.path.join(cwd, "acp-probe.txt")
-        emit("probe_file_written", os.path.exists(probe_file))
+            prompt(probe, session_id, index, text, args.timeout)
+        emit("actions_ran", {kind: os.path.exists(os.path.join(cwd, name)) for kind, name in MARKERS.items()})
+
+        if args.list and not agent.exited:
+            response, timings = probe.call("session/list", {"cwd": cwd}, 30)
+            result = (response or {}).get("result") or {}
+            sessions = result.get("sessions") or []
+            emit("session_list", {"outcome": "ok" if response and "result" in response else outcome_of(response),
+                                  "result_shape": shape(result, 2), "count": len(sessions),
+                                  "contains_this_session": any(item.get("sessionId") == session_id for item in sessions),
+                                  "seconds": timings.get("response")})
         emit("update_kind_counts", probe.update_kinds)
-        return 0
+    finally:
+        agent.close()
+
+    if args.load:
+        resume(command, cwd, args, session_id)
+    return 0
+
+
+def resume(command: list, cwd: str, args, session_id: Any) -> None:
+    """A fresh agent process resumes the session, then answers a question that needs the earlier turns."""
+    emit("resume", "starting a fresh agent process")
+    agent, probe, initialized = start(command, cwd, args.show_text)
+    try:
+        if initialized is None:
+            return
+        if not (initialized.get("agentCapabilities") or {}).get("loadSession"):
+            emit("load_skipped", "agent does not advertise loadSession")
+            return
+        response, timings = probe.call("session/load", {"sessionId": session_id, "cwd": cwd, "mcpServers": []}, 120)
+        emit("session_load", {"outcome": "ok" if response and "result" in response else outcome_of(response),
+                              "result_shape": shape((response or {}).get("result"), 2),
+                              "replayed_update_kinds": dict(probe.update_kinds), "seconds": timings.get("response")})
+        if response and "result" in response:
+            probe.update_kinds = {}
+            prompt(probe, session_id, "resume", RESUME_PROMPT, args.timeout)
+            emit("resume_update_kind_counts", probe.update_kinds)
     finally:
         agent.close()
 

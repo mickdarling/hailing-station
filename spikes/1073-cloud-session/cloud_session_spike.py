@@ -59,10 +59,10 @@ def redact(value: Optional[str]) -> str:
     return f"{prefix}…{value[-4:]}" if len(value) > 8 else "<redacted>"
 
 
-# Session IDs (a digit somewhere, at least 12 characters, so names such as session_update are left alone) and
-# UUIDs such as the organization ID. Every printed line goes through scrub(), including CLI errors, which embed
-# the full session ID ("cloud session <id> is archived ...").
-SESSION_ID = re.compile(r"\b(?:session|cse)_(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{12,}")
+# Session IDs (at least 20 alphanumerics after the prefix, wherever they appear, so field names such as
+# session_update or session_status_bucket are left alone) and UUIDs such as the organization ID. Every printed
+# line goes through scrub(), including CLI errors, which embed the full session ID ("cloud session <id> is ...").
+SESSION_ID = re.compile(r"(?:session|cse)_[A-Za-z0-9]{20,}")
 UUID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
 # Removed from the CLI's environment so it uses its own stored login (the seat principle, #1074).
 CREDENTIAL_VARIABLES = (
@@ -335,7 +335,8 @@ def cli_send(session: str, text: str) -> tuple[dict, float]:
         result["json_keys"] = sorted(parsed.keys())
     except ValueError:
         # Configuration errors print to stderr without JSON (per the docs); keep its first line.
-        result["stderr"] = (completed.stderr.strip().splitlines() or [""])[0][:200]
+        # Scrub before cutting, so a cut can never leave an ID too short for the redactor to recognise.
+        result["stderr"] = scrub((completed.stderr.strip().splitlines() or [""])[0])[:200]
     return result, elapsed
 
 
