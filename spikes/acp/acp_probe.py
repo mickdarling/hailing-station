@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -50,8 +51,10 @@ def emit(label: str, value: Any) -> None:
 
 def shape(value: Any, depth: int = 3) -> Any:
     if isinstance(value, dict):
-        return "{…}" if depth == 0 else {key: shape(item, depth - 1) for key, item in value.items()}
+        return "{…}" if depth <= 0 else {key: shape(item, depth - 1) for key, item in value.items()}
     if isinstance(value, list):
+        if depth <= 0:
+            return "[…]"
         return [shape(value[0], depth - 1)] if value else []
     return type(value).__name__
 
@@ -69,9 +72,12 @@ class Agent:
         environment = dict(os.environ)
         self.removed = sorted(name for name in CREDENTIAL_VARIABLES if environment.pop(name, None) is not None)
         self.stderr = open(os.path.join(cwd, "agent-stderr.log"), "wb")
+        # Its own process group, so close() also stops a harness that an npx or node wrapper started.
         self.process = subprocess.Popen(
             command, cwd=cwd, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr,
+            start_new_session=True,
         )
+        self.exited = False
         self.inbox: "queue.Queue[Optional[dict]]" = queue.Queue()
         self.next_id = 0
         threading.Thread(target=self._read, daemon=True).start()
@@ -89,9 +95,14 @@ class Agent:
         self.inbox.put(None)
 
     def send(self, message: dict) -> None:
+        if self.exited:
+            return
         assert self.process.stdin is not None
-        self.process.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
-        self.process.stdin.flush()
+        try:
+            self.process.stdin.write((json.dumps(message) + "\n").encode("utf-8"))
+            self.process.stdin.flush()
+        except (BrokenPipeError, ValueError):
+            self.exited = True
 
     def request(self, method: str, params: dict) -> int:
         self.next_id += 1
@@ -104,7 +115,14 @@ class Agent:
                 self.process.stdin.close()
             self.process.wait(timeout=5)
         except Exception:
-            self.process.kill()
+            pass
+        try:
+            os.killpg(self.process.pid, signal.SIGTERM)
+            self.process.wait(timeout=5)
+        except (ProcessLookupError, PermissionError):
+            pass
+        except subprocess.TimeoutExpired:
+            os.killpg(self.process.pid, signal.SIGKILL)
         self.stderr.close()
 
 
@@ -158,6 +176,25 @@ class Probe:
             detail["commands"] = len(update.get("availableCommands") or [])
         emit("update", detail)
 
+    def drain(self, request_id: int, seconds: float) -> None:
+        """After session/cancel, wait for the cancelled prompt's response so its late updates do not land in
+        the next prompt's timings. Agent requests are still answered; updates are counted, not timed."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            try:
+                message = self.agent.inbox.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if message is None:
+                self.agent.exited = True
+                return
+            if "method" in message and "id" in message:
+                self.answer_agent_request(message)
+            elif message.get("id") == request_id:
+                emit("cancelled_prompt_response", (message.get("result") or {}).get("stopReason"))
+                return
+        emit("cancel_drain_timeout", seconds)
+
     def call(self, method: str, params: dict, timeout: float) -> tuple[Optional[dict], dict]:
         """Send a request and pump agent traffic until its response arrives. Returns (response, timings)."""
         started = time.monotonic()
@@ -171,12 +208,14 @@ class Probe:
                 if method == "session/prompt":
                     self.agent.send({"jsonrpc": "2.0", "method": "session/cancel",
                                      "params": {"sessionId": params.get("sessionId")}})
+                    self.drain(request_id, 15)
                 return None, timings
             try:
                 message = self.agent.inbox.get(timeout=min(remaining, 1.0))
             except queue.Empty:
                 continue
             if message is None:
+                self.agent.exited = True
                 emit("agent_exited", {"code": self.agent.process.poll(), "during": method})
                 return None, timings
             if "_unparsed" in message:
@@ -243,6 +282,9 @@ def main() -> int:
                                 "available": [model.get("modelId") for model in models.get("availableModels") or []]})
 
         for index, text in enumerate(args.prompt or DEFAULT_PROMPTS, 1):
+            if agent.exited:
+                emit("prompt_skipped", {"prompt": index, "reason": "agent exited"})
+                continue
             response, timings = probe.call("session/prompt", {
                 "sessionId": session.get("sessionId"),
                 "prompt": [{"type": "text", "text": text}],

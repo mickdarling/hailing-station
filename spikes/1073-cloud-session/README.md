@@ -1,16 +1,18 @@
 # Spike #1073: talk to a Claude Code cloud session from the Mac
 
-Throwaway spike tooling for [#1073](https://github.com/mickdarling/hailing-station/issues/1073). It does what `haild` would do: send with the documented `claude -p … --cloud`, and read the reply back from the private sessions events API (read-only). It is not meant to merge to `main`.
+Spike tooling for [#1073](https://github.com/mickdarling/hailing-station/issues/1073), kept so the evidence for [#1075](https://github.com/mickdarling/hailing-station/issues/1075) can be re-run. It does what `haild` would do: send with the documented `claude -p … --cloud`, and read the reply back from the private sessions events API (read-only). It is not part of `haild`.
 
 Run everything on the Mac, signed in to the same claude.ai account as your cloud sessions (`claude auth status`). Use a **throwaway** cloud session and synthetic text only.
 
 ## Get the script without touching your working checkout
 
+Until this lands on `main`, use the PR's branch (`claude/friendly-cerf-a7r9zu`) in place of `main` below.
+
 ```sh
 cd ~/Developer/hailing-station
-git fetch origin claude/friendly-cerf-a7r9zu
+git fetch origin main
 mkdir -p ~/hail-spike-1073
-git show origin/claude/friendly-cerf-a7r9zu:spikes/1073-cloud-session/cloud_session_spike.py > ~/hail-spike-1073/spike.py
+git show origin/main:spikes/1073-cloud-session/cloud_session_spike.py > ~/hail-spike-1073/spike.py
 ```
 
 ## Steps
@@ -52,7 +54,7 @@ git show origin/claude/friendly-cerf-a7r9zu:spikes/1073-cloud-session/cloud_sess
    python3 ~/hail-spike-1073/spike.py send --session "$SID"
    ```
 
-   Record the refusal (`ok: false` with `error`, or the stderr line). Then unarchive it on claude.ai/code/sessions → Archived and repeat step 2, to confirm unarchive revives it.
+   Record the refusal: `ok: false`, `error_class: archived`, and the `error` text with its session ID redacted. Then unarchive it on claude.ai/code/sessions → Archived and repeat step 2, to confirm unarchive revives it.
 
 6. **History shape** (optional):
 
@@ -62,10 +64,11 @@ git show origin/claude/friendly-cerf-a7r9zu:spikes/1073-cloud-session/cloud_sess
 
 ## Reporting
 
-stdout is designed to be pasted into #1073: session and organization IDs are redacted, and message text appears only as character counts. Never paste stderr from `--show-text`. If a step fails, paste the `spike:` error line; it carries only the HTTP status and error type.
+stdout is designed to be pasted into the issues: every printed line passes through a redactor for session IDs (`session_…`, `cse_…`) and UUIDs such as the organization ID, and message text appears only as character counts. Check before pasting anyway. Never paste stderr from `--show-text`. A failing step prints one redacted `spike:` line with the HTTP status and error type, or the network error's class.
 
 ## What the script does not do
 
 - It never refreshes, prints or stores the claude.ai token. If the token has expired it stops; run any `claude` command that talks to the service, then retry, and note whether that refreshed it.
-- It makes no write to the private API. The only write is the documented CLI send.
+- It makes no write to the private API. The only write is the documented CLI send, which runs with provider credential variables removed so the CLI uses its own login.
+- It refuses HTTP redirects, so the token can only ever go to `api.anthropic.com`.
 - Stop-hook fallback (spike step 4 in the issue) needs a cloud environment setup script and is tested separately.

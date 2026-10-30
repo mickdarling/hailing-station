@@ -55,7 +55,7 @@ The existing reply descriptor and frame identity remain authoritative for audio/
 
 ## Adapter integration profiles
 
-Every profile follows the seat principle recorded in [#1074](https://github.com/mickdarling/hailing-station/issues/1074): a plug drives a session the way the user would at that machine, through the harness's own interface, configuration and login. `haild` never holds, chooses or injects provider credentials. Each plug declares its support tier and capabilities there. The Claude Code cloud row is the named exception ([#1073](https://github.com/mickdarling/hailing-station/issues/1073), [#1075](https://github.com/mickdarling/hailing-station/issues/1075)). The ACP and cloud rows are proposals under investigation, not shipped integrations.
+Every profile follows the seat principle recorded in [#1074](https://github.com/mickdarling/hailing-station/issues/1074): a plug drives a session the way the user would at that machine, through the harness's own interface, configuration and login. `haild` never holds, chooses or injects provider credentials. Each plug declares a support tier and capabilities (see #1074). The Claude Code cloud row is the named exception ([#1073](https://github.com/mickdarling/hailing-station/issues/1073), [#1075](https://github.com/mickdarling/hailing-station/issues/1075)). The ACP and cloud rows are proposals under investigation, not shipped integrations.
 
 | Profile | First source of truth | Host may claim | Must not claim |
 | --- | --- | --- | --- |

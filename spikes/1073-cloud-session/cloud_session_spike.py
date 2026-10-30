@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -39,6 +40,7 @@ from dataclasses import dataclass
 from typing import Any, Iterator, Optional
 
 API = "https://api.anthropic.com"
+API_HOST = urllib.parse.urlsplit(API).hostname
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 # The reference says any other value makes a message look like a peer message (2.1.220+). Reads only here,
 # but keep the header to the documented-working set.
@@ -55,6 +57,22 @@ def redact(value: Optional[str]) -> str:
         return "<none>"
     prefix = value.split("_", 1)[0] + "_" if "_" in value else ""
     return f"{prefix}…{value[-4:]}" if len(value) > 8 else "<redacted>"
+
+
+# Session IDs (a digit somewhere, at least 12 characters, so names such as session_update are left alone) and
+# UUIDs such as the organization ID. Every printed line goes through scrub(), including CLI errors, which embed
+# the full session ID ("cloud session <id> is archived ...").
+SESSION_ID = re.compile(r"\b(?:session|cse)_(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{12,}")
+UUID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
+# Removed from the CLI's environment so it uses its own stored login (the seat principle, #1074).
+CREDENTIAL_VARIABLES = (
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY",
+)
+
+
+def scrub(text: str) -> str:
+    text = SESSION_ID.sub(lambda match: redact(match.group(0)), text)
+    return UUID.sub(lambda match: redact(match.group(0)), text)
 
 
 # ---------------------------------------------------------------- stored login (read-only, never refreshed)
@@ -114,6 +132,15 @@ def require_fresh(expires_at: float) -> None:
 
 # ---------------------------------------------------------------- HTTP
 
+class RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """urllib would follow a 3xx and resend the Authorization header to wherever it points; refuse instead."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+OPENER = urllib.request.build_opener(RefuseRedirects)
+
 class Client:
     def __init__(self, token: str, organization: Optional[str]):
         self._token = token
@@ -134,8 +161,10 @@ class Client:
         headers = self._headers(accept)
         headers.update(extra or {})
         request = urllib.request.Request(API + path, headers=headers, method="GET")
+        if urllib.parse.urlsplit(request.full_url).hostname != API_HOST:
+            raise SpikeError("refusing to send the token to a host other than " + str(API_HOST))
         try:
-            return urllib.request.urlopen(request, timeout=timeout)
+            return OPENER.open(request, timeout=timeout)
         except urllib.error.HTTPError as error:
             # Report the status and error type only: bodies can echo sensitive data.
             kind = "unknown"
@@ -144,6 +173,8 @@ class Client:
             except ValueError:
                 pass
             raise SpikeError(f"GET {path.split('?')[0]} -> HTTP {error.code} ({kind})") from None
+        except (urllib.error.URLError, OSError) as error:
+            raise SpikeError(f"GET {path.split('?')[0]} -> network error ({type(error).__name__})") from None
 
     def get_json(self, path: str) -> Any:
         with self.open(path) as response:
@@ -174,10 +205,12 @@ def resolve_session(client: Client, session: str) -> tuple[str, dict]:
 
 def shape(value: Any, depth: int = 3) -> Any:
     if isinstance(value, dict):
-        if depth == 0:
+        if depth <= 0:
             return "{…}"
         return {key: shape(item, depth - 1) for key, item in value.items()}
     if isinstance(value, list):
+        if depth <= 0:
+            return "[…]"
         return [shape(value[0], depth - 1)] if value else []
     return type(value).__name__
 
@@ -256,7 +289,7 @@ def sse_frames(response) -> Iterator[tuple[Optional[str], Optional[str], str]]:
 # ---------------------------------------------------------------- subcommands
 
 def emit(label: str, value: Any) -> None:
-    print(f"{label}: {json.dumps(value, sort_keys=True)}")
+    print(scrub(f"{label}: {json.dumps(value, sort_keys=True)}"))
 
 
 def newest_events(client: Client, session_id: str, limit: int) -> list:
@@ -265,19 +298,40 @@ def newest_events(client: Client, session_id: str, limit: int) -> list:
     return list(body.get("data") or []) if isinstance(body, dict) else []
 
 
+def error_class(message: str) -> str:
+    lowered = message.lower()
+    if "archived" in lowered:
+        return "archived"
+    if "not found" in lowered:
+        return "notFound"
+    if "policy" in lowered or "disabled" in lowered:
+        return "policyDisabled"
+    return "failed"
+
+
 def cli_send(session: str, text: str) -> tuple[dict, float]:
+    if text.startswith("-"):
+        # The prompt is a positional argument; a leading dash would be parsed as an option.
+        raise SpikeError("message text may not start with '-'")
+    environment = {name: value for name, value in os.environ.items() if name not in CREDENTIAL_VARIABLES}
     started = time.monotonic()
-    completed = subprocess.run(
-        ["claude", "-p", text, "--cloud", session, "--output-format", "json"],
-        capture_output=True, text=True, timeout=120,
-    )
+    try:
+        completed = subprocess.run(
+            ["claude", "-p", text, "--cloud", session, "--output-format", "json"],
+            capture_output=True, text=True, timeout=120, env=environment,
+        )
+    except subprocess.TimeoutExpired:
+        return {"exit": None, "ok": False, "error_class": "timeout"}, time.monotonic() - started
+    except FileNotFoundError:
+        return {"exit": None, "ok": False, "error_class": "cliMissing"}, time.monotonic() - started
     elapsed = time.monotonic() - started
     result: dict = {"exit": completed.returncode}
     try:
         parsed = json.loads(completed.stdout)
         result["ok"] = parsed.get("ok")
         if parsed.get("error"):
-            result["error"] = parsed.get("error")
+            result["error_class"] = error_class(str(parsed.get("error")))
+            result["error"] = parsed.get("error")  # emit() scrubs the embedded session ID
         result["json_keys"] = sorted(parsed.keys())
     except ValueError:
         # Configuration errors print to stderr without JSON (per the docs); keep its first line.
@@ -342,8 +396,17 @@ def command_roundtrip(client: Client, args, _status) -> None:
 
     query = urllib.parse.urlencode({"from_sequence_num": cursor or 0})
     path = f"/v1/code/sessions/{urllib.parse.quote(session_id)}/events/stream?{query}"
-    deadline = started + args.timeout
     timings: dict = {}
+    try:
+        follow_stream(client, path, args, started, cursor, timings)
+    except OSError as error:
+        # A read that stalls past the socket timeout (no data and no keepalive) or a dropped connection.
+        emit("stream_error", type(error).__name__)
+    emit("timings_seconds", timings)
+
+
+def follow_stream(client: Client, path: str, args, started: float, cursor: Optional[int], timings: dict) -> None:
+    deadline = started + args.timeout
     seen_shapes: set = set()
     last_seq = cursor
     with client.open(path, accept="text/event-stream", timeout=30) as stream:
@@ -375,11 +438,10 @@ def command_roundtrip(client: Client, args, _status) -> None:
             if kind == "assistant":
                 timings.setdefault("first_assistant", round(now - started, 2))
                 if args.show_text and text:
-                    print(f"[assistant text, do not paste] {text}", file=sys.stderr)
+                    print(scrub(f"[assistant text, do not paste] {text}"), file=sys.stderr)
             if kind == "result":
                 timings["result"] = round(now - started, 2)
                 break
-    emit("timings_seconds", timings)
 
 
 def main() -> int:
@@ -408,7 +470,7 @@ def main() -> int:
             client, args, status)
         return 0
     except SpikeError as error:
-        print(f"spike: {error}", file=sys.stderr)
+        print(scrub(f"spike: {error}"), file=sys.stderr)
         return 2
 
 
