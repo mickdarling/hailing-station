@@ -23,6 +23,9 @@ What it does:
 - The agent's own stderr goes to <cwd>/agent-stderr.log (agent-stderr-resume.log for the --load process), which is
   never printed: it may hold private detail.
 
+Exit codes: 0 done, 2 initialize failed, 3 session/new failed, 4 scratch directory already used, 5 --mode not
+applied, 6 a timed-out prompt's cancellation was not confirmed (later prompts skipped).
+
 Standard library only; Python 3.9+.
 """
 
@@ -146,6 +149,9 @@ class Probe:
         self.agent = agent
         self.show_text = show_text
         self.update_kinds: dict = {}
+        # Set when a timed-out prompt's cancellation could not be confirmed: the agent may still be working on
+        # it, so anything sent afterwards would overlap it and its late output would be misattributed.
+        self.unsettled = False
 
     def answer_agent_request(self, message: dict) -> None:
         method = message.get("method", "")
@@ -215,7 +221,8 @@ class Probe:
             elif message.get("id") == request_id:
                 emit("cancelled_prompt_response", (message.get("result") or {}).get("stopReason"))
                 return
-        emit("cancel_drain_timeout", seconds)
+        self.unsettled = True
+        emit("cancel_drain_timeout", {"seconds": seconds, "session": "unsettled; nothing more is sent to it"})
 
     def call(self, method: str, params: dict, timeout: float) -> tuple[Optional[dict], dict]:
         """Send a request and pump agent traffic until its response arrives. Returns (response, timings)."""
@@ -286,8 +293,9 @@ def outcome_of(response: Optional[dict]) -> Any:
 
 
 def prompt(probe: Probe, session_id: Any, index: Any, text: str, timeout: float) -> None:
-    if probe.agent.exited:
-        emit("prompt_skipped", {"prompt": index, "reason": "agent exited"})
+    if probe.agent.exited or probe.unsettled:
+        reason = "agent exited" if probe.agent.exited else "an earlier prompt's cancellation was not confirmed"
+        emit("prompt_skipped", {"prompt": index, "reason": reason})
         return
     response, timings = probe.call("session/prompt", {
         "sessionId": session_id, "prompt": [{"type": "text", "text": text}]}, timeout)
@@ -360,7 +368,7 @@ def main() -> int:
             prompt(probe, session_id, index, text, args.timeout)
         emit("actions_ran", {kind: os.path.exists(os.path.join(cwd, name)) for kind, name in MARKERS.items()})
 
-        if args.list and not agent.exited:
+        if args.list and not agent.exited and not probe.unsettled:
             response, timings = probe.call("session/list", {"cwd": cwd}, 30)
             result = (response or {}).get("result") or {}
             sessions = result.get("sessions") or []
@@ -375,7 +383,8 @@ def main() -> int:
 
     if args.load:
         resume(command, cwd, args, session_id)
-    return 0
+    # 6: a prompt timed out and its cancellation was never confirmed, so later prompts were not sent.
+    return 6 if probe.unsettled else 0
 
 
 def resume(command: list, cwd: str, args, session_id: Any) -> None:
