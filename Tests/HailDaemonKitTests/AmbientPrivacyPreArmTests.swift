@@ -76,8 +76,7 @@ struct AmbientPrivacyPreArmTests {
         let router = rig.router
         #expect(await eventually { router.state.withLock { $0.parks[connection] != nil } }, "pre-arm parked marker")
         #expect(router.state.withLock { state in
-            state.duck[connection] == nil && state.privacySources[connection] == nil
-                && state.staleCleared[connection] == nil && state.privacyClips[connection] == nil
+            state.duck[connection] == nil && state.privacyClips[connection] == nil
                 && state.privacy[connection] == nil && state.latest[connection] == nil
                 && !state.runs.values.contains { $0.connection == connection }
         }, "no per-connection privacy state remains")

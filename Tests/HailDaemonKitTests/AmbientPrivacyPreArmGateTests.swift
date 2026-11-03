@@ -79,7 +79,7 @@ struct AmbientPrivacyPreArmGateTests {
 
     /// The router refuses a connection that already started a stream, and any once it is stopping, each logged as a
     /// token; a connection already private keeps its arming and logs nothing. Privacy held by another live connection
-    /// is taken as a restore takes it, with that connection as its source. (A torn-down connection is refused at the
+    /// is taken as a restore takes it, without changing that holder. (A torn-down connection is refused at the
     /// gate, through the real teardown: `AmbientPrivacyPreArmTeardownTests`.)
     @Test func theRouterRefusesAStreamedOrStoppingConnection() async throws {
         let rig = try await RestoreRig(phrase: nil)
@@ -94,7 +94,8 @@ struct AmbientPrivacyPreArmGateTests {
         for connection in [streamed, held, fresh] { router.ambientPrivacyPreArm(connection: connection) }
         #expect(!router.duckMode(connection: streamed))
         #expect(router.duckArming(connection: held) == token && router.duckMode(connection: fresh))
-        #expect(router.state.withLock { $0.privacySources[fresh]?.connection } == held)
+        #expect(await rig.env.listener.replyHold.holds(fresh))
+        #expect(router.duckMode(connection: held))
         #expect(rig.details("ambient_privacy_prearmed") == ["refused=streamed", "source=live"])
         await rig.finish()
         let late = UUID()

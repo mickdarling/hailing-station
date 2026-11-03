@@ -18,8 +18,8 @@ private final class RestoreHooks: Sendable {
 }
 
 /// Synthetic devices dropping and coming back through the loopback listener (MM-E). The fake's `speaker`th child (the
-/// first by default) says `phrase` as the enrolled owner; every other child says nothing. Each child records its own control lines, in
-/// `control.N.txt` by launch order, so a restored child's very first line can be read on its own.
+/// first by default) says `phrase` as the enrolled owner; every other child says nothing. Each child records its
+/// control lines in `control.N.txt` by launch order, so a restored child's very first line can be read on its own.
 final class RestoreRig: Sendable {
     static let resumed = AmbientAckClip(pcm: Data(repeating: 9, count: 480), sampleRate: 24_000,
                                        text: "Meeting mode is still on.")
@@ -51,7 +51,7 @@ final class RestoreRig: Sendable {
          timeout: TimeInterval = AmbientRightyoRouter.defaultMeetingTimeout,
          mediaTimeout: TimeInterval = AmbientRightyoRouter.defaultMediaTimeout,
          meeting: String? = nil, holdStarted: Bool = false, holdSpawn: Int? = nil,
-         childMade: (@Sendable (UUID) -> Void)? = nil, privacy: PrivacyOffSettings = .init()) async throws {
+         childMade: (@Sendable (UUID) -> Void)? = nil) async throws {
         // A child launched start-private confirms it in its `started` (#941), as a RightyO with S-2b does.
         let confirm = #" -e 's/"duck": {"version": 3}/"duck": {"version": 3'"$PRIV"'}/'"#
         let first = phrase == nil
@@ -81,9 +81,11 @@ final class RestoreRig: Sendable {
                                    meeting: .init(timeout: timeout, onChange: { change in
             hooks.list.withLock { $0.append(change) }
         }, now: { clock.now() }), onEvent: { event in events.list.withLock { $0.append(event) } },
-                                   childMade: childMade, privacy: privacy)
+                                   childMade: childMade)
     }
+}
 
+extension RestoreRig {
     private static func prepare(_ fake: FakeRightyo, phrase: String, meeting: String?) throws {
         var lines = try fake.recorded("events.jsonl").split(separator: "\n").map {
             $0.replacingOccurrences(of: "Rightyo, archive the project.", with: "Rightyo, \(phrase).")

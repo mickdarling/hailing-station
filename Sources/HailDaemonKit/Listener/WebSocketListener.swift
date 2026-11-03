@@ -46,9 +46,8 @@ public actor WebSocketListener {
     private let maxConnections: Int
     private let helloTimeout: Duration
     let log: @Sendable (WebSocketListenerEvent) -> Void
-    /// The peers, and each one's transport by its session's connection id, so the ambient router can probe a
-    /// stale-looking one (#941 `probe(connection:within:)`); dropped with the peer.
-    var peers: [UUID: WebSocketPeer] = [:], transports: [UUID: NWConnection] = [:]
+    /// Each live peer owns its session and transport.
+    var peers: [UUID: WebSocketPeer] = [:]
     /// Content-free, bounded request correlation; each ledger belongs to exactly one connection (#923).
     var heardTurns: [UUID: HeardTurnRecords] = [:]
     private var readyWaiters: [CheckedContinuation<UInt16, any Error>] = []
@@ -139,7 +138,7 @@ extension WebSocketListener {
         stopped = true
         networkListener.cancel()
         let active = Array(peers.values)
-        (peers, transports) = ([:], [:])
+        peers = [:]
         heardTurns.values.forEach { $0.close() }
         heardTurns.removeAll()
         for peer in active { await peer.stop(reason: reason) }
@@ -215,7 +214,7 @@ extension WebSocketListener {
         ) { [weak self] endedID in
             Task { await self?.peerEnded(endedID) }
         }
-        (peers[id], transports[session.connectionID]) = (peer, connection)
+        peers[id] = peer
         await peer.start()
     }
 
@@ -339,7 +338,6 @@ public struct AmbientRouterStatus: Sendable, Equatable {
 extension WebSocketListener {
     fileprivate func peerEnded(_ id: UUID) async {
         guard let peer = peers.removeValue(forKey: id) else { return }
-        transports[peer.session.connectionID] = nil
         heardTurns.removeValue(forKey: peer.session.connectionID)?.close()
         lastInput.forget(connection: peer.session.connectionID)
         await endAmbient(of: peer)
@@ -552,7 +550,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var onMeetingChange: (@Sendable (MeetingChange) -> Void)?
         /// The wall clock that meeting and media expiries are fixed and restored on (MM-E). Tests only change it.
         var now: @Sendable () -> Date = { Date() }
-        /// Awaited by each acknowledgement just before its clip is sent. Nil in the daemon, so nothing waits: tests only
+        /// Awaited by each acknowledgement just before its clip is sent. Nil in the daemon, so nothing waits: tests
+        /// only
         /// set it, to hold an acknowledgement and show a not-sent notice waits for it (#894 review).
         var acknowledgementHold: (@Sendable () async -> Void)?
         /// Called with the connection once a "Nothing was sent." clip is queued on its privacy clip chain. Nil in the
@@ -565,13 +564,6 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// Called with the connection once a start has made its child, just before the lock that admits it (#941). Nil
         /// in the daemon: tests only set it, to change privacy between the two (`admitsPrivacy`).
         var childMade: (@Sendable (UUID) -> Void)?
-        /// How long an owner's off waits for a restore source's pong before judging it stale (#941). Three seconds:
-        /// a live peer's WebSocket stack answers a ping at once (`URLSessionWebSocketTask` does so itself), so this
-        /// only absorbs a slow network; the probe runs off every lock and delays nothing else. Tests shorten it.
-        var privacyProbeTimeout: Duration = .seconds(3)
-        /// Awaited with the off's connection before an owner's off decides its restore sources (#941). Nil in the
-        /// daemon: tests only set it, to change a source's privacy before that decision.
-        var offScoping: (@Sendable (UUID) async -> Void)?
         /// How long the owner's spoken duck mode (#735) lasts before it turns itself off: host.json
         /// `ambient.duckTimeout`, or `defaultDuckTimeout`.
         public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
@@ -668,21 +660,13 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// #735 meeting mode restore (MM-E): the meeting or media mode a dropped connection left on, daemon-wide and
         /// in RAM only, until the next ambient start restores it or privacy, the owner's off or its expiry ends it.
         var parked: ParkedModes?
-        /// Privacy each dropped connection held (#941), keyed by that connection (#961: one entry each, so one
-        /// connection's stale verdict never drops another's), daemon-wide and in RAM only: every fresh stream starts
-        /// private while any is held, until the owner's own privacy-off clears them all. A stale verdict also
-        /// drops the judged source's own park. At most `maxParkedPrivacy`.
+        /// Privacy each dropped connection held (#941), keyed by that connection (#961), daemon-wide and in RAM.
+        /// Every fresh stream starts private while any park is held, until the owner's own off clears them all.
+        /// At most `maxParkedPrivacy`; a later teardown may park privacy again (#1041).
         var parks: [UUID: ParkedPrivacy] = [:]
         /// A park was evicted at the bound (#961). Every fresh stream starts private while it is set, so an eviction
         /// never opens privacy; only the owner's own privacy-off clears it.
         var parkOverflow = false
-        /// The live connection each restored connection took its privacy from (#941), with that arming: the only one
-        /// an owner's off there may end. Dropped with the connection.
-        var privacySources: [UUID: PrivacySource] = [:]
-        /// Sources an owner's off judged stale (#941), with the arming judged: excluded as a privacy source for other
-        /// streams, and parking nothing, while they hold that arming; their own privacy is untouched. Provisional, so
-        /// any later sign of life lets them count again. Dropped at teardown or the owner's own action there.
-        var staleCleared: [UUID: UUID] = [:]
         /// Arming order of meeting and media modes (MM-E): the latest owner command wins a restore or a move.
         var armings = 0
         /// Privacy entries and the last word per connection (#735 S-8 HS-C round 4, `AmbientPrivacyLedger`), and each
@@ -761,7 +745,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             }
             // An armed connection keeps the existing gate/switch exit, including its clips and notice.
             if state.duck[connection] != nil { return .armed }
-            ownerOff(connection, reason: "device", in: &state)
+            ownerOff(in: &state)
             let stillPrivate = state.duck[connection] != nil
                 || Self.privacySource(except: connection, in: state) != nil
             return .cleared(stillPrivate: stillPrivate)
@@ -786,8 +770,6 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             default: break
             }
             if case .started(let stream, _, _) = event { state.newestStart = stream }
-            // A source judged stale that sends audio or starts was alive (#941): it counts as a source again.
-            reapplyOnLife(event, in: &state)
             // Shutting down: nothing more is queued (starts are refused inline as stopping).
             if state.shuttingDown { return false }
             // While a reload builds its child (#405), events queue too: the worker waits for the reload, so a start
@@ -836,7 +818,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     public func stop(connection: UUID) { stop(connection: connection, device: nil) }
 
-    /// Teardown parks a meeting or media mode still on (MM-E), or privacy (#941), before removing it, for the next start
+    /// Teardown parks a meeting or media mode still on (MM-E), or privacy (#941), before removing it, for the next
+    /// start
     /// to restore.
     public func stop(connection: UUID, device: AmbientPeerDevice?) {
         let streams = state.withLock { state -> [UUID] in
@@ -847,8 +830,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             state.duck.removeValue(forKey: connection)?.timer?.cancel()
             if state.privacy[connection]?.entries.isEmpty != false { state.privacy[connection] = nil }
             // Clips already queued still play in order; a later one (none should come) starts a fresh chain.
-            (state.privacyClips[connection], state.privacySources[connection]) = (nil, nil)
-            state.staleCleared[connection] = nil
+            state.privacyClips[connection] = nil
             state.listener?.value?.replyHold.set(false, connection: connection)
             if let active = state.active, state.runs[active.run]?.connection == connection { state.active = nil }
             let streams = state.runs.filter { $0.value.connection == connection }.map(\.key)
@@ -1220,7 +1202,8 @@ extension AmbientRightyoRouter {
     /// it always precedes that run's `ambient_ended`, even when a child exits at once beside another live run (#273).
     /// A reload's run (#405) emits `ambient_reloaded` first for the same reason: a new child that fails at once must
     /// leave its failure, not the reload, as the last event. A child whose connection was torn down while it was made
-    /// is registered like any other: `closed`, recorded by `stop(connection:)`, already refuses its mode entries (#735).
+    /// is registered like any other: `closed`, recorded by `stop(connection:)`, already refuses its mode entries
+    /// (#735).
     func register(_ pipeline: RightyoAmbientPipeline, stream: UUID, connection: UUID, reload: Bool = false,
                   in state: inout State) -> UUID {
         let id = UUID()
@@ -1761,7 +1744,8 @@ extension AmbientRightyoRouter {
     /// Tells the device that said a request that sent nothing (#636 slice 5c, #894), on its child's one notice chain:
     /// after `acknowledgement`, the latest acknowledgement when the refusal came (an un-routed request is acknowledged
     /// before it is typed, so the speaker hears the acknowledgement first), the refusal line, then "Nothing was sent.".
-    /// Returns the line's and the clip's outcome tokens. A connection already gone (`no_connection`) gets no clip either.
+    /// Returns the line's and the clip's outcome tokens. A connection already gone (`no_connection`) gets no clip
+    /// either.
     private func tellNotSent(
         _ line: String, after acknowledgement: Task<Void, Never>?, on connection: UUID, listener: WebSocketListener?,
         request: UUID? = nil, persona: String = AmbientStopConfirmation.notSent
@@ -1775,13 +1759,15 @@ extension AmbientRightyoRouter {
     }
 
     /// "Nothing was sent." unless the connection is private (#894, Jarvis: privacy wins). Queued on the connection's
-    /// privacy clip chain, so it can never follow a "Privacy on." decided before it. Privacy (`duck`, its internal name)
+    /// privacy clip chain, so it can never follow a "Privacy on." decided before it. Privacy (`duck`, its internal
+    /// name)
     /// is read when it is queued and again just before it plays: `suppressed_privacy` if on at either. A privacy
     /// decision landing after that last check is caught by the connection's privacy reply hold (#913), which the entry
     /// sets with the decision and the clip's enqueue checks once, under the hold's own lock, for all its frames: none
     /// is sent once privacy is decided, also `suppressed_privacy`. A connection already marked torn down gets no clip
     /// and no chain: `no_connection`.
-    /// One whose teardown lands just before the chain is taken (its mark already pruned) gets a chain; once the clip has
+    /// One whose teardown lands just before the chain is taken (its mark already pruned) gets a chain; once the clip
+    /// has
     /// run, a connection with no peer left has that entry dropped, as `stop(connection:)` does, so none is left behind.
     /// A connection id never comes back, so no live connection loses its chain or a clip.
     private func confirmNotSent(
@@ -1869,7 +1855,8 @@ extension AmbientRightyoRouter {
     /// Turns duck mode on or off for `connection` (#735), as `setMedia` does, and returns how many children took it.
     /// Only a child whose RightyO advertised duck mode takes it; when none does (an older RightyO) duck mode is not
     /// entered at all, nothing else changes, and the caller tells the owner. An entry no child took while duck mode is
-    /// already on (a reloaded child not started yet) leaves it on, timeout unchanged. Duck mode taken leaves media mode.
+    /// already on (a reloaded child not started yet) leaves it on, timeout unchanged. Duck mode taken leaves media
+    /// mode.
     @discardableResult
     func setDuck(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
         setDuck(on, connection: connection, reason: reason) { expected == nil || $0 == expected } ?? 0
@@ -1894,8 +1881,6 @@ extension AmbientRightyoRouter {
     -> AmbientPrivacyEntry? {
         let decided = state.withLock { state -> (DuckChange, AmbientPrivacyEntry)? in
             guard armed(state.duck[connection]?.token) else { return nil }
-            // The owner's own action here supersedes a provisional stale verdict (#941).
-            state.staleCleared[connection] = nil
             let wasOn = state.duck[connection] != nil
             let duck = changeDuck(on, connection: connection, reason: reason, in: &state)
             let reported = duck?.reported
@@ -1903,10 +1888,9 @@ extension AmbientRightyoRouter {
                 ? openPrivacyEntry(connection, wasOn: wasOn, in: &state) : nil
             // An off withdraws every entry still open (round 3): each closes in silence, and never inherits a timeout.
             if !on, reported != nil { state.privacy[connection, default: .init()].withdrawAll() }
-            // The owner's own off clears parked privacy daemon-wide (#941), as the owner's off does a parked mode, and
-            // ends it on the same device's stale connections.
+            // The owner's own off clears existing parks daemon-wide; other holders keep contributing (#1041).
             if !on, wasOn, reported != nil, reason == "voice" || reason == "device" {
-                ownerOff(connection, reason: reason, in: &state)
+                ownerOff(in: &state)
             }
             var change = DuckChange(duck: reported ?? 0, media: nil, still: reported == nil && wasOn, wasOn: wasOn,
                                     entry: entry)
@@ -1930,13 +1914,17 @@ extension AmbientRightyoRouter {
             return (change, switched)
         }
         guard let (changed, switched) = decided else { return nil }
+        reportDuckChange(changed, on: on, connection: connection, reason: reason)
+        return switched
+    }
+
+    private func reportDuckChange(_ changed: DuckChange, on: Bool, connection: UUID, reason: String) {
         let refused = !on || changed.duck > 0 ? "" : changed.still ? " still_on" : " refused=unsupported"
         emit("ambient_duck", connection: connection,
              detail: "on=\(on) reason=\(reason) reported=\(changed.duck)\(refused)")
         if let media = changed.media {
             emit("ambient_media", connection: connection, detail: "on=false reason=voice reported=\(media)")
         }
-        return switched
     }
 
     /// Opens the next privacy entry on every child of `connection`, under the caller's lock.
@@ -2177,7 +2165,8 @@ extension AmbientRightyoRouter {
         state.withLock { $0.duck[connection] != nil && $0.privacy[connection]?.heardOn == true }
     }
 
-    /// Queues the clip `work` builds, given whether privacy is on, on `connection`'s chain, under the lock that reads it.
+    /// Queues the clip `work` builds, given whether privacy is on, on `connection`'s chain, under the lock that reads
+    /// it.
     func enqueuePrivacyClip(_ connection: UUID, _ work: (Bool) -> @Sendable () async -> Void) {
         state.withLock { state in
             Self.clipChain(connection, in: &state).enqueue(work(state.duck[connection] != nil))
@@ -2467,60 +2456,4 @@ extension HostSession {
     }
 }
 
-extension WebSocketListener {
-    /// Whether `connection`'s peer answers a WebSocket ping within `timeout` (#941): false for no pong in time, a send
-    /// error, a connection already gone, or a peer already closing (no ping follows its close frame). Only the
-    /// transport hand-off and the pong handler run; nothing waits under a lock. A peer's own stack answers (haild's
-    /// `autoReplyPing`, the app's `URLSessionWebSocketTask`).
-    func probe(connection: UUID, within timeout: Duration,
-               onLatePong: @escaping @Sendable () -> Void = {}) async -> Bool {
-        guard let peer = peers.values.first(where: { $0.session.connectionID == connection }),
-              await peer.isLive, !stopped, let transport = transports[connection] else { return false }
-        let answer = ProbeAnswer(onLatePong: onLatePong)
-        return await withCheckedContinuation { continuation in
-            answer.set(continuation)
-            let metadata = NWProtocolWebSocket.Metadata(opcode: .ping)
-            metadata.setPongHandler(queue) { answer.resume($0 == nil) }
-            let context = NWConnection.ContentContext(identifier: "hail.probe", metadata: [metadata])
-            transport.send(content: Data(), contentContext: context, isComplete: true,
-                           completion: .contentProcessed { if $0 != nil { answer.resume(false) } })
-            answer.time(Task {
-                try? await Task.sleep(for: timeout)
-                guard !Task.isCancelled else { return }
-                answer.resume(false)
-            })
-        }
-    }
-}
-
-/// A probe's one answer: the first of its pong, its send error or its timeout, which cancels its timer. A pong after
-/// the answer was given (a slow peer judged stale) still calls `onLatePong` (#941): the timer only ever decides first.
-final class ProbeAnswer: Sendable {
-    private struct State {
-        var waiter: CheckedContinuation<Bool, Never>?
-        var timer: Task<Void, Never>?
-        var answered = false
-    }
-    private let state = Mutex(State())
-    private let onLatePong: @Sendable () -> Void
-    init(onLatePong: @escaping @Sendable () -> Void) { self.onLatePong = onLatePong }
-    func set(_ continuation: CheckedContinuation<Bool, Never>) { state.withLock { $0.waiter = continuation } }
-    /// Keeps the timeout's task, cancelled at once if the answer came first.
-    func time(_ task: Task<Void, Never>) {
-        let answered = state.withLock { state in
-            if !state.answered { state.timer = task }
-            return state.answered
-        }
-        if answered { task.cancel() }
-    }
-    func resume(_ live: Bool) {
-        let (waiter, timer, late) = state.withLock { state in
-            defer { (state.answered, state.waiter, state.timer) = (true, nil, nil) }
-            return (state.waiter, state.timer, state.answered)
-        }
-        timer?.cancel()
-        waiter?.resume(returning: live)
-        if late, live { onLatePong() }
-    }
-}
 #endif

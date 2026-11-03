@@ -66,7 +66,7 @@ struct AmbientPrivacyPreArmTeardownTests {
         try await AmbientPrivacyPreArmDisarmTests.nextStartRestoresThePark(rig)
     }
 
-    /// A restore's arming (from a live source) for a gone device is dropped with the source it recorded, never parked
+    /// A restore's arming (from a live source) for a gone device is dropped, never parked
     /// (its source is not consumed), while one that was armed again meanwhile (a newer token) is left as it is.
     @Test func onlyTheArmingTheNoticeWasForIsUndone() async throws {
         let rig = try await RestoreRig(phrase: nil)
@@ -79,7 +79,7 @@ struct AmbientPrivacyPreArmTeardownTests {
         router.ambientPrivacyPreArm(connection: dead)
         router.ambientPrivacyPreArm(connection: rearmed)
         #expect(rig.details("ambient_privacy_prearmed") == ["source=live", "source=live"])
-        #expect(router.state.withLock { $0.privacySources[dead]?.connection } == holder)
+        #expect(router.duckMode(connection: dead) && router.duckMode(connection: holder))
         router.state.withLock { $0.duck[rearmed] = AmbientDuckTimer(token: newer, timer: nil) }
         release.yield()
         release.finish()
@@ -88,7 +88,7 @@ struct AmbientPrivacyPreArmTeardownTests {
         #expect(await eventually { drained.isOpen }, "both notices done marker")
         #expect(rig.details("ambient_privacy_disarmed") == ["reason=no_connection parked=false"])
         #expect(!router.duckMode(connection: dead))
-        #expect(router.state.withLock { $0.privacySources[dead] == nil && $0.parks.isEmpty }, "a restore is not parked")
+        #expect(router.state.withLock { $0.parks.isEmpty }, "a restore is not parked")
         #expect(await eventually { await !rig.env.listener.replyHold.holds(dead) }, "hold released marker")
         #expect(router.duckArming(connection: rearmed) == newer && router.duckMode(connection: holder))
         await rig.finish()

@@ -4,14 +4,6 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-/// The owner's off settings a test sets (#941): the probe's wait (haild's three seconds unless a test that expects no
-/// pong shortens it; a pong ends the wait at once) and a hook before the off decides.
-struct PrivacyOffSettings: Sendable {
-    static let silent = Self(probeTimeout: .milliseconds(500))
-    var probeTimeout: Duration = .seconds(3)
-    var offScoping: (@Sendable (UUID) async -> Void)?
-}
-
 /// The restore rig's pieces for #941's privacy park tests: segments told apart by their bytes, a held child let go,
 /// and what each child read. Synthetic only.
 extension RestoreRig {
