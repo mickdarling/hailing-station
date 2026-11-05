@@ -1,5 +1,15 @@
 public import Foundation
 
+/// Deterministic dispatch-boundary evidence for concurrency tests; absent during production scheduling.
+struct TaskProgressDispatchHooks: Sendable {
+    let beforeCallback: (@Sendable (TaskProgressWake) async -> Void)?
+    let didFinish: (@Sendable (TaskProgressWake) -> Void)?
+}
+
+enum TaskProgressDispatchScope {
+    @TaskLocal static var hooks: TaskProgressDispatchHooks?
+}
+
 /// Event-driven deadline owner for one explicitly enrolled task (#1013). The callback is a request for status,
 /// not permission to submit provider input: composition must check live target policy, binding and task authority.
 /// A callback must not renew a voice request, interrupt a provider or recover a stalled session (#720, #1002).
@@ -93,8 +103,16 @@ public actor TaskProgressScheduler {
         guard revision == expected, let update = state.due(at: clock.now()) else { return }
         deadline = nil
         let wake = wake
-        dispatch = Task {
-            guard !Task.isCancelled else { return }
+        let hooks = TaskProgressDispatchScope.hooks
+        dispatch = Task { [weak self] in
+            defer { hooks?.didFinish?(update) }
+            if let beforeCallback = hooks?.beforeCallback { await beforeCallback(update) }
+            guard !Task.isCancelled else {
+                // No callback received this token, so no external report can release it. Retire only this
+                // exact unissued wake; a callback that entered still owns its completion, even after return.
+                _ = await self?.complete(update)
+                return
+            }
             await wake(update)
         }
     }
