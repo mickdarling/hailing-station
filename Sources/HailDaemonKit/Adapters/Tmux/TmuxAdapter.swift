@@ -41,6 +41,7 @@ public actor TmuxAdapter: Adapter {
     var lastTails: [String: PayloadTail] = [:]
     /// haild's own last insert per pane, and who hears each submit outcome and pending-input refusal (#894).
     var evidence: TmuxEvidenceLedger
+    private let evidenceObserver: (@Sendable (TmuxDeliveryEvidence) -> Void)?
 
     /// - Parameters:
     ///   - tmux: executable path. A LaunchAgent's PATH lacks Homebrew, so #10's config passes the full path.
@@ -76,6 +77,7 @@ public actor TmuxAdapter: Adapter {
         self.chunkSize = max(1, chunkSize)
         self.pollInterval = pollInterval
         self.submitTiming = submitTiming
+        self.evidenceObserver = evidenceObserver
         self.evidence = TmuxEvidenceLedger(submitObserver: submitObserver, observer: evidenceObserver)
     }
 
@@ -92,21 +94,34 @@ public actor TmuxAdapter: Adapter {
     }
 
     public func deliver(_ text: String, to target: String, binding: String?) async throws {
+        try await enqueueDelivery(text, to: target, binding: binding, authority: nil)
+    }
+
+    public func deliver(
+        _ text: String, to target: String, binding: String?, authority: DeliveryAuthority
+    ) async throws {
+        try authority.requireCurrent()
+        try await enqueueDelivery(text, to: target, binding: binding, authority: authority)
+    }
+
+    private func enqueueDelivery(
+        _ text: String, to target: String, binding: String?, authority: DeliveryAuthority?
+    ) async throws {
         guard !text.contains(where: \.isNewline) else {
             throw AdapterError.deliveryFailed("text contains a line break")
         }
         // A bare Enter would accept whatever prompt is pending in an agent's pane.
         guard text.contains(where: { !$0.isWhitespace }) else { throw AdapterError.deliveryFailed("empty text") }
         let previous = lastDelivery
-        let abandoned = DeliveryAbandonment()
+        let control = TmuxDeliveryControl(target: target, authority: authority)
         let delivery = Task<Void, any Error> {
             await previous?.value
-            try await self.performDelivery(text, to: target, binding: binding, abandoned: abandoned)
+            try await self.performDelivery(text, to: target, binding: binding, control: control)
         }
         lastDelivery = Task { _ = await delivery.result }
         // The caller's cancellation (a timed-out socket submission, #200) abandons a delivery not yet committed to
         // its Enter (no paste or Enter follows); a committed one completes for a caller that may have left.
-        try await withTaskCancellationHandler { try await delivery.value } onCancel: { abandoned.abandon() }
+        try await withTaskCancellationHandler { try await delivery.value } onCancel: { control.abandoned.abandon() }
     }
 
     public func escape(_ target: String, binding: String?) async throws {
@@ -114,11 +129,35 @@ public actor TmuxAdapter: Adapter {
         try await tmux(["send-keys", "-t", session.paneID, "Escape"], failure: AdapterError.deliveryFailed)
     }
 
+    /// tmux reads an argument that ends in `;` as a command separator and drops that `;` (a lone `;` is then "no
+    /// data specified"); a `\` right before it escapes it, and is dropped instead. So one `\` goes before a trailing
+    /// `;`, which tmux removes again: `x;` is sent as `x\;`, and `x\;` as `x\\;` (#307 item 1).
+    static func bufferArgument(_ chunk: String) -> String {
+        guard chunk.hasSuffix(";") else { return chunk }
+        return chunk.dropLast() + "\\;"
+    }
+
+    /// The session behind `name` now, refused unless its binding is the one the caller holds.
+    func verified(_ name: String, binding: String?) async throws -> Session {
+        let session = try await session(named: name)
+        if let binding, binding != session.binding { throw AdapterError.rebound(name) }
+        return session
+    }
+
+    public func capture(_ target: String) async throws -> String {
+        let id = try await session(named: target).paneID
+        let arguments = ["capture-pane", "-p", "-J", "-t", id, "-S", "-200"]
+        let result = try await tmux(arguments, failure: AdapterError.captureFailed)
+        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+extension TmuxAdapter {
     private func performDelivery(
-        _ text: String, to target: String, binding: String?, abandoned: DeliveryAbandonment
+        _ text: String, to target: String, binding: String?, control: TmuxDeliveryControl
     ) async throws {
-        // A delivery abandoned while queued pastes nothing.
-        try abandoned.check()
+        // A delivery abandoned or retired while queued pastes nothing.
+        try control.check()
         let session = try await verified(target, binding: binding)
         guard !tainted.contains(session.paneID) else {
             // Named, not generic (#894); clearing the pane by hand still needs a haild restart to lift the taint.
@@ -127,29 +166,45 @@ public actor TmuxAdapter: Adapter {
         }
         let tail = PayloadTail(text)
         let pending = [tail, lastTails[session.paneID]]
-        let baseline = try await clearedBaseline(session, target: target, pending: pending, abandoned: abandoned)
+        let baseline = try await clearedBaseline(
+            session, target: target, pending: pending, abandoned: control.abandoned
+        )
         var typed = false
         do {
-            let fresh = try await paste(text, into: session, target: target, abandoned: abandoned) {
+            let fresh = try await paste(text, into: session, control: control) {
                 typed = true
                 lastTails[session.paneID] = tail
                 evidence.pasted(text, into: session.paneID)
             }
-            let observe: TmuxSubmitProbe.Observe = { await self.observePane(session.paneID) }
-            let acceptance = await TmuxSubmitProbe.acceptance(
-                submitTiming, baseline: fresh ?? baseline, tail: tail, clock: submitClock, observe: observe
-            )
-            // The Enter is what runs the text; the identity is checked once more right before it.
-            _ = try await verified(target, binding: session.binding)
-            // The commit point: nothing is submitted (pasted text stays, no rollback), or the Enter is sent regardless.
-            guard abandoned.commit() else { throw CancellationError() }
-            try await submit(session, target: target, tail: tail, acceptance: acceptance)
+            try await finishDelivery(session, control: control, tail: tail, baseline: fresh ?? baseline)
         } catch {
             // Abandonment before the paste leaves the pane clean, as does text that appeared while the buffer filled
             // (the paste step's own `inputPending(.appeared)`, #894); pasted and not known submitted taints it.
-            if typed { tainted.insert(session.paneID) }
+            if typed {
+                tainted.insert(session.paneID)
+                do { try control.authority?.requireCurrent() } catch {
+                    if !control.didEnter {
+                        evidenceObserver?(TmuxDeliveryEvidence(event: "tmux_policy_retired_unsent", detail: ""))
+                    }
+                    throw error
+                }
+            }
             throw error
         }
+    }
+
+    /// The binding and policy are checked after every settle wait, immediately before the first Enter.
+    private func finishDelivery(
+        _ session: Session, control: TmuxDeliveryControl, tail: PayloadTail, baseline: PaneObservation?
+    ) async throws {
+        let observe: TmuxSubmitProbe.Observe = { await self.observePane(session.paneID) }
+        let acceptance = await TmuxSubmitProbe.acceptance(
+            submitTiming, baseline: baseline, tail: tail, clock: submitClock, observe: observe
+        )
+        _ = try await verified(control.target, binding: session.binding)
+        // Caller cancellation commits here; retained policy authority still gates every Enter.
+        guard control.abandoned.commit() else { throw CancellationError() }
+        try await submit(session, control: control, tail: tail, acceptance: acceptance)
     }
 
     /// The screen before any text (#304). Text pending at the cursor (this tail, the last one's, or a placeholder) is
@@ -181,41 +236,17 @@ public actor TmuxAdapter: Adapter {
 
     /// Submits and records what was observed, a failure included.
     private func submit(
-        _ session: Session, target: String, tail: PayloadTail, acceptance: TmuxSubmitProbe.Acceptance
+        _ session: Session, control: TmuxDeliveryControl, tail: PayloadTail, acceptance: TmuxSubmitProbe.Acceptance
     ) async throws {
         do {
-            let outcome = try await attemptSubmit(session, target: target, tail: tail, acceptance: acceptance)
-            evidence.submitted(outcome, in: session.paneID, target: target)
+            let outcome = try await attemptSubmit(session, control: control, tail: tail, acceptance: acceptance)
+            evidence.submitted(outcome, in: session.paneID, target: control.target)
         } catch {
-            evidence.submitted(.failed, in: session.paneID, target: target)
+            evidence.submitted(.failed, in: session.paneID, target: control.target)
             throw error
         }
     }
 
-    /// tmux reads an argument that ends in `;` as a command separator and drops that `;` (a lone `;` is then "no
-    /// data specified"); a `\` right before it escapes it, and is dropped instead. So one `\` goes before a trailing
-    /// `;`, which tmux removes again: `x;` is sent as `x\;`, and `x\;` as `x\\;` (#307 item 1).
-    static func bufferArgument(_ chunk: String) -> String {
-        guard chunk.hasSuffix(";") else { return chunk }
-        return chunk.dropLast() + "\\;"
-    }
-
-    /// The session behind `name` now, refused unless its binding is the one the caller holds.
-    func verified(_ name: String, binding: String?) async throws -> Session {
-        let session = try await session(named: name)
-        if let binding, binding != session.binding { throw AdapterError.rebound(name) }
-        return session
-    }
-
-    public func capture(_ target: String) async throws -> String {
-        let id = try await session(named: target).paneID
-        let arguments = ["capture-pane", "-p", "-J", "-t", id, "-S", "-200"]
-        let result = try await tmux(arguments, failure: AdapterError.captureFailed)
-        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-}
-
-extension TmuxAdapter {
     private func sessions() async throws -> [Session] {
         try await Self.listSessions(runner: runner, tmux: tmuxPath, baseArguments: Self.baseArguments(socket: socket))
     }

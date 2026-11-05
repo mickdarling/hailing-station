@@ -145,27 +145,29 @@ extension TmuxAdapter {
     /// when the target asked for it. `-d` deletes the buffer once pasted, and a failure, refusal or abandonment
     /// before then deletes it. `pasting` runs just before the paste; returns the look taken right before it.
     func paste(
-        _ text: String, into session: Session, target: String, abandoned: DeliveryAbandonment, pasting: () -> Void
+        _ text: String, into session: Session, control: TmuxDeliveryControl, pasting: () -> Void
     ) async throws -> PaneObservation? {
         let pending = [PayloadTail(text), lastTails[session.paneID]]
         let buffer = "hail-\(UUID().uuidString)"
         do {
             for (index, chunk) in Self.chunks(text, size: chunkSize).enumerated() {
-                try abandoned.check()
                 let append = index == 0 ? [] : ["-a"]
                 let fill = ["set-buffer"] + append + ["-b", buffer, "--", Self.bufferArgument(chunk)]
+                try control.check()
                 try await tmux(fill, failure: AdapterError.deliveryFailed)
             }
             // Right before the paste: the identity (threat model B3), then the input (text that appeared at the cursor
             // while the buffer filled), then abandonment, so a cancellation during either lookup stops the paste.
-            _ = try await verified(target, binding: session.binding)
+            _ = try await verified(control.target, binding: session.binding)
             let fresh = await observePane(session.paneID)
             if let fresh, await pendingIndex(fresh, pending, in: session.paneID) != nil {
                 evidence.inputPending(.appeared, in: session.paneID, seen: fresh, own: pending[1])
                 throw AdapterError.inputPending(reason: .appeared)
             }
-            try abandoned.check()
-            try await pasteBuffer(buffer, holding: text, into: session.paneID, pasting: pasting)
+            try control.check()
+            try await pasteBuffer(
+                buffer, holding: text, into: session.paneID, authority: control.authority, pasting: pasting
+            )
             return fresh
         } catch {
             _ = try? await runner.run(tmuxPath, Self.baseArguments(socket: socket) + ["delete-buffer", "-b", buffer])
@@ -206,14 +208,17 @@ extension TmuxAdapter {
     /// goes only to an agent: the tmux server checks the pane's foreground command and pastes in the same command, so
     /// no check-then-paste gap is left on this side. `pasting` runs once text may have reached the pane. The pane is
     /// remembered as holding a framed paste, so its Enters are checked the same way (`pressEnter`).
-    func pasteBuffer(_ buffer: String, holding text: String, into pane: String, pasting: () -> Void) async throws {
+    func pasteBuffer(
+        _ buffer: String, holding text: String, into pane: String, authority: DeliveryAuthority?, pasting: () -> Void
+    ) async throws {
         let key = "\(socket ?? "")|\(pane)"
         if text.hasPrefix(PastedContent.begin("")) {
-            try await pasteToAgent(buffer: buffer, pane: pane, pasting: pasting)
+            try await pasteToAgent(buffer: buffer, pane: pane, authority: authority, pasting: pasting)
             _ = Self.framedPanes.withLock { $0.insert(key) }
             return
         }
         _ = Self.framedPanes.withLock { $0.remove(key) }
+        try authority?.requireCurrent()
         pasting()
         try await tmux(["paste-buffer", "-p", "-d", "-b", buffer, "-t", pane], failure: AdapterError.deliveryFailed)
     }
@@ -225,20 +230,27 @@ extension TmuxAdapter {
     /// The Enter that submits a delivery. After a framed paste it goes through the same agent check, in the same
     /// tmux command: if the agent left the pane between the paste and the Enter (a shell is in front now), no Enter
     /// is sent and the delivery fails with the agent-only reason.
-    func pressEnter(_ pane: String) async throws {
+    func pressEnter(_ pane: String, control: TmuxDeliveryControl) async throws {
         guard Self.framedPanes.withLock({ $0.contains("\(socket ?? "")|\(pane)") }) else {
+            try control.willEnter()
             try await tmux(["send-keys", "-t", pane, "Enter"], failure: AdapterError.deliveryFailed)
+            control.enterSent()
             return
         }
         guard pane.hasPrefix("%"), pane.dropFirst().allSatisfy(\.isNumber) else {
             throw AdapterError.deliveryFailed("unexpected tmux pane name")
         }
         let refused = "hail-enter-not-agent"
+        try control.willEnter()
         let result = try await tmux([
             "if-shell", "-F", "-t", pane, Self.isAgentFormat, "send-keys -t \(pane) Enter",
             "display-message -p \(refused)"
         ], failure: AdapterError.deliveryFailed)
-        if result.stdout.contains(refused) { throw AdapterError.deliveryFailed(PastedContent.agentOnlyRefusal) }
+        if result.stdout.contains(refused) {
+            control.enterRefused()
+            throw AdapterError.deliveryFailed(PastedContent.agentOnlyRefusal)
+        }
+        control.enterSent()
     }
 
     /// Foreground commands of a pane that runs an agent session (#608): Claude Code (`claude`, or `claude.exe` for the
@@ -248,13 +260,16 @@ extension TmuxAdapter {
     /// `if-shell -F` evaluates `#{pane_current_command}` for the pane inside the tmux server and runs the paste only
     /// when it is an agent; otherwise the else branch prints a marker and nothing reaches the pane. The buffer and pane
     /// names are generated (`hail-<uuid>`, `%<n>`), so the command strings hold no tmux syntax of their own.
-    func pasteToAgent(buffer: String, pane: String, pasting: () -> Void) async throws {
+    func pasteToAgent(
+        buffer: String, pane: String, authority: DeliveryAuthority?, pasting: () -> Void
+    ) async throws {
         guard buffer.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }),
               pane.hasPrefix("%"), pane.dropFirst().allSatisfy(\.isNumber) else {
             throw AdapterError.deliveryFailed("unexpected tmux buffer or pane name")
         }
         let refused = "hail-paste-not-agent"
         let result: CommandResult
+        try authority?.requireCurrent()
         do {
             result = try await tmux([
                 "if-shell", "-F", "-t", pane, Self.isAgentFormat,
@@ -273,5 +288,34 @@ extension TmuxAdapter {
     static var isAgentFormat: String {
         let tests = agentCommands.map { "#{==:#{pane_current_command},\($0)}" }
         return tests.dropFirst().reduce(tests[0]) { "#{||:\($0),\($1)}" }
+    }
+}
+
+/// Cancellation and retained policy are separate: committing cancellation never commits policy authority (#1028).
+final class TmuxDeliveryControl: Sendable {
+    private enum EnterState { case unsent, attempted, sent }
+    let target: String
+    let authority: DeliveryAuthority?
+    let abandoned = DeliveryAbandonment()
+    private let entered = Mutex(EnterState.unsent)
+    /// An indeterminate attempt may have sent Enter; only a definitive refusal proves it did not.
+    var didEnter: Bool { entered.withLock { $0 != .unsent } }
+
+    init(target: String, authority: DeliveryAuthority?) {
+        self.target = target
+        self.authority = authority
+    }
+
+    func willEnter() throws {
+        try authority?.requireCurrent()
+        entered.withLock { if $0 == .unsent { $0 = .attempted } }
+    }
+
+    func enterSent() { entered.withLock { $0 = .sent } }
+    func enterRefused() { entered.withLock { if $0 == .attempted { $0 = .unsent } } }
+
+    func check() throws {
+        try authority?.requireCurrent()
+        try abandoned.check()
     }
 }

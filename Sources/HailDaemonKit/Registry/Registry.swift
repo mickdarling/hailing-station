@@ -17,6 +17,17 @@ public enum RegistryError: Error, Equatable, Sendable {
 /// delivery does. Receiving context is not evidence of acceptance, output visibility, or completion.
 public protocol ProviderContextDelivering: Adapter {
     func deliver(_ text: String, to target: String, binding: String, context: ProviderTurnContext) async throws
+    func deliver(
+        _ text: String, to target: String, binding: String, context: ProviderTurnContext, authority: DeliveryAuthority
+    ) async throws
+}
+
+extension ProviderContextDelivering {
+    public func deliver(
+        _ text: String, to target: String, binding: String, context: ProviderTurnContext, authority: DeliveryAuthority
+    ) async throws {
+        throw AdapterError.deliveryFailed("guarded_delivery_unsupported")
+    }
 }
 
 /// Owns the adapters and merges their targets under stable ids `<kind>:<name>` (#10 item 2).
@@ -134,7 +145,8 @@ public actor Registry {
     }
 
     package func deliver(
-        _ text: String, to id: String, binding: String?, context: ProviderTurnContext? = nil
+        _ text: String, to id: String, binding: String?, context: ProviderTurnContext? = nil,
+        authority: DeliveryAuthority? = nil
     ) async throws {
         let (adapter, name) = try resolve(id)
         if let context {
@@ -143,7 +155,14 @@ public actor Registry {
             guard let contextual = adapter as? any ProviderContextDelivering else {
                 throw RegistryError.contextualDeliveryUnsupported
             }
-            try await contextual.deliver(text, to: name, binding: context.binding.sessionID, context: context)
+            if let authority {
+                try await contextual.deliver(text, to: name, binding: context.binding.sessionID,
+                                             context: context, authority: authority)
+            } else {
+                try await contextual.deliver(text, to: name, binding: context.binding.sessionID, context: context)
+            }
+        } else if let authority {
+            try await adapter.deliver(text, to: name, binding: binding, authority: authority)
         } else {
             try await adapter.deliver(text, to: name, binding: binding)
         }

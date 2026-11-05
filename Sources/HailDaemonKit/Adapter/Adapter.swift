@@ -62,6 +62,19 @@ public enum AdapterInputShapeError: Error, Sendable, Equatable {
     case singleLineRequired
 }
 
+/// Retained target authority for one guarded dispatch (#1028), never a fresh grant.
+/// Checks only the short policy-generation lock: no file I/O, actor hop or adapter I/O.
+/// Fully guarded adapters check immediately before each side effect, including a later Enter, without
+/// holding the generation lock across I/O. CheckedHandoffDelivering opts into a handoff-only check instead.
+/// Adapters supporting neither contract must refuse guarded delivery.
+public struct DeliveryAuthority: Sendable {
+    private let check: @Sendable () throws -> Void
+
+    init(check: @escaping @Sendable () throws -> Void) { self.check = check }
+
+    public func requireCurrent() throws { try check() }
+}
+
 /// The adapter interface (#10 item 2). Implementations are actors or otherwise `Sendable`; every call is
 /// async because adapters shell out, poll, or talk to another process. `events` is optional: the default
 /// is an already-finished stream, so the registry can treat every adapter alike.
@@ -73,12 +86,19 @@ public protocol Adapter: Sendable {
     /// Deliver `text` literally to the target named `target` (adapter-local name, not the id). With a
     /// `binding` from an earlier listing, the adapter delivers only if the target still has that binding.
     func deliver(_ text: String, to target: String, binding: String?) async throws
+    /// The default refuses unless the adapter explicitly opts into CheckedHandoffDelivering.
+    func deliver(_ text: String, to target: String, binding: String?, authority: DeliveryAuthority) async throws
     /// Send the target a literal Escape key. Adapters that cannot represent it fail closed.
     func escape(_ target: String, binding: String?) async throws
     /// The visible tail of the target's output, trimmed.
     func capture(_ target: String) async throws -> String
     var events: AsyncStream<TargetEvent> { get }
 }
+
+/// Explicit opt-in to checking retained authority once, immediately before handing off to unguarded delivery.
+/// This preserves loop-boundary semantics; retirement after handoff can still allow in-flight side effects.
+/// Applies only to Adapter's default authority overload; contextual delivery has its own separate contract.
+public protocol CheckedHandoffDelivering: Adapter {}
 
 extension Adapter {
     public var inputShape: AdapterInputShape { .lineOriented }
@@ -91,7 +111,39 @@ extension Adapter {
         try await deliver(text, to: target, binding: nil)
     }
 
+    public func deliver(
+        _ text: String, to target: String, binding: String?, authority: DeliveryAuthority
+    ) async throws {
+        guard self is any CheckedHandoffDelivering else {
+            throw AdapterError.deliveryFailed("guarded_delivery_unsupported")
+        }
+        try authority.requireCurrent()
+        try await deliver(text, to: target, binding: binding)
+    }
+
     public func escape(_ target: String, binding: String?) async throws {
         throw AdapterError.deliveryFailed("adapter does not support Escape")
     }
 }
+
+extension DiagnosticReplyBridgeAdapter {
+    // #1028 part 4 targets tmux paste/Enter; this utility keeps its contextual queue handoff check.
+    public func deliver(
+        _ text: String, to target: String, binding: String, context: ProviderTurnContext, authority: DeliveryAuthority
+    ) async throws {
+        try authority.requireCurrent()
+        try await deliver(text, to: target, binding: binding, context: context)
+    }
+}
+
+#if os(macOS)
+extension CodexAppServerAdapter {
+    // #1028 part 4 targets tmux paste/Enter; this provider keeps its contextual handoff check.
+    func deliver(
+        _ text: String, to target: String, binding: String, context: ProviderTurnContext, authority: DeliveryAuthority
+    ) async throws {
+        try authority.requireCurrent()
+        try await deliver(text, to: target, binding: binding, context: context)
+    }
+}
+#endif

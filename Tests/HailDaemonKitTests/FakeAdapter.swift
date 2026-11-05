@@ -66,6 +66,13 @@ actor FakeAdapter: Adapter {
     }
 }
 
+extension FakeAdapter {
+    func deliver(_ text: String, to target: String, binding: String?, authority: DeliveryAuthority) async throws {
+        try authority.requireCurrent()
+        try await deliver(text, to: target, binding: binding)
+    }
+}
+
 /// Overrides `events` to prove the stream reaches callers through `any Adapter` (#10 item 2).
 actor EventfulFakeAdapter: Adapter {
     nonisolated let kind = "watched"
@@ -159,5 +166,13 @@ actor GatedListingFakeAdapter: Adapter {
 
     func releaseListing() {
         releases.popLast()?.resume()
+    }
+}
+
+extension GatedFakeAdapter {
+    // Handoff-only host-boundary fake; tmux side-effect races use TmuxAuthorityRig.
+    func deliver(_ text: String, to target: String, binding: String?, authority: DeliveryAuthority) async throws {
+        try authority.requireCurrent()
+        try await deliver(text, to: target, binding: binding)
     }
 }

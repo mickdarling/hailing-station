@@ -162,7 +162,8 @@ public actor HailHost {
             // an attempt the adapter then refuses still spent its slot (fail closed).
             limiter.record(request, at: clock.now)
             do {
-                try await registry.deliver(line, to: id, binding: listed.binding, context: dispatch.turn)
+                try await registry.deliver(line, to: id, binding: listed.binding, context: dispatch.turn,
+                                           authority: dispatch.policyGeneration?.deliveryAuthority)
             } catch {
                 throw preservingPartial(error, delivered: delivered)
             }
@@ -580,6 +581,12 @@ struct TargetPolicyGeneration: Sendable {
     fileprivate let policy: TargetPolicy?
     var binding: String? { policy?.binding }
     var wasGranted: Bool { generation != nil }
+
+    var deliveryAuthority: DeliveryAuthority {
+        DeliveryAuthority {
+            guard performIfCurrent({ true }) == true else { throw HostError.denied(.notAllowed(target)) }
+        }
+    }
 
     func performIfCurrent<Result>(_ operation: () throws -> Result) rethrows -> Result? {
         try authority.performIfCurrent(self, operation: operation)

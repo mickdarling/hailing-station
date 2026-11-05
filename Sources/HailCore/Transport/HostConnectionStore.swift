@@ -1420,6 +1420,8 @@ extension AmbientListeningController {
         guard let streamer, streamer.streamID == streamID, !Self.isTransient(error) else {
             return
         }
+        // Retire recovery eligibility before asynchronous teardown or a late failure can report another drop.
+        isListening = false
         recordSendFailure(error, session: session, from: streamer, streamID: streamID)
         streamer.discardCapture()
         let current = session

@@ -3,7 +3,7 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-@Suite(.frozenGuardBudget) struct AmbientPolicyGenerationTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientPolicyGenerationTests {
     @Test(arguments: [false, true])
     func lateChildFailureKeepsPolicyStopTerminal(_ externally: Bool) async throws {
         let rig = try await AmbientPolicyRig.make()
@@ -90,30 +90,21 @@ import Testing
         #expect(deliveries.isEmpty)
     }
 
-    @Test func residualUntilPR4InFlightLineCompletesButLaterLinesAreRefused() async throws {
-        let adapter = GatedFakeAdapter(AdapterTarget(name: "a", binding: "binding-a"))
-        let registry = Registry()
-        try await registry.register(adapter)
-        var policy = Policy()
-        try policy.allow("tmux:a", binding: "binding-a", tier: .open)
-        let host = try HailHost(
-            registry: registry, sanitizing: SanitizePolicy(newlines: .split), store: InMemoryPolicyStore(policy)
-        )
-        let generation = host.targetPolicy.snapshot(for: "tmux:a")
-        async let arrival: Void = adapter.nextArrival()
+    @Test func targetWriteDuringSuspendedDeliveryRefusesEveryLine() async throws {
+        let rig = try await TmuxAuthorityRig.make(.fill)
+        defer { rig.runner.gate.fire() }
+        let generation = rig.host.targetPolicy.snapshot(for: TmuxAuthorityRig.target)
         let sending = Task {
-            try await host.sendAuthorized("one\ntwo", policyGeneration: generation, from: "test",
-                                          expectedBinding: nil, context: nil)
+            try await rig.host.sendAuthorized("one\ntwo", policyGeneration: generation, from: "test",
+                                              expectedBinding: nil, context: nil)
         }
-        await arrival
-        _ = try await host.setTier(.confirm, for: "tmux:a")
-        _ = try await host.setTier(.open, for: "tmux:a")
-        await adapter.release()
-        let expected: HostError = .partial(delivered: ["one"], reason: "target_policy_changed")
-        await #expect(throws: expected) { try await sending.value }
-        let deliveries: [String] = await adapter.deliveries
-        // PR 4 closes this residual: today the suspended adapter line still delivers after retirement.
-        #expect(deliveries == ["one"])
+        try await rig.runner.gate.waitUntilSuspended()
+        try await rig.retire()
+        await #expect(throws: HostError.denied(.notAllowed(TmuxAuthorityRig.target))) {
+            try await rig.runner.gate.finish(sending)
+        }
+        #expect(rig.runner.pasted.isEmpty)
+        #expect(rig.runner.enters == 0)
     }
 }
 
