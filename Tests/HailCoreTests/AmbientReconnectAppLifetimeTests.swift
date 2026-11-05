@@ -80,28 +80,28 @@ import Testing
         let releasing = CompletionFlag()
         rig.beforeSessionRelease = { await releasing.set(); await release.wait() }
         let stopping = Task { await rig.controller.destinationLost() }
+        defer { stopping.cancel() }
         do {
             try await waitUntil { await releasing.isSet }
-            await rig.controller.update(binding: nil, scene: .active)
+            try await ambientRefusalDeadline { await rig.controller.update(binding: nil, scene: .active) }
             #expect(!rig.controller.isOn && !rig.controller.isListening)
             #expect(rig.controller.binding == nil && rig.released == 0)
             let frames = try await rig.socket.sentFrames().count
             try await rig.feed()
             #expect(try await rig.socket.sentFrames().count == frames)
-        } catch {
-            await release.release()
-            await stopping.value
-            await rig.close()
-            throw error
-        }
+        } catch { Issue.record(error) }
         await release.release()
-        await stopping.value
-        #expect(rig.released == 1)
-        let frames = try await rig.socket.sentFrames().count
-        try await rig.feed()
-        #expect(try await rig.socket.sentFrames().count == frames)
-        await rig.close()
-        #expect(rig.released == 1)
+        do {
+            try await ambientRefusalDeadline { await stopping.value }
+            #expect(rig.released == 1)
+            let frames = try await rig.socket.sentFrames().count
+            try await rig.feed()
+            #expect(try await rig.socket.sentFrames().count == frames)
+        } catch { Issue.record(error) }
+        do {
+            try await ambientRefusalDeadline { await rig.close() }
+            #expect(rig.released == 1)
+        } catch { Issue.record(error) }
     }
 
     private func removeTargetAndReconcileCard(_ rig: AmbientReconnectRig, binding: AmbientAudioBinding) async throws {
