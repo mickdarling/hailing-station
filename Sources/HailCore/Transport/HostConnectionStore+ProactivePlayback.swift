@@ -37,15 +37,16 @@ extension HostConnectionStore {
             let old = proactiveSpeechReceipts[index]
             proactiveSpeechReceipts[index].allowed = old.allowed && speechAllowed && old.generation == generation
                 && old.target == target && old.source == event.frame.source
-        } else {
+        } else if proactiveSpeechReceipts.count < ConversationLog.limit {
+            // Retirement cannot be forgotten under pressure: a later duplicate would look newly authorized.
+            // Keep the bounded first identities for this store's lifetime; unknown overflow remains card-only.
             proactiveSpeechReceipts.append(.init(endpoint: event.endpointID, update: update, generation: generation,
                 source: event.frame.source, target: target, allowed: speechAllowed))
-            if proactiveSpeechReceipts.count > ConversationLog.limit { proactiveSpeechReceipts.removeFirst() }
         }
         proactivePolicyRevision &+= 1
     }
 
-    /// The explicit marker makes unknown, suppressed or evicted receipts fail closed rather than ordinary audio.
+    /// The explicit marker makes unknown, suppressed or capacity-declined receipts fail closed, never ordinary audio.
     func permitsProactiveSpeech(
         _ endpoint: HostEndpoint.Identifier, generation: UUID, descriptor: ReplyDescriptor
     ) -> Bool {
