@@ -6,6 +6,51 @@ import Testing
 
 @MainActor
 @Suite struct ProactiveReplyPlaybackTests {
+    @Test(arguments: [HailProtocol.AudioCodec.opus, .pcm16])
+    func refusedInitialFormatsCannotExhaustProactiveSpeech(_ codec: HailProtocol.AudioCodec) throws {
+        let rig = ProactivePlaybackRig()
+        for _ in 0...ProactiveReplyPlaybackState.limit {
+            rig.ingest(rig.audio(codec: codec, channels: codec == .pcm16 ? 2 : 1))
+        }
+        #expect(rig.controller.queue.isEmpty)
+        try rig.makeQuiet()
+        rig.ingest(rig.audio(byte: 2))
+        #expect(rig.player.scheduled.map(\.bytes.first) == [2])
+    }
+
+    @Test func rejectedFormatCannotBecomeOrdinaryAudio() throws {
+        let rig = ProactivePlaybackRig()
+        let rejected = rig.audio(codec: .opus)
+        rig.ingest(rejected)
+        var frame = rejected.frame
+        frame.id = UUID()
+        var audio = try #require(frame.audioPayload)
+        var descriptor = try #require(audio.reply)
+        descriptor.sessionUpdateID = nil
+        descriptor.priority = .normal
+        audio.reply = descriptor
+        audio.codec = .pcm16
+        frame.payload = .audio(audio)
+        try rig.makeQuiet()
+        rig.ingest(HostReplyEvent(endpointID: rejected.endpointID, frame: frame))
+        #expect(rig.player.scheduled.isEmpty && rig.controller.queue.isEmpty)
+    }
+
+    @Test func unsupportedDuplicateDoesNotRetireAcceptedProactiveAudio() throws {
+        let rig = ProactivePlaybackRig()
+        try rig.makeQuiet()
+        let accepted = rig.audio()
+        rig.ingest(accepted)
+        var frame = accepted.frame
+        frame.id = UUID()
+        var audio = try #require(frame.audioPayload)
+        audio.codec = .opus
+        frame.payload = .audio(audio)
+        rig.ingest(HostReplyEvent(endpointID: accepted.endpointID, frame: frame))
+        #expect(rig.player.cancelCount == 0)
+        #expect(rig.player.scheduled.count == 1 && rig.controller.queue.count == 1)
+    }
+
     @Test func markedAudioNeedsAuthorizationAndMissingCaptureFailsClosed() {
         let rig = ProactivePlaybackRig()
         rig.allowed = false
@@ -118,12 +163,19 @@ private final class ProactivePlaybackRig {
         }
     }
 
-    func audio(proactive: Bool = true, byte: UInt8 = 1) -> HostReplyEvent {
+    func audio(proactive: Bool = true, byte: UInt8 = 1, codec: HailProtocol.AudioCodec = .pcm16,
+               channels: Int = 1) -> HostReplyEvent {
         let id = UUID()
         var reply = ReplyDescriptor(id: id, hostID: "host", targetID: "tmux:build", audioStreamID: UUID(),
                                     priority: proactive ? .background : .normal)
         reply.sessionUpdateID = proactive ? id : nil
-        return idleAudio(reply, sequence: 0, final: true, byte: byte, endpoint: "mac")
+        var frame = idleAudio(reply, sequence: 0, final: true, byte: byte, endpoint: "mac").frame
+        if case .audio(var audio) = frame.payload {
+            audio.codec = codec
+            audio.channels = channels
+            frame.payload = .audio(audio)
+        }
+        return HostReplyEvent(endpointID: "mac", frame: frame)
     }
 
     func ingest(_ event: HostReplyEvent) {
@@ -159,6 +211,11 @@ private final class ProactivePlaybackRig {
 }
 
 private extension Frame {
+    var audioPayload: AudioPayload? {
+        guard case .audio(let payload) = self.payload else { return nil }
+        return payload
+    }
+
     var audioReplyID: UUID? {
         guard case .audio(let payload) = self.payload else { return nil }
         return payload.reply?.id
