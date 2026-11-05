@@ -18,6 +18,8 @@ struct FakeRightyo {
             "fake-rightyo-shared-\(getpid())")))
         let executable = directory.appendingPathComponent("rightyo")
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // A launcher may use umask 0000; the real executable validator rejects writable parents.
+        #expect(chmod(directory.path, 0o700) == 0)
         if !FileManager.default.fileExists(atPath: executable.path) {
             try? Data("#!/bin/sh\n. ./behavior.sh\n".utf8).write(to: executable, options: .atomic)
             _ = chmod(executable.path, 0o755)
