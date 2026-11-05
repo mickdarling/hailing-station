@@ -28,6 +28,8 @@ public final class HostConnectionStore {
     @ObservationIgnored var segmentWiring: ReplySegmentDeviceWiring?
     /// The station chat (#288): requests as they are sent and replies as they arrive, in the background too.
     public let conversation = ConversationLog()
+    /// First bounded speech identities, including denials, survive policy changes and reconnects without eviction.
+    /// At capacity, new cards remain visible but their unknown speech is declined for this store's lifetime.
     @ObservationIgnored var proactiveSpeechReceipts: [SessionUpdateSpeechReceipt] = []
     var proactivePolicyRevision: UInt64 = 0
     /// True while ambient listening is streaming; leaving the foreground then keeps the destination authorized (#282).
