@@ -55,10 +55,16 @@ func deliverCallPolicyCallback(
     }
 }
 
+struct CallPolicyRunOrigins {
+    let oldBinding: AmbientAudioBinding
+    let oldStream: UUID
+    let freshBinding: AmbientAudioBinding
+}
+
 @MainActor
 func prepareNewCallPolicyRun(
     _ rig: CallReconnectRig, sameTarget: Bool, sentPCM: Bool
-) async throws -> (AmbientAudioBinding, UUID, AmbientAudioBinding) {
+) async throws -> CallPolicyRunOrigins {
     try await rig.start()
     try await rig.feed()
     try await waitUntil { try await !audioFrames(rig.socket).isEmpty }
@@ -80,5 +86,5 @@ func prepareNewCallPolicyRun(
         try await rig.feed()
         try await waitUntil { try await audioFrames(rig.socket).count > before }
     }
-    return (old, stream, fresh)
+    return CallPolicyRunOrigins(oldBinding: old, oldStream: stream, freshBinding: fresh)
 }

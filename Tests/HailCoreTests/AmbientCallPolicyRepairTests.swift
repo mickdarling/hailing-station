@@ -71,13 +71,13 @@ import Testing
     @Test(arguments: [false, true], [false, true])
     func previousSelectionStreamCannotVetoANewPausedRun(sameTarget: Bool, sentPCM: Bool) async throws {
         try await withCallPolicyRepairRig { rig in
-            let (old, oldStream, fresh) = try await prepareNewCallPolicyRun(
+            let run = try await prepareNewCallPolicyRun(
                 rig, sameTarget: sameTarget, sentPCM: sentPCM
             )
             try await pauseForPolicyRepair(rig)
             if sentPCM {
                 #expect(deliverCallPolicyCallback("ambient target_policy_changed",
-                    origin: (old.connectionGeneration, oldStream), target: nil, to: rig))
+                    origin: (run.oldBinding.connectionGeneration, run.oldStream), target: nil, to: rig))
             } else {
                 // No PCM from this capture: the real connection still attributes a legacy wire notice
                 // to the previous stream. A new pause must not inherit that last-sent stream.
@@ -85,7 +85,7 @@ import Testing
             }
             #expect(rig.controller.isOn && rig.controller.pausedReason != nil)
             #expect(rig.controller.reconnect.canResumeCapture && rig.controller.stopReason == nil)
-            await rig.controller.update(binding: fresh, scene: .active)
+            await rig.controller.update(binding: run.freshBinding, scene: .active)
             #expect(rig.capture.startCount == 3 && rig.controller.isListening)
             let before = try await audioFrames(rig.socket).count
             try await rig.feed()
