@@ -27,12 +27,8 @@ import Testing
             rig.beforeMakeStreamerReturn = {
                 // A notice callback is synchronous on MainActor. Deliver after the constructor's await,
                 // before it returns, so asynchronous end() has not established a new session yet.
-                let event = HostReplyEvent(endpointID: rig.endpoint.id, frame: Frame(timestamp: 1,
-                    target: binding.targetID, source: "haild",
-                    payload: .control(.error(code: .notAllowed, message: message))))
-                delivered = HostNoticeOrigin.$generation.withValue(binding.connectionGeneration) {
-                    HostNoticeOrigin.$streamID.withValue(stream) { rig.store.receiveAmbientNotice(event) }
-                }
+                delivered = deliverCallPolicyCallback(message,
+                    origin: (binding.connectionGeneration, stream), target: binding.targetID, to: rig)
                 #expect(!rig.controller.reconnect.canResumeCapture)
             }
             let resuming = Task { @MainActor in await rig.controller.update(binding: binding, scene: .active) }
@@ -72,32 +68,23 @@ import Testing
         }
     }
 
-    @Test(arguments: [false, true])
-    func previousSelectionStreamCannotVetoANewPausedRun(sameTarget: Bool) async throws {
+    @Test(arguments: [false, true], [false, true])
+    func previousSelectionStreamCannotVetoANewPausedRun(sameTarget: Bool, sentPCM: Bool) async throws {
         try await withCallPolicyRepairRig { rig in
-            try await rig.start()
-            try await rig.feed()
-            try await waitUntil { try await !audioFrames(rig.socket).isEmpty }
-            let old = try rig.currentBinding()
-            await rig.controller.turnOff()
-            let target = sameTarget ? rig.target
-                : TargetInfo(id: "tmux:second", kind: "tmux", name: "Second", alive: true)
-            try await rig.socket.push(.targets([rig.target, target]))
-            try await waitUntil { @MainActor in rig.store.snapshots[rig.endpoint.id]?.targets.contains(target) == true }
-            try await rig.select(restoring: false, targetID: target.id)
-            let fresh = try #require(rig.store.ambientBinding(host: rig.endpoint.id, targetID: target.id))
-            #expect(fresh.selection != old.selection)
-            await rig.controller.turnOn(for: fresh)
+            let (old, oldStream, fresh) = try await prepareNewCallPolicyRun(
+                rig, sameTarget: sameTarget, sentPCM: sentPCM
+            )
             try await pauseForPolicyRepair(rig)
-            // No PCM from this capture: HostConnection still attributes a legacy target-less notice to
-            // the previous stream. It must not be treated as proof for the new paused microphone run.
-            try await deliverAddressedPolicyNotice(target: nil, to: rig)
+            if sentPCM {
+                #expect(deliverCallPolicyCallback("ambient target_policy_changed",
+                    origin: (old.connectionGeneration, oldStream), target: nil, to: rig))
+            } else {
+                // No PCM from this capture: the real connection still attributes a legacy wire notice
+                // to the previous stream. A new pause must not inherit that last-sent stream.
+                try await deliverAddressedPolicyNotice(target: nil, to: rig)
+            }
             #expect(rig.controller.isOn && rig.controller.pausedReason != nil)
             #expect(rig.controller.reconnect.canResumeCapture && rig.controller.stopReason == nil)
-            // Restore the full target list after the observable notice barrier.
-            try await rig.socket.push(.targets([rig.target, target]))
-            try await waitUntil { @MainActor in rig.store.ambientBinding(host: rig.endpoint.id,
-                                                                        targetID: target.id) == fresh }
             await rig.controller.update(binding: fresh, scene: .active)
             #expect(rig.capture.startCount == 3 && rig.controller.isListening)
             let before = try await audioFrames(rig.socket).count

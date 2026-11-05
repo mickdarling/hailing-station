@@ -228,7 +228,9 @@ latest stream; the host's existing latest-stream gate remains the boundary for t
 
 `AmbientCallPolicyRepairTests` adds a latched constructor-return injection through the store notice path,
 an explicitly stale target delivered through the real scripted socket receive loop, and a target-less old
-stream after a same-target reselection or a different-target selection. Constructor-return injection checks
+stream after a same-target reselection or a different-target selection. Each selection case additionally
+delivers an already-decoded old-origin store callback after the new run has sent PCM and paused.
+Constructor-return injection checks
 that neither capture-start count nor PCM advances; stale notices must preserve intent and permit a genuinely
 new stream. Cleanup releases the owned gates on every exit and attempts a bounded close. These tests and
 the production fix are source-prepared only at this stage; runtime qualification and negative controls are

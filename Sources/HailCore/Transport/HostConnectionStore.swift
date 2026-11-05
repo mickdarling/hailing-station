@@ -393,10 +393,9 @@ extension HostConnectionStore {
             ambientController?.receiveAmbientRefusal(
                 HostConnectionFailure.remote("\(code.rawValue): \(message)"), host: event.endpointID,
                 generation: HostNoticeOrigin.generation, streamID: HostNoticeOrigin.streamID,
-                targetID: event.frame.target,
-                currentBinding: ambientController?.binding.flatMap {
+                destination: (targetID: event.frame.target, binding: ambientController?.binding.flatMap {
                     ambientBinding(host: event.endpointID, targetID: $0.targetID)
-                }
+                })
             )
         case .control(.ownerVoice(let state)):
             if state == "unrecognized" {
@@ -1425,14 +1424,14 @@ extension AmbientListeningController {
     }
 
     func receiveAmbientRefusal(_ error: any Error, host: HostEndpoint.Identifier,
-                               generation: UUID?, streamID: UUID?, targetID: String? = nil,
-                               currentBinding: AmbientAudioBinding? = nil) {
+                               generation: UUID?, streamID: UUID?,
+                               destination: (targetID: String?, binding: AmbientAudioBinding?)? = nil) {
         guard isOn, let binding, binding.hostID == host, binding.connectionGeneration == generation,
-              let streamID, targetID == nil || targetID == binding.targetID else { return }
+              let streamID, destination?.targetID == nil || destination?.targetID == binding.targetID else { return }
         if pausedReason != nil {
             // Host errors normally omit a target/stream. The connection supplies its last sent stream;
             // that is proof for this pause only while the saved capture AND owner selection still match.
-            guard currentBinding == binding, pausedStream?.id == streamID,
+            guard destination?.binding == binding, pausedStream?.id == streamID,
                   pausedStream?.binding == binding else { return }
         } else if streamer?.streamID != streamID { return }
         if AmbientRefusal.isPolicyStop(error) {

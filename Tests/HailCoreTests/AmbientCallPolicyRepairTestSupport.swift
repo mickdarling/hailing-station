@@ -42,3 +42,43 @@ func deliverAddressedPolicyNotice(target: String?, to rig: CallReconnectRig) asy
     try await rig.socket.push(.targets(targets + [barrier]))
     try await waitUntil { @MainActor in rig.store.snapshots[rig.endpoint.id]?.targets.contains(barrier) == true }
 }
+
+/// An already-decoded notice may enter the store after another stream/selection has replaced its origin.
+@MainActor
+func deliverCallPolicyCallback(
+    _ message: String, origin: (generation: UUID?, stream: UUID?), target: String?, to rig: CallReconnectRig
+) -> Bool {
+    let event = HostReplyEvent(endpointID: rig.endpoint.id, frame: Frame(timestamp: 1, target: target,
+        source: "haild", payload: .control(.error(code: .notAllowed, message: message))))
+    return HostNoticeOrigin.$generation.withValue(origin.generation) {
+        HostNoticeOrigin.$streamID.withValue(origin.stream) { rig.store.receiveAmbientNotice(event) }
+    }
+}
+
+@MainActor
+func prepareNewCallPolicyRun(
+    _ rig: CallReconnectRig, sameTarget: Bool, sentPCM: Bool
+) async throws -> (AmbientAudioBinding, UUID, AmbientAudioBinding) {
+    try await rig.start()
+    try await rig.feed()
+    try await waitUntil { try await !audioFrames(rig.socket).isEmpty }
+    let old = try rig.currentBinding()
+    let frame = try #require(try await audioFrames(rig.socket).last)
+    guard case .audio(let audio) = frame.payload else { throw CancellationError() }
+    let stream = try #require(audio.streamID)
+    await rig.controller.turnOff()
+    let target = sameTarget ? rig.target
+        : TargetInfo(id: "tmux:second", kind: "tmux", name: "Second", alive: true)
+    try await rig.socket.push(.targets([rig.target, target]))
+    try await waitUntil { @MainActor in rig.store.snapshots[rig.endpoint.id]?.targets.contains(target) == true }
+    try await rig.select(restoring: false, targetID: target.id)
+    let fresh = try #require(rig.store.ambientBinding(host: rig.endpoint.id, targetID: target.id))
+    #expect(fresh.selection != old.selection)
+    await rig.controller.turnOn(for: fresh)
+    if sentPCM {
+        let before = try await audioFrames(rig.socket).count
+        try await rig.feed()
+        try await waitUntil { try await audioFrames(rig.socket).count > before }
+    }
+    return (old, stream, fresh)
+}
