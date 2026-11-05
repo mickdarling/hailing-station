@@ -100,7 +100,7 @@ public enum Schema {
         ])
     ])
 
-    private static let reply: JSONValue = requiring(
+    private static let replyBase: JSONValue = requiring(
         ["id", "host", "target", "priority", "interruption"],
         [
             "id": .object(["type": .string("string"), "format": .string("uuid")]),
@@ -114,10 +114,27 @@ public enum Schema {
             ]),
             "audioStream": .object(["type": .string("string"), "format": .string("uuid")]),
             "request": .object(["type": .string("string"), "format": .string("uuid")]),
+            "update": .object(["type": .string("string"), "format": .string("uuid")]),
             "priority": .object(["enum": .array(ReplyPriority.allCases.map { .string($0.rawValue) })]),
             "interruption": .object(["enum": .array(ReplyInterruption.allCases.map { .string($0.rawValue) })])
         ]
     )
+
+    private static let reply: JSONValue = {
+        guard case .object(var schema) = replyBase else { preconditionFailure("reply schema must be an object") }
+        schema["allOf"] = .array([.object([
+            "if": .object(["required": .array([.string("update")])]),
+            "then": .object([
+                "not": .object(["required": .array([.string("request")])]),
+                "properties": .object([
+                    "priority": .object(["const": .string("background")]),
+                    "interruption": .object(["const": .string("enqueue")])
+                ])
+            ])
+        ])])
+        // Equality between update and id is additionally enforced by the typed decoder.
+        return .object(schema)
+    }()
 
     private static let audio: JSONValue = .object([
         "type": .string("object"),
@@ -227,7 +244,7 @@ public enum Schema {
                     "hello", "list_targets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
                     "error", "diagnostic", "stop_playback", "ambient_moved_here", "ambient_heard",
                     "ambient_overheard", "overheard_scope", "set_reply_mute", "owner_voice", "ambient_input",
-                    "session_update", "health", "health_report", "media_mode",
+                    "session_update", "session_update_cancel", "health", "health_report", "media_mode",
                     "duck_mode", "set_privacy", "reply_yield"
                 ]
                     .map(JSONValue.string)
@@ -281,6 +298,7 @@ public enum Schema {
             commandRule("owner_voice", requires: ["state"]),
             commandRule("ambient_input", requires: ["route"]),
             commandRule("session_update", requires: ["update", "session", "priority", "text"]),
+            commandRule("session_update_cancel", requires: ["update"]),
             commandRule("health_report", requires: ["report"]),
             commandRule("media_mode", requires: ["on"]),
             commandRule("duck_mode", requires: ["on"]),
@@ -297,6 +315,7 @@ public enum Schema {
             ownerVoicePayloadRule,
             ambientInputPayloadRule,
             sessionUpdatePayloadRule,
+            sessionUpdateCancelPayloadRule,
             healthPayloadRule,
             healthReportPayloadRule,
             mediaModePayloadRule,

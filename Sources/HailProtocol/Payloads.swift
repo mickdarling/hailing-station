@@ -16,10 +16,13 @@ public struct ReplyDescriptor: Codable, Sendable, Equatable {
     public var audioStreamID: UUID?
     public var priority: ReplyPriority
     public var interruption: ReplyInterruption
+    /// Capability-gated unsolicited audio. Always equals `id`, with no voice request or interrupt intent.
+    public var sessionUpdateID: UUID?
 
     public init(
         id: UUID, hostID: String, targetID: String, audioStreamID: UUID? = nil,
-        priority: ReplyPriority = .normal, interruption: ReplyInterruption = .enqueue, requestID: UUID? = nil
+        priority: ReplyPriority = .normal, interruption: ReplyInterruption = .enqueue, requestID: UUID? = nil,
+        sessionUpdateID: UUID? = nil
     ) {
         self.id = id
         self.hostID = hostID
@@ -28,6 +31,7 @@ public struct ReplyDescriptor: Codable, Sendable, Equatable {
         self.audioStreamID = audioStreamID
         self.priority = priority
         self.interruption = interruption
+        self.sessionUpdateID = sessionUpdateID
     }
 
     public init(from decoder: any Decoder) throws {
@@ -39,6 +43,13 @@ public struct ReplyDescriptor: Codable, Sendable, Equatable {
         audioStreamID = try container.decodeIfPresent(UUID.self, forKey: .audioStreamID)
         priority = try container.decode(ReplyPriority.self, forKey: .priority)
         interruption = try container.decode(ReplyInterruption.self, forKey: .interruption)
+        sessionUpdateID = container.contains(.sessionUpdateID)
+            ? try container.decode(UUID.self, forKey: .sessionUpdateID) : nil
+        guard sessionUpdateID == nil || (sessionUpdateID == id && requestID == nil
+            && priority == .background && interruption == .enqueue) else {
+            throw DecodingError.dataCorruptedError(forKey: .sessionUpdateID, in: container,
+                                                  debugDescription: "invalid proactive audio identity")
+        }
         try requireNonEmpty(hostID, "reply.host", decoder)
         try requireNonEmpty(targetID, "reply.target", decoder)
         try requireAtMost(hostID.utf8.count, ReplyLimits.maxIdentifierBytes, "reply.host", decoder)
@@ -48,6 +59,7 @@ public struct ReplyDescriptor: Codable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case id, hostID = "host", targetID = "target", audioStreamID = "audioStream", priority, interruption
         case requestID = "request"
+        case sessionUpdateID = "update"
     }
 }
 
