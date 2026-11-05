@@ -15,7 +15,7 @@ enum LifetimeWakeFailure: CaseIterable, Sendable {
     var error: any Error {
         switch self {
         case .generic: ProviderCoordinatorSyntheticError.arbitraryFailure
-        case .refusal: AdapterError.inputPending(.tainted)
+        case .refusal: AdapterError.inputPending(reason: .tainted)
         }
     }
 }
