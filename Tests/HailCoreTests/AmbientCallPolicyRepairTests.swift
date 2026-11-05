@@ -51,11 +51,14 @@ import Testing
         }
     }
 
-    @Test func explicitlyDifferentTargetNoticeCannotPoisonThePausedStream() async throws {
+    @Test(arguments: [false, true])
+    func explicitlyDifferentTargetNoticeCannotPoisonThePausedStream(sentPCM: Bool) async throws {
         try await withCallPolicyRepairRig { rig in
             try await rig.start()
-            try await rig.feed()
-            try await waitUntil { try await !audioFrames(rig.socket).isEmpty }
+            if sentPCM {
+                try await rig.feed()
+                try await waitUntil { try await !audioFrames(rig.socket).isEmpty }
+            }
             try await pauseForPolicyRepair(rig)
             try await deliverAddressedPolicyNotice(target: "tmux:previous", to: rig)
             #expect(rig.controller.isOn && rig.controller.pausedReason != nil)
