@@ -444,11 +444,14 @@ private func publishRenderer(
     let start = progress.sequence
     // Relay stdout PCM as it arrives (#268): no files, no polling.
     var pending = Data()
+    var observedPCM = false
     for try await bytes in renderer.audio {
+        if !bytes.isEmpty, !observedPCM { context.timing?.mark(.pcm); observedPCM = true }
         pending.append(bytes)
         while pending.count >= StreamedReplyFrames.bytes(sequence: progress.sequence) {
             let size = StreamedReplyFrames.bytes(sequence: progress.sequence)
             if segmentEnd, pending.count == size { break }
+            context.timing?.mark(.frameReady)
             progress.deliveries += try await sendStreamedPCM(
                 pending.prefix(size), sequence: progress.sequence, context: context
             )
@@ -459,6 +462,7 @@ private func publishRenderer(
     try await renderer.requireSuccessfulExit()
     guard pending.count.isMultiple(of: 2) else { throw ReplyCommandError.invalid("vbsay wrote a partial sample") }
     if !pending.isEmpty {
+        context.timing?.mark(.frameReady)
         progress.deliveries += try await sendStreamedPCM(
             pending, sequence: progress.sequence, context: context, segmentEnd: segmentEnd
         )
@@ -519,6 +523,7 @@ private func sendStreamedPCM(
         isSegmentEnd: segmentEnd
     )
     let (sentAt, resendsBefore) = (ContinuousClock.now, ReplyResends.total)
+    context.timing?.mark(.publishStart, at: sentAt)
     let delivered = try await submitSpeechAudio(Frame(
         timestamp: replyTimestamp(), target: context.descriptor.targetID, source: context.descriptor.hostID,
         payload: .audio(payload)
