@@ -22,8 +22,9 @@ import Testing
             )
             defer { pair.close() }
             let calls = rig.runner.calls.count
+            let stream = UUID()
             try await recipientSocketSend(sessionFrame(target: TmuxAuthorityRig.target,
-                payload: .audio(ambientSegment(stream: UUID(), sequence: 0))), on: pair.sockets[0])
+                payload: .audio(ambientSegment(stream: stream, sequence: 0))), on: pair.sockets[0])
             try await expectPending(on: pair.sockets[0], gate: gate, log: log, refusals: 1)
             rig.runner.setInput("") // Clearing text cannot lift the sticky taint.
             try RightyoAmbientPendingInputTests.release(fake, "go2")
@@ -31,6 +32,7 @@ import Testing
             #expect(rig.runner.pasted == ["synthetic input"] && rig.runner.enters == 0)
             #expect(!rig.runner.calls.dropFirst(calls).contains { $0.first == "capture-pane" })
             #expect(await listener.lastInput.latest(for: TmuxAuthorityRig.target) == nil)
+            try await expectPolicyStop(rig, on: pair.sockets[0], stream: stream, gate: gate, log: log)
         } catch {
             await stop(listener)
             throw error
@@ -88,6 +90,20 @@ import Testing
 
     private func stop(_ listener: WebSocketListener) async {
         await bounded("policy-taint ambient cleanup") { await listener.stop(reason: "synthetic test complete") }
+    }
+
+    private func expectPolicyStop(
+        _ rig: TmuxAuthorityRig, on socket: URLSessionWebSocketTask, stream: UUID,
+        gate: AmbientAudioGate, log: AmbientEventDetails
+    ) async throws {
+        _ = try await rig.host.setTier(.locked, for: TmuxAuthorityRig.target)
+        try await recipientSocketSend(sessionFrame(target: TmuxAuthorityRig.target,
+            payload: .audio(ambientSegment(stream: stream, sequence: 1))), on: socket)
+        #expect(try await ambientError(on: socket, step: "real policy denial still ends listening")
+            == "ambient target_policy_changed")
+        #expect(await gate.activeStream == nil)
+        #expect(await eventually { !log.details("ambient_ended").isEmpty })
+        #expect(log.details("ambient_delivery_refused").count == 2)
     }
 }
 #endif

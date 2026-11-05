@@ -99,11 +99,13 @@ import Testing
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
         let outcome = try await rig.runner.gate.finish(sending)
-        #expect(outcome == .refused(
-            .notAllowed,
-            "a line was pasted but not sent — clear it on the Mac; "
-                + "hand-offs to this target are paused until haild restarts"
-        ))
+        let reason = "a line was pasted but not sent — clear it on the Mac; "
+            + "hand-offs to this target are paused until haild restarts"
+        #expect(outcome == .inputPending(reason: reason))
+        let calls = rig.runner.calls.count
+        #expect(try onlyControl(await session.receive(frame)) == .error(code: .notAllowed, message: reason))
+        #expect(rig.runner.pasted == ["synthetic input"])
+        #expect(!rig.runner.calls.dropFirst(calls).contains { $0.first == "capture-pane" })
         #expect(rig.runner.enters == 0)
         #expect(!rig.runner.input.isEmpty)
     }
