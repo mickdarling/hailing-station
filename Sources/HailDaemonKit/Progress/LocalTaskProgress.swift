@@ -5,6 +5,11 @@ enum TaskProgressOwnerControlScope {
     @TaskLocal static var beforeValidation: (@Sendable (TaskProgressTask) async -> Void)?
 }
 
+enum TaskProgressControllerLifetimeScope {
+    @TaskLocal static var beforeWake: (@Sendable (TaskProgressWake) async -> Void)?
+    @TaskLocal static var beforeReportCleanup: (@Sendable (TaskProgressWake) async -> Void)?
+}
+
 struct TaskProgressOwnerLease: Sendable {
     let task: TaskProgressTask
     let generation: UUID
@@ -25,25 +30,66 @@ final class TaskProgressOwnerState: Sendable {
         var task: TaskProgressTask?
         var generation = UUID()
         var fence = TaskProgressOutputFence()
+        var reserved = false
     }
     private let state = Mutex(State())
     var fence: TaskProgressOutputFence { state.withLock { $0.fence } }
 
-    func enroll(_ task: TaskProgressTask) {
+    func reserveStart() -> UUID? {
         state.withLock {
-            $0.fence.close()
-            $0.task = task
+            guard $0.task == nil, !$0.reserved else { return nil }
+            $0.reserved = true
             $0.generation = UUID()
-            $0.fence = TaskProgressOutputFence()
+            return $0.generation
         }
     }
 
-    func retire(_ task: UUID) {
+    func cancelStart(_ generation: UUID? = nil) {
         state.withLock {
-            guard $0.task?.id == task else { return }
+            guard $0.reserved, generation == nil || $0.generation == generation else { return }
+            $0.reserved = false
+            $0.generation = UUID()
+        }
+    }
+
+    func enroll(_ task: TaskProgressTask, reservation: UUID,
+                lifetime: TaskProgressOwnerLifetime) -> TaskProgressOwnerLease? {
+        state.withLock { state in
+            guard state.reserved, state.task == nil, state.generation == reservation else { return nil }
+            let admitted = lifetime.perform {
+                state.fence.close()
+                state.task = task
+                state.reserved = false
+                state.fence = TaskProgressOutputFence()
+                return .applied
+            }
+            return admitted == .applied ? .init(task: task, generation: reservation) : nil
+        }
+    }
+
+    @discardableResult
+    func retire(_ lease: TaskProgressOwnerLease) -> Bool {
+        state.withLock {
+            guard $0.task == lease.task, $0.generation == lease.generation else { return false }
             $0.fence.close()
             $0.task = nil
-            $0.generation = UUID()
+            return true
+        }
+    }
+
+    func isCurrent(_ lease: TaskProgressOwnerLease) -> Bool {
+        state.withLock { $0.task == lease.task && $0.generation == lease.generation }
+    }
+
+    func isRetired(_ lease: TaskProgressOwnerLease) -> Bool {
+        state.withLock { $0.task == nil && $0.generation == lease.generation }
+    }
+
+    func withCurrent(_ lease: TaskProgressOwnerLease,
+                     commit: () -> TaskProgressControlResult) -> TaskProgressControlResult {
+        state.withLock {
+            guard $0.task == lease.task, $0.generation == lease.generation else { return .noTask }
+            return commit()
         }
     }
 
@@ -66,28 +112,6 @@ final class TaskProgressOwnerState: Sendable {
             }
             return result
         }
-    }
-}
-
-enum TaskProgressOwnerSource: Sendable {
-    case local
-    case ambient(any AmbientListenerWiring, TaskProgressAmbientAudience)
-    func perform(_ commit: () -> TaskProgressControlResult) -> TaskProgressControlResult {
-        switch self {
-        case .local: commit()
-        case .ambient(let wiring, let audience): wiring.withTaskProgressOwnerPermission(audience, commit: commit)
-        }
-    }
-}
-
-struct TaskProgressRetainedOwnerAdmission: TaskProgressOwnerAdmission {
-    let state: TaskProgressOwnerState
-    let lease: TaskProgressOwnerLease
-    let lifetime: TaskProgressOwnerLifetime
-    let source: TaskProgressOwnerSource
-    let control: TaskProgressOwnerControl
-    func perform(_ commit: () -> TaskProgressControlResult) -> TaskProgressControlResult {
-        state.perform(lease, control: control) { lifetime.perform { source.perform(commit) } }
     }
 }
 

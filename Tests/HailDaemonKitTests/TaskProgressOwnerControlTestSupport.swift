@@ -9,6 +9,7 @@ struct TaskProgressOwnerControlRig {
     let controller: ListenerTaskProgress
     let task: UUID
     let stream: UUID
+    let clock: ProgressTestClock
     var listener: WebSocketListener { peer.listener }
 
     static func make() async throws -> Self {
@@ -20,10 +21,11 @@ struct TaskProgressOwnerControlRig {
         do {
             let peer = try await SessionUpdateListenerRig.make(ambient: router)
             listener = peer.listener
-            await peer.listener.enableTaskProgress(clock: ProgressTestClock().clock)
+            let clock = ProgressTestClock()
+            await peer.listener.enableTaskProgress(clock: clock.clock)
             let controller = try #require(await peer.listener.taskProgressController)
             let value = Self(fake: fake, router: router, peer: peer, controller: controller,
-                             task: UUID(), stream: UUID())
+                             task: UUID(), stream: UUID(), clock: clock)
             try await value.startStream(value.stream)
             try await value.enroll(value.task, seconds: 60)
             return value
@@ -59,6 +61,8 @@ struct TaskProgressOwnerControlRig {
     }
 
     func close() async {
+        await peer.hostRig.adapter.releaseLegacyHandoff()
+        await peer.hostRig.adapter.releaseListing()
         await listener.stop()
         fake.cleanUp()
     }
