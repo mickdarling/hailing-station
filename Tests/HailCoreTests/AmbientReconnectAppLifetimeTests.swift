@@ -89,20 +89,19 @@ import Testing
             let frames = try await rig.socket.sentFrames().count
             try await rig.feed()
             #expect(try await rig.socket.sentFrames().count == frames)
-        } catch {
-            await release.release()
-            try await ambientRefusalDeadline { await stopping.value }
-            try await ambientRefusalDeadline { await rig.close() }
-            throw error
-        }
+        } catch { Issue.record(error) }
         await release.release()
-        try await ambientRefusalDeadline { await stopping.value }
-        #expect(rig.released == 1)
-        let frames = try await rig.socket.sentFrames().count
-        try await rig.feed()
-        #expect(try await rig.socket.sentFrames().count == frames)
-        try await ambientRefusalDeadline { await rig.close() }
-        #expect(rig.released == 1)
+        do {
+            try await ambientRefusalDeadline { await stopping.value }
+            #expect(rig.released == 1)
+            let frames = try await rig.socket.sentFrames().count
+            try await rig.feed()
+            #expect(try await rig.socket.sentFrames().count == frames)
+        } catch { Issue.record(error) }
+        do {
+            try await ambientRefusalDeadline { await rig.close() }
+            #expect(rig.released == 1)
+        } catch { Issue.record(error) }
     }
 
     private func removeTargetAndReconcileCard(_ rig: AmbientReconnectRig, binding: AmbientAudioBinding) async throws {
