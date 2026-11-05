@@ -17,12 +17,15 @@ final class AuthorityTmuxRunner: CommandRunner {
         var collapsed = false
         var agent = true
         var retry = false
+        var enterFails = false
     }
     private let state: Mutex<State>
     let gate = PolicyWriteGate()
     private let checkpoint: Checkpoint
+    private let delivery: Int
 
-    init(_ checkpoint: Checkpoint = .none, input: String = "") {
+    init(_ checkpoint: Checkpoint = .none, input: String = "", delivery: Int = 1) {
+        self.delivery = delivery
         self.checkpoint = checkpoint
         state = Mutex(State(input: input))
     }
@@ -35,6 +38,8 @@ final class AuthorityTmuxRunner: CommandRunner {
     func requireRetry() { state.withLock { $0.retry = true } }
     func leaveAgent() { state.withLock { $0.agent = false } }
     func rebind() { state.withLock { $0.rebound = true } }
+    func setInput(_ text: String) { state.withLock { $0.input = text } }
+    func failEnter() { state.withLock { $0.enterFails = true } }
 
     func run(_ executable: String, _ arguments: [String]) async throws -> CommandResult {
         let reply = state.withLock { state -> (CommandResult, Bool) in
@@ -50,7 +55,8 @@ final class AuthorityTmuxRunner: CommandRunner {
             }
             let command = argv.first == "if-shell" ? argv[5].components(separatedBy: " ") : argv
             let response = respond(command, state: &state)
-            let pause = response.1 && !state.stopped
+            let ordinal = state.pasted.count + ([Checkpoint.fill, .prePaste].contains(checkpoint) ? 1 : 0)
+            let pause = response.1 && !state.stopped && ordinal >= delivery
             if pause { state.stopped = true }
             return (response.0, pause)
         }
@@ -67,11 +73,7 @@ final class AuthorityTmuxRunner: CommandRunner {
             output = state.rebound ? ScriptedPane.rebound : twoSessions
             reached = checkpoint == .verification && !state.pasted.isEmpty
         case "set-buffer":
-            if let flag = arguments.firstIndex(of: "-b") {
-                let name = arguments[flag + 1]
-                state.buffers[name] = (arguments.contains("-a") ? state.buffers[name] ?? "" : "")
-                    + (arguments.last ?? "")
-            }
+            fillBuffer(arguments, state: &state)
             reached = checkpoint == .fill
         case "paste-buffer":
             if let flag = arguments.firstIndex(of: "-b") {
@@ -83,6 +85,9 @@ final class AuthorityTmuxRunner: CommandRunner {
         case "send-keys":
             press(arguments, state: &state)
             reached = checkpoint == .enter && arguments.last == "Enter"
+            if state.enterFails, state.pasted.count >= delivery {
+                return (CommandResult(exitCode: 1, stdout: ""), reached)
+            }
         case "capture-pane":
             let input = state.collapsed ? "[Pasted text #1]" : state.input
             output = ScriptedPane.render("> " + input + "▌")
@@ -92,11 +97,17 @@ final class AuthorityTmuxRunner: CommandRunner {
         return (CommandResult(exitCode: 0, stdout: output), reached)
     }
 
+    private func fillBuffer(_ arguments: [String], state: inout State) {
+        guard let flag = arguments.firstIndex(of: "-b") else { return }
+        let name = arguments[flag + 1]
+        state.buffers[name] = (arguments.contains("-a") ? state.buffers[name] ?? "" : "") + (arguments.last ?? "")
+    }
+
     private func press(_ arguments: [String], state: inout State) {
         switch arguments.last {
         case "Enter":
             state.entered += 1
-            state.input = state.retry ? state.input + "\n  " : ""
+            state.input = state.retry && state.pasted.count >= delivery ? state.input + "\n  " : ""
         default: break
         }
     }
@@ -111,8 +122,10 @@ struct TmuxAuthorityRig {
     let authority: DeliveryAuthority
     let log: EvidenceLog
 
-    static func make(_ checkpoint: AuthorityTmuxRunner.Checkpoint = .none, input: String = "") async throws -> Self {
-        let runner = AuthorityTmuxRunner(checkpoint, input: input)
+    static func make(
+        _ checkpoint: AuthorityTmuxRunner.Checkpoint = .none, input: String = "", delivery: Int = 1
+    ) async throws -> Self {
+        let runner = AuthorityTmuxRunner(checkpoint, input: input, delivery: delivery)
         let log = EvidenceLog()
         let adapter = TmuxAdapter(
             runner: runner, socket: "hail-authority-\(UUID().uuidString)", chunkSize: 4, pollInterval: nil,
