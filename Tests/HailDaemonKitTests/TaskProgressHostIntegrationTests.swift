@@ -23,6 +23,14 @@ import Testing
         ) -> Bool {
             owner.withLock { $0 == audience.connection && stream == audience.stream && commit() }
         }
+        func withTaskProgressOwnerPermission(
+            _ audience: TaskProgressAmbientAudience, commit: () -> TaskProgressControlResult
+        ) -> TaskProgressControlResult {
+            owner.withLock {
+                guard $0 == audience.connection, stream == audience.stream else { return .noTask }
+                return commit()
+            }
+        }
     }
 
     @Test func enrollmentControlsAndCancelUseOneInspectableState() async throws {
@@ -145,7 +153,7 @@ import Testing
         let wiring = Wiring(), rig = try await SessionUpdateListenerRig.make(ambient: wiring)
         wiring.owner.withLock { $0 = rig.connectionID }
         await rig.listener.enableTaskProgress()
-        let task = UUID(), stream = UUID()
+        let task = UUID(), stream = wiring.stream
         _ = await rig.listener.taskProgress(.init(action: .start, target: RecipientTestRig.target,
                                                   task: task, seconds: 60))
         _ = await rig.listener.sessionUpdate(.init(action: .quietOn))
