@@ -1,4 +1,95 @@
 public import Foundation
+import Synchronization
+
+enum TaskProgressOwnerControlScope {
+    @TaskLocal static var beforeValidation: (@Sendable (TaskProgressTask) async -> Void)?
+}
+
+struct TaskProgressOwnerLease: Sendable {
+    let task: TaskProgressTask
+    let generation: UUID
+}
+
+/// Listener shutdown is independent of output quiet/media holds, which must not disable owner controls.
+final class TaskProgressOwnerLifetime: Sendable {
+    private let open = Mutex(true)
+    func close() { open.withLock { $0 = false } }
+    func perform(_ commit: () -> TaskProgressControlResult) -> TaskProgressControlResult {
+        open.withLock { $0 ? commit() : .noTask }
+    }
+}
+
+/// Synchronous enrollment identity shared with final scheduler admission; task UUID reuse cannot renew a lease.
+final class TaskProgressOwnerState: Sendable {
+    private struct State {
+        var task: TaskProgressTask?
+        var generation = UUID()
+        var fence = TaskProgressOutputFence()
+    }
+    private let state = Mutex(State())
+    var fence: TaskProgressOutputFence { state.withLock { $0.fence } }
+
+    func enroll(_ task: TaskProgressTask) {
+        state.withLock {
+            $0.fence.close()
+            $0.task = task
+            $0.generation = UUID()
+            $0.fence = TaskProgressOutputFence()
+        }
+    }
+
+    func retire(_ task: UUID) {
+        state.withLock {
+            guard $0.task?.id == task else { return }
+            $0.fence.close()
+            $0.task = nil
+            $0.generation = UUID()
+        }
+    }
+
+    func lease(for task: TaskProgressTask) -> TaskProgressOwnerLease? {
+        state.withLock { $0.task == task ? .init(task: task, generation: $0.generation) : nil }
+    }
+
+    func perform(_ lease: TaskProgressOwnerLease, control: TaskProgressOwnerControl,
+                 commit: () -> TaskProgressControlResult) -> TaskProgressControlResult {
+        state.withLock { state in
+            guard state.task == lease.task, state.generation == lease.generation else { return .noTask }
+            let result = commit()
+            // The stream/lifetime locks are already released. Never invert publication's fence->router order.
+            if result == .applied {
+                switch control {
+                case .pause, .stop: state.fence.close()
+                case .resume: state.fence = TaskProgressOutputFence()
+                default: break
+                }
+            }
+            return result
+        }
+    }
+}
+
+enum TaskProgressOwnerSource: Sendable {
+    case local
+    case ambient(any AmbientListenerWiring, TaskProgressAmbientAudience)
+    func perform(_ commit: () -> TaskProgressControlResult) -> TaskProgressControlResult {
+        switch self {
+        case .local: commit()
+        case .ambient(let wiring, let audience): wiring.withTaskProgressOwnerPermission(audience, commit: commit)
+        }
+    }
+}
+
+struct TaskProgressRetainedOwnerAdmission: TaskProgressOwnerAdmission {
+    let state: TaskProgressOwnerState
+    let lease: TaskProgressOwnerLease
+    let lifetime: TaskProgressOwnerLifetime
+    let source: TaskProgressOwnerSource
+    let control: TaskProgressOwnerControl
+    func perform(_ commit: () -> TaskProgressControlResult) -> TaskProgressControlResult {
+        state.perform(lease, control: control) { lifetime.perform { source.perform(commit) } }
+    }
+}
 
 /// Owner-local controls on the existing private socket. These are cooperative controls, like `notify quiet`;
 /// the source label is not proof of which local process spoke. No request reference is accepted (#1013).

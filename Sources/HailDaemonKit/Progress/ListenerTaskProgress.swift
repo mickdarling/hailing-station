@@ -15,12 +15,15 @@ actor ListenerTaskProgress {
     private var expires: ContinuousClock.Instant?
     private var lastText: String?
     private var outstandingPrivacyRevision: UInt64?
-    private var outputFence = TaskProgressOutputFence()
+    nonisolated let ownerState = TaskProgressOwnerState()
+    private var outputFence: TaskProgressOutputFence { ownerState.fence }
+    private let ownerLifetime: TaskProgressOwnerLifetime
     private var outstandingOutputFence: TaskProgressOutputFence?
     private var handling = false
 
-    init(listener: WebSocketListener, host: HailHost, clock: TaskProgressClock = .continuous) {
-        (self.listener, self.host, self.clock) = (listener, host, clock)
+    init(listener: WebSocketListener, host: HailHost, clock: TaskProgressClock = .continuous,
+         ownerLifetime: TaskProgressOwnerLifetime) {
+        (self.listener, self.host, self.clock, self.ownerLifetime) = (listener, host, clock, ownerLifetime)
     }
 
     private func timer() -> TaskProgressScheduler {
@@ -73,12 +76,14 @@ actor ListenerTaskProgress {
     }
 
     private func applyOwner(_ control: TaskProgressOwnerControl) async -> TaskProgressControlResult {
-        switch control {
-        case .pause, .stop: outputFence.close()
-        case .resume: outputFence = TaskProgressOutputFence()
-        default: break
-        }
-        return await timer().owner(control)
+        guard let task = enrollment, let lease = ownerState.lease(for: task) else { return .noTask }
+        let admission = ownerAdmission(control, lease: lease, source: .local)
+        return await timer().owner(control, task: task, admission: admission)
+    }
+
+    private func ownerAdmission(_ control: TaskProgressOwnerControl, lease: TaskProgressOwnerLease,
+                                source: TaskProgressOwnerSource) -> TaskProgressRetainedOwnerAdmission {
+        .init(state: ownerState, lease: lease, lifetime: ownerLifetime, source: source, control: control)
     }
 
     private func controlled(_ result: TaskProgressControlResult) async
@@ -105,7 +110,7 @@ actor ListenerTaskProgress {
         expires = clock.now().advanced(by: .seconds(6 * 3_600))
         lastText = nil
         outstandingPrivacyRevision = nil
-        outputFence = TaskProgressOutputFence()
+        ownerState.enroll(task)
         outstandingOutputFence = nil
         await scheduler.observe(await listener.taskProgressEnvironment(for: target))
         guard await scheduler.start(task, interval: .seconds(request.seconds ?? 300)) else {
@@ -122,17 +127,20 @@ actor ListenerTaskProgress {
         await timer().observe(await listener.taskProgressEnvironment(for: task.session))
     }
 
-    func owner(_ control: TaskProgressOwnerControl, connection: UUID) async -> Bool {
-        guard let task = enrollment, let listener,
-              await listener.taskProgressControlConnection(for: task.session) == connection else { return false }
-        return await applyOwner(control) == .applied
+    func owner(_ control: TaskProgressOwnerControl, connection: UUID, stream: UUID) async -> Bool {
+        guard let task = enrollment, let lease = ownerState.lease(for: task), let listener else { return false }
+        if let before = TaskProgressOwnerControlScope.beforeValidation { await before(task) }
+        guard let source = await listener.taskProgressOwnerSource(for: task.session, connection: connection,
+                                                                  stream: stream) else { return false }
+        let admission = ownerAdmission(control, lease: lease, source: source)
+        return await timer().owner(control, task: task, admission: admission) == .applied
     }
 
     func stop() async { if let task = enrollment { await finish(task.id) } }
 
     private func finish(_ id: UUID) async {
         guard enrollment?.id == id else { return }
-        outputFence.close()
+        ownerState.retire(id)
         await timer().finish(task: id)
         guard enrollment?.id == id else { return }
         enrollment = nil
@@ -269,7 +277,8 @@ private extension ListenerTaskProgress {
 extension WebSocketListener {
     func enableTaskProgress(clock: TaskProgressClock = .continuous) {
         guard sessionUpdates.policy.enabled, !stopped, taskProgressController == nil else { return }
-        taskProgressController = ListenerTaskProgress(listener: self, host: host, clock: clock)
+        taskProgressController = ListenerTaskProgress(listener: self, host: host, clock: clock,
+                                                      ownerLifetime: taskProgressOwnerLifetime)
     }
 
     public func taskProgress(_ request: LocalTaskProgressRequest) async -> LocalTaskProgressReport {
@@ -296,6 +305,11 @@ extension WebSocketListener {
               await peer.isLive, await peer.session.canReceiveSessionUpdate(target: target,
                 lastInput: lastInput.latest(for: target)) else { return nil }
         return connection
+    }
+
+    func taskProgressOwnerSource(for target: String, connection: UUID, stream: UUID) async -> TaskProgressOwnerSource? {
+        guard await taskProgressControlConnection(for: target) == connection, !stopped, let ambient else { return nil }
+        return .ambient(ambient, TaskProgressAmbientAudience(connection: connection, stream: stream))
     }
 
     func taskProgressEnvironment(for target: String) async -> TaskProgressEnvironment {
@@ -327,6 +341,6 @@ extension WebSocketListener {
         guard !stopped, ambient?.activeConnection() == connection,
               ambient?.isLatest(stream: stream, connection: connection) == true,
               let taskProgressController else { return false }
-        return await taskProgressController.owner(control, connection: connection)
+        return await taskProgressController.owner(control, connection: connection, stream: stream)
     }
 }
