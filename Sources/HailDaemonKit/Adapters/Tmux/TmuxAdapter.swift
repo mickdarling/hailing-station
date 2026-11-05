@@ -2,6 +2,11 @@
 // swiftlint:disable file_length
 import Foundation
 
+/// Retirement distinguishes a known unsent paste from an Enter that may already have reached tmux (#1028).
+enum PolicyRetiredDelivery: Error, Equatable {
+    case pastedUnsent, possiblySubmitted
+}
+
 /// Internal time source for submit waits (#917). Production keeps the continuous clock and its sleep semantics.
 struct TmuxSubmitClock: Sendable {
     let now: @Sendable () -> ContinuousClock.Instant
@@ -37,6 +42,8 @@ public actor TmuxAdapter: Adapter {
     /// Panes holding pasted text from a delivery that never reached a known submit (abandoned or failed after
     /// the paste). No later delivery types into them. Cleared only by a new adapter (a `haild` restart).
     private var tainted: Set<String> = []
+    /// Subset of tainted panes whose paste was retired before any possible Enter; also sticky until restart.
+    private var policyRetiredUnsent: Set<String> = []
     /// The tail of the last text pasted into each pane, so a later delivery can see it still pending (#304).
     var lastTails: [String: PayloadTail] = [:]
     /// haild's own last insert per pane, and who hears each submit outcome and pending-input refusal (#894).
@@ -162,6 +169,7 @@ extension TmuxAdapter {
         guard !tainted.contains(session.paneID) else {
             // Named, not generic (#894); clearing the pane by hand still needs a haild restart to lift the taint.
             evidence.inputPending(.tainted, in: session.paneID, seen: nil, own: lastTails[session.paneID])
+            if policyRetiredUnsent.contains(session.paneID) { throw PolicyRetiredDelivery.pastedUnsent }
             throw AdapterError.inputPending(reason: .tainted)
         }
         let tail = PayloadTail(text)
@@ -178,19 +186,23 @@ extension TmuxAdapter {
             }
             try await finishDelivery(session, control: control, tail: tail, baseline: fresh ?? baseline)
         } catch {
-            // Abandonment before the paste leaves the pane clean, as does text that appeared while the buffer filled
-            // (the paste step's own `inputPending(.appeared)`, #894); pasted and not known submitted taints it.
-            if typed {
-                tainted.insert(session.paneID)
-                do { try control.authority?.requireCurrent() } catch {
-                    if !control.didEnter {
-                        evidenceObserver?(TmuxDeliveryEvidence(event: "tmux_policy_retired_unsent", detail: ""))
-                    }
-                    throw error
-                }
-            }
-            throw error
+            try failDelivery(error, session: session, control: control, typed: typed)
         }
+    }
+
+    private func failDelivery(
+        _ error: any Error, session: Session, control: TmuxDeliveryControl, typed: Bool
+    ) throws -> Never {
+        // Before the paste, failures leave the pane clean. Any possibly pasted text keeps the 4a sticky taint.
+        guard typed else { throw error }
+        tainted.insert(session.paneID)
+        do { try control.authority?.requireCurrent() } catch {
+            guard !control.didEnter else { throw PolicyRetiredDelivery.possiblySubmitted }
+            policyRetiredUnsent.insert(session.paneID)
+            evidenceObserver?(TmuxDeliveryEvidence(event: "tmux_policy_retired_unsent", detail: ""))
+            throw PolicyRetiredDelivery.pastedUnsent
+        }
+        throw error
     }
 
     /// The binding and policy are checked after every settle wait, immediately before the first Enter.
