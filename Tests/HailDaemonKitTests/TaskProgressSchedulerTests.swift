@@ -135,11 +135,17 @@ final class ProgressTestClock: Sendable {
         _ = await scheduler.start(task, interval: .seconds(60))
         _ = try #require(await due.next())
         clock.advance(by: .seconds(60))
-        _ = try #require(await arrivals.next())
+        let accepted = try #require(await arrivals.next())
         #expect(await scheduler.owner(.pause) == .applied)
         _ = await cancellations.next()
         #expect(await scheduler.snapshot().task == task)
         #expect(await scheduler.snapshot().pauseReason == .ownerPaused)
+        #expect(await scheduler.snapshot().outstanding == accepted)
+        #expect(await scheduler.owner(.resume) == .applied)
+        clock.advance(by: .seconds(600))
+        #expect(await scheduler.snapshot().outstanding == accepted)
+        #expect(await scheduler.snapshot().nextDue == nil)
+        #expect(clock.sleeps == 1, "cancellation of an entered callback cannot solicit its busy session again")
         await scheduler.finish(task: task.id)
     }
 }
