@@ -10,6 +10,16 @@ enum TaskProgressDispatchScope {
     @TaskLocal static var hooks: TaskProgressDispatchHooks?
 }
 
+/// A final authority gate calls commit at most once, synchronously. Only pure cadence runs inside it, never I/O.
+protocol TaskProgressOwnerAdmission: Sendable {
+    func perform(_ commit: () -> TaskProgressControlResult) -> TaskProgressControlResult
+}
+
+enum TaskProgressOwnerAdmissionScope {
+    @TaskLocal static var beforeAdmission: (@Sendable (TaskProgressTask) async -> Void)?
+    @TaskLocal static var afterAdmission: (@Sendable (TaskProgressTask, TaskProgressControlResult) async -> Void)?
+}
+
 /// Event-driven deadline owner for one explicitly enrolled task (#1013). The callback is a request for status,
 /// not permission to submit provider input: composition must check live target policy, binding and task authority.
 /// A callback must not renew a voice request, interrupt a provider or recover a stalled session (#720, #1002).
@@ -54,14 +64,33 @@ public actor TaskProgressScheduler {
     @discardableResult
     public func owner(_ control: TaskProgressOwnerControl) -> TaskProgressControlResult {
         let result = state.owner(control, at: clock.now())
-        if result == .applied {
-            switch control {
-            case .pause, .stop: dispatch?.cancel()
-            default: break
-            }
-            reschedule()
-        }
+        ownerDidApply(control, result: result)
         return result
+    }
+
+    /// Retain the original task while an owning composition validates its stream/enrollment authority.
+    func owner(_ control: TaskProgressOwnerControl, task: TaskProgressTask, generation: UUID? = nil,
+               admission: any TaskProgressOwnerAdmission) async -> TaskProgressControlResult {
+        if let before = TaskProgressOwnerAdmissionScope.beforeAdmission { await before(task) }
+        guard state.task == task else { return .noTask }
+        if let generation, state.enrollmentGeneration != generation { return .noTask }
+        let result = admission.perform {
+            guard !Task.isCancelled else { return .noTask }
+            return state.owner(control, at: clock.now())
+        }
+        // Cancellation handlers and new deadline tasks must never execute under the authority's locks.
+        ownerDidApply(control, result: result)
+        if let after = TaskProgressOwnerAdmissionScope.afterAdmission { await after(task, result) }
+        return result
+    }
+
+    private func ownerDidApply(_ control: TaskProgressOwnerControl, result: TaskProgressControlResult) {
+        guard result == .applied else { return }
+        switch control {
+        case .pause, .stop: dispatch?.cancel()
+        default: break
+        }
+        reschedule()
     }
 
     @discardableResult
@@ -115,5 +144,37 @@ public actor TaskProgressScheduler {
             }
             await wake(update)
         }
+    }
+}
+
+extension TaskProgressScheduler {
+    func start(_ task: TaskProgressTask, interval: Duration, generation: UUID,
+               environment: TaskProgressEnvironment, admission: any TaskProgressOwnerAdmission) -> Bool {
+        let result = admission.perform {
+            guard !Task.isCancelled else { return .noTask }
+            guard state.start(task, interval: interval, generation: generation, at: clock.now()) else {
+                return .invalidInterval
+            }
+            state.observe(environment, at: clock.now())
+            return .applied
+        }
+        guard result == .applied else { return false }
+        dispatch?.cancel()
+        dispatch = nil
+        reschedule()
+        return true
+    }
+
+    @discardableResult
+    func finish(task: TaskProgressTask, generation: UUID) async -> Bool {
+        if let before = TaskProgressLifetimeScope.beforeFinish { await before(generation) }
+        guard state.task == task, state.enrollmentGeneration == generation else { return false }
+        finish(task: task.id)
+        return true
+    }
+
+    func observe(_ environment: TaskProgressEnvironment, task: TaskProgressTask, generation: UUID) {
+        guard state.task == task, state.enrollmentGeneration == generation else { return }
+        observe(environment)
     }
 }

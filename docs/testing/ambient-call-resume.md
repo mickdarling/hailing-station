@@ -37,7 +37,9 @@ owner-stop and initially-off coverage passed. The failures included both route o
 generation changes terminating the pause, privacy actions retaining resume intent, and missing private confirmation.
 
 Fixtures use scripted transports, held replies, hand-stepped waits and clocks, and explicit system notifications.
-Their scheduling watchdog yields while checking signals; it does not sleep or make elapsed-time assertions.
+The original scheduling watchdog yielded while checking signals. Current Core call-fixture qualification uses
+the standard bounded `waitUntil` poller (10-second scheduling watchdog, 5 ms cooperative polling). Protocol
+time still advances through injected waits and signals; protocol assertions and deadlines are unchanged.
 The prior guard that made a microphone interruption during a transport gap terminal is superseded by the call
 resume ruling. Its replacement proves that transport-first interruptions also pause and resume. Additional guards
 cover background reauthorization, destination/selection loss, route reconfiguration, and rejected,
@@ -236,3 +238,38 @@ new stream. Cleanup releases the owned gates on every exit and attempts a bounde
 the production fix are source-prepared only at this stage; runtime qualification and negative controls are
 pending the exclusive validation-cache lease. No physical call, microphone, model, installed build or live
 service has been changed or validated by this repair. #982 and its physical acceptance remain open.
+
+
+## Cooperative call-fixture scheduling follow-up
+
+The failed parallel Core runs at `f8eb1b36d68a354ca567abed0b5e0f2183947c27` remain recorded separately
+from the passing focused family and guard causal controls. `callEventually` now delegates to the established
+bounded scheduling watchdog rather than issuing up to 100,000 busy yields. This is a test-only scheduling
+change: every assertion, injected protocol clock and production byte is retained. It is a candidate explanation
+for the observed scheduling delays, not a proven cause until the helper-only parallel-Core comparison and
+current-head qualification complete. Historical commands and results above remain historical evidence;
+current mandatory verification uses the unchanged script and its default concurrency in a separate private cache.
+
+
+The pure call-capture fixture now supplies its own initially closed app-route override window. Concurrent fake
+`ManagedAudioSession` input selections can open the production process-wide singleton; an external call-like
+route in this separate fixture must not inherit that app-initiated override. Production's default shared-window
+guard and both window durations are unchanged. The two route-window failures remain recorded; a scoped
+shared-window interference control and fresh complete qualification are required before counting this fix.
+
+
+## Neighboring broken-stdin fixture boundary
+
+The first corrected call head921 passed local full verification, then hosted CI passed Core but failed one
+neighboring RightyoCoachingTransportFailureTests case: four bytes had been accepted before the pipe failed.
+That failed gate remains recorded. A controlled synthetic descendant retaining stdin demonstrates that the
+leader closing FD0 and reporting ready does not prove every reader has disappeared; it does not identify the
+actual hosted reader or assign a host-load cause. An earlier diagnostic attempt had its own FIFO/watchdog
+failure and remains incomplete, separately preserved.
+
+The transport fixture now pins writtenBytes when a valid frame is actually refused, requires repeated valid
+frames to stay refused and byte counts to remain fixed, and retains the coaching transportLost versus ordinary
+stdout distinction while the child is alive behind its release FIFO. The existing FIFO/child-lifetime and buffered/unbuffered stdout assertions remain. Fixture scheduling waits
+are bounded/cooperative;
+production writer, child-spawn and revocation bytes are unchanged. Current strict compilation, controlled
+reader-topology qualification, complete verification and fresh independent source reviews are separate gates.

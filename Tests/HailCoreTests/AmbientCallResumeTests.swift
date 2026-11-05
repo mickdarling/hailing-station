@@ -4,15 +4,11 @@ import HailProtocol
 import Testing
 @testable import HailCore
 
-/// Scheduling watchdog only: protocol time advances exclusively through injected waits and signals.
+/// Cooperative scheduling watchdog only: protocol time advances through injected waits and signals.
+/// Share the standard bounded poller instead of busy-yielding while actor callbacks must make progress.
 func callEventually(file: StaticString = #fileID, line: UInt = #line,
                     _ condition: @escaping @Sendable () async throws -> Bool) async throws {
-    for _ in 0..<100_000 {
-        if try await condition() { return }
-        await Task.yield()
-    }
-    Issue.record("Call fixture did not reach its signalled state at \(file):\(line)")
-    throw CancellationError()
+    try await waitUntil(timeout: .seconds(10), file: String(describing: file), line: Int(line), condition)
 }
 
 @MainActor
