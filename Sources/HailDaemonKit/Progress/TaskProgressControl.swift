@@ -61,6 +61,15 @@ public struct TaskProgressEnvironment: Sendable, Equatable {
 public struct TaskProgressWake: Sendable, Equatable {
     public let task: TaskProgressTask
     public let token: UUID
+    let enrollmentGeneration: UUID
+
+    init(task: TaskProgressTask, token: UUID, enrollmentGeneration: UUID = UUID()) {
+        (self.task, self.token, self.enrollmentGeneration) = (task, token, enrollmentGeneration)
+    }
+}
+
+enum TaskProgressLifetimeScope {
+    @TaskLocal static var beforeFinish: (@Sendable (UUID) async -> Void)?
 }
 
 public struct TaskProgressSnapshot: Sendable, Equatable {
