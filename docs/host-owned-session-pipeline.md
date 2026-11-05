@@ -55,8 +55,12 @@ The existing reply descriptor and frame identity remain authoritative for audio/
 
 ## Adapter integration profiles
 
+Every profile follows the seat principle recorded in [#1074](https://github.com/mickdarling/hailing-station/issues/1074): a plug drives a session the way the user would at that machine, through the harness's own interface, configuration and login. `haild` never holds, chooses or injects provider credentials. Each plug declares a support tier and capabilities (see #1074). The Claude Code cloud row is the named exception ([#1073](https://github.com/mickdarling/hailing-station/issues/1073), [#1075](https://github.com/mickdarling/hailing-station/issues/1075)). The ACP and cloud rows are proposals under investigation, not shipped integrations.
+
 | Profile | First source of truth | Host may claim | Must not claim |
 | --- | --- | --- | --- |
+| ACP agents (proposed, [#1076](https://github.com/mickdarling/hailing-station/issues/1076)) | Agent Client Protocol over stdio, with the harness's own stored login | Capabilities the agent advertises and the spike proves | That an adapter-run session is the user's interactive session, or that any credential came from `haild` |
+| Claude Code cloud session (experimental, [#1075](https://github.com/mickdarling/hailing-station/issues/1075)) | Documented `claude -p --cloud` for input; the undocumented sessions events API for output, read-only and opt-in, falling back to send-only | Delivery, reply text and turn end as observed on the configured CLI version | That the output path is supported by Anthropic or stable across versions |
 | Generic tmux / terminal TUI | Bound pane/PTY observations plus process lifecycle | Text was injected; observed screen changes; explicit completion only with a reliable signal | That Enter was accepted, a redraw is a new reply, or a pane snapshot is a structured agent turn |
 | Host-owned Codex session | Documented CLI/App Server structured events, subject to [#134](https://github.com/mickdarling/hailing-station/issues/134) | Capabilities demonstrated in an isolated session | Visibility/control of every desktop, cloud, remote, or concurrent session |
 | Claude Code and other agent CLIs | Their documented structured API if available; otherwise a supervised PTY | Only capabilities proven for the configured version/profile | That a provider-specific hook is required for Hailing Station output |

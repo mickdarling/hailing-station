@@ -29,6 +29,9 @@ package struct ReplyStreamTiming: Sendable, Equatable {
         package var frames = 0
         package var audio: Duration = .zero
         package var firstAudio: Duration?
+        package var firstPCM: Duration?
+        package var firstFrameReady: Duration?
+        package var firstPublishStart: Duration?
         package var minimumLead: Duration?
         package var slowestAcknowledgement: Duration = .zero
         package var acknowledgementP95: Duration = .zero
@@ -39,6 +42,20 @@ package struct ReplyStreamTiming: Sendable, Equatable {
 
     private let started: ContinuousClock.Instant
     private var firstAcknowledged: ContinuousClock.Instant?
+    private var firstPCM: ContinuousClock.Instant?
+    private var firstFrameReady: ContinuousClock.Instant?
+    private var firstPublishStart: ContinuousClock.Instant?
+
+    package enum Stage: Sendable { case pcm, frameReady, publishStart }
+
+    /// First observations only. These are consumer milestones, not the time the renderer wrote to its pipe.
+    package mutating func mark(_ stage: Stage, at now: ContinuousClock.Instant) {
+        switch stage {
+        case .pcm: if firstPCM == nil { firstPCM = now }
+        case .frameReady: if firstFrameReady == nil { firstFrameReady = now }
+        case .publishStart: if firstPublishStart == nil { firstPublishStart = now }
+        }
+    }
     private var audio: Duration = .zero
     private var minimumLead: Duration?
     private var acknowledgements: [Duration] = []
@@ -69,6 +86,8 @@ package struct ReplyStreamTiming: Sendable, Equatable {
         let p95 = sorted.isEmpty ? Duration.zero : sorted[min(sorted.count - 1, (sorted.count * 95 + 99) / 100 - 1)]
         return Summary(
             frames: acknowledgements.count, audio: audio, firstAudio: firstAcknowledged.map { $0 - started },
+            firstPCM: firstPCM.map { $0 - started }, firstFrameReady: firstFrameReady.map { $0 - started },
+            firstPublishStart: firstPublishStart.map { $0 - started },
             minimumLead: minimumLead, slowestAcknowledgement: sorted.last ?? .zero, acknowledgementP95: p95,
             resends: resends, wall: end - started
         )
@@ -76,6 +95,15 @@ package struct ReplyStreamTiming: Sendable, Equatable {
 }
 
 extension ReplyStreamTiming.Summary {
+    /// A separate versioned line preserves the original summary's format. Durations are offsets from job start.
+    package func stageLine(outcome: String) -> String {
+        func ms(_ value: Duration?) -> String { value.map { String(Int64($0 / .milliseconds(1))) } ?? "none" }
+        let allowed = ["played", "played_unmeasured", "failed", "cancelled", "superseded"]
+        let safeOutcome = allowed.contains(outcome) ? outcome : "unknown"
+        return "reply stages v1: first_pcm_ms=\(ms(firstPCM)) first_frame_ready_ms=\(ms(firstFrameReady)) "
+            + "first_publish_start_ms=\(ms(firstPublishStart)) first_ack_ms=\(ms(firstAudio)) outcome=\(safeOutcome)"
+    }
+
     /// One log line, numbers only.
     package var line: String {
         func ms(_ value: Duration?) -> String { value.map { String(Int64($0 / .milliseconds(1))) } ?? "none" }
@@ -93,6 +121,10 @@ package final class ReplyTimingRecorder: Sendable {
         timing = Mutex(ReplyStreamTiming(startedAt: started))
     }
 
+    package func mark(_ stage: ReplyStreamTiming.Stage, at now: ContinuousClock.Instant = .now) {
+        timing.withLock { $0.mark(stage, at: now) }
+    }
+
     package func sent(audio: Duration, at sentAt: ContinuousClock.Instant, acknowledgedAfter: Duration, resends: Int) {
         timing.withLock { $0.sent(audio: audio, at: sentAt, acknowledgedAfter: acknowledgedAfter, resends: resends) }
     }
@@ -105,5 +137,6 @@ package final class ReplyTimingRecorder: Sendable {
         let summary = timing.withLock { $0.summary(at: end) }
         let outcome = outcome == "played" && summary.frames == 0 ? "played_unmeasured" : outcome
         timingLogger.notice("\(summary.line, privacy: .public) outcome=\(outcome, privacy: .public)")
+        timingLogger.notice("\(summary.stageLine(outcome: outcome), privacy: .public)")
     }
 }
