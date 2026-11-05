@@ -241,6 +241,7 @@ scripts_() {
   trace_tests
   python3 -m unittest discover -s Tests/LocalIntentEvalTests
   python3 -m unittest scripts/tests/test_verify_test_output.py
+  python3 -m unittest scripts/tests/test_reply_timing_summary.py
   # `scripts` is also a standalone entry point; the CLI integration must not rely on `all` building first.
   swift build --product haild ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
   python3 -m unittest discover -s Tests/ReplyCLITests

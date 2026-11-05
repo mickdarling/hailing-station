@@ -141,6 +141,7 @@ import Testing
             "malformed: ambient stream must be new and start at sequence 0",
             "malformed: ambient sequence must increase",
             "not_allowed: ambient stopped: listener exited",
+            "not_allowed: ambient unavailable: no listener",
             // The host ended a stream opened before the owner selected away and back (#636): listen again after the
             // recovery backoff.
             "not_allowed: ambient stopped: the destination was selected again",
@@ -148,7 +149,7 @@ import Testing
         ]
         let final = [
             "not_allowed: ambient busy", "not_allowed: ambient target is not selected",
-            "not_allowed: ambient unavailable: no listener", "malformed: ambient segment shape"
+            "malformed: ambient segment shape"
         ]
         for message in transient {
             #expect(AmbientListeningController.isTransient(HostConnectionFailure.remote(message)))
