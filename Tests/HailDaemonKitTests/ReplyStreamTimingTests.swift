@@ -63,6 +63,33 @@ import Testing
             + "min_lead_ms=399 ack_max_ms=9 ack_p95_ms=9 resends=2 wall_ms=3000")
     }
 
+    @Test func stageOffsetsAreFirstOnlyAndUseTheSameStartAsAcknowledgement() {
+        var timing = ReplyStreamTiming(startedAt: at(0))
+        timing.mark(.pcm, at: at(100))
+        timing.mark(.pcm, at: at(150))
+        timing.mark(.frameReady, at: at(500))
+        timing.mark(.publishStart, at: at(600))
+        timing.sent(audio: .milliseconds(500), at: at(600), acknowledgedAfter: .milliseconds(25))
+        timing.mark(.frameReady, at: at(900))
+        timing.mark(.publishStart, at: at(1_000))
+        timing.sent(audio: .milliseconds(750), at: at(1_000), acknowledgedAfter: .milliseconds(8))
+        #expect(timing.summary(at: at(2_000)).stageLine(outcome: "played") == "reply stages v1: first_pcm_ms=100 "
+            + "first_frame_ready_ms=500 first_publish_start_ms=600 first_ack_ms=625 outcome=played")
+    }
+
+    @Test func absentAndFailedMilestonesStayMissing() {
+        var timing = ReplyStreamTiming(startedAt: at(0))
+        let empty = timing.summary(at: at(20)).stageLine(outcome: "played_unmeasured")
+        #expect(empty == "reply stages v1: first_pcm_ms=none first_frame_ready_ms=none "
+            + "first_publish_start_ms=none first_ack_ms=none outcome=played_unmeasured")
+        timing.mark(.pcm, at: at(10))
+        timing.mark(.frameReady, at: at(15))
+        timing.mark(.publishStart, at: at(17)) // Failed before acknowledgement: sent() is never called.
+        #expect(timing.summary(at: at(20)).stageLine(outcome: "failed") == "reply stages v1: first_pcm_ms=10 "
+            + "first_frame_ready_ms=15 first_publish_start_ms=17 first_ack_ms=none outcome=failed")
+        #expect(timing.summary(at: at(20)).stageLine(outcome: "private text").hasSuffix("outcome=unknown"))
+    }
+
     @Test func anInstalledHaildLogsAsLiveAndABuildLogsAsDev() {
         let release = "/Users/o/Library/Application Support/HailingStation/releases/830b7a7ac06cc4e4/haild"
         #expect(ReplyTimingLog.category(executablePath: release) == "reply-timing")
