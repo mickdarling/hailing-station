@@ -156,6 +156,7 @@ public final class AmbientListeningReconnect {
     public enum Reason: Int64, Sendable {
         case ownerStop = 1, ownerSelection, endpointChanged, explicitDisconnect, privacy, modeChanged
         case bindingChanged, targetChanged, startFailed, nonTransport, timedOut, movedAway, reauthorizationNeeded
+        case callAddressChanged, callPolicyChanged, targetPolicyChanged
     }
     public enum Outcome: Sendable { case applied, blocked, failed, interrupted }
     public struct Notice: Equatable, Sendable {
@@ -172,6 +173,15 @@ public final class AmbientListeningReconnect {
             return outcome == .applied ? "Hailing Station reconnected" : "Hailing Station stopped listening"
         }
         public var text: String {
+            if reason == .callAddressChanged {
+                return "listening stopped: host address changed during call"
+            }
+            if reason == .callPolicyChanged {
+                return AmbientRefusal.callPolicyStopReason
+            }
+            if reason == .targetPolicyChanged {
+                return AmbientRefusal.policyStopReason
+            }
             if reason == .reauthorizationNeeded {
                 return "Listening stopped; re-authorization needed. Choose a destination to continue."
             }
@@ -185,6 +195,9 @@ public final class AmbientListeningReconnect {
     public private(set) var notice: Notice?
     @ObservationIgnored public var onNotice: (@MainActor (Notice) -> Void)?
     @ObservationIgnored weak var controller: AmbientListeningController?
+    @ObservationIgnored weak var store: HostConnectionStore?
+    private var captureRequiresPrivacy = false
+    private var capturePrivacyBinding: AmbientAudioBinding?
     @ObservationIgnored var sleep: (@Sendable (Duration) async throws -> Void)?
     @ObservationIgnored var now: @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now }
     @ObservationIgnored let privacyConfirmation = AmbientRestorePrivacy()
@@ -213,6 +226,7 @@ public final class AmbientListeningReconnect {
     var isReauthorizing: Bool { isPending && !renewed && selectionGeneration != nil }
     func ownerStarted() {
         veto = nil; notice = nil; replacedAppliedNotice = false
+        captureResumed()
         pacing?.cancel()
         pacing = nil
         cancelAcceptance()
@@ -220,12 +234,16 @@ public final class AmbientListeningReconnect {
     func block(_ reason: Reason) {
         veto = veto ?? reason // Includes a privacy tap before the receive loop publishes the close, even if send fails.
         cancelAcceptance()
-        guard isPending else { return }
-        finish(.blocked, reason: veto)
-        controller?.cancelTransportRestore()
+        privacyConfirmation.cancel()
+        let stopping = isPending || controller?.pausedReason != nil
+        if isPending { finish(.blocked, reason: veto) }
+        if stopping {
+            controller?.cancelTransportRestore(reason: veto)
+        }
     }
     func drop(_ snapshot: HostConnectionSnapshot, store: HostConnectionStore) {
-        guard let controller, controller.isListening, let current = controller.binding,
+        guard let controller, controller.isOn, controller.isListening || controller.pausedReason != nil,
+              let current = controller.binding,
               current.hostID == snapshot.id else { return }
         // A send failure and the receive loop may report the SAME drop. Only a different socket is a flap.
         guard pending?.droppedGeneration != snapshot.connectionGeneration else { return }
@@ -281,12 +299,24 @@ public final class AmbientListeningReconnect {
 extension AmbientListeningReconnect {
     func receive(_ snapshot: HostConnectionSnapshot, previous: HostConnectionSnapshot?, store: HostConnectionStore) {
         recordDrop(snapshot, previous: previous, store: store)
+        if case .failed(let reason) = snapshot.state, reason.hasPrefix("host error: "),
+           controller?.pausedReason != nil, controller?.binding?.hostID == snapshot.id,
+           controller?.binding?.connectionGeneration == snapshot.connectionGeneration,
+           AmbientRefusal.isPolicyStop(HostConnectionFailure.remote(String(reason.dropFirst("host error: ".count)))) {
+            block(.callPolicyChanged)
+            return
+        }
         guard let intent = pending, intent.binding.hostID == snapshot.id else { return }
         if case .failed(let reason) = snapshot.state {
             return block(reason.hasPrefix("host error: unauthorized:") ? .reauthorizationNeeded : .nonTransport)
         }
         if snapshot.state == .disconnected { return block(.explicitDisconnect) }
-        if snapshot.endpoint != intent.endpoint { return block(.endpointChanged) }
+        if snapshot.endpoint != intent.endpoint {
+            if snapshot.endpoint.url != intent.endpoint.url, controller?.pausedReason != nil {
+                return block(.callAddressChanged)
+            }
+            return block(.endpointChanged)
+        }
         guard snapshot.state == .ready, snapshot.receivedTargetList else { return }
         if !snapshot.capabilities.contains(HostConnection.streamAudioCapability) { return block(.bindingChanged) }
         if !snapshot.targets.contains(where: { $0 == intent.target && $0.alive }) { return block(.targetChanged) }
@@ -343,7 +373,8 @@ extension AmbientListeningReconnect {
     }
     func allowsTransportRetry(host id: HostEndpoint.Identifier, generation: UUID) -> Bool {
         guard veto == nil, let pending, pending.binding.hostID == id, pending.droppedGeneration == generation,
-              controller?.isOn == true, controller?.isListening == true else { return false }
+              controller?.isOn == true,
+              controller?.isListening == true || controller?.pausedReason != nil else { return false }
         return true
     }
     /// Reauthorize the same selection on a new generation. No fresh capture start or foreground requirement.
@@ -377,6 +408,7 @@ extension AmbientListeningReconnect {
         guard let controller else { return }
         renewed = true // Host notices after this are normal listening state, never an owner action during the gap.
         binding = current
+        if pending?.privateBeforeDrop == true { capturePrivacyBinding = current }
         if !controller.restoreTransport(current) {
             finish(.failed, reason: .startFailed)
             controller.cancelTransportRestore()
@@ -432,6 +464,11 @@ extension AmbientListeningReconnect {
     func refreshEndpoint(_ endpoint: HostEndpoint, previous: HostConnectionSnapshot?,
                          store: HostConnectionStore) -> Bool {
         guard let previous, previous.id == endpoint.id else { return false }
+        if previous.endpoint.url != endpoint.url, controller?.pausedReason != nil,
+           controller?.binding?.hostID == endpoint.id {
+            block(.callAddressChanged)
+            return false
+        }
         if !isPending { drop(previous, store: store) }
         guard !(previous.endpoint.url.scheme?.lowercased() == "wss" && endpoint.url.scheme?.lowercased() == "ws")
         else { return false }
@@ -490,4 +527,61 @@ final class AmbientResumeAcceptance: Sendable {
 public extension AmbientListeningReconnect.Reason {
     /// Fixed local log vocabulary; device diagnostics retain the numeric reason for older hosts.
     var diagnosticToken: String? { self == .reauthorizationNeeded ? "reauthorization_needed" : nil }
+}
+
+/// Fresh microphone streams use the same generation-bound reassertion as transport restoration (#904).
+extension AmbientListeningReconnect {
+    var canResumeCapture: Bool { veto == nil && (!isPending || renewed) }
+
+    func capturePaused() {
+        capturePrivacyBinding = nil
+        if let host = controller?.binding?.hostID {
+            captureRequiresPrivacy = store?.duckMode[host]?.isOn() == true || pending?.privateBeforeDrop == true
+        }
+    }
+
+    func captureResumed() {
+        privacyConfirmation.cancel()
+        captureRequiresPrivacy = false
+        capturePrivacyBinding = nil
+    }
+
+    func prepareCaptureResume(_ current: AmbientAudioBinding) -> Bool {
+        guard canResumeCapture else { return false }
+        if store?.privacyLocal[current.hostID]?.request != nil {
+            block(.privacy)
+            return false
+        }
+        let privateNow = store?.duckMode[current.hostID]?.isOn() == true
+        guard captureRequiresPrivacy || privateNow else { return true }
+        if capturePrivacyBinding == current { return true }
+        guard let store else { return false }
+        if reopenPrivateCaptureTransport(current, store: store) {
+            return false
+        }
+        privacyConfirmation.sleep = sleep
+        privacyConfirmation.now = now
+        privacyConfirmation.begin(current, store: store) { [weak self] confirmed in
+            guard let self, self.canResumeCapture, self.controller?.isOn == true,
+                  self.controller?.pausedReason != nil, self.controller?.binding == current else { return }
+            guard confirmed else {
+                self.controller?.diagnostics?.record(.captureError, [.code: .token("resume_failed")])
+                return self.block(.privacy)
+            }
+            self.capturePrivacyBinding = current
+            self.controller?.retryPausedCapture()
+        }
+        return false
+    }
+
+    private func reopenPrivateCaptureTransport(_ current: AmbientAudioBinding, store: HostConnectionStore) -> Bool {
+        guard current == controller?.binding, !isPending,
+              let snapshot = store.snapshots[current.hostID],
+              snapshot.connectionGeneration == current.connectionGeneration else { return false }
+        // An already-private host sends no same-socket confirmation. Its pre-arm only accepts a
+        // fresh connection: retain call intent and use the ordinary paced reconnect/selection path.
+        drop(snapshot, store: store)
+        retrySelectionTransport(snapshot, store: store)
+        return true
+    }
 }
