@@ -8,7 +8,8 @@ public enum HostError: Error, Equatable, Sendable {
     case adapterUnavailable(kind: String, reason: String)
     case refused(SanitizeError)
     case denied(Denial)
-    case partial(delivered: [String], reason: String)
+    /// `pastedUnsent` identifies a retired paste after the delivered lines; it never counts as submitted.
+    case partial(delivered: [String], reason: String, pastedUnsent: Bool = false)
     case policyUnavailable(String)
 }
 final class ObservationCleanup: Sendable {
@@ -161,12 +162,7 @@ public actor HailHost {
             // Recorded before the suspension, so concurrent sends cannot all pass admission on one history;
             // an attempt the adapter then refuses still spent its slot (fail closed).
             limiter.record(request, at: clock.now)
-            do {
-                try await registry.deliver(line, to: id, binding: listed.binding, context: dispatch.turn,
-                                           authority: dispatch.policyGeneration?.deliveryAuthority)
-            } catch {
-                throw preservingPartial(error, delivered: delivered)
-            }
+            try await deliverLine(line, request: dispatch, binding: listed.binding, delivered: delivered)
             delivered.append(line)
         }
         return .delivered(delivered)
@@ -350,8 +346,31 @@ extension HailHost {
         throw preservingPartial(CancellationError(), delivered: delivered)
     }
 
-    private func preservingPartial(_ error: any Error, delivered: [String]) -> any Error {
+    private func deliverLine(
+        _ line: String, request: DispatchRequest, binding: String?, delivered: [String]
+    ) async throws {
+        do {
+            try await registry.deliver(line, to: request.target, binding: binding, context: request.turn,
+                                       authority: request.policyGeneration?.deliveryAuthority)
+        } catch {
+            var partial = delivered
+            // A possibly sent Enter is a handoff, like tmux's existing unverifiable submit outcome.
+            if case PolicyRetiredDelivery.possiblySubmitted = error { partial.append(line) }
+            throw preservingPartial(error, delivered: partial, policyGeneration: request.policyGeneration)
+        }
+    }
+
+    private func preservingPartial(
+        _ error: any Error, delivered: [String], policyGeneration: TargetPolicyGeneration? = nil
+    ) -> any Error {
         guard !delivered.isEmpty else { return error }
+        let pastedUnsent = (error as? PolicyRetiredDelivery) == .pastedUnsent
+        do { try policyGeneration?.requireCurrent() } catch {
+            return HostError.partial(delivered: delivered, reason: "target_policy_changed", pastedUnsent: pastedUnsent)
+        }
+        if error is PolicyRetiredDelivery {
+            return HostError.partial(delivered: delivered, reason: "target_policy_changed", pastedUnsent: pastedUnsent)
+        }
         if error is CancellationError {
             return HostError.partial(delivered: delivered, reason: "delivery cancelled")
         }
