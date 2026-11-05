@@ -249,3 +249,10 @@ change: every assertion, injected protocol clock and production byte is retained
 for the observed scheduling delays, not a proven cause until the helper-only parallel-Core comparison and
 current-head qualification complete. Historical commands and results above remain historical evidence;
 current mandatory verification uses the unchanged script and its default concurrency in a separate private cache.
+
+
+The pure call-capture fixture now supplies its own initially closed app-route override window. Concurrent fake
+`ManagedAudioSession` input selections can open the production process-wide singleton; an external call-like
+route in this separate fixture must not inherit that app-initiated override. Production's default shared-window
+guard and both window durations are unchanged. The two route-window failures remain recorded; a scoped
+shared-window interference control and fresh complete qualification are required before counting this fix.
