@@ -69,10 +69,11 @@ public actor TaskProgressScheduler {
     }
 
     /// Retain the original task while an owning composition validates its stream/enrollment authority.
-    func owner(_ control: TaskProgressOwnerControl, task: TaskProgressTask,
+    func owner(_ control: TaskProgressOwnerControl, task: TaskProgressTask, generation: UUID? = nil,
                admission: any TaskProgressOwnerAdmission) async -> TaskProgressControlResult {
         if let before = TaskProgressOwnerAdmissionScope.beforeAdmission { await before(task) }
         guard state.task == task else { return .noTask }
+        if let generation, state.enrollmentGeneration != generation { return .noTask }
         let result = admission.perform {
             guard !Task.isCancelled else { return .noTask }
             return state.owner(control, at: clock.now())
@@ -143,5 +144,37 @@ public actor TaskProgressScheduler {
             }
             await wake(update)
         }
+    }
+}
+
+extension TaskProgressScheduler {
+    func start(_ task: TaskProgressTask, interval: Duration, generation: UUID,
+               environment: TaskProgressEnvironment, admission: any TaskProgressOwnerAdmission) -> Bool {
+        let result = admission.perform {
+            guard !Task.isCancelled else { return .noTask }
+            guard state.start(task, interval: interval, generation: generation, at: clock.now()) else {
+                return .invalidInterval
+            }
+            state.observe(environment, at: clock.now())
+            return .applied
+        }
+        guard result == .applied else { return false }
+        dispatch?.cancel()
+        dispatch = nil
+        reschedule()
+        return true
+    }
+
+    @discardableResult
+    func finish(task: TaskProgressTask, generation: UUID) async -> Bool {
+        if let before = TaskProgressLifetimeScope.beforeFinish { await before(generation) }
+        guard state.task == task, state.enrollmentGeneration == generation else { return false }
+        finish(task: task.id)
+        return true
+    }
+
+    func observe(_ environment: TaskProgressEnvironment, task: TaskProgressTask, generation: UUID) {
+        guard state.task == task, state.enrollmentGeneration == generation else { return }
+        observe(environment)
     }
 }

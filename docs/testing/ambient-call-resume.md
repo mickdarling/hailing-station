@@ -256,3 +256,20 @@ The pure call-capture fixture now supplies its own initially closed app-route ov
 route in this separate fixture must not inherit that app-initiated override. Production's default shared-window
 guard and both window durations are unchanged. The two route-window failures remain recorded; a scoped
 shared-window interference control and fresh complete qualification are required before counting this fix.
+
+
+## Neighboring broken-stdin fixture boundary
+
+The first corrected call head921 passed local full verification, then hosted CI passed Core but failed one
+neighboring RightyoCoachingTransportFailureTests case: four bytes had been accepted before the pipe failed.
+That failed gate remains recorded. A controlled synthetic descendant retaining stdin demonstrates that the
+leader closing FD0 and reporting ready does not prove every reader has disappeared; it does not identify the
+actual hosted reader or assign a host-load cause. An earlier diagnostic attempt had its own FIFO/watchdog
+failure and remains incomplete, separately preserved.
+
+The transport fixture now pins writtenBytes when a valid frame is actually refused, requires repeated valid
+frames to stay refused and byte counts to remain fixed, and retains the coaching transportLost versus ordinary
+stdout distinction while the child is alive behind its release FIFO. The existing FIFO/child-lifetime and buffered/unbuffered stdout assertions remain. Fixture scheduling waits
+are bounded/cooperative;
+production writer, child-spawn and revocation bytes are unchanged. Current strict compilation, controlled
+reader-topology qualification, complete verification and fresh independent source reviews are separate gates.

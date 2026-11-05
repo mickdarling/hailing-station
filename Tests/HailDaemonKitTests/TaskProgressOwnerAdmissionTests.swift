@@ -33,7 +33,8 @@ import Testing
             let control = Task { await scheduler.owner(.stop, task: old, admission: OwnerTestAdmission(allowed: true)) }
             defer { control.cancel() }
             var entered = barrier.entered.stream.makeAsyncIterator()
-            #expect(try #require(await entered.next()) == old.id)
+            let enteredID = try #require(await entered.next())
+            #expect(enteredID == old.id)
             await scheduler.finish(task: old.id)
             _ = await scheduler.start(replacement, interval: .seconds(120))
             barrier.release()
@@ -66,7 +67,11 @@ import Testing
         _ = try #require(await arrivals.next())
         #expect(await scheduler.owner(.pause, task: task, admission: gate) == .applied)
         var cancellations = canceled.stream.makeAsyncIterator()
-        #expect(try #require(await cancellations.next()) == false)
+        guard let inside = await cancellations.next() else {
+            Issue.record("The admitted dispatch did not report cancellation")
+            throw CancellationError()
+        }
+        #expect(inside == false)
         #expect(await scheduler.snapshot().outstanding?.task == task)
         await scheduler.finish(task: task.id)
     }
