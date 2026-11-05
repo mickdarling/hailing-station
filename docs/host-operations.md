@@ -174,7 +174,7 @@ ps -o pid,pri,nice,%cpu,rss,command -p "$(pgrep -d, -f 'haild run|vbstreamd|Virt
   - For an offline aggregate of existing lines, pipe text from `log show` into `python3 scripts/reply-timing-summary.py`. For example:
 
     ```sh
-    log show --last 24h --info --style compact --predicate 'subsystem == "com.mickdarling.hailing-station" && category == "reply-timing"' | python3 scripts/reply-timing-summary.py
+    /usr/bin/log show --last 24h --info --style compact --predicate 'subsystem == "com.mickdarling.hailing-station" && category == "reply-timing"' | python3 scripts/reply-timing-summary.py
     ```
 
     The analyzer reads stdin only, ignores lines without a complete recognized record, and prints only counts and numeric aggregates; it does not echo or save input. It counts outcomes separately and calculates metrics for `played` replies only, excluding `none` values from each metric's sample size. Median is the usual middle value (mean of the middle pair for even samples); p95 is nearest-rank, so small samples have coarse tails. The output can still reveal information about activity and should be handled accordingly. Input and logging commands may expose other information if redirected or captured separately. `reply-timing-dev` is excluded by the predicate, not by the analyzer; supply only the intended category and time window.
