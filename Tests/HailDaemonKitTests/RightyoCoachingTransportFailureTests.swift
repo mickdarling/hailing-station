@@ -27,9 +27,7 @@ import Testing
             let ready: Data? = try await iterator.next()
             try #require(ready == Data("ready".utf8))
             if buffered {
-                while child.lines.base.queued.withLock({ $0 }) == 0 {
-                    try Task.checkCancellation(); await Task.yield()
-                }
+                try #require(await eventually { child.lines.base.queued.withLock { $0 } > 0 })
             }
             try await observeFailureAndRelease(child, fake: fake)
             if coaching {
@@ -49,19 +47,26 @@ import Testing
         try #require(child.write(frame)) // Queue admission precedes the asynchronous EPIPE.
         // Only failure can reject this valid frame: no local close, and the child is held alive at the FIFO.
         // Rejection takes the writer lock after its synchronous revocation callback has completed.
-        while child.write(frame) { try Task.checkCancellation(); await Task.yield() }
-        #expect(child.counters.writtenBytes == 0)
-        try await releaseOutput(fake.directory.appendingPathComponent("release"))
-        while !FileManager.default.fileExists(atPath: fake.directory.appendingPathComponent("emitted").path) {
-            try Task.checkCancellation(); await Task.yield()
+        try #require(await eventually { !child.write(frame) })
+        let writtenAtFailure = child.counters.writtenBytes
+        // Closing the leader's stdin does not prove every inherited reader is already gone. Any earlier
+        // kernel-accepted bytes are distinct from this boundary: a failed writer must stay retired.
+        for _ in 0..<8 {
+            #expect(!child.write(frame))
+            #expect(child.counters.writtenBytes == writtenAtFailure)
         }
+        try await releaseOutput(fake.directory.appendingPathComponent("release"))
+        try #require(await eventually {
+            FileManager.default.fileExists(atPath: fake.directory.appendingPathComponent("emitted").path)
+        })
         try #require(child.exitStatus == nil)
     }
 
     private func releaseOutput(_ fifo: URL) async throws {
         var descriptor = open(fifo.path, O_WRONLY | O_NONBLOCK | O_CLOEXEC)
-        while descriptor < 0, errno == ENXIO {
-            try Task.checkCancellation(); await Task.yield()
+        let deadline = ContinuousClock.now + .seconds(15)
+        while descriptor < 0, errno == ENXIO, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
             descriptor = open(fifo.path, O_WRONLY | O_NONBLOCK | O_CLOEXEC)
         }
         try #require(descriptor >= 0)
