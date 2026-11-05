@@ -208,3 +208,29 @@ polling probe is retained separately and is excluded from this product fail-befo
 Exact baseline command/results: host-local `hs-982-evidence/r4-moved-fail-before.log`.
 The refreshed four-point host trace is recorded above and in `r4-source-trace.txt`; only the main merge changed
 host production files. All subsequent verification is synthetic macOS SwiftPM execution.
+
+
+## Current source repair for the round 3 findings
+
+The original round 3 REQUEST CHANGES at `efd2de040aa5fd38128cc54730b5c57b83375a46`
+remains historical evidence. The follow-up closes the constructor return boundary: after awaiting streamer
+construction, the controller checks the same live session, exact destination binding and unvetoed resume
+intent before starting capture. A veto releases the newly activated session without starting the microphone.
+
+A pause retains the outgoing capture's stream and binding. A policy notice is current only when its socket
+generation, saved capture stream and still-authorized owner selection match that pause. Explicitly different
+targets are rejected before the connection stores a stream refusal. Legacy host errors omit target and stream;
+they retain their existing connection-attributed stream semantics, with the additional capture/binding checks.
+A new paused run that has sent no PCM cannot inherit the previous selection's last-sent stream. An ambient
+error before any stream has been sent remains a protocol failure and follows the existing fail-closed path.
+This does not add wire provenance or claim to distinguish two target-less host errors attributed to the same
+latest stream; the host's existing latest-stream gate remains the boundary for those errors.
+
+`AmbientCallPolicyRepairTests` adds a latched constructor-return injection through the store notice path,
+an explicitly stale target delivered through the real scripted socket receive loop, and a target-less old
+stream after a same-target reselection or a different-target selection. Constructor-return injection checks
+that neither capture-start count nor PCM advances; stale notices must preserve intent and permit a genuinely
+new stream. Cleanup releases the owned gates on every exit and attempts a bounded close. These tests and
+the production fix are source-prepared only at this stage; runtime qualification and negative controls are
+pending the exclusive validation-cache lease. No physical call, microphone, model, installed build or live
+service has been changed or validated by this repair. #982 and its physical acceptance remain open.

@@ -93,6 +93,9 @@ extension HostConnection {
             // The gate (#205) ends only the ambient stream and keeps the connection. Its error frames carry
             // no stream id, so they are recognised by the gate's "ambient" message prefix.
             guard message.hasPrefix("ambient"), let stream = ambientStream else { throw failure }
+            // Legacy host notices omit target. An explicitly addressed stale refusal must not poison
+            // the stream now selected on this socket before its ordered observer can reject the notice.
+            if let target = frame.target, target != desiredTargetID { return }
             ambientRefusal = (stream.id, failure)
             // Opt-in for restore-aware callers only. Existing observers receive exactly their old events.
             if reportsAmbientRefusals { await publishNotice(frame, streamID: stream.id) }

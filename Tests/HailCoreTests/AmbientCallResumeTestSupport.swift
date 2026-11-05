@@ -26,6 +26,8 @@ final class CallReconnectRig {
     let microphoneRetry = BackoffSteps()
     var permissionGate: SleepGate?
     var activationGate: SleepGate?
+    /// Synchronous delivery at the constructor return boundary, after its optional suspension.
+    var beforeMakeStreamerReturn: (@MainActor () -> Void)?
     let store: HostConnectionStore
     lazy var controller = makeController()
 
@@ -42,6 +44,7 @@ final class CallReconnectRig {
             self.makeCalls += 1
             if let gate = self.activationGate { try? await gate.sleep(.zero) }
             if self.failStart { throw AudioCaptureError.alreadyRunning }
+            self.beforeMakeStreamerReturn?()
             return AmbientAudioStreamer(capture: self.echoGuard?.masking(self.capture) ?? self.capture, send: send)
         },
         releaseSession: { [weak self] in self?.released += 1 },
