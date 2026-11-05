@@ -16,6 +16,7 @@ final class AmbientReconnectRig {
     var wrapReconnect: (ScriptedSocket) -> any WebSocketTransport = { $0 }
     var echoGuard: AmbientReplyEchoGuard?
     var released = 0
+    var beforeSessionRelease: (@MainActor () async -> Void)?
     var onSessionRelease: (() -> Void)?
     var unexpected: [String] = []
     var permission = true
@@ -44,6 +45,7 @@ final class AmbientReconnectRig {
             return AmbientAudioStreamer(capture: self.echoGuard?.masking(self.capture) ?? self.capture, send: send)
         },
         releaseSession: { [weak self] in
+            await self?.beforeSessionRelease?()
             self?.released += 1
             self?.onSessionRelease?()
         }, send: { [weak self] payload, binding in
