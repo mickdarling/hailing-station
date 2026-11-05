@@ -38,7 +38,7 @@ import Testing
     @Test func unsupportedDuplicateDoesNotRetireAcceptedProactiveAudio() throws {
         let rig = ProactivePlaybackRig()
         try rig.makeQuiet()
-        let accepted = rig.audio()
+        let accepted = rig.audio(final: false)
         rig.ingest(accepted)
         var frame = accepted.frame
         frame.id = UUID()
