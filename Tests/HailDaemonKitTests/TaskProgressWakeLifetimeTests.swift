@@ -28,7 +28,10 @@ import Testing
             #expect(await rig.status().outstanding)
             let report = await rig.listener.taskProgress(.init(action: .report, task: rig.task, token: token,
                                                                text: "Synthetic successor progress"))
-            #expect(report.outcome == "delivered" && report.task == rig.task)
+            let update = try #require(report.update)
+            #expect(report.outcome == "status" && report.task == rig.task)
+            // Cut13 accepts routine info as held; cut14 delivers enrolled cards immediately.
+            #expect(update.outcome == .held || update.outcome == .delivered)
             #expect(await rig.peer.session.replyRequests.isEmpty)
         }
     }

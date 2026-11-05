@@ -29,11 +29,17 @@ import Testing
             let secondToken = try lifetimePromptToken(second)
             try #require(await eventually { finished.count == 2 })
             barrier.release()
-            #expect(await reporting.value.outcome == "delivered")
+            let firstReport = await reporting.value
+            let firstUpdate = try #require(firstReport.update)
+            #expect(firstReport.outcome == "status")
+            // Cut13 accepts routine info as held; cut14 delivers enrolled cards immediately.
+            #expect(firstUpdate.outcome == .held || firstUpdate.outcome == .delivered)
             #expect(await rig.status().outstanding)
             let report = await rig.listener.taskProgress(.init(action: .report, task: task, token: secondToken,
                                                                text: "Synthetic second progress"))
-            #expect(report.outcome == "delivered" && report.outstanding == false)
+            let update = try #require(report.update)
+            #expect(report.outcome == "status" && report.outstanding == false)
+            #expect(update.outcome == .held || update.outcome == .delivered)
             #expect(rig.controller.ownerState.fence.isOpen)
         }
     }
