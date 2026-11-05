@@ -50,7 +50,49 @@ class ReplySegmentCLITests(unittest.TestCase):
                 )
             return result, frames
 
-    def assert_outcome(self, expected):
+    def assert_timing_records(self, messages, expected, *, no_stages=False):
+        summaries = [message for message in messages if message.startswith("reply audio: ")]
+        stages = [message for message in messages if message.startswith("reply stages v1: ")]
+        # Each line is a whole-job record, not one per segment; unrelated records cannot stand in for either.
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0].rsplit("outcome=", 1)[-1], expected)
+        self.assertEqual(len(stages), 1)
+        match = re.fullmatch(
+            r"reply stages v1: first_pcm_ms=(\d+|none) first_frame_ready_ms=(\d+|none) "
+            r"first_publish_start_ms=(\d+|none) first_ack_ms=(\d+|none) outcome=([a-z_]+)", stages[0],
+        )
+        self.assertIsNotNone(match)
+        *offsets, outcome = match.groups()
+        self.assertEqual(outcome, expected)
+        seen_missing = False
+        observed = []
+        for offset in offsets:
+            if offset == "none":
+                seen_missing = True
+            else:
+                self.assertFalse(seen_missing, "missing milestones must be a suffix")
+                observed.append(int(offset))
+        self.assertEqual(observed, sorted(observed))
+        if expected == "played":
+            self.assertEqual(len(observed), 4)
+        if expected == "played_unmeasured" or no_stages:
+            self.assertEqual(observed, [])
+
+    def test_record_types_and_duplicate_records_are_not_conflated(self):
+        summary = "reply audio: frames=1 outcome=played"
+        stage = ("reply stages v1: first_pcm_ms=1 first_frame_ready_ms=2 "
+                 "first_publish_start_ms=3 first_ack_ms=4 outcome=played")
+        self.assert_timing_records([summary, stage], "played")
+        for messages in ([stage], [summary, summary, stage], [summary, stage, stage]):
+            with self.subTest(messages=messages), self.assertRaises(AssertionError):
+                self.assert_timing_records(messages, "played")
+        for fields in [("none", "2", "3", "4"), ("1", "3", "2", "4"), ("1", "2", "3", "none")]:
+            line = (f"reply stages v1: first_pcm_ms={fields[0]} first_frame_ready_ms={fields[1]} "
+                    f"first_publish_start_ms={fields[2]} first_ack_ms={fields[3]} outcome=played")
+            with self.subTest(fields=fields), self.assertRaises(AssertionError):
+                self.assert_timing_records([summary, line], "played")
+
+    def assert_outcome(self, expected, *, no_stages=False):
         owner = self.invocations()[0]["owner"]
         result = subprocess.run(
             ["/usr/bin/log", "show", "--style", "ndjson", "--last", "2m", "--predicate",
@@ -59,8 +101,7 @@ class ReplySegmentCLITests(unittest.TestCase):
             capture_output=True, text=True, timeout=15, check=True,
         )
         messages = [json.loads(line).get("eventMessage", "") for line in result.stdout.splitlines()]
-        outcomes = [message.rsplit("outcome=", 1)[1] for message in messages if "outcome=" in message]
-        self.assertEqual(outcomes, [expected])  # one whole-reply timing outcome, never one per segment
+        self.assert_timing_records(messages, expected, no_stages=no_stages)
 
     def assert_complete(self, frames, boundaries):
         audio = [frame for _, frame in frames if frame["type"] == "audio"]
@@ -93,6 +134,14 @@ class ReplySegmentCLITests(unittest.TestCase):
         self.assert_complete(frames, [1, 2])
         self.assertEqual([len(base64.b64decode(f["payload"]["bytes"])) for _, f in frames[1:]],
                          [24000, 36000, 60000, 60000, 2])
+
+    def test_first_exact_frame_is_held_for_segment_end(self):
+        result, frames = self.run_speech("First. Second. Third.", self.environment("24000,36000,60000"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        audio = self.assert_complete(frames, [0, 1])
+        self.assertEqual([len(base64.b64decode(frame["payload"]["bytes"])) for frame in audio],
+                         [24000, 36000, 60000, 2])
+        self.assert_outcome("played")
 
     def test_files_only_fallback_segments_and_cleans_each_renderer(self):
         environment = self.environment()
@@ -132,6 +181,15 @@ class ReplySegmentCLITests(unittest.TestCase):
         self.assertEqual(retained[0].read_bytes(), bytes(4))
         self.assertTrue(all(not self.rig.alive(item["pid"]) for item in self.invocations()))
         self.assert_outcome("failed")
+
+    def test_failure_before_first_pcm_has_no_stage_milestones(self):
+        environment = self.environment("4")
+        environment["REPLY_RENDERER_TEST_FAIL_SEGMENT"] = "1"
+        result, frames = self.run_speech("First. Second.", environment)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual([frame["type"] for _, frame in frames], ["text"])
+        self.assertEqual(len(self.invocations()), 1)
+        self.assert_outcome("failed", no_stages=True)
 
     def test_frame_budget_is_shared_across_segments(self):
         result, frames = self.run_speech("First. Second. Third.", self.environment("3600000"))
@@ -251,6 +309,7 @@ class ReplySegmentCLITests(unittest.TestCase):
         result, frames = self.run_speech("First. Second. Third. Fourth. Fifth.", environment)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_complete(frames, [0, 1, 2, 3])
+        self.assert_outcome("played")  # Each four-byte segment is sent on short EOF.
         audio_times = [at for at, f in frames if f["type"] == "audio" and not f["payload"]["final"]]
         # Includes retirement/cleanup, next spawn and interpreter startup, PCM EOF and socket acknowledgement.
         gaps = [later - earlier for earlier, later in zip(audio_times, audio_times[1:])]
