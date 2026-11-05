@@ -11,7 +11,8 @@ import Testing
         let sending = Task { try await send("one\ntwo\nthree", rig: rig) }
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
-        await #expect(throws: HostError.partial(delivered: ["one"], reason: "target_policy_changed")) {
+        await #expect(throws: HostError.partial(delivered: ["one"], reason: "target_policy_changed",
+                                               pastedUnsent: checkpoint == .paste)) {
             try await rig.runner.gate.finish(sending)
         }
         #expect(rig.runner.pasted == (checkpoint == .paste ? ["one", "two"] : ["one"]))
@@ -45,19 +46,38 @@ import Testing
     @Test func clearedInputKeepsThePolicyTaintAndDeviceRefusalUntilRestart() async throws {
         let rig = try await taintedRig()
         let session = await session(rig)
-        let expected = HostDeliveryOutcome.refused(
-            .notAllowed, "a line was pasted but not sent — clear it on the Mac; "
-                + "hand-offs to this target are paused until haild restarts"
-        )
+        let reason = "a line was pasted but not sent — clear it on the Mac; "
+            + "hand-offs to this target are paused until haild restarts"
+        let expected = HostDeliveryOutcome.inputPending(reason: reason)
         #expect(try await deliver(session, text: "refused input") == expected)
         rig.runner.setInput("")
         let calls = rig.runner.calls.count
         #expect(try await deliver(session, text: "still refused") == expected)
+        let frame = sessionFrame(target: TmuxAuthorityRig.target, payload: .text(TextPayload(text: "phone input")))
+        #expect(try onlyControl(await session.receive(frame)) == .error(code: .notAllowed, message: reason))
         #expect(rig.runner.input.isEmpty)
         #expect(rig.runner.pasted == ["synthetic input"])
         #expect(rig.runner.enters == 0)
         #expect(!rig.runner.calls.dropFirst(calls).contains { $0.first == "capture-pane" })
         #expect(rig.log.all.last?.detail.contains("reason=tainted") == true)
+    }
+
+    @Test(arguments: [AuthorityTmuxRunner.Checkpoint.fill, .paste])
+    func lineTwoRefusalExplainsAnUnsentPasteWithoutMislabelingAnEarlierStop(
+        checkpoint: AuthorityTmuxRunner.Checkpoint
+    ) async throws {
+        let rig = try await TmuxAuthorityRig.make(checkpoint, delivery: 2)
+        defer { rig.runner.gate.fire() }
+        let session = await session(rig)
+        let frame = sessionFrame(target: TmuxAuthorityRig.target, payload: .text(TextPayload(text: "one\ntwo\nthree")))
+        let sending = Task { await session.receive(frame) }
+        try await rig.runner.gate.waitUntilSuspended()
+        try await rig.retire()
+        let result = try await rig.runner.gate.finish(sending)
+        let reason = checkpoint == .paste ? HostDeliveryOutcome.policyRetiredUnsentReason : "target action was refused"
+        #expect(try onlyControl(result) == .error(code: .notAllowed, message: reason))
+        #expect(rig.runner.pasted == (checkpoint == .paste ? ["one", "two"] : ["one"]))
+        #expect(rig.runner.enters == 1)
     }
 
     private func send(_ text: String, rig: TmuxAuthorityRig) async throws -> SendOutcome {

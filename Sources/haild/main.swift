@@ -393,7 +393,7 @@ do {
     case .adapterUnavailable(let kind, let reason): fail("\(kind) adapter unavailable: \(reason)", code: 4)
     case .refused(let reason): fail("refused: \(reason)", code: 3)
     case .denied(let denial): fail("denied: \(denial)", code: exitCode(for: denial))
-    case .partial(let delivered, let reason):
+    case .partial(let delivered, let reason, _):
         fail("delivered \(delivered.count) line\(delivered.count == 1 ? "" : "s"), then: \(reason)", code: 6)
     case .policyUnavailable(let reason): fail("policy unusable, delivery refused: \(reason)", code: 9)
     }

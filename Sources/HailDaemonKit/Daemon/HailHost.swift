@@ -8,7 +8,8 @@ public enum HostError: Error, Equatable, Sendable {
     case adapterUnavailable(kind: String, reason: String)
     case refused(SanitizeError)
     case denied(Denial)
-    case partial(delivered: [String], reason: String)
+    /// `pastedUnsent` identifies a retired paste after the delivered lines; it never counts as submitted.
+    case partial(delivered: [String], reason: String, pastedUnsent: Bool = false)
     case policyUnavailable(String)
 }
 final class ObservationCleanup: Sendable {
@@ -363,11 +364,12 @@ extension HailHost {
         _ error: any Error, delivered: [String], policyGeneration: TargetPolicyGeneration? = nil
     ) -> any Error {
         guard !delivered.isEmpty else { return error }
+        let pastedUnsent = (error as? PolicyRetiredDelivery) == .pastedUnsent
         do { try policyGeneration?.requireCurrent() } catch {
-            return HostError.partial(delivered: delivered, reason: "target_policy_changed")
+            return HostError.partial(delivered: delivered, reason: "target_policy_changed", pastedUnsent: pastedUnsent)
         }
         if error is PolicyRetiredDelivery {
-            return HostError.partial(delivered: delivered, reason: "target_policy_changed")
+            return HostError.partial(delivered: delivered, reason: "target_policy_changed", pastedUnsent: pastedUnsent)
         }
         if error is CancellationError {
             return HostError.partial(delivered: delivered, reason: "delivery cancelled")
