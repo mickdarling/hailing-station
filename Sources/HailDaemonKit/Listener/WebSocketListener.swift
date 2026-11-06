@@ -109,6 +109,9 @@ public actor WebSocketListener {
         (self.hostName, self.singleTerminalReplyFallback) = (hostName, singleTerminalReplyFallback)
         (self.maxConnections, self.helloTimeout) = (maxConnections, helloTimeout)
         (self.log, self.ambient) = (log, ambient)
+        replyHold.observeEntries { [weak self] revision in
+            Task { await self?.cancelProactiveSessionUpdateAudio(beforePrivacyRevision: revision) }
+        }
         ambient?.attach(self)
     }
 
@@ -147,6 +150,7 @@ extension WebSocketListener {
         heardTurns.values.forEach { $0.close() }
         heardTurns.removeAll()
         for peer in active { await peer.stop(reason: reason) }
+        await sessionUpdateFence.joinSpeech()
         await stopAmbient(active)
         if readyResult == nil { finishReady(.failure(.stoppedBeforeReady)) }
         emit(WebSocketListenerEvent(event: "listener_stopped", detail: reason))
@@ -250,6 +254,12 @@ extension AmbientAudioEvent {
 
 /// The listener's view of ambient listening (#203): bound once to the listener, told when a connection ends,
 /// and drained on shutdown.
+public struct TaskProgressAmbientAudience: Sendable, Equatable {
+    public let connection: UUID
+    public let stream: UUID
+    public init(connection: UUID, stream: UUID) { (self.connection, self.stream) = (connection, stream) }
+}
+
 public protocol AmbientListenerWiring: AnyObject, Sendable {
     func attach(_ listener: WebSocketListener)
     /// Read-only effective first-start state (#941); never arms the connection or consumes parked state.
@@ -283,6 +293,8 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     /// Synchronous final enqueue gate for proactive updates. Unknown wiring fails closed. No callback may wait
     /// or re-enter the router: only a prepared transport hand-off runs while privacy/media state is locked.
     func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool
+    func taskProgressAudience() -> TaskProgressAmbientAudience?
+    func withTaskProgressPermission(_ audience: TaskProgressAmbientAudience, commit: @Sendable () -> Bool) -> Bool
     var sessionUpdatesPrivate: Bool { get }
 }
 
@@ -324,6 +336,10 @@ extension AmbientListenerWiring {
     public func mediaMode(connection: UUID) -> Bool { false }
     public func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool { false }
     public var sessionUpdatesPrivate: Bool { true }
+    public func taskProgressAudience() -> TaskProgressAmbientAudience? { nil }
+    public func withTaskProgressPermission(
+        _ audience: TaskProgressAmbientAudience, commit: @Sendable () -> Bool
+    ) -> Bool { false }
 }
 
 /// What `haild ambient reload` did (#405). `refused` carries a content-free rule name.

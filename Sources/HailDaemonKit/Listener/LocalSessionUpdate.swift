@@ -106,6 +106,7 @@ extension WebSocketListener {
         case .quietOn:
             sessionUpdatesQuiet = true
             sessionUpdateFence.quiet()
+            await cancelProactiveSessionUpdateAudio()
             return updateReport(.status)
         case .submit: return await sessionUpdate(carried: request)
         }
