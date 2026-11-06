@@ -25,8 +25,9 @@ extension ConversationChatView {
         }
     }
 
-    /// The session that answered, when its reply shows in another session's thread (#636); nil in its own thread.
+    /// Every proactive card's session (#609), or an addressed reply shown in another session's thread (#636).
     static func placedSource(_ entry: ConversationEntry, thread: String?) -> String? {
+        if entry.updatePriority != nil { return entry.source.map { "\($0) · Update" } }
         guard let thread, entry.targetID != thread else { return nil }
         return entry.source
     }
@@ -37,7 +38,9 @@ extension ConversationChatView {
         case (.you, true): "You said, heard but not sent"
         case (.someone, _): "\(entry.name ?? "Someone") said, heard but not sent"
         // Spoken aloud, or text only (#606); from another session addressed by name, that session (#636).
-        case (.haili, _): "\(placedSource(entry, thread: thread) ?? "Haili") \(entry.spoken ? "said" : "replied")"
+        case (.haili, _):
+            entry.updatePriority != nil ? "\(entry.source ?? "Session") update"
+                : "\(placedSource(entry, thread: thread) ?? "Haili") \(entry.spoken ? "said" : "replied")"
         }
     }
 
