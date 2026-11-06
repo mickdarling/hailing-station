@@ -160,17 +160,20 @@ struct TmuxDeliveryCommitFakeTUITests {
             let kept = try #require(try pane.submits().first)
             #expect(kept != text && kept.hasPrefix(String(text.prefix(400))) && kept.hasSuffix("end.\n"))
 
-            // A read over 800 characters, then a shorter one inside the 100 ms paste window: the paste is lost.
+            // Replay separate reads against the same plain() model with an explicit clock. A Swift sleep and
+            // another tmux process cannot establish actual read boundaries or arrival inside the 100 ms window.
             let long = Self.payload("H", size: 1_000), short = " and a short tail"
-            kill(pid, SIGSTOP)
-            try await pane.tmux(["send-keys", "-t", "tui", "-l", "--", long])
-            kill(pid, SIGCONT)
-            try await Task.sleep(for: .milliseconds(30))
-            try await pane.tmux(["send-keys", "-t", "tui", "-l", "--", short])
-            try await Task.sleep(for: .milliseconds(300))
-            try await pane.tmux(["send-keys", "-t", "tui", "Enter"])
-            try await waitFor { try pane.submits().count == 2 }
-            #expect(try pane.submits().last == short, "the long read was lost")
+            let replay = try await FakeTUIPlainReadReplay.run(long: long, short: short)
+            #expect(replay.beforeExpiry.pendingLong == long)
+            #expect(replay.beforeExpiry.pendingDeadline == 0.1)
+            #expect(replay.beforeExpiry.shortReadAt == 0.03)
+            #expect(replay.beforeExpiry.shortReadAt < replay.beforeExpiry.pendingDeadline)
+            #expect(replay.beforeExpiry.submits == [short], "the long read was lost")
+            #expect(replay.afterExpiry.pendingLong == long)
+            #expect(replay.afterExpiry.pendingDeadline == 0.1)
+            #expect(replay.afterExpiry.shortReadAt == 0.101)
+            #expect(replay.afterExpiry.shortReadAt > replay.afterExpiry.pendingDeadline)
+            #expect(replay.afterExpiry.submits == [long + short], "an expired paste is kept")
         }
     }
 
