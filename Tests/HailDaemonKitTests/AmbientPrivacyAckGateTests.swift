@@ -105,6 +105,8 @@ import Testing
         for _ in 0..<3 { #expect(pipeline.send(audio: Gate.chunk(0x11))) }
         await #expect(throws: RightyoPrivacyRefusal.unacknowledged) { _ = try await run.value }
         #expect(await kept.value == false)
+        // The deadline's stop continuation may publish its callback after run() has returned.
+        #expect(await eventually { !seen.all.isEmpty })
         #expect(seen.all == [.unavailable])
         #expect(Self.control(fake) == "{\"duck\":true}\n")
         #expect(Gate.heard(fake).isEmpty)
