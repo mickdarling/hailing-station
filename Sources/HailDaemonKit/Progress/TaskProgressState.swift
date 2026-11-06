@@ -8,6 +8,7 @@ public struct TaskProgressState: Sendable {
     public private(set) var environment = TaskProgressEnvironment()
     public private(set) var outstanding: TaskProgressWake?
     public private(set) var nextDue: ContinuousClock.Instant?
+    private(set) var enrollmentGeneration: UUID?
     private var agentInterval: Duration = .seconds(300)
     private var ownerInterval: Duration?
     private var ownerPause: TaskProgressPauseReason?
@@ -29,8 +30,14 @@ public struct TaskProgressState: Sendable {
     public mutating func start(
         _ task: TaskProgressTask, interval: Duration = .seconds(300), at now: ContinuousClock.Instant
     ) -> Bool {
+        start(task, interval: interval, generation: UUID(), at: now)
+    }
+
+    mutating func start(_ task: TaskProgressTask, interval: Duration, generation: UUID,
+                        at now: ContinuousClock.Instant) -> Bool {
         guard Self.valid(interval), !task.session.isEmpty, !task.binding.isEmpty else { return false }
         self.task = task
+        enrollmentGeneration = generation
         agentInterval = interval
         ownerInterval = nil
         ownerPause = nil
@@ -42,6 +49,7 @@ public struct TaskProgressState: Sendable {
     public mutating func finish(task id: UUID) {
         guard task?.id == id else { return }
         task = nil
+        enrollmentGeneration = nil
         nextDue = nil
         outstanding = nil
         ownerPause = nil
@@ -87,8 +95,8 @@ public struct TaskProgressState: Sendable {
     }
 
     public mutating func due(at now: ContinuousClock.Instant) -> TaskProgressWake? {
-        guard let task, pauseReason == nil, let nextDue, now >= nextDue else { return nil }
-        let wake = TaskProgressWake(task: task, token: UUID())
+        guard let task, let enrollmentGeneration, pauseReason == nil, let nextDue, now >= nextDue else { return nil }
+        let wake = TaskProgressWake(task: task, token: UUID(), enrollmentGeneration: enrollmentGeneration)
         outstanding = wake
         self.nextDue = nil
         return wake

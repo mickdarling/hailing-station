@@ -68,6 +68,7 @@ public actor WebSocketListener {
     /// Sessions' unsolicited updates (#609): off unless `--session-updates`. The quiet switch lasts until restart.
     var sessionUpdates = SessionUpdateQueue(), sessionUpdatesQuiet = false
     var taskProgressController: ListenerTaskProgress?
+    let taskProgressOwnerLifetime = TaskProgressOwnerLifetime()
     var sessionUpdateTaskAuthorities: [UUID: TaskProgressPublicationAuthority] = [:]
     var sessionUpdatesDelivering = false, sessionUpdatePrivacyRevision: UInt64 = 0
     let sessionUpdateFence = SessionUpdateFence()
@@ -144,6 +145,7 @@ extension WebSocketListener {
     public func stop(reason: String = "requested") async {
         guard !stopped else { return }
         stopped = true
+        taskProgressOwnerLifetime.close()
         sessionUpdateFence.close()
         await taskProgressController?.stop()
         sessionUpdateFence.close()
@@ -298,6 +300,10 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool
     func taskProgressAudience() -> TaskProgressAmbientAudience?
     func withTaskProgressPermission(_ audience: TaskProgressAmbientAudience, commit: @Sendable () -> Bool) -> Bool
+    /// Identity-only final owner admission. The nonescaping commit changes pure cadence, never I/O or router state.
+    func withTaskProgressOwnerPermission(
+        _ audience: TaskProgressAmbientAudience, commit: () -> TaskProgressControlResult
+    ) -> TaskProgressControlResult
     var sessionUpdatesPrivate: Bool { get }
 }
 
@@ -343,6 +349,9 @@ extension AmbientListenerWiring {
     public func withTaskProgressPermission(
         _ audience: TaskProgressAmbientAudience, commit: @Sendable () -> Bool
     ) -> Bool { false }
+    public func withTaskProgressOwnerPermission(
+        _ audience: TaskProgressAmbientAudience, commit: () -> TaskProgressControlResult
+    ) -> TaskProgressControlResult { .noTask }
 }
 
 /// What `haild ambient reload` did (#405). `refused` carries a content-free rule name.
@@ -963,6 +972,16 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
                   !state.closed.contains(audience.connection), state.duck.isEmpty,
                   state.parks.isEmpty, !state.parkOverflow,
                   state.media[audience.connection] == nil else { return false }
+            return commit()
+        }
+    }
+
+    public func withTaskProgressOwnerPermission(
+        _ audience: TaskProgressAmbientAudience, commit: () -> TaskProgressControlResult
+    ) -> TaskProgressControlResult {
+        state.withLock { state in
+            guard Self.taskProgressAudience(in: state) == audience, !state.shuttingDown,
+                  !state.closed.contains(audience.connection) else { return .noTask }
             return commit()
         }
     }
