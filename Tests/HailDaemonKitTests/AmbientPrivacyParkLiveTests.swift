@@ -16,9 +16,9 @@ final class RouterBox: Sendable {
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget)
 struct AmbientPrivacyParkLiveTests {
     /// A rig whose first connection (`name`, `kind`) went private by the owner's voice and is still open.
-    static func privateStillOpen(name: String = "test", kind: String? = "phone") async throws
-    -> (RestoreRig, (URLSessionWebSocketTask, UUID)) {
-        let rig = try await RestoreRig(phrase: "stop recording")
+    static func privateStillOpen(name: String = "test", kind: String? = "phone",
+                                 holdSpawn: Int? = nil) async throws -> (RestoreRig, (URLSessionWebSocketTask, UUID)) {
+        let rig = try await RestoreRig(phrase: "stop recording", holdSpawn: holdSpawn)
         let (socket, stale) = try await rig.start(name: name, kind: kind)
         try #require(await eventually { rig.router.duckMode(connection: stale) }, "first connection holds privacy")
         #expect(await eventually { !rig.details("ambient_duck_confirmed").isEmpty }, "privacy entry settled")
@@ -27,7 +27,7 @@ struct AmbientPrivacyParkLiveTests {
 
     /// A normal start on the reconnected connection takes listening over from the still-open private one: private.
     @Test func aReconnectBeforeTheOldConnectionIsTornDownStartsPrivate() async throws {
-        let (rig, (_, stale)) = try await Self.privateStillOpen()
+        let (rig, (_, stale)) = try await Self.privateStillOpen(holdSpawn: 2)
         defer { rig.close() }
         let (socket, fresh) = try await rig.start()
         #expect(fresh != stale && rig.router.duckMode(connection: stale))
@@ -54,7 +54,7 @@ struct AmbientPrivacyParkLiveTests {
     /// Once the old connection's stream has ended (the connection still open and private), a resume start is let in,
     /// and starts private.
     @Test func aResumeAfterTheOldStreamEndedStartsPrivate() async throws {
-        let (rig, (old, stale)) = try await Self.privateStillOpen()
+        let (rig, (old, stale)) = try await Self.privateStillOpen(holdSpawn: 2)
         defer { rig.close() }
         let stream = try #require(rig.router.activeStream)
         try await recipientSocketSend(audio(stream, 1, final: true), on: old)

@@ -64,7 +64,7 @@ final class RestoreRig: Sendable {
         echo "$*" > "argv.$SPAWN.txt"
         \(FakeRightyo.ackingControl(append: true).replacingOccurrences(of: "control.txt", with: "control.$SPAWN.txt"))
         \(holdStarted ? FakeRightyo.untilGo : "")
-        \(holdSpawn.map { "if [ \"$SPAWN\" = \($0) ]; then\n\(FakeRightyo.untilGo)\nfi" } ?? "")
+        \(holdSpawn.map { "if [ \"$SPAWN\" = \($0) ]; then\n: > held-start.$SPAWN\n\(FakeRightyo.untilGo)\nfi" } ?? "")
         if [ "$SPAWN" = \(speaker) ]; then
         \(first)
         else
