@@ -10,8 +10,8 @@ import Testing
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget)
 struct AmbientPrivacyParkTests {
     /// A rig whose first connection went private and then dropped, leaving its privacy parked.
-    static func privacyDropped() async throws -> RestoreRig {
-        let rig = try await RestoreRig(phrase: "stop recording")
+    static func privacyDropped(holdSpawn: Int? = nil) async throws -> RestoreRig {
+        let rig = try await RestoreRig(phrase: "stop recording", holdSpawn: holdSpawn)
         let (first, dropped) = try await rig.start()
         try #require(await eventually { rig.router.duckMode(connection: dropped) }, "first connection holds privacy")
         #expect(await eventually { !rig.details("ambient_duck_confirmed").isEmpty }, "privacy entry settled")
@@ -25,22 +25,6 @@ struct AmbientPrivacyParkTests {
         if case .audio(let segment) = audio(UUID(), 1).payload { segment.bytes.count } else { -1 }
     }
 
-    /// Sends the started child a second synthetic segment once it hears audio (its private `started` confirmed), then
-    /// ends the rig, so the `spawn`th child's audio file is complete. The child was launched start-private, and at most
-    /// that second segment reached it: the first, sent with the start before its private proof, was dropped (#735
-    /// S-8). A confirmed-private child hears the stream in RAM only, to hear the way back in.
-    static func expectHeardOnlyPrivately(_ rig: RestoreRig, on socket: URLSessionWebSocketTask,
-                                         spawn: Int) async throws {
-        #expect(await eventually { rig.router.activePipeline?.hearsAudio == true }, "fresh child started")
-        let stream = try #require(rig.router.activeStream)
-        try await recipientSocketSend(audio(stream, 1), on: socket)
-        try await barrier(on: socket, step: "parked privacy stream audio processed")
-        await rig.finish()
-        let heard = (try? Data(contentsOf: rig.fake.directory.appendingPathComponent("audio.\(spawn).raw"))) ?? Data()
-        #expect(heard.count <= segmentBytes, "no PCM reaches RightyO before its private proof")
-        #expect((try? rig.fake.recorded("argv.\(spawn).txt"))?.contains("--start-private") == true)
-    }
-
     static func launchedPublic(_ rig: RestoreRig, spawn: Int) async -> Bool {
         await eventually { (try? rig.fake.recorded("argv.\(spawn).txt"))?.contains("--start-private") == false }
     }
@@ -48,7 +32,7 @@ struct AmbientPrivacyParkTests {
     /// Another device's claims never make a start public: it is restored private, and the claims are only logged.
     @Test(arguments: [false, true])
     func anotherDeviceStillStartsPrivate(resume: Bool) async throws {
-        let rig = try await Self.privacyDropped()
+        let rig = try await Self.privacyDropped(holdSpawn: 2)
         defer { rig.close() }
         let (socket, connection) = try await rig.start(name: "other", kind: "watch", resume: resume)
         #expect(rig.router.duckMode(connection: connection))
@@ -62,7 +46,7 @@ struct AmbientPrivacyParkTests {
 
     /// The same claims are logged as a match; the start is private either way.
     @Test func theSameDeviceIsLoggedAsAMatch() async throws {
-        let rig = try await Self.privacyDropped()
+        let rig = try await Self.privacyDropped(holdSpawn: 2)
         defer { rig.close() }
         let (socket, connection) = try await rig.start()
         #expect(rig.router.duckMode(connection: connection))
@@ -77,7 +61,7 @@ struct AmbientPrivacyParkTests {
     /// Past every mode's bound (hours after the drop) the start is still private: an old park never yields public.
     @Test(arguments: [false, true])
     func anOldParkStillStartsPrivate(resume: Bool) async throws {
-        let rig = try await Self.privacyDropped()
+        let rig = try await Self.privacyDropped(holdSpawn: 2)
         defer { rig.close() }
         rig.clock.advance(5 * 3600)
         let (socket, connection) = try await rig.start(resume: resume)
@@ -123,7 +107,7 @@ struct AmbientPrivacyParkTests {
     /// Only the owner's off on a private connection clears it: an off by anything else, or an off where privacy was
     /// not on, leaves it held, and the next start is still private.
     @Test func noOtherOffClearsThePark() async throws {
-        let rig = try await Self.privacyDropped()
+        let rig = try await Self.privacyDropped(holdSpawn: 3)
         defer { rig.close() }
         let (_, restored) = try await rig.start()
         let router = rig.router
@@ -141,7 +125,7 @@ struct AmbientPrivacyParkTests {
     /// A restored connection that drops again parks its privacy again, beside the first park (#961), so a third
     /// connection is private too, restored from the newest.
     @Test func aRestoredConnectionDroppingAgainParksAgain() async throws {
-        let rig = try await Self.privacyDropped()
+        let rig = try await Self.privacyDropped(holdSpawn: 3)
         defer { rig.close() }
         let (again, restored) = try await rig.start()
         await rig.drop(again, restored)
