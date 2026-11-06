@@ -22,6 +22,21 @@ final class ObservationCleanup: Sendable {
         lease.withLock { value in let old = value; value = nil; return old }?.cancel()
     }
 }
+/// Immutable caller proof is captured at request construction, before dispatch/registry actor suspension.
+private struct HostDispatchRequest: Sendable {
+    let target: String
+    let device: String
+    let confirmedHash: String?
+    let expectedBinding: String?
+    let turn: ProviderTurnContext?
+    var policyGeneration: TargetPolicyGeneration?
+    let taskHandoff = TaskProgressWakeScope.beforeHandoff
+
+    var deliveryAuthority: DeliveryAuthority? {
+        TaskProgressWakeScope.deliveryAuthority(policy: policyGeneration?.deliveryAuthority, handoff: taskHandoff)
+    }
+}
+
 /// Host composition root (#10): registry, policy (#41), and a sanitised path re-evaluated before every line.
 public actor HailHost {
     public static let confirmationWindow: Duration = .seconds(120)
@@ -100,7 +115,7 @@ public actor HailHost {
         _ text: String, to id: String, from device: String = "keyboard", confirmedHash: String? = nil,
         expectedBinding: String? = nil
     ) async throws -> SendOutcome {
-        try await dispatch(text, request: DispatchRequest(
+        try await dispatch(text, request: HostDispatchRequest(
             target: id, device: device, confirmedHash: confirmedHash, expectedBinding: expectedBinding, turn: nil
         ))
     }
@@ -109,22 +124,13 @@ public actor HailHost {
     public func send(
         _ text: String, context: ProviderTurnContext, from device: String = "keyboard", confirmedHash: String? = nil
     ) async throws -> SendOutcome {
-        try await dispatch(text, request: DispatchRequest(
+        try await dispatch(text, request: HostDispatchRequest(
             target: context.binding.targetID, device: device, confirmedHash: confirmedHash,
             expectedBinding: context.binding.sessionID, turn: context
         ))
     }
 
-    private struct DispatchRequest {
-        let target: String
-        let device: String
-        let confirmedHash: String?
-        let expectedBinding: String?
-        let turn: ProviderTurnContext?
-        var policyGeneration: TargetPolicyGeneration?
-    }
-
-    private func dispatch(_ text: String, request dispatch: DispatchRequest) async throws -> SendOutcome {
+    private func dispatch(_ text: String, request dispatch: HostDispatchRequest) async throws -> SendOutcome {
         let id = dispatch.target
         try requireSendPreflight()
         try dispatch.policyGeneration?.requireCurrent()
@@ -214,7 +220,7 @@ extension HailHost {
         _ text: String, policyGeneration: TargetPolicyGeneration, from device: String,
         expectedBinding: String?, context: ProviderTurnContext?
     ) async throws -> SendOutcome {
-        try await dispatch(text, request: DispatchRequest(
+        try await dispatch(text, request: HostDispatchRequest(
             target: policyGeneration.target, device: device, confirmedHash: nil,
             expectedBinding: expectedBinding ?? policyGeneration.binding, turn: context,
             policyGeneration: policyGeneration
@@ -317,7 +323,7 @@ extension HailHost {
         return target
     }
 
-    private func dispatchListing(_ request: DispatchRequest, lineCount: Int) async throws -> Registry.Listed {
+    private func dispatchListing(_ request: HostDispatchRequest, lineCount: Int) async throws -> Registry.Listed {
         let listed = try await listed(request.target)
         try Task.checkCancellation()
         // Context and capability are checked before consuming confirmation or making an adapter attempt.
@@ -347,11 +353,11 @@ extension HailHost {
     }
 
     private func deliverLine(
-        _ line: String, request: DispatchRequest, binding: String?, delivered: [String]
+        _ line: String, request: HostDispatchRequest, binding: String?, delivered: [String]
     ) async throws {
         do {
             try await registry.deliver(line, to: request.target, binding: binding, context: request.turn,
-                                       authority: request.policyGeneration?.deliveryAuthority)
+                                       authority: request.deliveryAuthority)
         } catch {
             var partial = delivered
             // A possibly sent Enter is a handoff, like tmux's existing unverifiable submit outcome.

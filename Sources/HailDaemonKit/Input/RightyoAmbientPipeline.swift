@@ -112,6 +112,9 @@ public final class RightyoAmbientPipeline: Sendable {
         /// Called once per admitted request that is the owner's spoken media mode on (true) or off (#551), handled
         /// like `onVoiceMute`. It must return at once.
         public var onVoiceMedia: (@Sendable (Bool) -> Void)?
+        /// Exact live voiceprint-owner task cadence control. True only when applied to this stream's live task;
+        /// false leaves the phrase an ordinary request. Nil when task progress is not enabled.
+        public var onTaskProgressOwner: (@Sendable (TaskProgressOwnerControl) async -> Bool)?
         /// #735 meeting mode (rightyo#227), handled like media mode; off carries no requested profile.
         /// It must return at once.
         public var onVoiceMeeting: (@Sendable (Bool, MeetingProfile?) -> Void)?
@@ -227,7 +230,8 @@ public final class RightyoAmbientPipeline: Sendable {
                                             mediaCommands: configuration.replyControl,
                                             destinations: configuration.destinations,
                                             routing: configuration.routing,
-                                            duckActive: duckActive)
+                                            duckActive: duckActive,
+                                            taskProgressOwner: configuration.onTaskProgressOwner)
         let child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
                                             session: session, timing: configuration.timing,
                                             replyControl: configuration.replyControl,
