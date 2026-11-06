@@ -17,6 +17,8 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
     private(set) var legacy: [String] = []
     let legacyEvents = AsyncStream<String>.makeStream()
     private var legacyFailure: (any Error)?
+    private var nextLegacyHeld = false
+    private var legacyRelease: CheckedContinuation<Void, Never>?
     private var nextListingHeld = false
     let listingEvents = AsyncStream<Void>.makeStream()
     private var listingRelease: CheckedContinuation<Void, Never>?
@@ -39,9 +41,17 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
     func deliver(_ text: String, to target: String, binding: String?) async throws {
         legacy.append(text)
         legacyEvents.continuation.yield(text)
-        if let legacyFailure { throw legacyFailure }
+        let failure = legacyFailure
+        if nextLegacyHeld {
+            nextLegacyHeld = false
+            await withCheckedContinuation { legacyRelease = $0 }
+        }
+        if let failure { throw failure }
     }
     func failLegacyHandoff(with error: any Error) { legacyFailure = error }
+    func passLegacyHandoff() { legacyFailure = nil }
+    func holdNextLegacyHandoff() { nextLegacyHeld = true }
+    func releaseLegacyHandoff() { legacyRelease?.resume(); legacyRelease = nil }
     func holdNextListing() { nextListingHeld = true }
     func releaseListing() { listingRelease?.resume(); listingRelease = nil }
     func deliver(_ text: String, to target: String, binding: String, context: ProviderTurnContext) async throws {
@@ -122,19 +132,6 @@ extension RecipientContextAdapter {
 // Direct admission tests use a synthetic synchronous enqueue, never a production authorization Boolean.
 extension HostSession {
     func acceptsHostReply(_ frame: Frame) -> Bool { enqueueHostReply(frame, enqueue: { true }) }
-}
-
-final class RecipientTestClock: Sendable {
-    private let value = Mutex<Int64>(1_700_000_000_000)
-    private let origin = ContinuousClock.now
-    private let elapsed = Mutex<Int64>(0)
-    func now() -> Int64 { value.withLock { $0 } }
-    func instant() -> ContinuousClock.Instant { origin.advanced(by: .milliseconds(elapsed.withLock { $0 })) }
-    func advance(_ milliseconds: Int64) {
-        value.withLock { $0 += milliseconds }
-        elapsed.withLock { $0 += milliseconds }
-    }
-    func adjustWallClock(_ milliseconds: Int64) { value.withLock { $0 += milliseconds } }
 }
 
 struct RecipientTestRig {

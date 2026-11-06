@@ -19,6 +19,7 @@ public protocol HostReplyPublishing: Sendable {
     func ambient(_ request: LocalAmbientRequest) async -> LocalAmbientReport
     /// `haild notify` (#609): applies the session update policy; the update's text is never logged.
     func sessionUpdate(_ request: LocalSessionUpdateRequest) async -> LocalSessionUpdateReport
+    func taskProgress(_ request: LocalTaskProgressRequest) async -> LocalTaskProgressReport
 }
 
 extension HostReplyPublishing {
@@ -35,6 +36,10 @@ extension HostReplyPublishing {
     /// A destination without session updates holds and speaks nothing.
     public func sessionUpdate(_ request: LocalSessionUpdateRequest) async -> LocalSessionUpdateReport {
         LocalSessionUpdateReport(outcome: .notEnabled)
+    }
+
+    public func taskProgress(_ request: LocalTaskProgressRequest) async -> LocalTaskProgressReport {
+        .init(outcome: "not_enabled", reason: "requires_task_progress_and_session_updates")
     }
 }
 
@@ -60,6 +65,7 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
     public var ambient: LocalAmbientReport?
     /// Session update answers (#609) only; every other response omits the key.
     public var update: LocalSessionUpdateReport?
+    public var progress: LocalTaskProgressReport?
 
     public init(delivered: Int, error: String? = nil, code: LocalReplyRefusal? = nil) {
         self.delivered = delivered
@@ -87,7 +93,13 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         return response
     }
 
-    private enum CodingKeys: String, CodingKey { case delivered, error, code, request, ambient, update }
+    public static func progress(_ report: LocalTaskProgressReport) -> Self {
+        var response = Self(delivered: 0)
+        response.progress = report
+        return response
+    }
+
+    private enum CodingKeys: String, CodingKey { case delivered, error, code, request, ambient, update, progress }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -98,6 +110,7 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         request = try container.decodeIfPresent(UUID.self, forKey: .request)
         ambient = try container.decodeIfPresent(LocalAmbientReport.self, forKey: .ambient)
         update = try container.decodeIfPresent(LocalSessionUpdateReport.self, forKey: .update)
+        progress = try container.decodeIfPresent(LocalTaskProgressReport.self, forKey: .progress)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -108,6 +121,7 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         if isDispatch { try container.encode(request, forKey: .request) }
         try container.encodeIfPresent(ambient, forKey: .ambient)
         try container.encodeIfPresent(update, forKey: .update)
+        try container.encodeIfPresent(progress, forKey: .progress)
     }
 }
 
@@ -245,6 +259,7 @@ extension LocalReplyEndpoint {
         if isDispatch { return await submitDispatch(data, from: client) }
         if kind == LocalAmbientRequest.kind { return await submitAmbient(data, from: client) }
         if kind == LocalSessionUpdateRequest.kind { return await submitSessionUpdate(data, from: client) }
+        if kind == LocalTaskProgressRequest.kind { return await submitTaskProgress(data, from: client) }
         await submitReply(data, from: client)
     }
 
