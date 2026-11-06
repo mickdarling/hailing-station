@@ -19,9 +19,11 @@ struct AmbientPrivacyOffScopeTests {
     /// Source A (a silent peer, or one that answers pings) is private by the owner's voice and still open; B, of class
     /// `kind`, is restored private from it. Returns before any off.
     static func restoredFrom(silent: Bool, sourceKind: String? = "phone", kind: String? = "phone",
-                             privacy: PrivacyOffSettings? = nil) async throws -> (Scene, SilentPeer?) {
+                             privacy: PrivacyOffSettings? = nil, holdSpawn: Int? = nil)
+    async throws -> (Scene, SilentPeer?) {
         // A silent source's probe waits out the timeout, so it is shortened; a live one's pong ends it at once.
-        let rig = try await RestoreRig(phrase: "stop recording", privacy: privacy ?? (silent ? .silent : .init()))
+        let rig = try await RestoreRig(phrase: "stop recording", holdSpawn: holdSpawn,
+                                       privacy: privacy ?? (silent ? .silent : .init()))
         let (peer, source) = try await Self.source(on: rig, silent: silent, kind: sourceKind)
         let router = rig.router
         #expect(await eventually { router.activeConnection() == source }, "source start marker")
