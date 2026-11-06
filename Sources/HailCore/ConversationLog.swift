@@ -35,8 +35,10 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     public private(set) var metadataBlocks: [MarkdownBlock] = []
     /// The reply has audio (#606), so its `text` is the words spoken aloud: the chat shows it in a speech style.
     public var spoken = false
+    /// A proactive update's priority (#609). These cards are never a response to an outstanding request.
+    public var updatePriority: String?
     /// A reply from another session that answers a request the user addressed to it by name from the thread it
-    /// arrived in (#636): that session's listed name, shown as the reply's label. Nil for every other entry.
+    /// arrived in (#636), or a proactive update (#609): the session's listed name, shown as its label.
     public var source: String?
     /// The thread such a reply shows in, besides its own. Nil otherwise.
     public var shownIn: String?
@@ -74,6 +76,8 @@ public final class ConversationLog {
     public private(set) var entries: [ConversationEntry] = []
     /// Requests the user addressed by name to another session (#636), each open for `addressLifetime`; newest last.
     @ObservationIgnored private var addressed: [AddressedRequest] = []
+    /// Recent endpoint/update receipts survive reconnects without retaining content. Bounded like visible history.
+    @ObservationIgnored private var updateReceipts: [String] = []
     /// Which entry each recent address placed (address id to entry id), so a send that then fails can undo it.
     @ObservationIgnored private var placements: [(address: UUID, entry: String)] = []
     @ObservationIgnored private let now: @Sendable () -> Date
@@ -156,7 +160,8 @@ extension ConversationLog {
             $0.endpointID == endpointID && $0.shownIn == targetID
         }.map(\.id)) : []
         return Set(replies.lazy.filter {
-            ($0.endpointID == endpointID && $0.target == targetID) || placed.contains($0.id)
+            !$0.isSessionUpdate
+                && (($0.endpointID == endpointID && $0.target == targetID) || placed.contains($0.id))
         }.map(\.id))
     }
 
@@ -267,6 +272,32 @@ extension ConversationLog {
         entry.metadata = payload.metadata
         entry.spoken = reply.audioStreamID != nil
         append(entry)
+    }
+
+    /// One unsolicited card, labelled by its live host session and placed only in its exact target's thread.
+    /// Duplicates never replace content, satisfy a pending paste or consume an addressed-request placement.
+    func noteSessionUpdate(_ event: HostReplyEvent) {
+        guard case .control(.sessionUpdate(let update, let session, let priority, let text, let card))
+                = event.frame.payload, let target = event.frame.target, !target.isEmpty else { return }
+        let id = "\(event.endpointID)|\(update.uuidString.lowercased())"
+        let receipt = "update|\(id)"
+        guard !updateReceipts.contains(receipt), !entries.contains(where: { $0.id == id }) else { return }
+        updateReceipts.append(receipt)
+        if updateReceipts.count > Self.limit { updateReceipts.removeFirst(updateReceipts.count - Self.limit) }
+        var entry = ConversationEntry(id: id, speaker: .haili, text: text,
+                                      endpointID: event.endpointID, targetID: target, date: now())
+        entry.source = session
+        entry.updatePriority = priority
+        entry.metadata = card
+        append(entry)
+    }
+
+    /// Like ordinary replies, the speech style means audio arrived, not proof that it physically played.
+    func noteSessionUpdateAudio(endpoint: HostEndpoint.Identifier, update: UUID) {
+        let id = "\(endpoint)|\(update.uuidString.lowercased())"
+        if let index = entries.firstIndex(where: { $0.id == id && $0.updatePriority != nil }) {
+            entries[index].spoken = true
+        }
     }
 
     private func append(_ entry: ConversationEntry) {
