@@ -3,6 +3,45 @@ import Foundation
 // Enrollment, deadline commits and listener wiring share the same private state owner.
 // swiftlint:disable file_length
 
+private struct TaskProgressWakeContext: Sendable {
+    let generation: TargetPolicyGeneration
+    let attempt: TaskProgressWakeAttempt
+    let lifetime: TaskProgressAdmissionLifetime
+    let revision: UInt64
+    let fence: TaskProgressOutputFence
+}
+
+struct TaskProgressEnrollmentAdmission: TaskProgressOwnerAdmission {
+    let state: TaskProgressOwnerState
+    let lease: TaskProgressOwnerLease
+    let lifetime: TaskProgressOwnerLifetime
+    func perform(_ commit: () -> TaskProgressControlResult) -> TaskProgressControlResult {
+        state.withCurrent(lease) { lifetime.perform(commit) }
+    }
+}
+
+enum TaskProgressOwnerSource: Sendable {
+    case local
+    case ambient(any AmbientListenerWiring, TaskProgressAmbientAudience)
+    func perform(_ commit: () -> TaskProgressControlResult) -> TaskProgressControlResult {
+        switch self {
+        case .local: commit()
+        case .ambient(let wiring, let audience): wiring.withTaskProgressOwnerPermission(audience, commit: commit)
+        }
+    }
+}
+
+struct TaskProgressRetainedOwnerAdmission: TaskProgressOwnerAdmission {
+    let state: TaskProgressOwnerState
+    let lease: TaskProgressOwnerLease
+    let lifetime: TaskProgressOwnerLifetime
+    let source: TaskProgressOwnerSource
+    let control: TaskProgressOwnerControl
+    func perform(_ commit: () -> TaskProgressControlResult) -> TaskProgressControlResult {
+        state.perform(lease, control: control) { lifetime.perform { source.perform(commit) } }
+    }
+}
+
 /// The listener owns enrollment, current policy and recipient admission. The scheduler owns only deadlines.
 /// A task never acquires voice reply ownership, renews a request, interrupts a turn or restarts a provider.
 actor ListenerTaskProgress {
@@ -15,12 +54,16 @@ actor ListenerTaskProgress {
     private var expires: ContinuousClock.Instant?
     private var lastText: String?
     private var outstandingPrivacyRevision: UInt64?
-    private var outputFence = TaskProgressOutputFence()
+    nonisolated let ownerState = TaskProgressOwnerState()
+    private var outputFence: TaskProgressOutputFence { ownerState.fence }
+    private let ownerLifetime: TaskProgressOwnerLifetime
     private var outstandingOutputFence: TaskProgressOutputFence?
+    private var outstandingWake: TaskProgressWake?
     private var handling = false
 
-    init(listener: WebSocketListener, host: HailHost, clock: TaskProgressClock = .continuous) {
-        (self.listener, self.host, self.clock) = (listener, host, clock)
+    init(listener: WebSocketListener, host: HailHost, clock: TaskProgressClock = .continuous,
+         ownerLifetime: TaskProgressOwnerLifetime) {
+        (self.listener, self.host, self.clock, self.ownerLifetime) = (listener, host, clock, ownerLifetime)
     }
 
     private func timer() -> TaskProgressScheduler {
@@ -37,7 +80,7 @@ actor ListenerTaskProgress {
         handling = true
         defer { handling = false }
         if request.action == .start { return await start(request) }
-        guard let task = enrollment, request.task == task.id else {
+        guard let task = enrollment, request.task == task.id, let lease = ownerState.lease(for: task) else {
             return .init(outcome: "refused", reason: "no_matching_task")
         }
         let scheduler = timer()
@@ -47,18 +90,19 @@ actor ListenerTaskProgress {
             return await controlled(await scheduler.agent(interval: .seconds(request.seconds ?? 0)))
         case .owner: return await ownerRequest(request)
         case .cancel:
-            await finish(task.id)
+            await finish(lease)
             return await status()
-        case .finish: return await finishRequest(request, task: task)
+        case .finish: return await finishRequest(request, lease: lease)
         case .report: return await report(request)
         }
     }
 
-    private func finishRequest(_ request: LocalTaskProgressRequest, task: TaskProgressTask) async
+    private func finishRequest(_ request: LocalTaskProgressRequest, lease: TaskProgressOwnerLease) async
         -> LocalTaskProgressReport {
-        let result = await submit(request, priority: .action)
-        await finish(task.id)
+        let result = await submit(request, priority: .action, lease: lease, fence: nil)
+        await finish(lease)
         var ended = await status()
+        guard ownerState.isRetired(lease) else { return staleTask() }
         if result.outcome == "refused" { ended.outcome = "refused" }
         ended.reason = result.reason
         ended.update = result.update
@@ -73,12 +117,9 @@ actor ListenerTaskProgress {
     }
 
     private func applyOwner(_ control: TaskProgressOwnerControl) async -> TaskProgressControlResult {
-        switch control {
-        case .pause, .stop: outputFence.close()
-        case .resume: outputFence = TaskProgressOutputFence()
-        default: break
-        }
-        return await timer().owner(control)
+        guard let task = enrollment, let lease = ownerState.lease(for: task) else { return .noTask }
+        let admission = ownerAdmission(control, lease: lease, source: .local)
+        return await timer().owner(control, task: task, generation: lease.generation, admission: admission)
     }
 
     private func controlled(_ result: TaskProgressControlResult) async
@@ -89,7 +130,10 @@ actor ListenerTaskProgress {
     }
 
     private func start(_ request: LocalTaskProgressRequest) async -> LocalTaskProgressReport {
-        guard enrollment == nil else { return .init(outcome: "refused", reason: "task_already_active") }
+        guard enrollment == nil, let reservation = ownerState.reserveStart() else {
+            return .init(outcome: "refused", reason: "task_already_active")
+        }
+        defer { ownerState.cancelStart(reservation) }
         guard let target = request.target, let id = request.task, let listener,
               let listed = try? await host.registry.listing().first(where: { $0.info.id == target }),
               listed.info.alive, let binding = listed.binding else {
@@ -100,61 +144,98 @@ actor ListenerTaskProgress {
             return .init(outcome: "refused", reason: "policy_denied")
         }
         let task = TaskProgressTask(id: id, session: target, binding: binding)
+        guard let lease = ownerState.enroll(task, reservation: reservation, lifetime: ownerLifetime) else {
+            return staleTask()
+        }
         let scheduler = timer()
         (enrollment, generation) = (task, grant)
         expires = clock.now().advanced(by: .seconds(6 * 3_600))
         lastText = nil
         outstandingPrivacyRevision = nil
-        outputFence = TaskProgressOutputFence()
         outstandingOutputFence = nil
-        await scheduler.observe(await listener.taskProgressEnvironment(for: target))
-        guard await scheduler.start(task, interval: .seconds(request.seconds ?? 300)) else {
-            await finish(task.id)
+        outstandingWake = nil
+        let environment = await listener.taskProgressEnvironment(for: target)
+        let admission = TaskProgressEnrollmentAdmission(state: ownerState, lease: lease, lifetime: ownerLifetime)
+        guard await scheduler.start(task, interval: .seconds(request.seconds ?? 300), generation: lease.generation,
+                                    environment: environment, admission: admission) else {
+            await finish(lease)
             return .init(outcome: "refused", reason: "invalid_interval")
         }
         // A live availability edge may have arrived while either actor hop above was suspended.
-        await refresh()
-        return await status()
+        await refresh(lease)
+        guard ownerState.isCurrent(lease) else { return staleTask() }
+        let report = await status()
+        return ownerState.isCurrent(lease) ? report : staleTask()
     }
 
     func refresh() async {
-        guard let task = enrollment, let listener else { return }
-        await timer().observe(await listener.taskProgressEnvironment(for: task.session))
+        guard let task = enrollment, let lease = tryLease(task) else { return }
+        await refresh(lease)
     }
 
-    func owner(_ control: TaskProgressOwnerControl, connection: UUID) async -> Bool {
-        guard let task = enrollment, let listener,
-              await listener.taskProgressControlConnection(for: task.session) == connection else { return false }
-        return await applyOwner(control) == .applied
+    private func refresh(_ lease: TaskProgressOwnerLease) async {
+        guard ownerState.isCurrent(lease), let listener else { return }
+        let environment = await listener.taskProgressEnvironment(for: lease.task.session)
+        await timer().observe(environment, task: lease.task, generation: lease.generation)
     }
 
-    func stop() async { if let task = enrollment { await finish(task.id) } }
+    func owner(_ control: TaskProgressOwnerControl, connection: UUID, stream: UUID) async -> Bool {
+        guard let task = enrollment, let lease = ownerState.lease(for: task), let listener else { return false }
+        if let before = TaskProgressOwnerControlScope.beforeValidation { await before(task) }
+        guard let source = await listener.taskProgressOwnerSource(for: task.session, connection: connection,
+                                                                  stream: stream) else { return false }
+        let admission = ownerAdmission(control, lease: lease, source: source)
+        return await timer().owner(control, task: task, generation: lease.generation, admission: admission) == .applied
+    }
 
-    private func finish(_ id: UUID) async {
-        guard enrollment?.id == id else { return }
-        outputFence.close()
-        await timer().finish(task: id)
-        guard enrollment?.id == id else { return }
+    func stop() async {
+        ownerState.cancelStart()
+        if let task = enrollment, let lease = tryLease(task) { await finish(lease) }
+    }
+
+    private func finish(_ lease: TaskProgressOwnerLease) async {
+        guard enrollment == lease.task, ownerState.retire(lease) else { return }
+        await timer().finish(task: lease.task, generation: lease.generation)
+        guard ownerState.isRetired(lease), enrollment == lease.task else { return }
         enrollment = nil
         generation = nil
         expires = nil
         lastText = nil
         outstandingPrivacyRevision = nil
         outstandingOutputFence = nil
+        outstandingWake = nil
     }
 }
 
 private extension ListenerTaskProgress {
+    private func ownerAdmission(_ control: TaskProgressOwnerControl, lease: TaskProgressOwnerLease,
+                                source: TaskProgressOwnerSource) -> TaskProgressRetainedOwnerAdmission {
+        .init(state: ownerState, lease: lease, lifetime: ownerLifetime, source: source, control: control)
+    }
+
+    private func tryLease(_ task: TaskProgressTask) -> TaskProgressOwnerLease? { ownerState.lease(for: task) }
+    private func staleTask() -> LocalTaskProgressReport { .init(outcome: "refused", reason: "stale_task") }
+
     func wake(_ wake: TaskProgressWake) async {
         defer { TaskProgressWakeScope.didFinishWake?() }
-        guard enrollment == wake.task, let listener, let generation, let expires, clock.now() < expires else {
-            return await finish(wake.task.id)
+        if let before = TaskProgressControllerLifetimeScope.beforeWake { await before(wake) }
+        guard enrollment == wake.task, let lease = tryLease(wake.task),
+              lease.generation == wake.enrollmentGeneration else { return }
+        guard await timer().snapshot().outstanding == wake, ownerState.isCurrent(lease) else { return }
+        outstandingWake = wake
+        outstandingPrivacyRevision = nil
+        outstandingOutputFence = nil
+        guard let listener, let generation, let expires, clock.now() < expires else {
+            return await finish(wake, lease: lease)
         }
         let lifetime = TaskProgressAdmissionLifetime(expires: expires, clock: clock)
-        await refresh()
+        await refresh(lease)
         guard await timer().permits(wake) else { _ = await timer().complete(wake); return }
-        outstandingPrivacyRevision = await listener.taskProgressPrivacyRevision()
-        outstandingOutputFence = outputFence
+        let revision = await listener.taskProgressPrivacyRevision()
+        guard ownerState.isCurrent(lease), outstandingWake == wake else { return }
+        let fence = outputFence
+        outstandingPrivacyRevision = revision
+        outstandingOutputFence = fence
         let attempt = TaskProgressWakeAttempt()
         do {
             // The retained generation is never refreshed here. Revoke/restore cannot resurrect this enrollment.
@@ -164,37 +245,44 @@ private extension ListenerTaskProgress {
                 _ = await timer().complete(wake)
                 return
             }
-            let result = try await sendWake(wake, listener: listener, generation: generation,
-                                            attempt: attempt, lifetime: lifetime)
-            guard case .delivered = result else { return await finish(wake.task.id) }
+            let context = TaskProgressWakeContext(generation: generation, attempt: attempt, lifetime: lifetime,
+                                                  revision: revision, fence: fence)
+            let result = try await sendWake(wake, listener: listener, context: context)
+            guard case .delivered = result else { return await finish(wake, lease: lease) }
         } catch is CancellationError {
             // Only proven zero-attempt cancellation releases the solicitation. An ambiguous handoff stays busy.
-            if !attempt.hasAttempt {
-                if lifetime.isExpired { await finish(wake.task.id) } else { _ = await timer().complete(wake) }
-            }
+            await cancelWake(wake, lease: lease, attempt: attempt, lifetime: lifetime)
         } catch {
             // Refused/busy/rebound is inspectable stopped state; never a retry or recovery storm.
-            await finish(wake.task.id)
+            await finish(wake, lease: lease)
         }
     }
 
-    private func sendWake(
-        _ wake: TaskProgressWake, listener: WebSocketListener,
-        generation: TargetPolicyGeneration, attempt: TaskProgressWakeAttempt,
-        lifetime: TaskProgressAdmissionLifetime
-    ) async throws -> SendOutcome {
-        guard let revision = outstandingPrivacyRevision, let taskFence = outstandingOutputFence,
-              await timer().permits(wake) else { throw CancellationError() }
-        let authority = TaskProgressPublicationAuthority(generation: generation, binding: wake.task.binding,
-                                                          taskFence: taskFence)
+    private func cancelWake(_ wake: TaskProgressWake, lease: TaskProgressOwnerLease,
+                            attempt: TaskProgressWakeAttempt, lifetime: TaskProgressAdmissionLifetime) async {
+        guard !attempt.hasAttempt else { return }
+        if lifetime.isExpired { await finish(wake, lease: lease) } else { _ = await timer().complete(wake) }
+    }
+
+    private func finish(_ wake: TaskProgressWake, lease: TaskProgressOwnerLease) async {
+        guard outstandingWake == wake else { return }
+        await finish(lease)
+    }
+
+    private func sendWake(_ wake: TaskProgressWake, listener: WebSocketListener,
+                          context: TaskProgressWakeContext) async throws -> SendOutcome {
+        guard await timer().permits(wake) else { throw CancellationError() }
+        let authority = TaskProgressPublicationAuthority(generation: context.generation, binding: wake.task.binding,
+                                                          taskFence: context.fence)
         guard
               let commit = await listener.taskProgressHandoff(for: wake.task, authority: authority,
-                                                              privacyRevision: revision, attempt: attempt,
-                                                              lifetime: lifetime) else {
+                                                              privacyRevision: context.revision,
+                                                              attempt: context.attempt,
+                                                              lifetime: context.lifetime) else {
             throw CancellationError()
         }
         return try await TaskProgressWakeScope.$beforeHandoff.withValue(commit) {
-            try await host.sendAuthorized(wake.statusPrompt, policyGeneration: generation,
+            try await host.sendAuthorized(wake.statusPrompt, policyGeneration: context.generation,
                                           from: "task-progress", expectedBinding: wake.task.binding, context: nil)
         }
     }
@@ -202,34 +290,47 @@ private extension ListenerTaskProgress {
     private func report(_ request: LocalTaskProgressRequest) async -> LocalTaskProgressReport {
         let scheduler = timer()
         guard let outstanding = await scheduler.snapshot().outstanding, outstanding.task == enrollment,
-              request.token == outstanding.token else { return .init(outcome: "refused", reason: "stale_update") }
-        await refresh()
+              request.token == outstanding.token, let lease = tryLease(outstanding.task),
+              lease.generation == outstanding.enrollmentGeneration, outstandingWake == outstanding else {
+            return .init(outcome: "refused", reason: "stale_update")
+        }
+        let revision = outstandingPrivacyRevision, fence = outstandingOutputFence
+        await refresh(lease)
+        guard ownerState.isCurrent(lease) else { return staleTask() }
         let result: LocalTaskProgressReport
-        if await scheduler.permits(outstanding), outstandingOutputFence?.isOpen == true,
-           let expected = outstandingPrivacyRevision, let listener,
+        if await scheduler.permits(outstanding), fence?.isOpen == true,
+           let expected = revision, let listener,
            await listener.taskProgressPrivacyRevision() == expected {
             result = await SessionUpdatePrivacyScope.$expectedRevision.withValue(expected) {
-                await submit(request, priority: .info)
+                await submit(request, priority: .info, lease: lease, fence: fence)
             }
         } else {
             result = .init(outcome: "suppressed", reason: "paused")
         }
         _ = await scheduler.complete(outstanding)
-        outstandingPrivacyRevision = nil
-        outstandingOutputFence = nil
+        if let before = TaskProgressControllerLifetimeScope.beforeReportCleanup { await before(outstanding) }
+        guard ownerState.isCurrent(lease) else { return staleTask() }
+        if outstandingWake == outstanding {
+            outstandingPrivacyRevision = nil
+            outstandingOutputFence = nil
+            outstandingWake = nil
+        }
         if result.reason == "retired_authority" || result.update?.reason == "retired_authority" {
-            await finish(outstanding.task.id)
+            await finish(lease)
         }
         var current = await status()
+        guard ownerState.isCurrent(lease) || ownerState.isRetired(lease) else { return staleTask() }
         current.outcome = result.outcome
         current.reason = result.reason
         current.update = result.update
         return current
     }
 
-    private func submit(_ request: LocalTaskProgressRequest, priority: SessionUpdatePriority) async
+    private func submit(_ request: LocalTaskProgressRequest, priority: SessionUpdatePriority,
+                        lease: TaskProgressOwnerLease, fence: TaskProgressOutputFence?) async
         -> LocalTaskProgressReport {
-        guard let task = enrollment else { return .init(outcome: "refused", reason: "no_task") }
+        guard enrollment == lease.task, ownerState.isCurrent(lease) else { return staleTask() }
+        let task = lease.task
         guard let generation, generation.performIfCurrent({ true }) == true else {
             return .init(outcome: "refused", reason: "retired_authority")
         }
@@ -239,7 +340,7 @@ private extension ListenerTaskProgress {
         guard text != lastText else { return .init(outcome: "unchanged") }
         guard let listener else { return .init(outcome: "refused", reason: "stopped") }
         let authority = TaskProgressPublicationAuthority(generation: generation, binding: task.binding,
-            taskFence: priority == .info ? outstandingOutputFence : nil)
+            taskFence: priority == .info ? fence : nil)
         let details = ["Task: `\(task.id.uuidString)`", request.card].compactMap { $0 }
             .joined(separator: "\n\n")
         let update = await TaskProgressPublicationScope.$authority.withValue(authority) {
@@ -247,6 +348,7 @@ private extension ListenerTaskProgress {
                                                text: text, card: details))
         }
         var result = await status()
+        guard ownerState.isCurrent(lease) else { return staleTask() }
         result.update = update
         if update.outcome != .refused && update.outcome != .notEnabled { lastText = text }
         return result
@@ -269,7 +371,8 @@ private extension ListenerTaskProgress {
 extension WebSocketListener {
     func enableTaskProgress(clock: TaskProgressClock = .continuous) {
         guard sessionUpdates.policy.enabled, !stopped, taskProgressController == nil else { return }
-        taskProgressController = ListenerTaskProgress(listener: self, host: host, clock: clock)
+        taskProgressController = ListenerTaskProgress(listener: self, host: host, clock: clock,
+                                                      ownerLifetime: taskProgressOwnerLifetime)
     }
 
     public func taskProgress(_ request: LocalTaskProgressRequest) async -> LocalTaskProgressReport {
@@ -296,6 +399,11 @@ extension WebSocketListener {
               await peer.isLive, await peer.session.canReceiveSessionUpdate(target: target,
                 lastInput: lastInput.latest(for: target)) else { return nil }
         return connection
+    }
+
+    func taskProgressOwnerSource(for target: String, connection: UUID, stream: UUID) async -> TaskProgressOwnerSource? {
+        guard await taskProgressControlConnection(for: target) == connection, !stopped, let ambient else { return nil }
+        return .ambient(ambient, TaskProgressAmbientAudience(connection: connection, stream: stream))
     }
 
     func taskProgressEnvironment(for target: String) async -> TaskProgressEnvironment {
@@ -327,6 +435,6 @@ extension WebSocketListener {
         guard !stopped, ambient?.activeConnection() == connection,
               ambient?.isLatest(stream: stream, connection: connection) == true,
               let taskProgressController else { return false }
-        return await taskProgressController.owner(control, connection: connection)
+        return await taskProgressController.owner(control, connection: connection, stream: stream)
     }
 }
