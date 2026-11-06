@@ -69,7 +69,7 @@ struct AmbientPrivacyPreArmTests {
     /// R2: a pre-armed connection that drops before any stream parks its privacy, as any private connection does,
     /// and leaves no state of its own behind; the next fresh start, another device's, is private.
     @Test func aPreArmedConnectionsTeardownParksItsPrivacy() async throws {
-        let rig = try await RestoreRig(phrase: nil)
+        let rig = try await RestoreRig(phrase: nil, holdSpawn: 1)
         defer { rig.close() }
         let (socket, connection) = try await Self.preArmed(rig)
         socket.cancel(with: .goingAway, reason: nil)
