@@ -207,6 +207,8 @@ public actor HostSession {
     /// Whether something reports this session's provider turns ended (#430). Until a turn-end source is wired, a
     /// provider-owned request keeps the ordinary lifetime so finished turns cannot hold capacity for hours.
     let providerTurnEndsReported: Bool
+    /// Explicit listener opt-in; merely selecting a target never enables unsolicited output negotiation.
+    let sessionUpdatesEnabled: Bool
     var state = State.awaitingHello
     var peerName = "terminal"
     /// What the device said it can do in its hello (#309), bounded; it gates host-sent `stop_playback`.
@@ -244,6 +246,7 @@ public actor HostSession {
         },
         requestClock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
         providerTurnEndsReported: Bool = false,
+        sessionUpdatesEnabled: Bool = false,
         modeSnapshot: @escaping @Sendable (UUID) -> [ControlPayload] = { _ in
             [.duckMode(on: false), .mediaMode(on: false)]
         },
@@ -253,6 +256,7 @@ public actor HostSession {
         snapshotOff = snapshotPrivacyOff
         self.host = host
         self.providerTurnEndsReported = providerTurnEndsReported
+        self.sessionUpdatesEnabled = sessionUpdatesEnabled
         self.authorizer = authorizer
         self.hostName = hostName
         self.now = now
@@ -382,7 +386,8 @@ extension HostSession {
         peerDeviceKind = AmbientTakeOver.deviceKind(hello.deviceKind)
         let info = HelloInfo(
             versions: VersionNegotiation.supported,
-            capabilities: authorizer.capabilities + [ReplySegments.capability, ModeSnapshot.capability],
+            capabilities: authorizer.capabilities + [ReplySegments.capability, ModeSnapshot.capability]
+                + (sessionUpdatesEnabled ? [SessionUpdateCard.capability, SessionUpdateCard.audioCapability] : []),
             deviceName: hostName
         )
         // WebSocketPeer sends this whole batch before receiving the next frame. Reading the snapshot is

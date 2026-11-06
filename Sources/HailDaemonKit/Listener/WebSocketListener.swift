@@ -270,6 +270,9 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     func activeConnection() -> UUID?
     /// Whether the owner's spoken media mode (#551) is on for `connection`. The default has none.
     func mediaMode(connection: UUID) -> Bool
+    /// Synchronous final enqueue gate for proactive updates. Unknown wiring fails closed. No callback may wait
+    /// or re-enter the router: only a prepared transport hand-off runs while privacy/media state is locked.
+    func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool
 }
 
 extension AmbientListenerWiring {
@@ -308,6 +311,7 @@ extension AmbientListenerWiring {
     public func status() -> AmbientRouterStatus { AmbientRouterStatus() }
     public func activeConnection() -> UUID? { nil }
     public func mediaMode(connection: UUID) -> Bool { false }
+    public func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool { false }
 }
 
 /// What `haild ambient reload` did (#405). `refused` carries a content-free rule name.
@@ -901,6 +905,13 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     var peakQueue: Int { state.withLock { $0.peakQueue } }
     public func mediaMode(connection: UUID) -> Bool { state.withLock { $0.media[connection] != nil } }
+    public func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool {
+        state.withLock { state in
+            guard !state.shuttingDown, !state.closed.contains(connection), state.duck.isEmpty,
+                  state.parks.isEmpty, !state.parkOverflow, state.media[connection] == nil else { return false }
+            return enqueue()
+        }
+    }
     /// Whether the owner's spoken duck mode (#735) is on for `connection` (tests).
     func duckMode(connection: UUID) -> Bool { state.withLock { $0.duck[connection] != nil } }
     /// The current privacy arming's token for `connection`, nil while privacy is off (#735 S-6: a device switch reads

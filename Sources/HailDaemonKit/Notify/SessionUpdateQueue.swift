@@ -52,6 +52,13 @@ public struct SessionUpdateQueue: Sendable, Equatable {
 
     public init(policy: SessionUpdatePolicy = .init()) { self.policy = policy }
 
+    /// Removes only the update whose transport hand-off completed. Offering a drain must not consume work:
+    /// a disconnected or unsupported recipient leaves every other update held, with its budget already spent.
+    public mutating func acknowledge(_ id: UUID) { held.removeAll { $0.id == id } }
+
+    /// Privacy discards output rather than deferring it until privacy ends. Rate-limit history is retained.
+    public mutating func discardHeld() { held.removeAll() }
+
     public mutating func submit(
         _ update: SessionUpdate, audience: SessionUpdateAudience, now: Instant
     ) -> SessionUpdateDecision {
@@ -155,7 +162,7 @@ public struct SessionUpdateQueue: Sendable, Equatable {
         }
     }
 
-    private mutating func expire(now: Instant) {
+    mutating func expire(now: Instant) {
         held.removeAll { $0.submitted.duration(to: now) >= policy.lifetime }
     }
 
