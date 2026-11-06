@@ -17,7 +17,7 @@ HAILD = REPO / ".build" / "debug" / "haild"
 
 
 class NotifyCLITests(unittest.TestCase):
-    def run_notify(self, arguments, response, mode=0o600):
+    def run_notify(self, arguments, response, mode=0o600, command="notify"):
         """Runs `haild notify`, answering its one request with `response`; returns (result, requests)."""
         with tempfile.TemporaryDirectory(prefix="hail-notify-") as scratch:
             path = os.path.join(scratch, "replies.sock")
@@ -50,7 +50,7 @@ class NotifyCLITests(unittest.TestCase):
                 worker = threading.Thread(target=answer, daemon=True)
                 worker.start()
                 result = subprocess.run(
-                    [str(HAILD), "notify", *arguments, "--socket", path], cwd=REPO, capture_output=True,
+                    [str(HAILD), command, *arguments, "--socket", path], cwd=REPO, capture_output=True,
                     text=True, timeout=20, check=False,
                 )
                 if not requests:  # haild never connected (a refused socket): release the waiting accept at once.
@@ -82,7 +82,7 @@ class NotifyCLITests(unittest.TestCase):
         self.assertEqual(requests[0]["priority"], "action")
         self.assertEqual(result.stdout.splitlines(), [
             "held: 1 update waiting",
-            "push: suggested (nothing is spoken yet; raise your own notification)",
+            "push: unavailable (APNs delivery is not configured)",
         ])
 
     def test_refusals_map_to_lines_and_exit_codes(self):
@@ -106,6 +106,13 @@ class NotifyCLITests(unittest.TestCase):
         self.assertEqual(result.stdout.splitlines(), ["held: 3 updates waiting", "quiet: on"])
         _, requests = self.run_notify(["quiet", "on"], self.report("status", quiet=True))
         self.assertEqual(requests, [{"kind": "update", "action": "quiet_on"}])
+
+    def test_card_delivery_and_speech_availability_are_distinct(self):
+        result, _ = self.run_notify(["tmux:work", "--say", "Synthetic update"],
+                                   self.report("delivered", speechStatus="device_attention_gated"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), ["delivered: update card sent", "held: 0 updates waiting",
+                                                     "speech: device_attention_gated"])
 
     def test_usage_a_lost_answer_and_a_socket_open_to_others(self):
         for arguments in [[], ["quiet"], ["quiet", "off"], ["tmux:work"], ["tmux:work", "--say"],
