@@ -21,16 +21,6 @@ struct SessionUpdateAudienceLease: Sendable {
     var taskAuthority: TaskProgressPublicationAuthority?
 }
 
-/// Card-only lifetime/quiet fence; speech is not configured in this cut.
-final class SessionUpdateFence: Sendable {
-    private let allowed = Mutex(true)
-    func close() { allowed.withLock { $0 = false } }
-    func quiet() { close() }
-    func enqueue(_ operation: () -> Bool) -> Bool { allowed.withLock { $0 && operation() } }
-    var speechBusy: Bool { false }
-    var speechStatus: String { "not_configured" }
-}
-
 extension WebSocketListener {
     /// Each submission retains its original source identity and continuous policy generation, including ordinary
     /// notify. A task report uses the solicitation's authority; this admission must never upgrade it to a new grant.
@@ -239,6 +229,13 @@ extension WebSocketPeer {
                   }
               }) else { return false }
         guard replySendSucceeded(await prepared.result()) else { return false }
+        if await session.peerCapabilities.contains(SessionUpdateCard.audioCapability) {
+            fence.startSpeech { renderer in
+                let delivery = SessionUpdateSpeechDelivery(admission: admission, lastInput: lastInput,
+                    privacyRevision: privacyRevision, hold: hold, ambient: ambient, fence: fence)
+                await self.speakSessionUpdate(update, delivery: delivery, renderer: renderer)
+            }
+        }
         return true
     }
 }
