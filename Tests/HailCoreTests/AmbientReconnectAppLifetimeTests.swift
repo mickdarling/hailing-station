@@ -60,13 +60,48 @@ import Testing
                                         scene: background ? .background : .active)
         case .cardDisappearance: await rig.controller.destinationLost()
         }
-        #expect(!rig.controller.isOn && !rig.controller.isListening && rig.released == 1)
+        #expect(!rig.controller.isOn && !rig.controller.isListening)
         #expect(rig.controller.binding == nil)
+        // Selection can stop the old sender on another task before update observes that listening is off.
+        // Stopped state closes admission immediately; the earlier task still owns asynchronous release.
+        try await waitUntil { await MainActor.run { rig.released == 1 } }
+        #expect(rig.released == 1)
         #expect(rig.appPresentation.notice == notice) // History survives independently of capture.
         let frames = try await rig.socket.sentFrames().count
         try await rig.feed()
         #expect(try await rig.socket.sentFrames().count == frames)
         await rig.close()
+    }
+
+    @Test func updateOfStoppedListeningDoesNotJoinAnEarlierSuspendedRelease() async throws {
+        let rig = try AmbientReconnectRig()
+        try await rig.start()
+        let release = OpenGate()
+        let releasing = CompletionFlag()
+        rig.beforeSessionRelease = { await releasing.set(); await release.wait() }
+        let stopping = Task { await rig.controller.destinationLost() }
+        defer { stopping.cancel() }
+        do {
+            try await waitUntil { await releasing.isSet }
+            try await ambientRefusalDeadline { await rig.controller.update(binding: nil, scene: .active) }
+            #expect(!rig.controller.isOn && !rig.controller.isListening)
+            #expect(rig.controller.binding == nil && rig.released == 0)
+            let frames = try await rig.socket.sentFrames().count
+            try await rig.feed()
+            #expect(try await rig.socket.sentFrames().count == frames)
+        } catch { Issue.record(error) }
+        await release.release()
+        do {
+            try await ambientRefusalDeadline { await stopping.value }
+            #expect(rig.released == 1)
+            let frames = try await rig.socket.sentFrames().count
+            try await rig.feed()
+            #expect(try await rig.socket.sentFrames().count == frames)
+        } catch { Issue.record(error) }
+        do {
+            try await ambientRefusalDeadline { await rig.close() }
+            #expect(rig.released == 1)
+        } catch { Issue.record(error) }
     }
 
     private func removeTargetAndReconcileCard(_ rig: AmbientReconnectRig, binding: AmbientAudioBinding) async throws {
