@@ -20,7 +20,8 @@ struct AmbientPrivacyParkSetTests {
         let settings = PrivacyOffSettings(probeTimeout: .milliseconds(500), offScoping: { _ in
             await window.value.withLock { $0 }?()
         })
-        let (scene, silent) = try await AmbientPrivacyOffScopeTests.restoredFrom(silent: true, privacy: settings)
+        let (scene, silent) = try await AmbientPrivacyOffScopeTests.restoredFrom(silent: true, privacy: settings,
+                                                                                   holdSpawn: 4)
         let (rig, router) = (scene.rig, scene.rig.router)
         let peer = try #require(silent)
         defer { peer.cancel(); rig.close() }
