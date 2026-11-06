@@ -35,7 +35,8 @@ final class CallCaptureRig {
             engines.append(engine)
             let capture = AVAudioEngineCapture(
                 engine: engine, notificationCenter: center, operations: operations,
-                routeInputChanged: { _ in true }, sleep: { [routeWait] in await routeWait.sleep($0) }
+                routeInputChanged: { _ in true }, routeOverrideWindow: AppRouteOverrideWindow(),
+                sleep: { [routeWait] in await routeWait.sleep($0) }
             )
             let streamer = AmbientAudioStreamer(capture: capture, send: send)
             streamers.append(streamer)
