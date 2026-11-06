@@ -89,7 +89,7 @@ import Testing
 }
 
 @MainActor
-private final class ProactivePlaybackRig {
+final class ProactivePlaybackRig {
     let clock = TestInstantClock()
     let player = IdlePlayer()
     let controller: ReplyPlaybackController
@@ -118,12 +118,19 @@ private final class ProactivePlaybackRig {
         }
     }
 
-    func audio(proactive: Bool = true, byte: UInt8 = 1) -> HostReplyEvent {
+    func audio(proactive: Bool = true, byte: UInt8 = 1, codec: HailProtocol.AudioCodec = .pcm16,
+               channels: Int = 1, final: Bool = true) -> HostReplyEvent {
         let id = UUID()
         var reply = ReplyDescriptor(id: id, hostID: "host", targetID: "tmux:build", audioStreamID: UUID(),
                                     priority: proactive ? .background : .normal)
         reply.sessionUpdateID = proactive ? id : nil
-        return idleAudio(reply, sequence: 0, final: true, byte: byte, endpoint: "mac")
+        var frame = idleAudio(reply, sequence: 0, final: final, byte: byte, endpoint: "mac").frame
+        if case .audio(var audio) = frame.payload {
+            audio.codec = codec
+            audio.channels = channels
+            frame.payload = .audio(audio)
+        }
+        return HostReplyEvent(endpointID: "mac", frame: frame)
     }
 
     func ingest(_ event: HostReplyEvent) {

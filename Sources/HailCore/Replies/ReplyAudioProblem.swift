@@ -31,6 +31,11 @@ extension ReplyPlaybackController {
         _ audio: AudioPayload, event: HostReplyEvent, descriptor: ReplyDescriptor, key: ReplyStreamKey
     ) -> Bool {
         if audio.codec != .pcm16 || audio.channels != 1 {
+            // A refused first update releases its slot; the tombstone prevents ordinary-audio revival.
+            if descriptor.sessionUpdateID != nil, streams[key] == nil {
+                failPlayback(for: key)
+                proactive.identities[key] = nil
+            }
             let presentationID = upsertPresentation(event, descriptor: descriptor)
             presentationStatuses[presentationID] = Self.audioFormatNotPlayable
             return true
