@@ -39,7 +39,7 @@ import Testing
         await store.disconnect(endpoint.id)
     }
 
-    @Test func unknownEvictedOrWrongGenerationReceiptsCannotAuthorizeAudio() async throws {
+    @Test func unknownOverflowOrWrongGenerationReceiptsCannotAuthorizeAudio() async throws {
         let ready = try await ready()
         let (store, endpoint) = (ready.store, ready.endpoint)
         let generation = try #require(store.snapshots[endpoint.id]?.connectionGeneration)
@@ -50,11 +50,14 @@ import Testing
         }
         #expect(store.permitsProactiveSpeech(endpoint.id, generation: generation, descriptor: descriptor))
         #expect(!store.permitsProactiveSpeech(endpoint.id, generation: UUID(), descriptor: descriptor))
+        let overflow = reply()
         HostNoticeOrigin.$generation.withValue(generation) {
-            for _ in 0..<ConversationLog.limit { _ = store.receiveSessionUpdate(card(UUID(), endpoint: endpoint.id)) }
+            for _ in 1..<ConversationLog.limit { _ = store.receiveSessionUpdate(card(UUID(), endpoint: endpoint.id)) }
+            _ = store.receiveSessionUpdate(card(overflow.id, endpoint: endpoint.id))
         }
         #expect(store.proactiveSpeechReceipts.count == ConversationLog.limit)
-        #expect(!store.permitsProactiveSpeech(endpoint.id, generation: generation, descriptor: descriptor))
+        #expect(store.permitsProactiveSpeech(endpoint.id, generation: generation, descriptor: descriptor))
+        #expect(!store.permitsProactiveSpeech(endpoint.id, generation: generation, descriptor: overflow))
         await store.disconnect(endpoint.id)
     }
 
