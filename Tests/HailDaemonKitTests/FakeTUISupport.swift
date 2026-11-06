@@ -13,18 +13,11 @@ import Testing
 /// Each submit is appended to the log as one JSON line. The script writes its pid so a test can SIGSTOP it; it runs
 /// under a wrapper shell, because tmux resumes a stopped pane process at once when it is the pane's own pid.
 enum FakeTUI {
-    static let script = #"""
-import json, os, select, sys, termios, time, tty
-log, pidfile = sys.argv[1], sys.argv[2]
-tty.setraw(0)
-os.write(1, b"\x1b[?2004h")
+    /// The same input transitions serve real PTY input and the deterministic read/clock replay.
+    static let inputModel = #"""
 segments, history, pending, count = [], [], None, [0]
 START, END = "\x1b[200~", "\x1b[201~"
 def text(segs): return "".join(s[0] for s in segs)
-def render():
-    shown = "".join(s[1] if s[1] else s[0] for s in segments).replace("\n", "\r\n  ")
-    echo = "".join("> " + h[-60:] + "\r\n" for h in history[-3:])
-    os.write(1, ("\x1b[2J\x1b[H" + echo + "\r\n❯ " + shown).encode())
 def placeholder(t):
     if len(t) <= 800: return None
     count[0] += 1
@@ -45,6 +38,21 @@ def plain(chunk, after_paste):
         segments, pending = pending[0] + [(chunk, None)], None
     else:
         segments.append((chunk, None))
+def flush_pending():
+    global pending
+    segments.append((pending[1], placeholder(pending[1]))); pending = None
+"""#
+
+    static let script = #"""
+import json, os, select, sys, termios, time, tty
+log, pidfile = sys.argv[1], sys.argv[2]
+tty.setraw(0)
+os.write(1, b"\x1b[?2004h")
+"""# + "\n" + inputModel + "\n" + #"""
+def render():
+    shown = "".join(s[1] if s[1] else s[0] for s in segments).replace("\n", "\r\n  ")
+    echo = "".join("> " + h[-60:] + "\r\n" for h in history[-3:])
+    os.write(1, ("\x1b[2J\x1b[H" + echo + "\r\n❯ " + shown).encode())
 open(pidfile, "w").write(str(os.getpid()))
 render()
 buf = ""
@@ -52,7 +60,7 @@ while True:
     wait = max(0, pending[2] - time.time()) if pending else None
     ready, _, _ = select.select([0], [], [], wait)
     if not ready:
-        segments.append((pending[1], placeholder(pending[1]))); pending = None; render(); continue
+        flush_pending(); render(); continue
     data = os.read(0, 65536).decode("utf-8", "replace")
     buf += data
     after_paste = False
