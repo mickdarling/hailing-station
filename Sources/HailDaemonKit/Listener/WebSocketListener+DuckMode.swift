@@ -171,6 +171,7 @@ extension WebSocketListener {
     /// Sends `duck_mode` (#735) to the connection whose ambient stream it is: `sent`, `unsupported` (it did not
     /// advertise `duck_mode`), `failed` or `no_connection`. Logged by the caller as tokens only.
     func showDuckMode(_ on: Bool, reason: String, expires: Int64?, connection: UUID) async -> String {
+        await refreshTaskProgressEnvironment()
         guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
             return "no_connection"
         }
