@@ -19,15 +19,19 @@ public protocol Trigger: Sendable {
 /// An owned snapshot of one engine callback buffer, safe to hand to another concurrency domain.
 public struct AudioCaptureBuffer: @unchecked Sendable {
     public let pcmBuffer: AVAudioPCMBuffer
+    /// Monotonic time of the owned callback copy, preserved through queues; never wall-clock or persisted.
+    let capturedAt: ContinuousClock.Instant
     let admissionEpoch: UInt64
 
     public init?(copying buffer: AVAudioPCMBuffer) {
         self.init(copying: buffer, admissionEpoch: 0)
     }
 
-    init?(copying buffer: AVAudioPCMBuffer, admissionEpoch: UInt64) {
+    init?(copying buffer: AVAudioPCMBuffer, admissionEpoch: UInt64,
+          capturedAt: ContinuousClock.Instant = .now) {
         guard let copy = buffer.copy() as? AVAudioPCMBuffer else { return nil }
         pcmBuffer = copy
+        self.capturedAt = capturedAt
         self.admissionEpoch = admissionEpoch
     }
 }
