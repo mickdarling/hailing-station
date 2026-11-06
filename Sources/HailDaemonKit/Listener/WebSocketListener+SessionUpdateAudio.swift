@@ -6,7 +6,9 @@ import Synchronization
 extension WebSocketListener {
     /// Source configuration only; this neither creates output directories nor starts a child or listening stream.
     public func configureSessionUpdateSpeech(_ renderer: any SessionUpdateSpeechRendering) {
-        sessionUpdateFence.configure(renderer)
+        sessionUpdateFence.configure(renderer, onIdle: { [weak self] in
+            await self?.refreshTaskProgressEnvironment()
+        })
     }
 
     public var sessionUpdateSpeechStatus: String { sessionUpdateFence.speechStatus }

@@ -145,7 +145,9 @@ extension WebSocketListener {
         sessionUpdateTaskAuthorities[update.id] = authority
         // Routine information waits for a real interaction/playback pause. Action cards may be delivered now;
         // neither path borrows a request reference or asks the uncorrelated reply router to choose a device.
-        let deliverCard = update.priority == .action
+        // Explicit task enrollment requests cadence feedback. Send its card now; marked audio still waits for
+        // measured quiet at the device. Ordinary unrequested `info` remains held for an interaction.
+        let deliverCard = update.priority == .action || TaskProgressPublicationScope.authority?.taskFence != nil
         let delivered = deliverCard
             ? await drainSessionUpdates(.interaction, only: update.id).contains(update.id) : false
         purgePrivateSessionUpdates()
