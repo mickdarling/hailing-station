@@ -46,9 +46,14 @@ public actor WebSocketListener {
     private let maxConnections: Int
     private let helloTimeout: Duration
     let log: @Sendable (WebSocketListenerEvent) -> Void
-    /// The peers, and each one's transport by its session's connection id, so the ambient router can probe a
-    /// stale-looking one (#941 `probe(connection:within:)`); dropped with the peer.
-    var peers: [UUID: WebSocketPeer] = [:], transports: [UUID: NWConnection] = [:]
+    /// Synchronous membership only, mirrored on every peer mutation (including synthetic peers). The router can
+    /// reject late target snapshots after teardown without awaiting the listener or retaining closed identities.
+    nonisolated let livePeerConnections = Mutex<Set<UUID>>([])
+    /// The peers and their transports by session connection id, dropped together (#941).
+    var peers: [UUID: WebSocketPeer] = [:] {
+        didSet { livePeerConnections.withLock { $0 = Set(peers.values.map { $0.session.connectionID }) } }
+    }
+    var transports: [UUID: NWConnection] = [:]
     /// Content-free, bounded request correlation; each ledger belongs to exactly one connection (#923).
     var heardTurns: [UUID: HeardTurnRecords] = [:]
     private var readyWaiters: [CheckedContinuation<UInt16, any Error>] = []
@@ -833,18 +838,14 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     /// every child slot taken goes to the worker, which forces the oldest retired child out first (#366); until it
     /// is done, every later event queues behind it.
     public func ambientAudio(_ event: AmbientAudioEvent) {
-        // PR 1 admits only the startup destination. A different target never occupies the worker or makes room.
-        if case .started(_, _, let scope) = event, scope.target != configuration.target {
-            handle(event)
-            return
-        }
         let queued = state.withLock { state -> Bool in
             switch event {
             // A start never lifts `closed`: a torn-down connection id never comes back (#735), so one that did
             // would still be dead.
             case .started(let stream, let connection, let scope):
                 state.latest[connection] = stream
-                if !state.shuttingDown, !state.closed.contains(connection) {
+                if !state.shuttingDown, !state.closed.contains(connection),
+                   state.listener?.value?.livePeerConnections.withLock({ $0.contains(connection) }) == true {
                     state.streamTargets[connection] = scope.target
                 }
             // Taken over (#366): the old stream's late failure is not reported to its device as a stop.
@@ -858,7 +859,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             if state.shuttingDown { return false }
             // While a reload builds its child (#405), events queue too: the worker waits for the reload, so a start
             // cannot launch beside the reload's child and the old one, past `maxLiveChildren`.
-            guard state.queue.isEmpty, !state.working, !state.reloading, !Self.mustMakeRoom(for: event, state) else {
+            guard state.queue.isEmpty, !state.working, !state.reloading, !mustMakeRoom(for: event, state) else {
                 Self.enqueue(event, into: &state)
                 return true
             }
@@ -1104,13 +1105,11 @@ extension AmbientRightyoRouter {
         }
         switch event {
         case .started(let stream, let connection, let scope):
-            let target = scope.target
-            guard target == configuration.target else {
-                return refuse(stream, connection: connection, target: target, reason: "target_binding_unavailable")
+            guard let destination = destination(for: scope) else {
+                return refuse(stream, connection: connection, target: scope.target,
+                              reason: "target_binding_unavailable")
             }
-            start(stream, connection: connection,
-                  destination: Destination(target: target, binding: configuration.binding),
-                  selection: scope.selection)
+            start(stream, connection: connection, destination: destination, selection: scope.selection)
         case .segment(let stream, _, let bytes):
             let pipeline = state.withLock { $0.active?.stream == stream ? $0.active?.pipeline : nil }
             // Overload drops the oldest audio; it never blocks the gate. Refused input means the child is gone
@@ -1148,9 +1147,10 @@ extension AmbientRightyoRouter {
     /// final segment, is skipped: it neither forces a child out nor spawns. The newest makes room first, then
     /// every event is handled as it would be inline.
     private func work(_ event: AmbientAudioEvent) async {
-        if case .started(let stream, _, _) = event {
+        if case .started(let stream, _, let scope) = event {
             guard isLive(stream) else { return }
-            await makeRoom(for: stream)
+            // A binding refusal keeps queue order and dead-start pruning, but never evicts a child just to refuse.
+            if destination(for: scope) != nil { await makeRoom(for: stream) }
             guard isLive(stream) else { return }
         }
         handle(event)
@@ -1191,10 +1191,21 @@ extension AmbientRightyoRouter {
         state.peakQueue = max(state.peakQueue, state.queue.count)
     }
 
-    /// True for a start that would find every child slot taken.
-    fileprivate static func mustMakeRoom(for event: AmbientAudioEvent, _ state: State) -> Bool {
-        guard case .started = event, !state.shuttingDown else { return false }
-        return full(state)
+    /// Configured starts always use the startup binding, ignoring the scope. Other starts require a binding
+    /// resolved before admission; no listing or asynchronous resolution belongs in this router.
+    private func destination(for scope: AmbientStreamScope) -> Destination? {
+        if scope.target == configuration.target {
+            return Destination(target: scope.target, binding: configuration.binding)
+        }
+        guard let binding = scope.binding, !binding.isEmpty else { return nil }
+        return Destination(target: scope.target, binding: binding)
+    }
+
+    /// Only a start able to spawn may make room. Refusals still queue behind work/reload already in flight.
+    fileprivate func mustMakeRoom(for event: AmbientAudioEvent, _ state: State) -> Bool {
+        guard case .started(_, _, let scope) = event, !state.shuttingDown,
+              destination(for: scope) != nil else { return false }
+        return Self.full(state)
     }
 
     private static func forcingOrder(_ run: Run) -> (Int, Int) {
@@ -1402,15 +1413,20 @@ extension AmbientRightyoRouter {
         return id
     }
 
-    /// Snapshot for device actions without a stream target and host mode transitions. Child
-    /// callbacks receive their destination explicitly and never look up a target when their queued clip plays.
-    func streamTarget(on connection: UUID) -> String {
+    /// Snapshot for device actions and host mode transitions. Without a live connection's admitted target, return
+    /// nil: callers suppress target-bearing clips, never guess the configured destination. Privacy pre-arm has no
+    /// clip; device mode changes still apply without a target. Child callbacks retain their explicit destination.
+    func streamTarget(on connection: UUID) -> String? {
         state.withLock { streamTarget(on: connection, in: $0) }
     }
 
-    func streamTarget(on connection: UUID, in state: State) -> String {
+    func streamTarget(on connection: UUID, in state: State) -> String? {
+        guard !state.shuttingDown, !state.closed.contains(connection),
+              state.listener?.value?.livePeerConnections.withLock({ $0.contains(connection) }) == true else {
+            return nil
+        }
         guard let active = state.active, state.runs[active.run]?.connection == connection else {
-            return state.streamTargets[connection] ?? configuration.target
+            return state.streamTargets[connection]
         }
         return active.target
     }

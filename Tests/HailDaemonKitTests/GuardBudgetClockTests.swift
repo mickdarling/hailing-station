@@ -49,8 +49,15 @@ extension Trait where Self == FrozenGuardBudget {
 /// so a semantic fixture cannot become a second refusal through a budget timeout.
 struct GuardClockAmbientSink: AmbientAudioSink {
     let router: AmbientRightyoRouter
+    /// Synthetic pre-admission binding supplied by router-target tests; production gate behavior stays pinned/nil.
+    var binding: String?
     private let clock = GuardBudgetClock.current
     func ambientAudio(_ event: AmbientAudioEvent) {
+        var event = event
+        if let binding, case .started(let stream, let connection, let scope) = event {
+            event = .started(stream: stream, connection: connection, target: scope.target,
+                             selection: scope.selection, binding: binding)
+        }
         GuardBudgetClock.$current.withValue(clock) { router.ambientAudio(event) }
     }
     func ambientInputRoute(_ route: String, connection: UUID) {

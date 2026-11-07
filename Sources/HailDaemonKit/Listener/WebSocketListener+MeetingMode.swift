@@ -109,8 +109,8 @@ extension AmbientRightyoRouter {
             if reason == "voice" {
                 discardParked(meeting: !on, media: on, reason: on ? "superseded" : "off", in: &state)
             }
-            let target = target ?? (reason == "timeout" ? state.meeting[connection]?.target : nil)
-                ?? streamTarget(on: connection, in: state)
+            let target = target ?? (reason == "timeout" ? state.meeting[connection]?.target
+                                    : streamTarget(on: connection, in: state))
             guard on else {
                 return (endMeeting(connection: connection, reason: reason, target: target, in: &state), nil)
             }
@@ -122,7 +122,7 @@ extension AmbientRightyoRouter {
                 token: token, timer: meetingTimeoutTask(connection: connection, token: token, after: timeout),
                 profile: profile, started: current?.started ?? Date(), meetingID: meetingID,
                 expiresAt: configuration.now().addingTimeInterval(timeout), recording: recording,
-                armed: Self.arm(&state), resume: current?.resume, target: target)
+                armed: Self.arm(&state), resume: current?.resume)
             // Install meeting first: leaving media writes true once, never a false/true pair.
             let reported = state.media[connection] != nil
                 ? changeMedia(false, connection: connection, reason: "voice", in: &state).reported
@@ -173,9 +173,10 @@ extension AmbientRightyoRouter {
                           + "reported=\(change.reported)\(renewed)")
             self?.emit("ambient_meeting_control", connection: connection, detail: "meeting_control=\(held)")
         }
-        guard let persona = change.persona else { return }
-        let target = target ?? streamTarget(on: connection, in: state)
+        // Store once, even for a persona-less restore. A timeout without a retained target stays silent.
+        let target = target ?? (change.reason == "timeout" ? nil : streamTarget(on: connection, in: state))
         if change.on, state.meeting[connection]?.token == change.token { state.meeting[connection]?.target = target }
+        guard let persona = change.persona, let target else { return }
         Self.clipChain(connection, in: &state).enqueue { [weak self, weak listener] in
             guard let self else { return }
             var confirm = "unreported"
@@ -188,7 +189,6 @@ extension AmbientRightyoRouter {
                  detail: "on=\(change.on) profile=\(change.profile.rawValue) confirm=\(confirm)")
         }
     }
-
     /// Rechecks the on-change's timeout, privacy and teardown; an off-change cannot be superseded.
     private func meetingCurrent(_ change: AmbientMeetingChange, connection: UUID) -> Bool {
         guard change.on else { return true }

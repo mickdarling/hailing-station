@@ -128,14 +128,14 @@ extension AmbientRightyoRouter {
     /// Logged as state tokens only.
     func switchPrivacy(_ on: Bool, connection: UUID, armedAs armed: UUID?) {
         let listener = attachedListener
-        // Device-originated: snapshot the connection now, before its clip is queued.
+        // Snapshot now; a missing target suppresses only the clip, never the device's privacy state change.
         let target = streamTarget(on: connection)
         let clip: (AmbientPrivacyEntry) -> (@Sendable () async -> Void)? = { [weak self] in
-            self?.deviceClip(on, $0, connection: connection, target: target, listener: listener)
+            guard let self, let target else { return nil }
+            return deviceClip(on, $0, connection: connection, target: target, listener: listener)
         }
         _ = switchDuck(on, connection: connection, reason: "device", whileArming: { $0 == armed }, clip: clip)
     }
-
     private func deviceClip(_ on: Bool, _ entry: AmbientPrivacyEntry, connection: UUID, target: String,
                             listener: WebSocketListener?) -> @Sendable () async -> Void {
         let outcome = "on=\(on) reason=device"

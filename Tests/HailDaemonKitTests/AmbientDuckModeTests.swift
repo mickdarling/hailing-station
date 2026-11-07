@@ -123,7 +123,7 @@ final class DuckRig: Sendable {
          clips: AmbientAckLibrary? = nil, timeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout,
          capabilities: [String] = [],
          startDeadline: TimeInterval = DuckRig.deadline, ackDeadline: TimeInterval = DuckRig.deadline,
-         confirmTimeout: TimeInterval? = nil) async throws {
+         confirmTimeout: TimeInterval? = nil, preboundOtherTarget: Bool = false) async throws {
         fake = try FakeRightyo(script ?? FakeRightyo.ackingControl() + "\n" + AmbientPrivacyEntryTests.fixture(
             saying: words, enrolled: enrolled, advertises: advertises, version: version))
         try fake.install(fixture: enrolled ? "enrolled-formed-request.jsonl" : "tool-events.jsonl")
@@ -133,7 +133,7 @@ final class DuckRig: Sendable {
                                    ackDeadline: ackDeadline, confirmTimeout: confirmTimeout,
                                    onEvent: { event in
             events.list.withLock { $0.append(event) }
-        })
+        }, preboundOtherTarget: preboundOtherTarget)
         self.events = events
         (session, socket) = try recipientSocket(port: env.port)
         try await recipientSocketSend(sessionFrame(payload: .control(.hello(HelloInfo(
