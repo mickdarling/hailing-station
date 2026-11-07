@@ -102,13 +102,16 @@ extension AmbientRouterStreamTargetTests {
                 overheard = true
             case .control(.error(let code, _, _)):
                 #expect(code == .voiceRouteRefused)
-                // Control errors carry no frame target; showRouteRefusal checks the explicit source target.
+                // The error is untargeted; the following confirmation and its reply descriptor carry attribution.
+                #expect(frame.target == nil)
                 refused = true
             case .text(let text):
                 #expect(frame.target == RecipientTestRig.target)
+                #expect(text.reply?.targetID == RecipientTestRig.target)
                 if text.text == expected { words = true }
-            case .audio:
+            case .audio(let payload):
                 #expect(frame.target == RecipientTestRig.target)
+                #expect(payload.reply?.targetID == RecipientTestRig.target)
                 if words { audio = true }
             default: Issue.record("unexpected confirmation payload")
             }

@@ -17,7 +17,7 @@ The plan is issue #327 comment 6710189582. The PR 1 second-key record is comment
   - Delivery (`acknowledgementFrames` and related checks) still requires the session to select that target, so a mismatch fails closed.
   - That prevents mismatched delivery but does not establish correct attribution. PR 2b must resolve connection-scoped attribution from the session's selection before it enables follow-selection.
   - Child callbacks keep the target captured when the child was built.
-- **Meeting target:** `meetingChanged` stores the target before the persona guard, including a persona-less restore. A timeout uses its meeting's retained target and never borrows a newer stream's target.
+- **Meeting target:** `meetingChanged` stores the target before the persona guard, including a future persona-less on-change guard (the synthetic `on=true, reason=moved` case is not a production restore). A timeout uses its meeting's retained target and never borrows a newer stream's target.
 
 ## Review history of this branch
 
@@ -59,7 +59,7 @@ The plan is issue #327 comment 6710189582. The PR 1 second-key record is comment
   - no child built and no room made, even with every slot full.
 - `makePipeline` callback wiring for prebound non-configured streams, covering stop, mute, media, voice notes, acknowledgements, heard and overheard, route refusal and not-sent confirmations.
 - Meeting and privacy child callbacks keeping their target across snapshot replacement, clearing and queued playback.
-- A persona-less meeting restore keeping its target.
+- A future persona-less on-change keeping its target; production restores use `resumed_unrecorded`, which has a persona.
 - Snapshot clearing on stop and shutdown, and the closed and shutdown write guards.
 - `AmbientAudioGateTests.admitsAStreamWithGapsAndEndsOnFinal`, checking the pinned target and nil binding.
 

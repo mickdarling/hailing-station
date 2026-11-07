@@ -24,6 +24,15 @@ extension HostSession {
 }
 
 extension WebSocketListener {
+    /// Resolve a device/system clip inside its async task, without holding the router lock. No selection means
+    /// no clip; delivery independently rechecks selection. Child callbacks use their captured stream target.
+    func ambientClipTarget(connection: UUID) async -> String? {
+        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
+            return nil
+        }
+        return await peer.session.selectedTarget
+    }
+
     /// Plays `clip` on the connection that heard the request (rightyo#105), through the guarded request-less
     /// delivery: the connection's selection, the host permit (policy, binding, tier, lockdown) and the transport
     /// permit all apply, and nothing goes to any other connection. It is host-originated to one named connection,
