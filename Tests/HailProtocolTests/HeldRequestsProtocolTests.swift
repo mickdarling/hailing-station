@@ -71,7 +71,7 @@ import Testing
         value["action"] = action
         try rejects(value)
     }
-    @Test(arguments: ["future", "", "SENT", "sent "])
+    @Test(arguments: ["future", "", "SENT", "sent ", "expired"])
     func unknownOutcomesAreRefused(outcome: String) throws {
         var value = try object("held_resolution")
         value["outcome"] = outcome

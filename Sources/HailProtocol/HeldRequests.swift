@@ -3,14 +3,14 @@ public import Foundation
 /// Proposed held ambient requests (#1120). A capable device advertises this only once it can show the hold,
 /// its reasons and Send / Discard. Hosts must gate notices and resolutions on it; neither end advertises it yet.
 /// IDs are fresh opaque UUIDs, never text, hashes or bindings. Decisions grant no authority: Send must recheck
-/// policy, scope and expiry on the host. A hold must keep the stream alive and never deliver unchecked.
+/// every host gate afresh, including after notice expiry. Content stays held until successful Send or explicit
+/// Discard; refusal, notice expiry and disconnect do not delete it. No retention handler is implemented here.
 public enum HeldRequests {
     public static let capability = "held_requests"
     public static let maxRules = 16
     public static let maxRuleTokenBytes = 32
-    /// Remaining lifetime from notice issuance, in whole seconds, not a wall-clock timestamp.
+    /// Remaining Send authority of this notice only, in whole seconds. Content does not expire with it.
     public static let expirySeconds = 1...3_600
-
     static func container<Key: CodingKey>(
         _ type: Key.Type, command: String, allowed: [String], from decoder: any Decoder
     ) throws -> KeyedDecodingContainer<Key> {
@@ -22,7 +22,6 @@ public enum HeldRequests {
         }
         return try decoder.container(keyedBy: type)
     }
-
     static func decode(from decoder: any Decoder) throws -> ControlPayload {
         let container = try decoder.container(keyedBy: DiagnosticCodingKey.self)
         switch try container.decode(String.self, forKey: DiagnosticCodingKey(stringValue: "command")) {
@@ -39,12 +38,19 @@ public enum HeldRequestReason: String, Codable, Sendable, CaseIterable {
     case rateLimited = "rate_limited"
 }
 
-/// Built-in guard names as wire tokens, or `custom` for every configured rule (#1120). Never send a custom
-/// name or pattern. Space/punctuation-bearing built-in display names are normalized to these snake_case tokens.
+/// Frozen `held_requests` vocabulary (#1120). Unknown built-ins and every configured rule use `custom`.
+/// Never expose raw names/patterns or drop the closed hold reason when mapping to `custom`.
 public enum HeldRequestRule: String, Codable, Sendable, CaseIterable {
     case rmRF = "rm_rf", sudo, forcePush = "force_push", gitResetHard = "git_reset_hard"
     case gitClean = "git_clean", destructiveGit = "destructive_git", branchDelete = "branch_delete", delete
     case diskWrite = "disk_write", permissions, shell, forkBomb = "fork_bomb", credential, custom
+
+    /// Only trusted built-in names may be normalized. New defaults safely fall back without a wire extension.
+    public static func wireRule(for name: String, isBuiltIn: Bool) -> Self {
+        guard isBuiltIn else { return .custom }
+        let token = name.split { $0 == " " || $0 == "-" }.joined(separator: "_")
+        return Self(rawValue: token) ?? .custom
+    }
 }
 
 /// The device's explicit choice for one held UUID (#1120); Send is a request for host revalidation.
@@ -59,9 +65,12 @@ public enum HeldRequestRefusalReason: String, Codable, Sendable, CaseIterable {
     case connectionLost = "connection_lost"
 }
 
-/// The host's final disposition of a held UUID (#1120), with a closed reason only for refusal.
+/// Proposed notice/decision result (#1120), not necessarily a final content disposition.
+/// Only `sent` and `discarded` resolve retained content. Every `refused` reason keeps it held for retry/Discard.
+/// `noticeExpired` ends this notice's authority only; a later Send must run every check afresh.
+/// `stale` means unavailable to this connection; it does not prove deletion (restart loss is a known limitation).
 public enum HeldRequestOutcome: String, Codable, Sendable, CaseIterable {
-    case sent, discarded, expired, refused, stale
+    case sent, discarded, noticeExpired = "notice_expired", refused, stale
 }
 
 /// Proposed host → device `request_held` notice (#1120), containing no request text or delivery authority.
@@ -72,7 +81,6 @@ public struct RequestHeld: Codable, Sendable, Equatable {
     public var reasons: [HeldRequestReason]
     public var rules: [HeldRequestRule]
     public var expiresIn: Int
-
     public init(held: UUID, turn: UUID? = nil, reasons: [HeldRequestReason], rules: [HeldRequestRule], expiresIn: Int) {
         self.held = held
         self.turn = turn
@@ -80,11 +88,9 @@ public struct RequestHeld: Codable, Sendable, Equatable {
         self.rules = rules
         self.expiresIn = expiresIn
     }
-
     private enum CodingKeys: String, CodingKey {
         case command, held, turn, reasons, rules, expiresIn = "expires_in"
     }
-
     public init(from decoder: any Decoder) throws {
         let container = try HeldRequests.container(CodingKeys.self, command: "request_held",
             allowed: ["command", "held", "turn", "reasons", "rules", "expires_in"], from: decoder)
@@ -98,7 +104,6 @@ public struct RequestHeld: Codable, Sendable, Equatable {
                                                     debugDescription: "invalid request_held bounds"))
         }
     }
-
     public func encode(to encoder: any Encoder) throws {
         guard isValid else {
             throw EncodingError.invalidValue(self, .init(codingPath: encoder.codingPath,
@@ -112,7 +117,6 @@ public struct RequestHeld: Codable, Sendable, Equatable {
         try container.encode(rules, forKey: .rules)
         try container.encode(expiresIn, forKey: .expiresIn)
     }
-
     private var isValid: Bool {
         (1...HeldRequestReason.allCases.count).contains(reasons.count)
             && Set(reasons).count == reasons.count
@@ -150,7 +154,7 @@ public struct HeldDecision: Codable, Sendable, Equatable {
 }
 
 /// Proposed host → device `held_resolution` (#1120). `reason` is required only for `refused`, and forbidden
-/// otherwise. Its closed vocabulary carries no request text or policy detail.
+/// otherwise. Nonterminal results retain content; its closed vocabulary carries no request text or policy detail.
 public struct HeldResolution: Codable, Sendable, Equatable {
     public var held: UUID
     public var outcome: HeldRequestOutcome

@@ -70,6 +70,45 @@ public enum Fixtures {
     private static let audioBytes = Data([0x4F, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00])
 
     public static let all: [Example] = [
+        Example(name: "control-request-held", frame: Frame(
+            id: id(1120), timestamp: 1, source: "host",
+            payload: .control(.requestHeld(RequestHeld(held: id(1120), reasons: [.ruleMatch, .guardTimeout],
+                rules: [.sudo, .custom], expiresIn: 60)))
+        )),
+        Example(name: "control-request-held-turn", frame: Frame(
+            id: id(1121), timestamp: 1, source: "host",
+            payload: .control(.requestHeld(RequestHeld(held: id(1120), turn: id(923), reasons: [.confirmTier],
+                rules: [], expiresIn: 1)))
+        )),
+        Example(name: "control-held-decision-send", frame: Frame(
+            id: id(1122), timestamp: 1, source: "terminal",
+            payload: .control(.heldDecision(HeldDecision(held: id(1120), action: .send)))
+        )),
+        Example(name: "control-held-decision-discard", frame: Frame(
+            id: id(1123), timestamp: 1, source: "terminal",
+            payload: .control(.heldDecision(HeldDecision(held: id(1120), action: .discard)))
+        )),
+        Example(name: "control-held-resolution-sent", frame: Frame(
+            id: id(1124), timestamp: 1, source: "host",
+            payload: .control(.heldResolution(HeldResolution(held: id(1120), outcome: .sent)))
+        )),
+        Example(name: "control-held-resolution-discarded", frame: Frame(
+            id: id(1125), timestamp: 1, source: "host",
+            payload: .control(.heldResolution(HeldResolution(held: id(1120), outcome: .discarded)))
+        )),
+        Example(name: "control-held-resolution-notice-expired", frame: Frame(
+            id: id(1126), timestamp: 1, source: "host",
+            payload: .control(.heldResolution(HeldResolution(held: id(1120), outcome: .noticeExpired)))
+        )),
+        Example(name: "control-held-resolution-refused", frame: Frame(
+            id: id(1127), timestamp: 1, source: "host",
+            payload: .control(.heldResolution(HeldResolution(held: id(1120), outcome: .refused,
+                reason: .policyChanged)))
+        )),
+        Example(name: "control-held-resolution-stale", frame: Frame(
+            id: id(1128), timestamp: 1, source: "host",
+            payload: .control(.heldResolution(HeldResolution(held: id(1120), outcome: .stale)))
+        )),
         Example(name: "text-final", frame: Frame(
             id: id(1), timestamp: 1_758_200_000_000, target: "tmux:claude-hail", source: "terminal",
             payload: .text(TextPayload(text: "run the tests and tell me what failed", isFinal: true))

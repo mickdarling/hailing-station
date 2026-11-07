@@ -34,7 +34,8 @@ import HailProtocolFixtures
             "hello", "listTargets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
             "error", "diagnostic", "stopPlayback", "ambientMovedHere", "ambientHeard", "ambientOverheard",
             "overheardScope", "setReplyMute", "ownerVoice", "ambientInput", "sessionUpdate", "health", "healthReport",
-            "mediaMode", "duckMode", "setPrivacy", "sessionUpdateCancel"
+            "mediaMode", "duckMode", "setPrivacy", "sessionUpdateCancel", "requestHeld", "heldDecision",
+            "heldResolution"
         ]
         #expect(Fixtures.controlCommandsCovered == expected)
     }

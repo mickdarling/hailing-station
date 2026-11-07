@@ -2,17 +2,18 @@ import HailDaemonKit
 import HailProtocol
 import Testing
 
-/// #1120: the proposed wire vocabulary must cover every daemon default without exposing configured names.
+/// #1120: new defaults may use `custom`; the capability's wire vocabulary must remain frozen.
 @Suite struct HeldRequestRuleVocabularyTests {
-    @Test func everyDaemonDefaultHasAClosedWireRule() throws {
-        var covered = Set<HeldRequestRule>()
+    @Test func everyDaemonDefaultMapsToAFrozenWireRule() {
+        let frozen = Set(["rm_rf", "sudo", "force_push", "git_reset_hard", "git_clean", "destructive_git",
+                          "branch_delete", "delete", "disk_write", "permissions", "shell", "fork_bomb",
+                          "credential", "custom"])
         for pattern in DangerousPatternGuard.defaults {
-            // The proposed contract collapses runs of spaces/hyphens in built-in names to one underscore.
-            let token = pattern.name.split { $0 == " " || $0 == "-" }.joined(separator: "_")
-            let rule = try #require(HeldRequestRule(rawValue: token), "missing wire rule for \(pattern.name)")
-            #expect(rule != .custom)
-            covered.insert(rule)
+            let rule = HeldRequestRule.wireRule(for: pattern.name, isBuiltIn: true)
+            #expect(frozen.contains(rule.rawValue))
         }
-        #expect(covered == Set(HeldRequestRule.allCases.filter { $0 != .custom }))
+        // A future default needs no new capability token, and configured names never inherit built-in metadata.
+        #expect(HeldRequestRule.wireRule(for: "future default", isBuiltIn: true) == .custom)
+        #expect(HeldRequestRule.wireRule(for: "sudo", isBuiltIn: false) == .custom)
     }
 }

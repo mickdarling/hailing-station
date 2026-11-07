@@ -36,7 +36,7 @@ class HeldRequestsSchemaTests(unittest.TestCase):
             self.assertEqual(self.check(payload), [])
         for action in ["send", "discard"]:
             self.assertEqual(self.check(dict(self.payloads()[1], action=action)), [])
-        for outcome in ["sent", "discarded", "expired", "stale"]:
+        for outcome in ["sent", "discarded", "notice_expired", "stale"]:
             self.assertEqual(self.check(dict(command="held_resolution", held=HELD, outcome=outcome)), [])
 
     def test_missing_required_fields_and_extra_fields(self):
@@ -63,7 +63,7 @@ class HeldRequestsSchemaTests(unittest.TestCase):
             self.assertTrue(self.check(dict(self.notice(), reasons=reasons)))
         for action in ["unknown", "SEND", None, False]:
             self.assertTrue(self.check(dict(self.payloads()[1], action=action)))
-        for outcome in ["unknown", "SENT", None, False]:
+        for outcome in ["unknown", "SENT", "expired", None, False]:
             self.assertTrue(self.check(dict(self.payloads()[2], outcome=outcome)))
         # The lightweight validator does not implement uniqueItems; retain that constraint in the full schema.
         control_rules = self.schema["$defs"]["control"]["allOf"]
@@ -89,7 +89,7 @@ class HeldRequestsSchemaTests(unittest.TestCase):
         for reason in [None, False, "", "a" * 32, "a" * 33, "not prose", "pattern=.*", "UPPER", "é", "line\n",
                        "policy_changed ", "policy_changed\n"]:
             self.assertTrue(self.check(dict(refused, reason=reason)), repr(reason))
-        for outcome in ["sent", "discarded", "expired", "stale"]:
+        for outcome in ["sent", "discarded", "notice_expired", "stale"]:
             self.assertTrue(self.check(dict(refused, outcome=outcome)))
         for reason in ["policy_changed", "target_unavailable", "binding_changed", "selection_changed", "lockdown",
                        "denied", "rate_limited", "capacity", "connection_lost"]:

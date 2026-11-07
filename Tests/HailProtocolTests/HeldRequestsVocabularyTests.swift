@@ -6,6 +6,30 @@ import Testing
 @Suite struct HeldRequestsVocabularyTests {
     private let held = UUID(uuidString: "00000000-0000-4000-8000-000000001120")
 
+    @Test func frozenRuleMappingKeepsUnknownAndConfiguredNamesPrivate() throws {
+        let frozen = Set(["rm_rf", "sudo", "force_push", "git_reset_hard", "git_clean", "destructive_git",
+                          "branch_delete", "delete", "disk_write", "permissions", "shell", "fork_bomb",
+                          "credential", "custom"])
+        #expect(Set(HeldRequestRule.allCases.map(\.rawValue)) == frozen)
+        for rule in HeldRequestRule.allCases {
+            #expect(HeldRequestRule.wireRule(for: rule.rawValue, isBuiltIn: true) == rule)
+            #expect(HeldRequestRule.wireRule(for: rule.rawValue, isBuiltIn: false) == .custom)
+        }
+        #expect(HeldRequestRule.wireRule(for: "git reset --hard", isBuiltIn: true) == .gitResetHard)
+        #expect(HeldRequestRule.wireRule(for: "rm -rf", isBuiltIn: true) == .rmRF)
+        for name in ["future built-in", "private pattern=.*", "SUDO", "", "deadbeef"] {
+            for isBuiltIn in [false, true] {
+                let rule = HeldRequestRule.wireRule(for: name, isBuiltIn: isBuiltIn)
+                #expect(rule == .custom)
+                let notice = RequestHeld(held: try #require(held), reasons: [.ruleMatch, .guardTimeout],
+                                         rules: [rule], expiresIn: 60)
+                let decoded = try JSONDecoder().decode(RequestHeld.self, from: JSONEncoder().encode(notice))
+                #expect(decoded.rules == [.custom])
+                #expect(decoded.reasons == [.ruleMatch, .guardTimeout])
+            }
+        }
+    }
+
     @Test(arguments: HeldRequestRefusalReason.allCases)
     func everyRefusalReasonRoundTrips(reason: HeldRequestRefusalReason) throws {
         let payload = ControlPayload.heldResolution(HeldResolution(

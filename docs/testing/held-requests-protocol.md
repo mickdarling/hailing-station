@@ -122,3 +122,102 @@ exclusions count **two production files in this follow-up**, `HeldRequests.swift
 **three across PR 1**, including `Control.swift`. Tests, docs and generated schema JSON are excluded.
 No host Swift build/test, push, simulator build, installation or physical-device validation was performed.
 Independent review of this new head remains pending; the earlier REQUEST CHANGES is not an approval.
+
+## Round 2 corrections: retention and frozen compatibility — PROPOSED
+
+This section supersedes the retention/lifecycle and daemon-default mapping contracts in the historical sections
+above. The earlier REQUEST CHANGES is not approval of this revision; independent review of the new head is pending.
+Everything remains a proposal: no capability advertisement, host retention/decision handler, app UI, deployment,
+installation, simulator build or physical-device validation is introduced.
+
+The proposed content disposition is successful Send or explicit Discard only. Every refused Send retains content
+and shows its closed reason; expiry ends only the current notice's Send authority. A later Send evaluates every
+host gate afresh and a continuing hold produces a fresh notice for the same content/UUID. Disconnect retains
+content; authenticated same-device re-offer is explicitly deferred and blocks advertisement, with a visible
+"Held on host; disconnected — recovery pending" entry instead of silent loss. Admission is reserved before
+acceptance, limited to 8 unresolved holds/reservations per connection allocation and 64 host-wide, with no eviction;
+the app visibly retains unadmitted content while asking the owner to resolve a hold. Restart still loses in-memory
+content: the app must show `stale` and loss (or uncertain delivery), without automatic resubmission. No persistence
+is invented. Privacy-on and lockdown deletion exceptions remain undecided issue-level questions for #1120.
+
+The unshipped `expired` outcome is renamed to `notice_expired` (`HeldRequestOutcome.noticeExpired`); the old token
+is now rejected by Swift and schema fixtures. `refused` and `notice_expired` are nonterminal content outcomes.
+Only successful Send / explicit Discard are terminal and replay unchanged. Serialization, uncertain-handoff
+reconciliation and fresh evaluation remain proposed host requirements, not behavior proven by these wire tests.
+
+`HeldRequestRule.wireRule(for:isBuiltIn:)` lives entirely in HailProtocol. It normalizes trusted built-ins into
+the frozen vocabulary and maps unknown built-ins and all configured names to `custom`. The separate protocol
+mapping test pins the frozen set, tests known/unknown/configured names and verifies fallback notices retain both
+closed hold reasons. `everyDaemonDefaultMapsToAFrozenWireRule` accepts additional defaults when mapped to `custom`
+and fails on any emitted token outside the frozen set. No daemon production code changed.
+
+### Fixtures discovered by the existing CI lane
+
+Nine canonical positive fixtures were added to `Fixtures.all` and `fixtures/frames`:
+
+- `control-request-held.json`, `control-request-held-turn.json`
+- `control-held-decision-send.json`, `control-held-decision-discard.json`
+- `control-held-resolution-{sent,discarded,notice-expired,refused,stale}.json`
+
+Twenty-three hand-written negative fixtures under `fixtures/invalid/control-{request-held,held-decision,held-resolution}-*.json`
+cover raw/unfrozen rule names, unknown reasons/actions/outcomes, the rejected old `expired` outcome, missing fields,
+invalid UUIDs, forbidden content fields, null turn, list/expiry bounds and incorrect refusal-reason presence.
+The existing CI `scripts/check_schema.py` glob discovers all of them without workflow changes. Swift fixture
+conformance also covers the canonical positives and negative decoder cases. The older Swift/Python heard-turn
+exclusion tests now allow the already-proposed `request_held` correlation, and the fixture command-coverage test
+includes all three held controls. The first schema regression run exposed those obsolete exclusions; after correction,
+all schema tests passed. No CI/workflow/script enforcement file changed.
+
+### Final verification
+
+Sources and fixtures were copied to the existing `~/codex-workspaces/vw1120a` iteration workspace. Every SSH
+invocation was blocking with stdin `< /dev/null`; each VM job completed before the next started. No Swift build
+or test ran on the voice host. Exact VM-side test commands:
+
+```sh
+WS=vw1120a ~/codex-workspaces/vw327-run.sh 'HailProtocolTests'
+WS=vw1120a ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests.HeldRequestRuleVocabularyTests'
+```
+
+Both reported `build=0`, `test=0`. Final results: **161 tests in 30 suites passed** (0.147 seconds) and
+**1 test in 1 suite passed** (0.001 seconds), respectively. The protocol run was repeated after a formatting-only
+lint repair so this evidence covers the final Swift files; the initial run also passed 161 tests. The supplied
+script uses the bounded background-policy CLT build and serial filtered test commands documented above.
+
+Generator verification on the VM, in `~/codex-workspaces/vw1120a`:
+
+```sh
+taskpolicy -b .build/debug/hail-protocol-gen /tmp/hs1120-round2-generated/frames
+diff -qr fixtures/frames /tmp/hs1120-round2-generated/frames
+cmp fixtures/schema/frame-v1.schema.json /tmp/hs1120-round2-generated/schema/frame-v1.schema.json
+```
+
+Result: generated **57 fixtures** plus schema; both byte-comparison commands exited **0**. The schema's outcome
+enum is derived from the Swift enum, including its non-refused conditional list.
+
+Exact host Python commands (all under background policy):
+
+```sh
+taskpolicy -b python3 -m unittest discover -s Tests/ProtocolSchemaTests
+taskpolicy -b python3 -m unittest scripts/tests/test_check_schema.py
+taskpolicy -b python3 scripts/check_schema.py
+```
+
+Results: **21 schema tests passed**, **11 validator tests passed**, and the built-in checker reported
+**57 positive fixtures accepted, 121 negative fixtures rejected, 0 failing**. This proves the existing fixture
+validation discovers the new controls; it does not claim a remote CI run.
+
+Exact host lint command:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict Sources/HailProtocol/HeldRequests.swift Sources/HailProtocolFixtures/Fixtures.swift Tests/HailProtocolTests/FixtureConformanceTests.swift Tests/HailProtocolTests/HeardTurnProtocolTests.swift Tests/HailProtocolTests/HeldRequestsProtocolTests.swift Tests/HailProtocolTests/HeldRequestsVocabularyTests.swift Tests/HailDaemonKitTests/HeldRequestRuleVocabularyTests.swift
+```
+
+Result: **0 violations in 7 Swift files**. `git diff --check` passed. Applying the actual `scripts/pr-shape.py`
+exclusions counts **2 production files in this correction**, `HeldRequests.swift` and `Fixtures.swift`, and
+**4 across PR 1**, including `Control.swift` and `Schema.swift`. No security-critical paths are changed.
+No push or PR metadata update is performed by this correction. The new commit requires fresh independent review.
+
+Open questions for #1120 remain explicit: any privacy-on/lockdown deletion exception and its owner-visible notice;
+authenticated same-device re-offer and host-local recovery/Discard; admission/backpressure and device buffering;
+restart-loss/uncertain-handoff reconciliation; and whether persistence is required to eliminate restart loss.

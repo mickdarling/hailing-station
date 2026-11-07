@@ -361,14 +361,18 @@ heard-turn commands retain their existing rules. Omission is valid; null and inv
 empty, with at most 16 tokens of at most 32 UTF-8 bytes each. Its closed vocabulary normalizes the built-in guard
 names to `rm_rf`, `sudo`, `force_push`, `git_reset_hard`, `git_clean`, `destructive_git`, `branch_delete`, `delete`,
 `disk_write`, `permissions`, `shell`, `fork_bomb`, `credential`; all configured rules use `custom`, never their
-name, pattern or request text, even when a configured name matches a built-in name. `HeldRequestRule` in
-HailProtocol defines this closed vocabulary. Only built-in names are normalized by collapsing runs of spaces
-and hyphens to one underscore; arbitrary names must never be normalized into wire values.
-`HeldRequestRuleVocabularyTests.everyDaemonDefaultHasAClosedWireRule` checks the vocabulary against every
-`DangerousPatternGuard.defaults` name. `expires_in` is the remaining lifetime from notice issuance, in whole seconds
-from 1 through 3,600 inclusive, rather than a wall-clock timestamp.
+name, pattern or request text, even when a configured name matches a built-in name. This vocabulary is
+**frozen for `held_requests`**: adding a daemon default does not add a wire token. `HeldRequestRule.wireRule`
+in HailProtocol collapses runs of spaces and hyphens to one underscore **only for trusted built-in names**;
+if the result is outside the frozen set it returns `custom`. Every configured name returns `custom` without
+normalization. The closed hold reason remains present regardless of this mapping: unknown rule names never
+fail open, suppress the hold, or appear raw on the wire. `HeldRequestRuleVocabularyTests.everyDaemonDefaultMapsToAFrozenWireRule`
+permits new defaults mapped to `custom` and rejects any mapping emitting an unfrozen token; the protocol mapping
+contract has separate synthetic coverage. `expires_in` is this notice's remaining Send authority from issuance,
+in whole seconds from 1 through 3,600 inclusive, rather than a wall-clock timestamp or content lifetime.
 
-The only actions are `send` and `discard`. Outcomes are `sent`, `discarded`, `expired`, `refused`, `stale`.
+The only actions are `send` and `discard`. Outcomes are `sent`, `discarded`, `notice_expired`, `refused`, `stale`.
+The unshipped `expired` spelling is replaced by `notice_expired` to avoid implying content deletion; it is rejected.
 Only `refused` requires `reason`, a closed `HeldRequestRefusalReason` value; other outcomes forbid it.
 All three controls reject unknown fields, unknown enum values, missing required
 fields, null optional fields, invalid UUIDs and out-of-bounds values. The generated schema mirrors these bounds.
@@ -387,37 +391,88 @@ use the first applicable row in this order so the reason is deterministic.
 | `binding_changed` | The live listing binding differs from the held binding (`LocalDispatch.dispatchScoped` binding check). |
 | `policy_changed` | The snapshot captured with `HailHost.inputPolicyGeneration(for:)` fails `TargetPolicyGeneration.requireCurrent()`, including a reload, tier change or unreadable policy. |
 | `lockdown` | Current `Policy.evaluate` returns `.denied(.lockdown)`. |
-| `denied` | Current authorizer/policy/delivery gate refuses for another reason: missing authorization, allowlist/tier denial, confirmation still required, renewed guard match/timeout, pending target input or adapter refusal before handoff. Send never bypasses these checks. |
+| `denied` | Current authorizer/policy/delivery gate refuses for another reason: missing authorization, allowlist/tier denial, confirmation still required, renewed guard match/timeout, pending target input or adapter refusal before handoff. Send never bypasses these checks. A continuing hold condition also produces a fresh `request_held` for the same content. |
 | `rate_limited` | Current `Policy.evaluate` returns `.denied(.rateLimited)` for target/device rate limits. |
 | `capacity` | `HostSession` delivery admission cannot reserve a live reply/request slot. |
 
-**PROPOSED decision lifecycle.** A held UUID has states `held → sent | discarded | expired | refused | stale`.
-`sent` means one validated handoff; `discarded` means an explicit Discard before expiry; `refused` means Send
-failed revalidation. `expired` means its Send deadline passed before a decision was accepted. `stale` means no
-record belongs to this connection (including an invalidated hold). The host serializes expiry and decisions
-per UUID and consumes each hold at most once, recording the final resolution before any competing decision
-can run. Only an unexpired `held` state can attempt Send; an uncertain handoff must never be retried automatically.
+**PROPOSED decision lifecycle and outcomes.** Content stays `held` until `sent` (one successful, validated
+handoff) or `discarded` (an explicit Discard, including after notice expiry). `refused` is a failed Send attempt,
+not a content disposition: **every** refusal reason keeps the content held, tells the device the closed reason,
+and leaves Send again later / Discard available. `notice_expired` means only "this notice's Send authority
+ended; content still held". `stale` means this connection cannot access a record; it is never delivery authority
+or, by itself, evidence that content was deleted. Holding and all outcomes leave the ambient stream running;
+none sends an ambient stop or restarts it.
 
-**PROPOSED replay and late decisions.** Look up a recorded terminal resolution first. A duplicate decision
-with the same action replays that resolution; a conflicting later action receives the recorded resolution
-unchanged. Neither can cause another handoff. For an unresolved hold at or past its host-monotonic deadline,
-record and return `expired` for either action, even if the expiry timer has not run yet. An unknown UUID gets
-`stale`: absence is never evidence of Send authority, and this avoids revealing whether another connection
-owns that UUID. Resolutions are scoped to the owning connection. All duplicate, conflicting, late, unknown,
-invalidated and refused paths fail closed with no new delivery. Holding and every resolution leave the ambient
-stream running; none sends an ambient stop or restarts the stream.
+The host serializes decisions, expiry and handoff per held UUID. Every Send, even during an unexpired notice,
+runs **every** current authority, policy, scope, target, binding, selection, guard, rate, capacity and connection
+check afresh immediately before handoff. Never deliver based on an old notice or cached evaluation. An expired
+notice cannot authorize delivery: a later explicit Send starts a fresh evaluation of the **same held content**
+with the same held UUID. If any hold condition still applies, refuse the attempt with the applicable closed reason
+and issue a fresh `request_held` with current reasons/rules and a new notice deadline; the device shows "Still held"
+and requires another explicit Send or Discard. Other refusal checks also retain the content and show their reason.
+If all checks pass in that fresh evaluation, that explicit Send may authorize exactly one handoff. A changed pinned
+target/binding/selection cannot silently redirect it, and a changed policy cannot reuse old authority. No expiry,
+retry timer, reconnection or rule-name fallback may release content or inject it into provider context.
 
-**PROPOSED retention, distinct from Send authority.** On expiry the host retains the original held request
-text, heard-turn correlation, hold reasons and pinned target/binding/policy/selection metadata in host memory
-for exactly 3,600 seconds after the Send deadline, for recovery/display in a later UI slice. This retained
-content is inert: expiry never releases it, injects it into provider context, or renews Send authority. Recovery
-requires a fresh explicit submission with a new UUID and all current checks. Content is purged earlier on
-owning-connection teardown, host shutdown/restart, lockdown or explicit local deletion; Discard and other
-terminal outcomes purge their request content immediately. No recordings or disk persistence are introduced.
-After content deletion, keep a minimal UUID/final-outcome/closed-reason resolution record for the lifetime of
-the owning connection, so late decisions still receive `expired` and duplicates still replay unchanged.
-Bound admission of new holds rather than evict these records; after connection teardown an old UUID is
-unknown and gets `stale` on a new connection. Thus content loss cannot recreate delivery authority.
+**PROPOSED replay and late decisions.** Record successful Send / explicit Discard before a competing decision
+can run. Duplicate or conflicting decisions after either terminal disposition replay it unchanged and cannot
+hand off again. Coalesce overlapping Send attempts into one evaluation/handoff; a refusal or notice expiry must
+not be cached as a permanent final resolution that prevents a subsequent explicit retry or Discard. A notice
+expiry timer reports `notice_expired` once for that notice without consuming the content. A late Discard still
+discards it; a late Send takes the fresh evaluation path above. An uncertain handoff stays held with delivery
+status visibly unresolved; never retry automatically or permit another Send until reconciliation establishes
+whether it succeeded. An unknown or inaccessible UUID gets `stale`, without revealing whether another owner has
+it. These controls alone do not implement decision serialization or delivery reconciliation.
+
+**PROPOSED retention, distinct from Send authority.** Mick's requirement is verbatim: "the fix shouldn't be to
+find out which are the bad phrases the fix should be to fail safe". Undelivered held content is never dropped.
+Retain the original content, heard-turn correlation, hold reasons and pinned target/binding/policy/selection
+metadata **inertly in host memory until successful Send or explicit Discard**. No age-based purge, refused Send,
+notice expiry, admission pressure or connection teardown deletes it. Terminal Send / Discard may release its
+content; keep minimal terminal resolution records for duplicate protection for the owning connection's lifetime.
+No recordings or disk persistence are introduced.
+
+**PROPOSED connection teardown and re-offer — deferred blocker.** Disconnect ends that connection's notices'
+authority, but retains its content and ownership metadata. The owner's next connection **from that device** must
+be offered its pending holds again only after an authenticated device/owner association, fresh evaluation and
+new notice authority; never identify an owner by a display name, source string or possession of a UUID alone.
+This protocol-only slice cannot safely define that association, inventory/re-offer exchange or acknowledgement
+against the current unauthenticated listener. They are explicit deferred #1120 requirements before advertisement.
+Until recovery succeeds the app must keep its pending entry visible as "Held on host; disconnected — recovery
+pending", with Send disabled; it must not show discarded, sent or lost merely because the connection ended.
+A `stale` response on an unassociated new connection does not remove that entry or purge the host content.
+A later implementation must define authenticated re-offer and access to explicit Discard, including a visible
+host-local recovery path, before enabling holds; this slice makes no claim to ship that behavior.
+
+**PROPOSED bounding by admission, never eviction.** Reserve a possible hold slot **before accepting a new request**:
+at most **8 unresolved held messages/reservations per connection allocation** and **64 host-wide**. Disconnected
+holds continue counting against their original allocation and the host limit; reconnect cannot reset these limits
+or create a fresh allowance for the same owner. Successful Send / explicit Discard frees a slot; expiry/refusal
+never does. When either bound is reached, do not accept more content into host processing, evict an old hold, or
+claim a new hold was accepted. The app retains the new, unadmitted content locally and visibly says "Host is
+holding too many messages; Send or Discard one to continue. This new message is waiting on this device." Block
+further submission/capture admission until a slot is reserved; do not overwrite that waiting message. A request
+already accepted under a reservation can always become a hold, including when it fills the last slot. A Send
+refused for delivery `capacity` retains its existing slot/content. The admission/backpressure exchange and app
+buffer handling are deferred host/app requirements, not invented fields in these controls; enabling the capability
+is blocked until they guarantee no accepted content can be silently lost at a bound.
+
+**Known limitation — daemon restart loses content.** Host shutdown, crash or restart loses these in-memory holds;
+this proposal does **not** specify persistence. On a confirmed host-instance change / unrecoverable missing record,
+the app must show the pending hold as `stale`: "Host restarted; held content was lost. Nothing was sent."
+If handoff status was uncertain, show "Delivery status unknown; held copy was lost" instead of claiming nothing
+was sent. Do not automatically resubmit. Unknown ownership on reconnect is distinct from confirmed restart loss.
+Defining the restart/instance reconciliation exchange is also deferred before advertisement. This known loss
+limitation must remain visible; a durable never-loss guarantee requires an issue-level persistence requirement.
+
+**Open questions for #1120 (not decided).** Does privacy-on or lockdown require deleting undelivered held content?
+Either would be an **explicit, visible exception** to the never-drop contract and needs an issue-level requirement,
+including owner notice, scope and recovery implications. Neither is permission to purge in this proposal; lockdown
+currently maps only to a retaining Send refusal. What authenticated device association and recovery UI/protocol
+will safely re-offer disconnected holds and allow Discard? What admission/backpressure and device-buffer contract
+will implement the 8/64 bounds? How will restart loss and uncertain handoff be reconciled visibly, and does #1120
+require persistence to remove the stated restart limitation? These remain open; no privacy deletion, recovery or
+persistence behavior is advertised as implemented.
 
 These types provide no delivery authority or host retention mechanism. The lifecycle, refusal mapping and
 retention above are **PROPOSED**; host handling, guard outcomes, context exclusion, UI and audit remain later
