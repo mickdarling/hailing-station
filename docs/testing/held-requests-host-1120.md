@@ -34,7 +34,8 @@ session connection UUID. Send checks live peer membership/liveness, original sel
 away-and-back), live target and exact binding, original policy grant/revision, authorizer, privacy snapshot,
 lockdown, allowlist/tier, rate limits, fresh guard evaluation, reply permit/lease, capacity and request lifetime
 through normal session/registry/host delivery. Policy changes refuse rather than silently adopting new authority.
-Selection and privacy also participate in adapter delivery authority checks. Listener liveness is checked again
+Selection, privacy, lockdown, pinned policy revision and notice expiry also participate in adapter delivery
+authority checks. Listener liveness is checked again
 before host dispatch and each line handoff. Existing adapter authority contracts still define the handoff boundary.
 
 Only a fresh `.confirm` can consume a held read-back hash. A denial never becomes delivery. A fresh timeout or
@@ -48,7 +49,7 @@ The store coalesces overlapping Sends and serializes Discard against an in-fligh
 explicit Discard release content and leave minimal terminal replay records: duplicates and conflicting later
 decisions replay the terminal result. An uncertain adapter handoff keeps the content, reports `unresolved`
 through `heldStatus`, and blocks further Sends until future reconciliation; explicit Discard remains possible.
-Unknown or inaccessible IDs are `stale`. Terminal records contain no prompt or read-back.
+Unknown or inaccessible IDs on a live originating API path are `stale`. Terminal records contain no prompt or read-back.
 
 Content-free logs are `ambient_request_held reasons=... rules=...` and
 `ambient_request_resolution outcome=... reasons=... rules=...`. Values come only from closed enums, never prompt,
@@ -69,6 +70,17 @@ concurrent decisions, selection/binding/target/policy/privacy changes, rate/capa
 unknown/foreign IDs, discard, bounds and content-free log/notice fields. Two existing #874 tests are updated because
 they explicitly asserted the ambient read-back cancellation that this change removes. Direct host-local
 `RightyoHostDispatcher` and non-ambient confirmation behavior retain their existing expectations.
+
+| Test file | Evidence |
+| --- | --- |
+| `HeldRequestTestSupport.swift` | Shared synthetic rig with injected clocks and privacy state. |
+| `HeldRequestTests.swift` | Exact content/scope, reasons, Send/Discard, replay, ownership, selection, binding, target, policy, rate, expiry and admission bounds. |
+| `HeldAmbientStreamTests.swift` | One held request followed by a delivered request in the same consumer run; disconnect retains the hold. |
+| `HeldRequestConcurrencyTests.swift` | Concurrent decisions, away/back during suspension, policy/privacy/lockdown/expiry at the adapter boundary and uncertain handoff. |
+| `HeldRequestFreshChecksTests.swift` | Global guard-policy change, capacity, privacy retry, 64 actual host-wide holds and content-free fields. |
+| `HeldRequestLegacyTests.swift` | Listener APIs preserve the original #230 reference and exact prompt; expired notices with clean fresh evaluation still renew. |
+| `RightyoInputRequestRefusalSessionTests.swift` | Updated cancellation expectation, with non-ambient confirmation unchanged. |
+| `RightyoInputRequestRefusalTests.swift` | Existing consumer continuation expectation now distinguishes retained ambient read-backs from the unchanged direct host dispatcher. |
 
 ## Verification
 
@@ -95,7 +107,32 @@ SSH stdin is closed (`< /dev/null`) and the command runs synchronously. A differ
 initially matched the literal pattern; it was left alone and the requested wait eventually cleared. No competing
 runner was stopped. The final wrapper preserves workspace-specific build/test logs.
 
-Final snapshot, VM counts and strict-lint results will be recorded after validation completes.
+The final source validation snapshot is `bb44e03efefdd8be9f4afed1bc6debeae9480e2e`. A documentation-only
+commit records the final results afterward. Build time was 69.88 seconds; the existing missing-module-cache
+debug-info warnings were present. The requested full command returned **`build=0`, `test=0`**:
+**981 tests in 174 suites passed in 386.247 seconds**, with **zero unexpected failures** and the five
+intentional known issues described below. All five new held-request suites passed.
+
+Strict lint passed with zero violations for all **12 changed Swift files**, using this exact command per file:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict <file>
+```
+
+Earlier validation history is retained rather than described as passing:
+
+- Two initial compile runs found public-import/actor-isolation and test-helper type errors; these were fixed.
+- Snapshot `dee7a456` built successfully and ran **973 tests in 172 suites**, with **two unexpected failures**
+  plus **five known issues**, in 504.785 seconds. The failures exposed lockdown classification and premature
+  confirmation consumption on a rate denial; both were fixed. Logs are retained on the VM as
+  `~/codex-workspaces/vw1120c-dee7a456-build.log` and `vw1120c-dee7a456-test.log`.
+- Snapshot `ae10bead` built, then its own test process tree was stopped to include the additional adapter-boundary
+  lockdown/privacy/expiry checks in the final run. Its partial test log is not a completed verification result.
+- The five known issues are deliberately expected assertions in `LocalDispatchPreflightWaitTests` for missing
+  listing arrival, early dispatch exit and a suspended synthetic step. They are distinct from unexpected failures.
+
+The final full command's workspace-specific logs are `~/codex-workspaces/vw1120c-build.log` and
+`~/codex-workspaces/vw1120c-test.log`.
 
 All new time-sensitive tests use injected clocks or explicit continuation/stream barriers, without sleeps.
 Existing regression suites retain their own timing mechanisms. No simulator or physical device validation is claimed.
