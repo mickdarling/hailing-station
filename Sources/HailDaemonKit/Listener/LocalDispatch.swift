@@ -292,11 +292,19 @@ extension WebSocketListener {
         guard let peer = peers.values.first(where: { $0.session.connectionID == connection }), await peer.isLive else {
             return .refused(.connectionLost)
         }
-        let result = await peer.session.sendHeld(id, from: connection)
+        let result = await HeldPeerScope.$current.withValue(
+            { await self.ownsHeldPeer(peer) },
+            operation: { await peer.session.sendHeld(id, from: connection) }
+        )
         // A completed handoff remains sent even if the owner disconnected while awaiting its result.
         if result == .sent { return result }
         guard await peer.isLive, peers.values.contains(where: { $0 === peer }) else { return .refused(.connectionLost) }
         return result
+    }
+
+    private func ownsHeldPeer(_ peer: WebSocketPeer) async -> Bool {
+        guard !stopped, peers.values.contains(where: { $0 === peer }) else { return false }
+        return await peer.isLive
     }
 
     public func discardHeld(_ id: UUID, from connection: UUID) async -> HeldSendResult {

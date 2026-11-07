@@ -31,6 +31,7 @@ struct HeldRequestEntry: Sendable {
     let binding: String
     let selection: UUID
     let policy: TargetPolicyGeneration
+    let policyRevision: UUID
     let reference: UUID?
     let route: HostSession.VoiceRouted?
     let readBack: ReadBack
@@ -51,6 +52,7 @@ struct HeldRequestEntry: Sendable {
         self.binding = binding
         self.selection = selection
         self.policy = policy
+        policyRevision = evidence?.revision ?? previous?.policyRevision ?? UUID()
         self.reference = reference
         self.route = route
         self.readBack = readBack
@@ -146,14 +148,15 @@ actor HeldRequestStore {
 final class HeldReadBackEvidence: Sendable {
     struct Value: Sendable {
         let hash: String
+        let revision: UUID
         let reasons: [HeldRequestReason]
         let rules: [HeldRequestRule]
     }
     @TaskLocal static var current: HeldReadBackEvidence?
     private let storage = Mutex<Value?>(nil)
     var value: Value? { storage.withLock { $0 } }
-    func record(readBackHash: String, reasons: [HeldRequestReason], rules: [HeldRequestRule]) {
-        storage.withLock { $0 = Value(hash: readBackHash, reasons: reasons, rules: rules) }
+    func record(readBackHash: String, revision: UUID, reasons: [HeldRequestReason], rules: [HeldRequestRule]) {
+        storage.withLock { $0 = Value(hash: readBackHash, revision: revision, reasons: reasons, rules: rules) }
     }
 }
 
@@ -162,15 +165,23 @@ struct HeldSendScope: Sendable {
     let entry: HeldRequestEntry
     let renewOnly: Bool
     let allowed: @Sendable () -> Bool
+    let selected: @Sendable () -> Bool
     let failure = HeldSendFailure()
 }
 
 final class HeldSendFailure: Sendable {
     private let storage = Mutex<HeldRequestRefusalReason?>(nil)
+    private let attempted = Mutex(false)
+    var didAttemptHandoff: Bool { attempted.withLock { $0 } }
+    func willHandoff() { attempted.withLock { $0 = true } }
     var reason: HeldRequestRefusalReason? { storage.withLock { $0 } }
     func record(_ error: any Error) {
+        if Self.knownUnsent(error) { attempted.withLock { $0 = false } }
         let reason: HeldRequestRefusalReason
         switch error {
+        case HeldAuthorityError.selectionChanged: reason = .selectionChanged
+        case HeldAuthorityError.connectionLost: reason = .connectionLost
+        case HeldAuthorityError.policyChanged: reason = .policyChanged
         case HostError.denied(.lockdown): reason = .lockdown
         case HostError.denied(.rateLimited): reason = .rateLimited
         case HostError.unknownTarget: reason = .targetUnavailable
@@ -180,6 +191,15 @@ final class HeldSendFailure: Sendable {
         }
         storage.withLock { $0 = reason }
     }
+    private static func knownUnsent(_ error: any Error) -> Bool {
+        switch error {
+        case HostError.denied, HostError.policyUnavailable, HostError.unknownTarget, is RegistryError,
+             is ProviderContractError, is HeldAuthorityError, AdapterError.inputPending, AdapterError.rebound,
+             PolicyRetiredDelivery.pastedUnsent: return true
+        default: return false
+        }
+    }
+
 }
 
 extension HostSession {
@@ -205,14 +225,15 @@ extension HostSession {
         guard listed.binding == entry.binding else { return .refused(.bindingChanged) }
         _ = await host.refreshedPolicy()
         do { try entry.policy.requireCurrent() } catch { return .refused(.policyChanged) }
+        guard await host.heldPolicyIsCurrent(entry.policyRevision) else { return .refused(.policyChanged) }
         let snapshot = self.snapshot, connection = connectionID, store = host.heldRequests
         let scope = HeldSendScope(entry: entry, renewOnly: requestClock() >= entry.expires, allowed: {
-            store.selects(entry.selection, connection: connection)
-                && !snapshot(connection).contains {
+            !snapshot(connection).contains {
                     if case .duckMode(on: true, reason: _, expires: _) = $0 { return true }
                     return false
                 }
-        })
+        }, selected: { store.selects(entry.selection, connection: connection) })
+        guard scope.selected() else { return .refused(.selectionChanged) }
         guard scope.allowed(), await !host.currentLockdown.isOn else { return .refused(.lockdown) }
         return await HeldSendScope.$current.withValue(scope) {
             await Self.$ambientInputDispatch.withValue(true) {
@@ -236,17 +257,32 @@ extension HostSession {
             case .holdAdmissionRefused: return .refused(.capacity)
             }
         } catch {
+            if scope.failure.didAttemptHandoff { await host.heldRequests.markUnresolved(entry.id) }
             if let reason = scope.failure.reason { return .refused(reason) }
-            switch error {
-            case LocalDispatchRefusal.selectionChanged, LocalDispatchRefusal.targetNotSelected:
-                return .refused(.selectionChanged)
-            case LocalDispatchRefusal.bindingMismatch: return .refused(.bindingChanged)
-            case LocalDispatchRefusal.sessionNotReady: return .refused(.connectionLost)
-            case LocalDispatchRefusal.ownershipLost, LocalDispatchRefusal.connectionLost:
-                await host.heldRequests.markUnresolved(entry.id)
-                return .refused(.connectionLost)
-            default: return .refused(.denied)
-            }
+            return await heldDispatchFailure(error, entry: entry)
+        }
+    }
+
+    private func heldDispatchFailure(_ error: any Error, entry: HeldRequestEntry) async -> HeldSendResult {
+        switch error {
+        case LocalDispatchRefusal.selectionChanged, LocalDispatchRefusal.targetNotSelected:
+            return .refused(.selectionChanged)
+        case LocalDispatchRefusal.bindingMismatch: return .refused(.bindingChanged)
+        case LocalDispatchRefusal.sessionNotReady: return .refused(.connectionLost)
+        case LocalDispatchRefusal.ownershipLost, LocalDispatchRefusal.connectionLost:
+            await host.heldRequests.markUnresolved(entry.id)
+            return .refused(.connectionLost)
+        default: return .refused(.denied)
         }
     }
 }
+
+/// A listener supplies liveness checks; the session API remains usable for synthetic host tests.
+enum HeldPeerScope {
+    @TaskLocal static var current: (@Sendable () async -> Bool)?
+    static func requireCurrent() async throws {
+        if let current, await !current() { throw HeldAuthorityError.connectionLost }
+    }
+}
+
+enum HeldAuthorityError: Error { case selectionChanged, connectionLost, policyChanged }

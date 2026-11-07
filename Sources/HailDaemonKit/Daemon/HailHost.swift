@@ -41,6 +41,7 @@ private struct HostDispatchRequest: Sendable {
         return DeliveryAuthority {
             try normal?.requireCurrent()
             try heldScope.entry.policy.deliveryAuthority.requireCurrent()
+            guard heldScope.selected() else { throw HeldAuthorityError.selectionChanged }
             guard heldScope.allowed() else { throw HostError.denied(.lockdown) }
         }
     }
@@ -184,6 +185,7 @@ extension HailHost {
     // swiftlint:disable:next function_body_length
     private func dispatch(_ text: String, request dispatch: HostDispatchRequest) async throws -> SendOutcome {
         let id = dispatch.target
+        try await HeldPeerScope.requireCurrent()
         try requireSendPreflight()
         try dispatch.policyGeneration?.requireCurrent()
         var lines = try sanitizedLines(text)
@@ -371,13 +373,21 @@ extension HailHost {
         return listed
     }
 
+    func heldPolicyIsCurrent(_ revision: UUID) -> Bool { revision == policyRevision }
+
     private func requireCurrentLine(
         _ delivered: [String], index: Int, policyGeneration: TargetPolicyGeneration?
     ) throws {
         do {
-            if let scope = HeldSendScope.current, !scope.allowed() { throw HostError.denied(.lockdown) }
+            if let scope = HeldSendScope.current {
+                guard scope.selected() else { throw HeldAuthorityError.selectionChanged }
+                guard scope.allowed() else { throw HostError.denied(.lockdown) }
+            }
             try policyGeneration?.requireCurrent()
             try HeldSendScope.current?.entry.policy.requireCurrent()
+            if let scope = HeldSendScope.current, scope.entry.policyRevision != policyRevision {
+                throw HeldAuthorityError.policyChanged
+            }
         } catch {
             guard !delivered.isEmpty else { throw error }
             throw HostError.partial(delivered: delivered, reason: "target_policy_changed")
@@ -390,6 +400,8 @@ extension HailHost {
         _ line: String, request: HostDispatchRequest, binding: String?, delivered: [String]
     ) async throws {
         do {
+            try await HeldPeerScope.requireCurrent()
+            HeldSendScope.current?.failure.willHandoff()
             try await registry.deliver(line, to: request.target, binding: binding, context: request.turn,
                                        authority: request.deliveryAuthority)
         } catch {
@@ -501,7 +513,7 @@ extension HailHost {
             pending[oldest.key] = nil
         }
         HeldReadBackEvidence.current?.record(
-            readBackHash: hash, reasons: heldReasons(reason, evaluation: evaluation),
+            readBackHash: hash, revision: policyRevision, reasons: heldReasons(reason, evaluation: evaluation),
             rules: evaluation.guardOutcomes.map {
                 HeldRequestRule.wireRule(
                     for: $0.name, isBuiltIn: policy.guardPatterns == DangerousPatternGuard.defaults

@@ -130,7 +130,7 @@ extension HostSession {
     }
 
     // Keep reservation cleanup and all handoff outcomes in the same decision boundary.
-    // swiftlint:disable:next cyclomatic_complexity
+    // swiftlint:disable cyclomatic_complexity
     /// Lease, permit, capacity, lifetime and generation checks, then `HailHost.send` with its sanitizer,
     /// shape and policy gates; only a successful complete handoff commits the request record. The input
     /// type is the authorization proof: nothing reaches the host that the session's authorizer did not
@@ -184,6 +184,8 @@ extension HostSession {
             return deliveryRefusal(error)
         }
     }
+
+    // swiftlint:enable cyclomatic_complexity
 
     // Immutable authority snapshot plus same-evaluation evidence.
     // swiftlint:disable:next function_parameter_count

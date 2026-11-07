@@ -87,7 +87,7 @@ import Testing
         let rig = try await HeldTestRig.make()
         let entry = try await rig.hold()
         if lockdown { _ = await rig.host.engageLockdown(reason: "synthetic") } else {
-            rig.privacy.withLock { $0 = true }
+            rig.privacy.isOn = true
         }
         #expect(await rig.send(entry.id) == .refused(.lockdown))
         #expect(await rig.host.heldRequests.entries[entry.id]?.text == entry.text)
@@ -101,7 +101,8 @@ import Testing
         rig.clock.advance(120_000)
         guard case .held(let notice) = await rig.send(entry.id) else { throw HeldTestError.expectedHold }
         #expect(notice.held == entry.id)
-        #expect(await rig.host.heldRequests.entries[entry.id]?.expires > entry.expires)
+        let renewed = try #require(await rig.host.heldRequests.entries[entry.id])
+        #expect(renewed.expires > entry.expires)
         #expect(await rig.adapter.contexts.isEmpty)
         #expect(await rig.send(entry.id) == .sent)
     }

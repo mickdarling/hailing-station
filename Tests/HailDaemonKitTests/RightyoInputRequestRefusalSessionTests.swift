@@ -9,7 +9,7 @@ import Testing
     private let target = "tmux:demo"
     private let binding = "original"
 
-    @Test func ambientConfirmationRefusalLeavesNoPendingReadBack() async throws {
+    @Test func ambientConfirmationRetainsTheReadBackAndContent() async throws {
         let rig = try await makeRig()
         let request = LocalDispatchRequest(
             connection: await rig.session.connectionID, target: target, binding: binding, text: text
@@ -21,7 +21,8 @@ import Testing
         }
         #expect(await rig.session.replyRequests.isEmpty)
         #expect(await rig.adapter.deliveries.isEmpty)
-        #expect(await rig.host.cancel(confirmationHash(device: HostSession.dispatchDevice)) == false)
+        #expect(await rig.host.heldRequests.entries.count == 1)
+        #expect(await rig.host.cancel(confirmationHash(device: HostSession.dispatchDevice)))
         await rig.listener.stop(reason: "synthetic test complete")
     }
 

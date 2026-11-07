@@ -25,7 +25,7 @@ struct HeldTestRig: Sendable {
         let store = InMemoryPolicyStore(policy)
         let host = try HailHost(registry: registry, store: store, requestNow: clock.instant)
         let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(), requestClock: clock.instant,
-                                  modeSnapshot: { _ in [.duckMode(on: privacy.withLock { $0 })] })
+                                  modeSnapshot: { _ in [.duckMode(on: privacy.isOn)] })
         _ = await session.receive(helloFrame())
         _ = await session.receive(sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target))))
         return Self(host: host, adapter: adapter, session: session, clock: clock, privacy: privacy, store: store)
@@ -57,5 +57,8 @@ enum HeldTestError: Error { case expectedHold }
 
 final class HeldTestPrivacy: Sendable {
     private let state = Mutex(false)
-    func withLock<Result>(_ body: (inout Bool) -> Result) -> Result { state.withLock(body) }
+    var isOn: Bool {
+        get { state.withLock { $0 } }
+        set { state.withLock { $0 = newValue } }
+    }
 }
