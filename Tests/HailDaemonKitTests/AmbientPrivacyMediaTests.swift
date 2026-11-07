@@ -18,7 +18,7 @@ import Testing
         let connection = try #require(rig.connection()), router = rig.env.router
         #expect(router.setMedia(true, connection: connection, reason: "voice") == 0)
         #expect(router.duckMode(connection: connection) && !router.mediaMode(connection: connection))
-        router.voiceMedia(on: connection, listener: rig.env.listener)(true)
+        router.voiceMedia(on: connection, target: RecipientTestRig.target, listener: rig.env.listener)(true)
         #expect(try await rig.confirmation() == "Privacy on. I'm only listening for my name.")
         #expect(await eventually {
             rig.details("ambient_media_confirmed") == ["on=true confirm=confirmprivacystatus/0:sent"]

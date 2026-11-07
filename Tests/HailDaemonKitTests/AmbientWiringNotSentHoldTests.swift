@@ -74,7 +74,7 @@ import Testing
         await run.decidePrivate(connection) { state in
             AmbientRightyoRouter.clipChain(connection, in: &state).enqueue {
                 await router.sayPrivacy(AmbientStopConfirmation.privacyOn, outcome: "on=true reason=device",
-                                        connection: connection, listener: listener)
+                                        connection: connection, target: RecipientTestRig.target, listener: listener)
             }
         }
         gate.open()

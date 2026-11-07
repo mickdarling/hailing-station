@@ -38,7 +38,8 @@ struct TaskProgressOwnerControlRig {
 
     func startStream(_ stream: UUID) async throws {
         let selection = await peer.session.selectionGeneration
-        router.ambientAudio(.started(stream: stream, connection: peer.connectionID, selection: selection))
+        router.ambientAudio(.started(stream: stream, connection: peer.connectionID,
+            target: RecipientTestRig.target, selection: selection))
         try #require(await eventually { router.activeStream == stream })
         await router.taskProgressChanges.queued({}).value
     }

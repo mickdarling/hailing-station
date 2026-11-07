@@ -14,7 +14,8 @@ import Testing
             timing: .init(eofGrace: 20, termGrace: 20), replyControl: false))
         let rig = try await SessionUpdateListenerRig.make(ambient: router)
         let first = UUID(), selection = await rig.session.selectionGeneration
-        router.ambientAudio(.started(stream: first, connection: rig.connectionID, selection: selection))
+        router.ambientAudio(.started(stream: first, connection: rig.connectionID,
+            target: RecipientTestRig.target, selection: selection))
         await router.taskProgressChanges.queued({}).value
         let generation = await rig.hostRig.host.inputPolicyGeneration(for: RecipientTestRig.target)
         let authority = TaskProgressPublicationAuthority(generation: generation, binding: "reply-binding",
@@ -30,8 +31,10 @@ import Testing
         switch edge {
         case .end: router.ambientAudio(.ended(stream: first, reason: .final))
         case .replaceSameConnection:
-            router.ambientAudio(.started(stream: UUID(), connection: rig.connectionID, selection: selection))
-        case .takeOver: router.ambientAudio(.started(stream: UUID(), connection: UUID(), selection: nil))
+            router.ambientAudio(.started(stream: UUID(), connection: rig.connectionID,
+                target: RecipientTestRig.target, selection: selection))
+        case .takeOver: router.ambientAudio(.started(stream: UUID(), connection: UUID(),
+            target: RecipientTestRig.target, selection: nil))
         case .expired: clock.advance(by: .seconds(6 * 3_600))
         }
         #expect(throws: CancellationError.self) { try commit() }

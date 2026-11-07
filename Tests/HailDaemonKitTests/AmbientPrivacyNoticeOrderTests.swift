@@ -66,7 +66,8 @@ import Testing
     static func change(_ on: Bool, from source: Source, rig: DuckRig, connection: UUID) {
         switch source {
         case .device: rig.env.router.ambientPrivacy(on, connection: connection)
-        case .voice: rig.env.router.voiceDuck(on: connection, listener: rig.env.listener)(on ? .enter : .exit)
+        case .voice: rig.env.router.voiceDuck(on: connection, target: RecipientTestRig.target,
+            listener: rig.env.listener)(on ? .enter : .exit)
         }
     }
 

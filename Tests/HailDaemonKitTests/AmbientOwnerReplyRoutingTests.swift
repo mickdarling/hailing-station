@@ -66,7 +66,7 @@ import Testing
         #expect(owner(stream, []) == connection)
         #expect(owner(stream, [.segment(stream: stream, sequence: 3, bytes: Data())]) == connection)
         #expect(owner(newer, []) == nil, "a newer stream has started: the take-over is under way")
-        #expect(owner(stream, [.started(stream: newer, connection: UUID())]) == nil)
+        #expect(owner(stream, [.started(stream: newer, connection: UUID(), target: RecipientTestRig.target)]) == nil)
         #expect(owner(stream, [.ended(stream: stream, reason: .superseded)]) == nil)
         #expect(AmbientRightyoRouter.ambientOwner(stream: nil, connection: connection, newestStart: nil,
                                                   queued: []) == nil)

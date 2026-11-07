@@ -23,7 +23,7 @@ import Testing
         let rig = try await Self.startedRig()
         defer { rig.close() }
         let connection = try #require(rig.connection()), router = rig.env.router
-        let say = router.voiceMedia(on: connection, listener: rig.env.listener)
+        let say = router.voiceMedia(on: connection, target: RecipientTestRig.target, listener: rig.env.listener)
 
         let latch = MeetingLatch()
         router.mediaNotices.enqueue { await latch.wait() }
@@ -46,7 +46,7 @@ import Testing
         let rig = try await Self.startedRig()
         defer { rig.close() }
         let connection = try #require(rig.connection()), router = rig.env.router
-        let say = router.voiceMedia(on: connection, listener: rig.env.listener)
+        let say = router.voiceMedia(on: connection, target: RecipientTestRig.target, listener: rig.env.listener)
         say(true)
         let (_, onWords) = try await AmbientPrivacySwitchTests.untilWords(rig.socket, step: "media mode on")
         #expect(onWords == "Media mode on.")

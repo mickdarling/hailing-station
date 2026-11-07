@@ -99,7 +99,7 @@ import Testing
         defer { rig.close() }
         #expect(await eventually { Self.said(rig) == ["unavailable"] })
         let connection = try #require(rig.connection())
-        rig.env.router.voiceDuck(on: connection, listener: rig.env.listener)(.enter)
+        rig.env.router.voiceDuck(on: connection, target: RecipientTestRig.target, listener: rig.env.listener)(.enter)
         #expect(await eventually { Self.said(rig).count == 2 })
         _ = await rig.settledEvents()
         await rig.finish()
@@ -123,7 +123,7 @@ import Testing
         let connection = try #require(rig.connection())
         rig.env.router.ambientPrivacy(true, connection: connection)
         #expect(await eventually { Self.said(rig) == ["unavailable"] })
-        rig.env.router.voiceDuck(on: connection, listener: rig.env.listener)(.enter)
+        rig.env.router.voiceDuck(on: connection, target: RecipientTestRig.target, listener: rig.env.listener)(.enter)
         #expect(await eventually { Self.said(rig).count == 2 })
         _ = await rig.settledEvents()
         await rig.finish()

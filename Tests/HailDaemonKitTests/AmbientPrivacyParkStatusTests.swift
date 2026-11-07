@@ -16,7 +16,7 @@ struct AmbientPrivacyParkStatusTests {
         let (socket, connection) = try await rig.start()
         let router = rig.router
         #expect(await eventually { router.activePipeline?.hearsAudio == true }, "restored child confirmed private")
-        router.voiceDuck(on: connection, listener: rig.env.listener)(.status)
+        router.voiceDuck(on: connection, target: RecipientTestRig.target, listener: rig.env.listener)(.status)
         #expect(try await rig.confirmation(on: socket) == RestoreRig.status.text)
         #expect(await eventually { rig.details("ambient_duck_confirmed").last?.hasPrefix("status on=true") == true },
                 "status answered marker")
@@ -33,7 +33,7 @@ struct AmbientPrivacyParkStatusTests {
         let router = rig.router
         try rig.release()
         #expect(await eventually { router.activePipeline?.hearsAudio == true }, "restored child confirmed private")
-        router.voiceDuck(on: connection, listener: rig.env.listener)(.status)
+        router.voiceDuck(on: connection, target: RecipientTestRig.target, listener: rig.env.listener)(.status)
         #expect(await eventually {
             rig.details("ambient_duck_confirmed").last == "status on=false confirm=unreported"
         }, "silent status marker")

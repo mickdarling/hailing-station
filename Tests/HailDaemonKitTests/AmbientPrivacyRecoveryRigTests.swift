@@ -106,7 +106,7 @@ import Testing
         try await recipientSocketSend(audio(UUID(), 0), on: rig.socket)
         #expect(await eventually { rig.unavailableSilences.last == "unavailable=already_unavailable" })
         for count in 2...3 {
-            router.voiceDuck(on: connection, listener: rig.env.listener)(.enter)
+            router.voiceDuck(on: connection, target: RecipientTestRig.target, listener: rig.env.listener)(.enter)
             router.ambientPrivacy(true, connection: connection)
             #expect(await eventually { Announce.said(rig).count == count })
         }
@@ -129,7 +129,8 @@ import Testing
         let mark = AmbientRunMark()
         mark.set(AmbientPrivacyUnavailableTests.refused())
         router.ambientPrivacy(false, connection: connection)
-        router.voiceDuck(on: connection, listener: rig.env.listener, mark: mark)(.unavailable)
+        router.voiceDuck(on: connection, target: RecipientTestRig.target,
+            listener: rig.env.listener, mark: mark)(.unavailable)
         _ = await rig.settledEvents()
         await rig.finish()
         #expect(Four.lastSaid(rig) == "off" && !router.duckMode(connection: connection))

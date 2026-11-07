@@ -29,7 +29,8 @@ import Testing
         let run = try await PendingInputRun.make(options: .init(capabilities: HeardTurnRig.capabilities))
         defer { run.close() }
         let connection = try #require(await run.connection)
-        let callbacks = run.env.router.heardRequests(on: connection, listener: run.env.listener,
+        let callbacks = run.env.router.heardRequests(on: connection, target: RecipientTestRig.target,
+            listener: run.env.listener,
                                                      notices: AmbientRefusalNotices())
         let relay = AmbientHeardRelay(onHeard: nil, requests: callbacks)
         relay.observe(try RightyoInputConsumerTests().event("request", sequence: 2))

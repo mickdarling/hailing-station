@@ -30,7 +30,7 @@ import Testing
         let env = try await ambientRig(fake, timing: .init(eofGrace: 2, termGrace: 2), events: events)
         let stream = UUID()
         GuardBudgetClock.$current.withValue(.expiring()) {
-            env.router.ambientAudio(.started(stream: stream, connection: UUID()))
+            env.router.ambientAudio(.started(stream: stream, connection: UUID(), target: RecipientTestRig.target))
         }
         #expect(env.router.activeStream == stream)
         #expect(!events.all.contains("ambient_refused"))

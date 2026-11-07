@@ -21,7 +21,8 @@ extension AmbientRequestRefusalTests {
         let latch = MeetingLatch(), notices = AmbientRefusalNotices()
         defer { latch.open() }
         notices.chain.enqueue { await latch.wait() }
-        let callbacks = router.heardRequests(on: UUID(), listener: listener, notices: notices)
+        let callbacks = router.heardRequests(on: UUID(), target: RecipientTestRig.target,
+            listener: listener, notices: notices)
         let evidence = RightyoGuardRefusal()
         evidence.record(["sudo", "SYNTHETIC_PRIVATE_RULE"], patterns: DangerousPatternGuard.defaults)
         await RightyoGuardRefusal.$current.withValue(evidence) { await callbacks.finish(UUID(), refusal) }
