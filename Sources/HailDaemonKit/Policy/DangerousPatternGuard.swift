@@ -1,37 +1,17 @@
 import Foundation
-
-/// One guard rule: a name the terminal can speak and a case-insensitive regular expression (#41 item 3).
-public struct GuardPattern: Codable, Sendable, Equatable {
-    public var name: String
-    public var regex: String
-
-    public init(name: String, regex: String) {
-        self.name = name
-        self.regex = regex
-    }
-}
-
-/// A rule that does not compile, reported by name so it can be fixed at the keyboard.
-public struct InvalidGuardPattern: Error, Equatable, Sendable {
-    public var name: String
-}
-
-/// The clock a guard rule's match budget is measured on (#208). Production reads `ContinuousClock`;
-/// nothing in production binds `current`. Module-internal so only this module and `@testable` tests can
-/// bind it: a test whose subject is not guard timing binds a frozen clock so scheduler preemption cannot
-/// turn a benign line into a guard hit, and a test of the fail-closed path binds one that has already
-/// passed every deadline. The budget itself and the timeout-is-a-hit rule are unchanged.
-struct GuardBudgetClock: Sendable {
-    @TaskLocal static var current = GuardBudgetClock { ContinuousClock.now }
-    let now: @Sendable () -> ContinuousClock.Instant
-}
+import Synchronization
 
 /// The guard rules compiled once. Built from a `Policy` at construction, so an invalid rule is refused
 /// there and never at delivery time. `NSRegularExpression` is immutable and thread-safe, and its `\b` is
 /// the simple word boundary the rules are written for.
+/// Each rule has a 20 ms thread CPU budget (#1120) and a 1 s wall cap: scheduling pauses get 50 times
+/// the CPU allowance, while stalled work remains bounded at ICU progress callbacks and scan boundaries.
+/// Either expiry, an unreadable CPU clock or a regressing clock latches a fail-closed timeout (#208, #1120).
+/// The target-block path remains unbudgeted (#658). These are cooperative limits, not an interrupt between callbacks.
 public struct CompiledGuards: Sendable {
     private let rules: [(name: String, regex: NSRegularExpression)]
     private let matchBudget: Duration
+    static let wallClockCap: Duration = .seconds(1)
 
     public init(_ patterns: [GuardPattern], matchBudget: Duration = .milliseconds(20)) throws {
         self.matchBudget = matchBudget
@@ -47,35 +27,48 @@ public struct CompiledGuards: Sendable {
     /// once. The joined form catches a command split across lines (a trailing backslash continuation
     /// under a split policy would otherwise put `rm \` and `-rf /` on different Enters).
     public func matches(in lines: [String]) -> [String] {
-        outcomes(in: lines).compactMap { $0.outcome == .none ? nil : $0.name }
+        hits(in: lines).map(\.name)
     }
 
     /// Pasted text's screening (#608), never a gate: the rules that match, and the rules that ran out of budget
     /// before deciding (`unchecked`), so the note can say the paste was not fully checked rather than look clean.
     func flags(in lines: [String]) -> (matched: [String], unchecked: [String]) {
-        let results = outcomes(in: lines)
+        let results = hits(in: lines)
         return (results.filter { $0.outcome == .match }.map(\.name),
                 results.filter { $0.outcome == .timeout }.map(\.name))
     }
 
     enum Outcome { case match, timeout, none }
 
-    /// Each rule's outcome over every candidate line: a match anywhere wins; otherwise a budget that ran out on any
-    /// line is a timeout; otherwise none.
-    private func outcomes(in lines: [String]) -> [(name: String, outcome: Outcome)] {
+    /// Positive per-rule evidence in rule order, from one scan. Both outcomes require confirmation.
+    public func hits(in lines: [String]) -> [GuardHit] {
         let candidates = lines.count > 1 ? lines + [lines.joined(separator: " ")] : lines
+        guard !candidates.isEmpty else { return [] }
         let clock = GuardBudgetClock.current
-        return rules.map { rule in
-            let deadline = clock.now() + matchBudget
-            var timedOut = false
+        return rules.compactMap { rule in
+            let wallStart = clock.now()
+            guard let start = clock.cpuNow() else { return GuardHit(name: rule.name, outcome: .timeout) }
+            let samples = Mutex((cpu: start, wall: wallStart, expired: false))
+            let expired = { @Sendable in
+                samples.withLock { previous in
+                    if previous.expired { return true }
+                    guard let cpu = clock.cpuNow() else { previous.expired = true; return true }
+                    let wall = clock.now()
+                    previous.expired = cpu < previous.cpu || wall < previous.wall
+                        || cpu - start >= matchBudget || wall - wallStart >= Self.wallClockCap
+                    previous.cpu = cpu
+                    previous.wall = wall
+                    return previous.expired
+                }
+            }
             for line in candidates {
-                switch boundedMatch(rule.regex, in: line, clock: clock, deadline: deadline) {
-                case .match: return (rule.name, .match)
-                case .timeout: timedOut = true
+                switch boundedMatch(rule.regex, in: line, expired: expired) {
+                case .match: return GuardHit(name: rule.name, outcome: .match)
+                case .timeout: return GuardHit(name: rule.name, outcome: .timeout)
                 case .none: continue
                 }
             }
-            return (rule.name, timedOut ? .timeout : .none)
+            return nil
         }
     }
 
@@ -89,20 +82,21 @@ public struct CompiledGuards: Sendable {
 
     /// ICU progress callbacks bound custom expressions; for the guard a timeout counts as a hit, never a bypass.
     private func boundedMatch(
-        _ regex: NSRegularExpression, in line: String, clock: GuardBudgetClock, deadline: ContinuousClock.Instant
+        _ regex: NSRegularExpression, in line: String, expired: @Sendable () -> Bool
     ) -> Outcome {
+        if expired() { return .timeout }
         var outcome = Outcome.none
-        let range = NSRange(line.startIndex..., in: line)
-        regex.enumerateMatches(in: line, options: .reportProgress, range: range) { result, _, stop in
-            if result != nil {
-                outcome = .match
-                stop.pointee = true
-            } else if clock.now() >= deadline {
+        GuardMatchDriver.enumerate(regex, line) { matched in
+            if expired() {
                 outcome = .timeout
-                stop.pointee = true
+                return true
+            } else if matched {
+                outcome = .match
+                return true
             }
+            return false
         }
-        return outcome
+        return expired() ? .timeout : outcome
     }
 }
 

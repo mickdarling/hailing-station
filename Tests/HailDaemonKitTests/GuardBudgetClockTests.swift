@@ -3,10 +3,10 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-/// Deterministic guard-budget clocks (#208). Production measures each rule's 20 ms budget on `ContinuousClock`
+/// Deterministic guard-budget clocks (#208). Production measures each rule's 20 ms budget on thread CPU time, with a 1 s wall cap
 /// and counts an expired budget as a hit; on a loaded runner a preempted match crossed that deadline and turned a
 /// benign RightyO delivery into `confirmationRequired`. Tests whose subject is not guard timing bind `frozen`;
-/// the fail-closed path is asserted under `expiring()` instead of hoping the scheduler is slow.
+/// the fail-closed path is asserted under `expiring()` or two injected clocks instead of hoping the scheduler is slow.
 extension GuardBudgetClock {
     /// Never advances, so no budget expires: only a real regex match is a hit.
     static let frozen: GuardBudgetClock = {
