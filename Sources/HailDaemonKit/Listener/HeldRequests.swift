@@ -92,7 +92,13 @@ actor HeldRequestStore {
     private var reservations: [UUID: UUID] = [:]
     private(set) var entries: [UUID: HeldRequestEntry] = [:]
     private var terminal: [UUID: (UUID, HeldSendResult)] = [:]
-    private var running: [UUID: Task<HeldSendResult, Never>] = [:]
+    private struct Decision {
+        let id: UUID
+        let isSend: Bool
+        let task: Task<HeldSendResult, Never>
+    }
+    private var decisions: [UUID: Decision] = [:]
+    private var running: [UUID: UUID] = [:]
     // An uncertain handoff must be reconciled; a second explicit Send cannot risk a duplicate.
     private var unresolved: Set<UUID> = []
     private let logger = Logger(subsystem: "com.mickdarling.hailing-station", category: "held-requests")
@@ -122,15 +128,52 @@ actor HeldRequestStore {
 
     func send(_ id: UUID, from connection: UUID,
               attempt: @escaping @Sendable (HeldRequestEntry) async -> HeldSendResult) async -> HeldSendResult {
-        if let final = terminal[id] { return final.0 == connection ? final.1 : .stale }
-        guard let entry = entries[id], entry.connection == connection else { return .stale }
-        if let task = running[id] { return await task.value }
-        guard !unresolved.contains(id) else { return .refused(.denied) }
-        let task = Task { await attempt(entry) }
-        running[id] = task
-        let result = await task.value
-        logResolution(result, entry: entry)
-        finish(id, connection: connection, result: result)
+        await queueSend(id, from: connection, attempt: attempt).value
+    }
+
+    func queueSend(_ id: UUID, from connection: UUID,
+                   attempt: @escaping @Sendable (HeldRequestEntry) async -> HeldSendResult
+    ) -> Task<HeldSendResult, Never> {
+        queueDecision(id, from: connection, attempt: attempt)
+    }
+
+    func queueDiscard(_ id: UUID, from connection: UUID) -> Task<HeldSendResult, Never> {
+        queueDecision(id, from: connection, attempt: nil)
+    }
+
+    private func queueDecision(
+        _ id: UUID, from connection: UUID,
+        attempt: (@Sendable (HeldRequestEntry) async -> HeldSendResult)?
+    ) -> Task<HeldSendResult, Never> {
+        if let final = terminal[id] { return Task { final.0 == connection ? final.1 : .stale } }
+        guard entries[id]?.connection == connection else { return Task { .stale } }
+        let previous = decisions[id]
+        if let previous, previous.isSend == (attempt != nil) { return previous.task }
+        let identity = UUID()
+        let task = Task {
+            // Each queued decision observes the state left by its predecessor, including a refused Send.
+            if let previous { _ = await previous.task.value }
+            return await self.decide(id, connection: connection, identity: identity, attempt: attempt)
+        }
+        decisions[id] = Decision(id: identity, isSend: attempt != nil, task: task)
+        return task
+    }
+
+    private func decide(
+        _ id: UUID, connection: UUID, identity: UUID,
+        attempt: (@Sendable (HeldRequestEntry) async -> HeldSendResult)?
+    ) async -> HeldSendResult {
+        running[id] = identity
+        let result: HeldSendResult
+        if let final = terminal[id] {
+            result = final.0 == connection ? final.1 : .stale
+        } else if let entry = entries[id], entry.connection == connection {
+            if let attempt {
+                result = unresolved.contains(id) ? .refused(.denied) : await attempt(entry)
+            } else { result = .discarded }
+            logResolution(result, entry: entry)
+        } else { result = .stale }
+        finish(id, connection: connection, identity: identity, result: result)
         return result
     }
 
@@ -155,9 +198,11 @@ actor HeldRequestStore {
         logger.notice("ambient_request_resolution outcome=\(outcome, privacy: .public) \(detail, privacy: .public)")
     }
 
-    private func finish(_ id: UUID, connection: UUID, result: HeldSendResult) {
+    private func finish(_ id: UUID, connection: UUID, identity: UUID, result: HeldSendResult) {
+        guard running[id] == identity else { return }
         running[id] = nil
-        if result == .sent || result == .discarded {
+        if decisions[id]?.id == identity { decisions[id] = nil }
+        if entries[id] != nil, result == .sent || result == .discarded {
             terminal[id] = (connection, result)
             entries[id] = nil
             unresolved.remove(id)
@@ -165,16 +210,7 @@ actor HeldRequestStore {
     }
 
     func discard(_ id: UUID, from connection: UUID) async -> HeldSendResult {
-        if let final = terminal[id] { return final.0 == connection ? final.1 : .stale }
-        guard entries[id]?.connection == connection else { return .stale }
-        if let task = running[id] {
-            let result = await task.value
-            finish(id, connection: connection, result: result)
-            return await discard(id, from: connection)
-        }
-        if let entry = entries[id] { logResolution(.discarded, entry: entry) }
-        finish(id, connection: connection, result: .discarded)
-        return .discarded
+        await queueDiscard(id, from: connection).value
     }
 }
 
