@@ -43,6 +43,7 @@ private struct HostDispatchRequest: Sendable {
             try heldScope.entry.policy.deliveryAuthority.requireCurrent()
             guard heldScope.selected() else { throw HeldAuthorityError.selectionChanged }
             guard heldScope.allowed() else { throw HostError.denied(.lockdown) }
+            guard heldScope.noticeCurrent() else { throw HeldAuthorityError.noticeExpired }
         }
     }
 }
@@ -219,7 +220,7 @@ extension HailHost {
             }
             switch decision {
             case .deliver:
-                if HeldSendScope.current?.renewOnly == true {
+                if let scope = HeldSendScope.current, scope.renewOnly || requestNow() >= scope.entry.expires {
                     return .needsConfirmation(issue(request, reason: "notice renewal", evaluation: evaluation))
                 }
             case .confirm(let reason, let hits):
@@ -517,7 +518,8 @@ extension HailHost {
             pending[oldest.key] = nil
         }
         HeldReadBackEvidence.current?.record(
-            readBackHash: hash, revision: policyRevision, expires: now + window, reasons: heldReasons(reason, evaluation: evaluation),
+            readBackHash: hash, revision: policyRevision, expires: now + window,
+            reasons: heldReasons(reason, evaluation: evaluation),
             rules: evaluation.guardOutcomes.map {
                 HeldRequestRule.wireRule(
                     for: $0.name, isBuiltIn: policy.guardPatterns == DangerousPatternGuard.defaults

@@ -17,11 +17,10 @@ import Testing
         let connection = await session.connectionID
         let reference = UUID()
         let text = "HELD_TOKEN prepared reply \(reference.uuidString)"
-        await #expect(throws: LocalDispatchRefusal.confirmationRequired) {
-            try await listener.dispatchAmbient(.init(connection: connection, target: "tmux:demo",
-                binding: "original", text: text), reference: reference, selection: session.selectionGeneration)
-        }
-        let entry = try #require(await host.heldRequests.entries.values.first)
+        let result = try await listener.dispatchAmbientResult(.init(connection: connection, target: "tmux:demo",
+            binding: "original", text: text), reference: reference, selection: session.selectionGeneration)
+        guard case .held(let notice) = result else { throw HeldTestError.expectedHold }
+        let entry = try #require(await host.heldRequests.entries[notice.held])
         #expect(await listener.sendHeld(entry.id, from: connection) == .sent)
         #expect(await adapter.deliveries.map(\.text) == [text])
         #expect(await session.replyRequests[reference]?.committed == true)

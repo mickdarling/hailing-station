@@ -202,7 +202,10 @@ extension HostSession {
             previous: scope?.entry, expires: requestClock() + host.heldNoticeWindow,
             noticeWindow: host.heldNoticeWindow
         )
-        return .held(await host.heldRequests.hold(entry, reservation: reservation))
+        guard let notice = await host.heldRequests.hold(entry, reservation: reservation) else {
+            return .holdAdmissionRefused
+        }
+        return .held(notice)
     }
 
     private func deliveryRefusal(_ error: any Error) -> HostDeliveryOutcome {

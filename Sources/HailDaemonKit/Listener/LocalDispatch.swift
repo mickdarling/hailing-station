@@ -287,6 +287,23 @@ extension HostSession {
 }
 
 extension WebSocketListener {
+    /// Future host consumers can retain held identity without changing #874's existing refusal contract.
+    func dispatchAmbientResult(
+        _ request: LocalDispatchRequest, reference: UUID? = nil, selection: UUID?, routedFrom: String? = nil
+    ) async throws -> LocalDispatchResult {
+        let capture = LocalDispatchCapture()
+        return try await LocalDispatchCapture.$current.withValue(capture) {
+            do {
+                return .delivered(try await dispatchAmbient(
+                    request, reference: reference, selection: selection, routedFrom: routedFrom
+                ))
+            } catch {
+                if let result = capture.value { return result }
+                throw error
+            }
+        }
+    }
+
     /// Only a live originating session may Send. UUID possession never transfers a hold to a new peer.
     public func sendHeld(_ id: UUID, from connection: UUID) async -> HeldSendResult {
         guard let peer = peers.values.first(where: { $0.session.connectionID == connection }), await peer.isLive else {

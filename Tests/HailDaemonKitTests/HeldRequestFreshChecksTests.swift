@@ -39,6 +39,31 @@ import Testing
         #expect(await rig.send(entry.id) == .sent)
     }
 
+    @Test func hostWideBoundIncludesAllConnectionsWithoutEvictingContent() async throws {
+        let rig = try await HeldTestRig.make()
+        let first = try await rig.hold()
+        for _ in 1..<8 { _ = try await rig.hold() }
+        for _ in 1..<8 {
+            let session = HostSession(host: rig.host, authorizer: PersonalTerminalAuthorizer())
+            _ = await session.receive(helloFrame())
+            _ = await session.receive(sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target))))
+            let next = HeldTestRig(host: rig.host, adapter: rig.adapter, session: session,
+                                   clock: rig.clock, privacy: rig.privacy, store: rig.store)
+            for _ in 0..<8 { _ = try await next.hold() }
+        }
+        #expect(await rig.host.heldRequests.entries.count == 64)
+        let overflow = HostSession(host: rig.host, authorizer: PersonalTerminalAuthorizer())
+        _ = await overflow.receive(helloFrame())
+        _ = await overflow.receive(sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target))))
+        let request = dispatchRequest(connection: await overflow.connectionID, text: "HELD_TOKEN")
+        let result = try await HostSession.$ambientInputDispatch.withValue(true) {
+            try await overflow.dispatchResult(request)
+        }
+        #expect(result == .holdAdmissionRefused)
+        #expect(await rig.host.heldRequests.entries[first.id]?.text == first.text)
+        #expect(await rig.host.heldRequests.entries.count == 64)
+    }
+
     @Test func heldLogFieldsOnlyContainClosedTokens() async throws {
         let rig = try await HeldTestRig.make()
         let entry = try await rig.hold("HELD_TOKEN synthetic private text")

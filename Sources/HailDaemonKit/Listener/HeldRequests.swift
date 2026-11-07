@@ -26,7 +26,6 @@ public enum HeldSendResult: Sendable, Equatable {
 /// Uncertain handoffs cannot be sent again until a future reconciliation path establishes their disposition.
 public enum HeldDeliveryStatus: Sendable, Equatable { case pending, unresolved, sent, discarded }
 
-
 struct HeldRequestEntry: Sendable {
     let id: UUID
     let connection: UUID
@@ -108,8 +107,13 @@ actor HeldRequestStore {
     }
     func release(_ reservation: UUID) { reservations[reservation] = nil }
 
-    func hold(_ entry: HeldRequestEntry, reservation: UUID?) -> RequestHeld {
-        if let reservation { reservations[reservation] = nil }
+    func hold(_ entry: HeldRequestEntry, reservation: UUID?) -> RequestHeld? {
+        if let reservation {
+            guard reservations[reservation] == entry.connection, entries[entry.id] == nil else { return nil }
+            reservations[reservation] = nil
+        } else {
+            guard entries[entry.id]?.connection == entry.connection else { return nil }
+        }
         entries[entry.id] = entry
         let detail = entry.logDetail
         logger.notice("ambient_request_held \(detail, privacy: .public)")
@@ -199,6 +203,7 @@ struct HeldSendScope: Sendable {
     let renewOnly: Bool
     let allowed: @Sendable () -> Bool
     let selected: @Sendable () -> Bool
+    let noticeCurrent: @Sendable () -> Bool
     let failure = HeldSendFailure()
 }
 
@@ -262,12 +267,14 @@ extension HostSession {
         do { try entry.policy.requireCurrent() } catch { return .refused(.policyChanged) }
         guard await host.heldPolicyIsCurrent(entry.policyRevision) else { return .refused(.policyChanged) }
         let snapshot = self.snapshot, connection = connectionID, store = host.heldRequests
+        let requestClock = self.requestClock
         let scope = HeldSendScope(entry: entry, renewOnly: requestClock() >= entry.expires, allowed: {
             !snapshot(connection).contains {
                 if case .duckMode(on: true, reason: _, expires: _) = $0 { return true }
                 return false
             }
-        }, selected: { store.selects(entry.selection, connection: connection) })
+        }, selected: { store.selects(entry.selection, connection: connection) },
+           noticeCurrent: { requestClock() < entry.expires })
         guard scope.selected() else { return .refused(.selectionChanged) }
         guard scope.allowed(), await !host.currentLockdown.isOn else { return .refused(.lockdown) }
         return await HeldSendScope.$current.withValue(scope) {
@@ -320,4 +327,4 @@ enum HeldPeerScope {
     }
 }
 
-enum HeldAuthorityError: Error { case selectionChanged, connectionLost, policyChanged }
+enum HeldAuthorityError: Error { case selectionChanged, connectionLost, policyChanged, noticeExpired }
