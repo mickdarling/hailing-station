@@ -151,7 +151,10 @@ public actor HailHost {
         for (index, line) in lines.enumerated() {
             try requireCurrentLine(delivered, index: index, policyGeneration: dispatch.policyGeneration)
             request.lines = Array(lines[index...])
-            var decision = evaluator.evaluate(request, lockdown: lockdown.isOn, limiter: limiter, now: clock.now)
+            let evaluation = evaluator.evaluateWithEvidence(
+                request, lockdown: lockdown.isOn, limiter: limiter, now: clock.now
+            )
+            var decision = evaluation.decision
             // A confirmation turns a read-back into delivery and nothing else: every denial stands.
             if confirmed, confirmedRevision == policyRevision, case .confirm = decision { decision = .deliver }
             switch decision {
@@ -160,7 +163,7 @@ public actor HailHost {
             case .confirm(let reason, let hits):
                 guard delivered.isEmpty else { throw HostError.partial(delivered: delivered, reason: reason) }
                 RightyoGuardRefusal.current?.record(hits, patterns: policy.guardPatterns)
-                return .needsConfirmation(issue(request, reason: reason, guardHits: hits))
+                return .needsConfirmation(issue(request, reason: reason, evaluation: evaluation))
             case .denied(let denial):
                 guard delivered.isEmpty else { throw HostError.partial(delivered: delivered, reason: "\(denial)") }
                 throw HostError.denied(denial)
@@ -457,7 +460,7 @@ extension HailHost {
         }
         return listed
     }
-    private func issue(_ request: DeliveryRequest, reason: String, guardHits: [String]) -> ReadBack {
+    private func issue(_ request: DeliveryRequest, reason: String, evaluation: PolicyEvaluation) -> ReadBack {
         let now = clock.now
         pending = pending.filter { now - $0.value < window }
         let hash = request.confirmationHash
@@ -466,7 +469,8 @@ extension HailHost {
               let oldest = pending.min(by: { $0.value < $1.value }) {
             pending[oldest.key] = nil
         }
-        return ReadBack(reason: reason, guardHits: guardHits, lines: request.lines, hash: hash)
+        return ReadBack(reason: reason, guardHits: evaluation.guardOutcomes.map(\.name),
+                        guardOutcomes: evaluation.guardOutcomes, lines: request.lines, hash: hash)
     }
     /// True once for a hash this host issued, still within the window, for exactly this request; then it
     /// is forgotten. Anything else (unknown, expired, already used, other utterance) confirms nothing, and
