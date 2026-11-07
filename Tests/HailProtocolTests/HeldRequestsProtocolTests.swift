@@ -10,7 +10,8 @@ import Testing
 
     @Test(arguments: [false, true])
     func noticeRoundTripsWithMatchAndTimeout(carriesTurn: Bool) throws {
-        let notice = RequestHeld(held: try #require(held), turn: carriesTurn ? try #require(turn) : nil,
+        let heldID = try #require(held), turnID = try #require(turn)
+        let notice = RequestHeld(held: heldID, turn: carriesTurn ? turnID : nil,
                                  reasons: [.ruleMatch, .guardTimeout], rules: [.sudo, .custom], expiresIn: 60)
         try roundTrip(.requestHeld(notice))
         let object = try #require(JSONSerialization.jsonObject(
