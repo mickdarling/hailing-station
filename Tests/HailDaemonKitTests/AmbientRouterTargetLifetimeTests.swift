@@ -8,7 +8,7 @@ extension AmbientRouterStreamTargetTests {
     @Test func aPersonaLessMeetingRestoreRetainsItsTargetBeforeTheClipGuard() async throws {
         let fake = try FakeRightyo("/bin/cat > /dev/null")
         defer { fake.cleanUp() }
-        let env = try await ambientRig(fake, timing: .init(eofGrace: 0.1, termGrace: 0.1), preboundOtherTarget: true)
+        let env = try await preboundAmbientRig(fake, timing: .init(eofGrace: 0.1, termGrace: 0.1))
         let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         let connection = try #require(await env.listener.peers.values.first?.session.connectionID)
@@ -33,7 +33,7 @@ extension AmbientRouterStreamTargetTests {
         await env.listener.stop()
     }
 
-    @Test func aPrunedClosedConnectionNeverRegainsAStreamTarget() async throws {
+    @Test func aPrunedClosedConnectionCanRetainOnlyALateSnapshot() async throws {
         let fake = try FakeRightyo("/bin/cat > /dev/null")
         defer { fake.cleanUp() }
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.1, termGrace: 0.1))
@@ -41,7 +41,7 @@ extension AmbientRouterStreamTargetTests {
         defer { pair.close() }
         let connection = try #require(await env.listener.peers.values.first?.session.connectionID)
         let router = env.router
-        #expect(router.streamTarget(on: connection) == nil)
+        #expect(router.streamTarget(on: connection) == router.configuration.target)
         router.ambientAudio(.started(stream: UUID(), connection: connection, target: "recipient:other",
                                      binding: "other-binding"))
         #expect(router.streamTarget(on: connection) == "recipient:other")
@@ -51,17 +51,16 @@ extension AmbientRouterStreamTargetTests {
             router.state.withLock { $0.runs.isEmpty && !$0.closed.contains(connection) }
         })
         router.ambientAudio(.started(stream: UUID(), connection: connection, target: "recipient:other"))
-        #expect(router.state.withLock { $0.streamTargets[connection] == nil })
-        #expect(router.streamTarget(on: connection) == nil)
+        #expect(router.state.withLock { $0.streamTargets[connection] == "recipient:other" })
+        #expect(router.activeStream == nil)
         await env.listener.stop()
     }
 
-    @Test func aTargetlessMeetingTimeoutDoesNotBorrowTheCurrentStreamTarget() async throws {
+    @Test func aMeetingWithoutARetainedTargetTimesOutUsingOnlyTheConfiguredFallback() async throws {
         let fake = try FakeRightyo("/bin/cat > /dev/null")
         defer { fake.cleanUp() }
-        let env = try await ambientRig(fake, timing: .init(eofGrace: 0.1, termGrace: 0.1),
-                                       acknowledgements: MeetingRig.clips, replyControl: true,
-                                       preboundOtherTarget: true)
+        let env = try await preboundAmbientRig(fake, timing: .init(eofGrace: 0.1, termGrace: 0.1),
+                                               acknowledgements: MeetingRig.clips)
         let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         defer { pair.close() }
         let connection = try #require(await env.listener.peers.values.first?.session.connectionID)
@@ -75,14 +74,16 @@ extension AmbientRouterStreamTargetTests {
         }
         #expect(router.streamTarget(on: connection) == RecipientTestRig.target)
         #expect(router.setMeeting(on: false, connection: connection, reason: "timeout", expected: token) == 1)
-        #expect(router.state.withLock { $0.privacyClips[connection] == nil })
-        try await pair.boundedBarrier(step: "targetless timeout stays silent")
+        let clips = try #require(router.state.withLock { $0.privacyClips[connection] })
+        await bounded("timeout clip drained") { await clips.queued {}.value }
+        // The session selects the current stream, not the configured fallback: delivery must fail closed.
+        try await pair.boundedBarrier(step: "timeout fallback cannot borrow current stream target")
         router.ambientAudio(.ended(stream: stream, reason: .final))
         await boundedSettle(router)
         await env.listener.stop()
     }
 
-    @Test func privacyPreArmAndDeviceOffWorkWithoutGuessingATarget() async throws {
+    @Test func privacyPreArmAndDeviceOffRetainTheConfiguredFallback() async throws {
         let fake = try FakeRightyo("/bin/cat > /dev/null")
         defer { fake.cleanUp() }
         let env = try await ambientRig(fake, timing: .init(eofGrace: 0.1, termGrace: 0.1))
@@ -92,11 +93,11 @@ extension AmbientRouterStreamTargetTests {
         let router = env.router
         router.ambientPrivacyPreArm(connection: connection)
         #expect(router.duckMode(connection: connection))
-        #expect(router.streamTarget(on: connection) == nil)
+        #expect(router.streamTarget(on: connection) == router.configuration.target)
         router.ambientPrivacy(false, connection: connection)
         #expect(!router.duckMode(connection: connection))
-        #expect(router.streamTarget(on: connection) == nil)
-        try await pair.boundedBarrier(step: "targetless privacy sends no guessed clip")
+        #expect(router.streamTarget(on: connection) == router.configuration.target)
+        try await pair.boundedBarrier(step: "pre-arm and unreported off send no clip")
         await env.listener.stop()
     }
 }

@@ -59,8 +59,7 @@ final class MeetingRig: Sendable {
     /// `meeting` is the child's `started` advertisement of the meeting control (#735 MM-D), raw JSON, none by default;
     /// `ignoring` makes the child set every meeting line aside in `ignored.txt` instead of taking it.
     init(phrases: [String] = ["meeting mode"], timeout: TimeInterval = AmbientRightyoRouter.defaultMeetingTimeout,
-         clips: AmbientAckLibrary? = MeetingRig.clips, meeting: String? = nil, ignoring: Bool = false,
-         preboundOtherTarget: Bool = false) async throws {
+         clips: AmbientAckLibrary? = MeetingRig.clips, meeting: String? = nil, ignoring: Bool = false) async throws {
         let second = phrases.count > 1 ? """
         n=0
         while [ ! -e next-turn ] && [ $n -lt 300 ]; do /bin/sleep 0.05; n=$((n + 1)); done
@@ -77,7 +76,7 @@ final class MeetingRig: Sendable {
                                    meeting: .init(timeout: timeout, onChange: { change in
             let line = "on=\(change.on) profile=\(change.profile.rawValue) reason=\(change.reason)"
             hooks.list.withLock { $0.append((change.connection, line)) }
-        }), onEvent: { event in events.list.withLock { $0.append(event) } }, preboundOtherTarget: preboundOtherTarget)
+        }), onEvent: { event in events.list.withLock { $0.append(event) } })
         pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
         try await recipientSocketSend(audio(stream, 0), on: socket)
     }

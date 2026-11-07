@@ -57,7 +57,6 @@ struct AmbientMeetingChange: Sendable {
 /// later slices; the owner's pause and the rest of RightyO's attention policy stay as they are.
 extension AmbientRightyoRouter {
     public static let defaultMeetingTimeout: TimeInterval = 3 * 3600
-
     /// Whether the connection has a meeting, including the one-participant rubber duck profile.
     public func meetingMode(connection: UUID) -> Bool { state.withLock { $0.meeting[connection] != nil } }
 
@@ -173,10 +172,11 @@ extension AmbientRightyoRouter {
                           + "reported=\(change.reported)\(renewed)")
             self?.emit("ambient_meeting_control", connection: connection, detail: "meeting_control=\(held)")
         }
-        // Store once, even for a persona-less restore. A timeout without a retained target stays silent.
-        let target = target ?? (change.reason == "timeout" ? nil : streamTarget(on: connection, in: state))
+        // Store before the persona guard, including restores/moves. Timeouts never borrow a newer stream's target.
+        let target = target ?? (change.reason == "timeout" ? configuration.target
+                               : streamTarget(on: connection, in: state))
         if change.on, state.meeting[connection]?.token == change.token { state.meeting[connection]?.target = target }
-        guard let persona = change.persona, let target else { return }
+        guard let persona = change.persona else { return }
         Self.clipChain(connection, in: &state).enqueue { [weak self, weak listener] in
             guard let self else { return }
             var confirm = "unreported"

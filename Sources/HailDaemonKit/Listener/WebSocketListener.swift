@@ -46,13 +46,8 @@ public actor WebSocketListener {
     private let maxConnections: Int
     private let helloTimeout: Duration
     let log: @Sendable (WebSocketListenerEvent) -> Void
-    /// Synchronous membership only, mirrored on every peer mutation (including synthetic peers). The router can
-    /// reject late target snapshots after teardown without awaiting the listener or retaining closed identities.
-    nonisolated let livePeerConnections = Mutex<Set<UUID>>([])
     /// The peers and their transports by session connection id, dropped together (#941).
-    var peers: [UUID: WebSocketPeer] = [:] {
-        didSet { livePeerConnections.withLock { $0 = Set(peers.values.map { $0.session.connectionID }) } }
-    }
+    var peers: [UUID: WebSocketPeer] = [:]
     var transports: [UUID: NWConnection] = [:]
     /// Content-free, bounded request correlation; each ledger belongs to exactly one connection (#923).
     var heardTurns: [UUID: HeardTurnRecords] = [:]
@@ -836,7 +831,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     /// Called in order from the gate's actor; only spawns, enqueues or signals, never awaits. A start that finds
     /// every child slot taken goes to the worker, which forces the oldest retired child out first (#366); until it
-    /// is done, every later event queues behind it.
+    /// is done, every later event queues behind it. A rare late start after a closed mark is pruned can re-add a
+    /// target snapshot, bounded by connection ids; the gate never starts streams for torn-down peers.
     public func ambientAudio(_ event: AmbientAudioEvent) {
         let queued = state.withLock { state -> Bool in
             switch event {
@@ -844,8 +840,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             // would still be dead.
             case .started(let stream, let connection, let scope):
                 state.latest[connection] = stream
-                if !state.shuttingDown, !state.closed.contains(connection),
-                   state.listener?.value?.livePeerConnections.withLock({ $0.contains(connection) }) == true {
+                if !state.shuttingDown, !state.closed.contains(connection) {
                     state.streamTargets[connection] = scope.target
                 }
             // Taken over (#366): the old stream's late failure is not reported to its device as a stop.
@@ -1413,20 +1408,17 @@ extension AmbientRightyoRouter {
         return id
     }
 
-    /// Snapshot for device actions and host mode transitions. Without a live connection's admitted target, return
-    /// nil: callers suppress target-bearing clips, never guess the configured destination. Privacy pre-arm has no
-    /// clip; device mode changes still apply without a target. Child callbacks retain their explicit destination.
-    func streamTarget(on connection: UUID) -> String? {
+    /// Snapshot for connection-scoped device and system clips, with an explicit configured-target fallback when
+    /// no admitted stream target exists. Delivery (`acknowledgementFrames` and related paths) still requires the
+    /// session to select that target, so a mismatch fails closed. PR 2b revisits this with the session's selection.
+    /// Child callbacks retain their captured target and never use this lookup at playback time.
+    func streamTarget(on connection: UUID) -> String {
         state.withLock { streamTarget(on: connection, in: $0) }
     }
 
-    func streamTarget(on connection: UUID, in state: State) -> String? {
-        guard !state.shuttingDown, !state.closed.contains(connection),
-              state.listener?.value?.livePeerConnections.withLock({ $0.contains(connection) }) == true else {
-            return nil
-        }
+    func streamTarget(on connection: UUID, in state: State) -> String {
         guard let active = state.active, state.runs[active.run]?.connection == connection else {
-            return state.streamTargets[connection]
+            return state.streamTargets[connection] ?? configuration.target
         }
         return active.target
     }

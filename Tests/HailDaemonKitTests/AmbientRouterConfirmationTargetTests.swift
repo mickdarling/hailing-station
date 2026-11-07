@@ -4,30 +4,30 @@ import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
-/// #327 PR 2a: start a prebound non-configured stream, then use its child callback builders and change/clear the
+/// #327 review: use the actual child callback builders with a future stream target, then change/clear the
 /// connection snapshot before invoking them. Real loopback delivery checks the selected target and policy.
 extension AmbientRouterStreamTargetTests {
     enum MeetingConfirmation: CaseIterable { case entry, exit, timeout }
 
     @Test(arguments: MeetingConfirmation.allCases, [false, true])
     func meetingCallbacksKeepTheirStreamTarget(_ confirmation: MeetingConfirmation, clear: Bool) async throws {
-        let rig = try await MeetingRig(preboundOtherTarget: true)
+        let rig = try await MeetingRig()
         defer { rig.close() }
         _ = try await rig.confirmation()
         let router = rig.env.router, connection = try #require(rig.connection())
-        // The child really started with a pre-admission binding for a target other than the configured one.
-        let target = RecipientTestRig.target
-        #expect(router.state.withLock { $0.active?.target == target && $0.active?.binding == "reply-binding" }
-                && target != router.configuration.target)
+        // Build the future stream's callbacks directly: PR 1's gate/router still admit only their configured target.
+        // Both targets are policy-allowed, and the phone selects the originating target, so delivery checks apply.
+        let target = "recipient:other"
+        try await rig.pair.boundedSelect(target, on: 0)
         let callback = router.voiceMeeting(on: connection, target: target, listener: rig.env.listener)
         let held = MeetingLatch()
         defer { held.open() }
         router.enqueuePrivacyClip(connection) { _ in { await held.wait() } }
-        // No active stream now: a lookup at callback time or playback would see B (or no target).
+        // No active stream now: a lookup at callback time or playback would see B (or the configured fallback).
         let active = router.state.withLock { state in
             let active = state.active
             state.active = nil
-            state.streamTargets[connection] = clear ? nil : router.configuration.target
+            state.streamTargets[connection] = clear ? nil : RecipientTestRig.target
             return active
         }
         switch confirmation {
@@ -62,15 +62,14 @@ extension AmbientRouterStreamTargetTests {
     @Test(arguments: PrivacyConfirmation.allCases, [false, true])
     func privacyCallbacksKeepTheirStreamTarget(_ confirmation: PrivacyConfirmation, clear: Bool) async throws {
         let rig = try await DuckRig(saying: "Rightyo, stop recording.", advertises: true,
-                                    clips: AmbientDuckModeTests.clips, preboundOtherTarget: true)
+                                    clips: AmbientDuckModeTests.clips)
         defer { rig.close() }
         _ = try await rig.confirmation()
         _ = try await receiveFrame(on: rig.socket, step: "initial privacy audio")
         let router = rig.env.router, connection = try #require(rig.connection())
-        // The child really started with a pre-admission binding for a target other than the configured one.
-        let target = RecipientTestRig.target
-        #expect(router.state.withLock { $0.active?.target == target && $0.active?.binding == "reply-binding" }
-                && target != router.configuration.target)
+        // Build the future stream's callbacks directly: PR 1's gate/router still admit only their configured target.
+        // Both targets are policy-allowed, and the phone selects the originating target, so delivery checks apply.
+        let target = "recipient:other"
         try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: target))), on: rig.socket)
         try await barrier(on: rig.socket, step: "originating stream selection")
         let duck = router.voiceDuck(on: connection, target: target, listener: rig.env.listener)
@@ -81,7 +80,7 @@ extension AmbientRouterStreamTargetTests {
         let active = router.state.withLock { state in
             let active = state.active
             state.active = nil
-            state.streamTargets[connection] = clear ? nil : router.configuration.target
+            state.streamTargets[connection] = clear ? nil : RecipientTestRig.target
             if confirmation == .unavailable, let active {
                 // No listening keeper or earlier announcement: the child's unavailable changes the last word.
                 state.runs[active.run]?.retiredAt = 1

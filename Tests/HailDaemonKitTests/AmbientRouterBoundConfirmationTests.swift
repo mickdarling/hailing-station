@@ -50,11 +50,10 @@ extension AmbientRouterStreamTargetTests {
         defer { fake.cleanUp() }
         try fake.install(fixture: kind.fixture)
         let inbox = fake.directory.appendingPathComponent("Inbox.md")
-        let env = try await ambientRig(
-            fake, timing: .init(eofGrace: 20, termGrace: 0.1), acknowledgements: boundClips(kind), replyControl: true,
+        let env = try await preboundAmbientRig(
+            fake, timing: .init(eofGrace: 20, termGrace: 0.1), acknowledgements: boundClips(kind),
             destinations: try VoiceDestinations(["Notes": .markdown(inbox.path)]),
-            routes: kind == .routeRefusal ? try AmbientVoiceRouteRefusalTests.routes() : nil,
-            preboundOtherTarget: true
+            routes: kind == .routeRefusal ? try AmbientVoiceRouteRefusalTests.routes() : nil
         )
         if kind == .notSent { await env.rig.adapter.failHandoff(with: AdapterError.inputPending(reason: .staleInput)) }
         let capabilities = ["probe", AmbientHeard.capability, AmbientOverheard.capability, RequestRefusals.capability]

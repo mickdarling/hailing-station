@@ -30,16 +30,13 @@ func ambientRig(
     acknowledgementHold: AcknowledgementHold? = nil, notSentQueued: NotSentQueued? = nil,
     notSentPlaying: NotSentPlaying? = nil,
     onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil,
-    childMade: (@Sendable (UUID) -> Void)? = nil, privacy: PrivacyOffSettings = .init(),
-    preboundOtherTarget: Bool = false
+    childMade: (@Sendable (UUID) -> Void)? = nil, privacy: PrivacyOffSettings = .init()
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make(guardPatterns: guardPatterns)
     let connected = ConnectedPeerIDs()
     var configuration = AmbientRightyoRouter.Configuration(
-        executable: executable ?? fake.executable, config: fake.config,
-        target: preboundOtherTarget ? "recipient:other" : RecipientTestRig.target,
-        binding: preboundOtherTarget ? "other-binding" : "reply-binding", allowSynthetic: true,
-        timing: timing, shutdownGrace: shutdownGrace, audit: audit,
+        executable: executable ?? fake.executable, config: fake.config, target: RecipientTestRig.target,
+        binding: "reply-binding", allowSynthetic: true, timing: timing, shutdownGrace: shutdownGrace, audit: audit,
         acknowledgements: acknowledgements, replyControl: replyControl
     )
     (configuration.mediaTimeout, configuration.destinations) = (mediaTimeout, destinations)
@@ -53,8 +50,8 @@ func ambientRig(
     (configuration.privacyProbeTimeout, configuration.offScoping) = (privacy.probeTimeout, privacy.offScoping)
     configuration.notes.shortcuts = shortcuts
     let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
-    let sink = GuardClockAmbientSink(router: router, binding: preboundOtherTarget ? "reply-binding" : nil)
-    let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: sink, sweepInterval: nil)
+    let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: GuardClockAmbientSink(router: router),
+                                sweepInterval: nil)
     let listener = try WebSocketListener(
         bindAddress: "127.0.0.1", port: 0, host: rig.host,
         authorizer: PersonalTerminalAuthorizer(ambientAudio: gate).naming(routes), hostName: "mac-test",
@@ -107,10 +104,12 @@ extension FallbackSocketPair {
         }
         return pair
     }
+
     /// `barrier`: every socket idle within the bound; a stray reply is a failure, never a timing inference.
     func boundedBarrier(step: String) async throws {
         for socket in sockets { try await HailDaemonKitTests.barrier(on: socket, step: step) }
     }
+
     /// `select`, with its barrier bounded.
     func boundedSelect(_ target: String, on index: Int) async throws {
         try await recipientSocketSend(sessionFrame(payload: .control(.select(targetID: target))), on: sockets[index])
@@ -178,7 +177,8 @@ func eventually(_ condition: @Sendable () async -> Bool) async -> Bool {
     return false
 }
 
-/// Returns the next bounded frame's ambient-prefixed, connection-keeping error message.
+/// The next frame, within the bound `receiveFrame` keeps, must be an `ambient`-prefixed, connection-keeping error;
+/// returns its message.
 func ambientError(
     on socket: URLSessionWebSocketTask, step: String, code expected: ErrorCode = .notAllowed
 ) async throws -> String {
