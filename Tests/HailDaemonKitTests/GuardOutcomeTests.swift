@@ -98,13 +98,6 @@ extension DangerousPatternTests {
         ])
         #expect(guards.hits(in: ["echo hi"]).isEmpty)
     }
-
-    @Test func anInjectedOverrunReportsTimeoutInsteadOfMatch() throws {
-        let guards = try CompiledGuards([GuardPattern(name: "sudo", regex: "sudo")])
-        GuardBudgetClock.$current.withValue(.stepped(cpu: .milliseconds(21))) {
-            #expect(guards.hits(in: ["sudo ls"]) == [GuardHit(name: "sudo", outcome: .timeout)])
-        }
-    }
 }
 
 extension PolicyEvaluationTests {

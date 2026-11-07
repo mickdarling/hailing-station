@@ -1,36 +1,13 @@
-import Darwin
 import Foundation
-
-/// Injectable wall and thread CPU clocks (#208, #1120). Matching is synchronous: CPU readings stay on
-/// one thread. The legacy wall-only test initializer freezes CPU time; production binds neither clock.
-struct GuardBudgetClock: Sendable {
-    @TaskLocal static var current = GuardBudgetClock(now: { ContinuousClock.now }, cpuNow: threadCPUTime)
-    let now: @Sendable () -> ContinuousClock.Instant
-    let cpuNow: @Sendable () -> Duration?
-
-    init(_ now: @escaping @Sendable () -> ContinuousClock.Instant) {
-        self.init(now: now, cpuNow: { .zero })
-    }
-
-    init(now: @escaping @Sendable () -> ContinuousClock.Instant, cpuNow: @escaping @Sendable () -> Duration?) {
-        self.now = now
-        self.cpuNow = cpuNow
-    }
-
-    static func threadCPUTime() -> Duration? {
-        var sample = timespec()
-        guard clock_gettime(CLOCK_THREAD_CPUTIME_ID, &sample) == 0 else { return nil }
-        return .seconds(sample.tv_sec) + .nanoseconds(sample.tv_nsec)
-    }
-}
+import Synchronization
 
 /// The guard rules compiled once. Built from a `Policy` at construction, so an invalid rule is refused
 /// there and never at delivery time. `NSRegularExpression` is immutable and thread-safe, and its `\b` is
 /// the simple word boundary the rules are written for.
 /// Each rule has a 20 ms thread CPU budget (#1120) and a 1 s wall cap: scheduling pauses get 50 times
 /// the CPU allowance, while stalled work remains bounded at ICU progress callbacks and scan boundaries.
-/// Either expiry (or an unreadable CPU clock) is a timeout and still fails closed (#208). The target-block
-/// path remains unbudgeted (#658). These are cooperative limits, not an interrupt of ICU between callbacks.
+/// Either expiry, an unreadable CPU clock or a regressing clock latches a fail-closed timeout (#208, #1120).
+/// The target-block path remains unbudgeted (#658). These are cooperative limits, not an interrupt between callbacks.
 public struct CompiledGuards: Sendable {
     private let rules: [(name: String, regex: NSRegularExpression)]
     private let matchBudget: Duration
@@ -69,11 +46,20 @@ public struct CompiledGuards: Sendable {
         guard !candidates.isEmpty else { return [] }
         let clock = GuardBudgetClock.current
         return rules.compactMap { rule in
-            let wallDeadline = clock.now() + Self.wallClockCap
+            let wallStart = clock.now()
             guard let start = clock.cpuNow() else { return GuardHit(name: rule.name, outcome: .timeout) }
+            let samples = Mutex((cpu: start, wall: wallStart, expired: false))
             let expired = { @Sendable in
-                guard let cpu = clock.cpuNow() else { return true }
-                return cpu - start >= matchBudget || clock.now() >= wallDeadline
+                samples.withLock { previous in
+                    if previous.expired { return true }
+                    guard let cpu = clock.cpuNow() else { previous.expired = true; return true }
+                    let wall = clock.now()
+                    previous.expired = cpu < previous.cpu || wall < previous.wall
+                        || cpu - start >= matchBudget || wall - wallStart >= Self.wallClockCap
+                    previous.cpu = cpu
+                    previous.wall = wall
+                    return previous.expired
+                }
             }
             for line in candidates {
                 switch boundedMatch(rule.regex, in: line, expired: expired) {
@@ -100,15 +86,15 @@ public struct CompiledGuards: Sendable {
     ) -> Outcome {
         if expired() { return .timeout }
         var outcome = Outcome.none
-        let range = NSRange(line.startIndex..., in: line)
-        regex.enumerateMatches(in: line, options: .reportProgress, range: range) { result, _, stop in
+        GuardMatchDriver.enumerate(regex, line) { matched in
             if expired() {
                 outcome = .timeout
-                stop.pointee = true
-            } else if result != nil {
+                return true
+            } else if matched {
                 outcome = .match
-                stop.pointee = true
+                return true
             }
+            return false
         }
         return expired() ? .timeout : outcome
     }

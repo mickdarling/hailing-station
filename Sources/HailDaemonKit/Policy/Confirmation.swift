@@ -1,4 +1,6 @@
 import CryptoKit
+import Darwin
+import Foundation
 
 /// One rule's positive evidence, from the evaluation that gated delivery (#1120). Contains no request text.
 public struct GuardHit: Sendable, Equatable {
@@ -98,5 +100,40 @@ extension Denial: CustomStringConvertible {
             let seconds = parts.seconds + (parts.attoseconds > 0 ? 1 : 0)
             return "rate limit reached, retry in \(seconds) second\(seconds == 1 ? "" : "s")"
         }
+    }
+}
+
+/// Internal synchronous enumeration seam: tests control callback ordering without depending on ICU progress cadence.
+enum GuardMatchDriver {
+    typealias Callback = (Bool) -> Bool
+    typealias Enumeration = @Sendable (NSRegularExpression, String, Callback) -> Void
+    @TaskLocal static var enumerate: Enumeration = { regex, line, callback in
+        let range = NSRange(line.startIndex..., in: line)
+        regex.enumerateMatches(in: line, options: .reportProgress, range: range) { result, _, stop in
+            if callback(result != nil) { stop.pointee = true }
+        }
+    }
+}
+
+/// Injectable wall and thread CPU clocks (#208, #1120). Matching is synchronous: CPU readings stay on
+/// one thread. The legacy wall-only test initializer freezes CPU time; production binds neither clock.
+struct GuardBudgetClock: Sendable {
+    @TaskLocal static var current = GuardBudgetClock(now: { ContinuousClock.now }, cpuNow: threadCPUTime)
+    let now: @Sendable () -> ContinuousClock.Instant
+    let cpuNow: @Sendable () -> Duration?
+
+    init(_ now: @escaping @Sendable () -> ContinuousClock.Instant) {
+        self.init(now: now, cpuNow: { .zero })
+    }
+
+    init(now: @escaping @Sendable () -> ContinuousClock.Instant, cpuNow: @escaping @Sendable () -> Duration?) {
+        self.now = now
+        self.cpuNow = cpuNow
+    }
+
+    static func threadCPUTime() -> Duration? {
+        var sample = timespec()
+        guard clock_gettime(CLOCK_THREAD_CPUTIME_ID, &sample) == 0 else { return nil }
+        return .seconds(sample.tv_sec) + .nanoseconds(sample.tv_nsec)
     }
 }
