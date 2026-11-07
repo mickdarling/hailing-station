@@ -35,6 +35,25 @@ import Testing
         #expect(await rig.host.heldRequests.entries[entry.id]?.text == entry.text)
     }
 
+    @Test func policyChangeAfterEvaluationStillRefusesAtAdapterAuthority() async throws {
+        let rig = try await HeldTestRig.make()
+        let entry = try await rig.hold()
+        let gate = HeldHandoffGate()
+        var arrivals = gate.arrivals.stream.makeAsyncIterator()
+        async let result = HeldPeerScope.$current.withValue({ await gate.check() }, operation: {
+            await rig.send(entry.id)
+        })
+        _ = await arrivals.next()
+        var policy = rig.store.stored
+        policy.guardPatterns = [.init(name: "new guard", regex: "NEVER_MATCHES")]
+        rig.store.overwrite(policy)
+        _ = await rig.host.refreshedPolicy()
+        await gate.release()
+        #expect(await result == .refused(.policyChanged))
+        #expect(await rig.adapter.contexts.isEmpty)
+        #expect(await rig.host.heldRequests.status(entry.id, from: entry.connection) == .pending)
+    }
+
     @Test func uncertainAdapterHandoffBlocksSubsequentSendUntilReconciliation() async throws {
         let rig = try await HeldTestRig.make()
         let entry = try await rig.hold()
@@ -47,4 +66,19 @@ import Testing
         #expect(await rig.host.heldRequests.entries[entry.id]?.text == entry.text)
         #expect(await rig.discard(entry.id) == .discarded)
     }
+}
+
+private actor HeldHandoffGate {
+    let arrivals = AsyncStream<Void>.makeStream()
+    private var count = 0
+    private var continuation: CheckedContinuation<Void, Never>?
+    func check() async -> Bool {
+        count += 1
+        if count == 2 {
+            arrivals.continuation.yield(())
+            await withCheckedContinuation { continuation = $0 }
+        }
+        return true
+    }
+    func release() { continuation?.resume(); continuation = nil }
 }

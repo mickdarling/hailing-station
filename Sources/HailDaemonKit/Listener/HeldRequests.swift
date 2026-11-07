@@ -204,6 +204,7 @@ struct HeldSendScope: Sendable {
     let allowed: @Sendable () -> Bool
     let selected: @Sendable () -> Bool
     let noticeCurrent: @Sendable () -> Bool
+    let policyCurrent: @Sendable () -> Bool
     let failure = HeldSendFailure()
 }
 
@@ -220,6 +221,8 @@ final class HeldSendFailure: Sendable {
         case HeldAuthorityError.selectionChanged: reason = .selectionChanged
         case HeldAuthorityError.connectionLost: reason = .connectionLost
         case HeldAuthorityError.policyChanged: reason = .policyChanged
+        case HostError.denied(.notAllowed) where HeldSendScope.current?.entry.policy.performIfCurrent({ true }) != true:
+            reason = .policyChanged
         case HostError.denied(.lockdown): reason = .lockdown
         case HostError.denied(.rateLimited): reason = .rateLimited
         case HostError.unknownTarget: reason = .targetUnavailable
@@ -267,14 +270,15 @@ extension HostSession {
         do { try entry.policy.requireCurrent() } catch { return .refused(.policyChanged) }
         guard await host.heldPolicyIsCurrent(entry.policyRevision) else { return .refused(.policyChanged) }
         let snapshot = self.snapshot, connection = connectionID, store = host.heldRequests
-        let requestClock = self.requestClock
+        let requestClock = self.requestClock, host = self.host
         let scope = HeldSendScope(entry: entry, renewOnly: requestClock() >= entry.expires, allowed: {
             !snapshot(connection).contains {
                 if case .duckMode(on: true, reason: _, expires: _) = $0 { return true }
                 return false
             }
         }, selected: { store.selects(entry.selection, connection: connection) },
-           noticeCurrent: { requestClock() < entry.expires })
+           noticeCurrent: { requestClock() < entry.expires },
+           policyCurrent: { host.heldPolicyIsCurrent(entry.policyRevision) })
         guard scope.selected() else { return .refused(.selectionChanged) }
         guard scope.allowed(), await !host.currentLockdown.isOn else { return .refused(.lockdown) }
         return await HeldSendScope.$current.withValue(scope) {

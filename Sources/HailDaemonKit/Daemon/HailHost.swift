@@ -41,6 +41,7 @@ private struct HostDispatchRequest: Sendable {
         return DeliveryAuthority {
             try normal?.requireCurrent()
             try heldScope.entry.policy.deliveryAuthority.requireCurrent()
+            guard heldScope.policyCurrent() else { throw HeldAuthorityError.policyChanged }
             guard heldScope.selected() else { throw HeldAuthorityError.selectionChanged }
             guard heldScope.allowed() else { throw HostError.denied(.lockdown) }
             guard heldScope.noticeCurrent() else { throw HeldAuthorityError.noticeExpired }
@@ -77,6 +78,7 @@ public actor HailHost {
     private let window: Duration
     private var policy: Policy
     private var policyRevision = UUID()
+    nonisolated private let heldPolicyRevision = Mutex(UUID())
     nonisolated let targetPolicy: TargetPolicyAuthority
     private let replyPublicationAuthority = ReplyPublicationAuthority()
     private var evaluator: PolicyEvaluator
@@ -97,7 +99,7 @@ public actor HailHost {
         self.store = store
         targetPolicy = TargetPolicyAuthority(store: store)
         window = confirmationWindow
-        heldNoticeWindow = confirmationWindow
+        heldNoticeWindow = min(confirmationWindow, .seconds(3_600))
         self.requestNow = requestNow
         var loaded = Policy()
         do {
@@ -378,7 +380,11 @@ extension HailHost {
         return listed
     }
 
-    func heldPolicyIsCurrent(_ revision: UUID) -> Bool { revision == policyRevision }
+    nonisolated func heldPolicyIsCurrent(_ revision: UUID) -> Bool {
+        heldPolicyRevision.withLock { $0 == revision }
+    }
+
+    private func retireHeldPolicy() { heldPolicyRevision.withLock { $0 = UUID() } }
 
     private func requireCurrentLine(
         _ delivered: [String], index: Int, policyGeneration: TargetPolicyGeneration?
@@ -390,7 +396,7 @@ extension HailHost {
             }
             try policyGeneration?.requireCurrent()
             try HeldSendScope.current?.entry.policy.requireCurrent()
-            if let scope = HeldSendScope.current, scope.entry.policyRevision != policyRevision {
+            if let scope = HeldSendScope.current, !heldPolicyIsCurrent(scope.entry.policyRevision) {
                 throw HeldAuthorityError.policyChanged
             }
         } catch {
@@ -468,11 +474,13 @@ extension HailHost {
             compiled = try PolicyEvaluator(policy: update.policy)
         } catch {
             revokeAuthority()
+            retireHeldPolicy()
             targetPolicy.update(nil)
             policyFailure = "\(error)"
             throw error
         }
         revokeAuthority()
+        retireHeldPolicy()
         targetPolicy.update(update.policy)
         policy = update.policy
         evaluator = compiled
@@ -484,13 +492,14 @@ extension HailHost {
             let read = try tracking?.loadStable(comparedTo: targetPolicy.appliedPolicy)
             let next = try read?.policy ?? store.load()
             let compiled = try PolicyEvaluator(policy: next)
-            if next != policy { revokeAuthority() }
+            if next != policy { revokeAuthority(); retireHeldPolicy() }
             targetPolicy.update(next, retiring: read?.changedTargets ?? [])
             policy = next
             evaluator = compiled
             policyFailure = nil
         } catch {
             revokeAuthority()
+            retireHeldPolicy()
             targetPolicy.update(nil)
             policyFailure = "\(error)"
             throw HostError.policyUnavailable("\(error)")
@@ -518,7 +527,7 @@ extension HailHost {
             pending[oldest.key] = nil
         }
         HeldReadBackEvidence.current?.record(
-            readBackHash: hash, revision: policyRevision, expires: now + window,
+            readBackHash: hash, revision: heldPolicyRevision.withLock { $0 }, expires: now + heldNoticeWindow,
             reasons: heldReasons(reason, evaluation: evaluation),
             rules: evaluation.guardOutcomes.map {
                 HeldRequestRule.wireRule(
