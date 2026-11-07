@@ -60,7 +60,8 @@ import Testing
         #expect(await rig.adapter.deliveries == ["synthetic input"])
         #expect(await rig.adapter.contexts.map(\.id) == [owner])
         #expect(await rig.session.replyRequests[owner]?.committed == true)
-        #expect(rig.listener.lastInput.latest(for: FinalDeliveryRig.target)?.connection == rig.session.connectionID)
+        let ledger = await rig.listener.lastInput, connection = await rig.session.connectionID
+        #expect(ledger.latest(for: FinalDeliveryRig.target)?.connection == connection)
         await rig.listener.stop(reason: "synthetic completion")
     }
 
@@ -71,6 +72,42 @@ import Testing
         )))
         #expect(await rig.adapter.contexts.map(\.id) == [owner])
         #expect(await rig.session.replyRequests[owner]?.committed == true)
+        await rig.listener.stop(reason: "synthetic completion")
+    }
+
+    @Test(arguments: [119_999, 120_000])
+    func finalLegacyAuthority(_ elapsed: Int64) async throws {
+        let rig = try await FinalDeliveryRig.make(legacy: true)
+        let reference = UUID()
+        await rig.adapter.handoff.arm()
+        let delivery = Task { try await rig.ambient(reference: reference) }
+        await rig.adapter.handoff.wait()
+        rig.clock.advance(elapsed)
+        await rig.adapter.handoff.resume()
+        if elapsed < 120_000 {
+            #expect(try await delivery.value == reference)
+            #expect(await rig.adapter.deliveries == ["synthetic input"])
+            #expect(await rig.session.replyRequests[reference]?.committed == true)
+        } else {
+            await #expect(throws: LocalDispatchRefusal.deliveryRefused) { try await delivery.value }
+            await rig.expectEmpty()
+        }
+        await rig.listener.stop(reason: "synthetic completion")
+    }
+
+    @Test func currentTextAuthority() async throws {
+        let rig = try await FinalDeliveryRig.make()
+        let listener = try WebSocketListener(bindAddress: "127.0.0.1", port: 0, host: rig.host,
+                                             authorizer: PersonalTerminalAuthorizer())
+        let pair = try await FallbackSocketPair.connect(port: listener.start(), selecting: [FinalDeliveryRig.target])
+        defer { pair.close() }
+        try await recipientSocketSend(sessionFrame(
+            target: FinalDeliveryRig.target, payload: .text(TextPayload(text: "synthetic input"))
+        ), on: pair.sockets[0])
+        try await pair.barrier()
+        #expect(await rig.adapter.deliveries == ["synthetic input"])
+        #expect(await rig.adapter.contexts.count == 1)
+        await listener.stop(reason: "synthetic completion")
         await rig.listener.stop(reason: "synthetic completion")
     }
 }

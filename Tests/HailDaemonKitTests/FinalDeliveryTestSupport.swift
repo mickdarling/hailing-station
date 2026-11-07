@@ -63,6 +63,19 @@ actor FinalDeliveryAdapter: ProviderContextDelivering, ProviderReplyBindingLeasi
     }
 }
 
+struct FinalDeliveryLegacyAdapter: Adapter {
+    let kind = "final"
+    let adapter: FinalDeliveryAdapter
+    func listTargets() async throws -> [AdapterTarget] { try await adapter.listTargets() }
+    func capture(_ target: String) async throws -> String { "" }
+    func deliver(_ text: String, to target: String, binding: String?) async throws {
+        try await adapter.deliver(text, to: target, binding: binding)
+    }
+    func deliver(_ text: String, to target: String, binding: String?, authority: DeliveryAuthority) async throws {
+        try await adapter.deliver(text, to: target, binding: binding, authority: authority)
+    }
+}
+
 struct FinalDeliveryRig {
     static let target = "final:reply"
     let adapter: FinalDeliveryAdapter
@@ -73,9 +86,13 @@ struct FinalDeliveryRig {
     let clock: RecipientTestClock
     let id: UUID
 
-    static func make() async throws -> Self {
+    static func make(legacy: Bool = false) async throws -> Self {
         let adapter = FinalDeliveryAdapter(), registry = Registry(), clock = RecipientTestClock()
-        try await registry.register(adapter)
+        if legacy {
+            try await registry.register(FinalDeliveryLegacyAdapter(adapter: adapter))
+        } else {
+            try await registry.register(adapter)
+        }
         var policy = Policy(guardPatterns: [])
         try policy.allow(target, binding: "synthetic-binding", tier: .open)
         let host = try HailHost(registry: registry, store: InMemoryPolicyStore(
@@ -93,18 +110,19 @@ struct FinalDeliveryRig {
                     clock: clock, id: id)
     }
 
-    func ambient() async throws -> UUID? {
+    func ambient(reference: UUID? = nil) async throws -> UUID? {
         try await listener.dispatchAmbient(
             dispatchRequest(connection: session.connectionID, target: Self.target, binding: "synthetic-binding"),
-            selection: await session.selectionGeneration
+            reference: reference, selection: await session.selectionGeneration
         )
     }
 
     func expectEmpty() async {
+        let ledger = await listener.lastInput
         #expect(await adapter.deliveries.isEmpty)
         #expect(await adapter.contexts.isEmpty)
         #expect(await session.replyRequests.isEmpty)
         #expect(await session.evictedForHandoff.isEmpty)
-        #expect(listener.lastInput.latest(for: Self.target) == nil)
+        #expect(ledger.latest(for: Self.target) == nil)
     }
 }
