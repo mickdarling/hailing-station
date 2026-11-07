@@ -59,7 +59,7 @@ import Testing
         let rig = try await AmbientPrivacySwitchTests.startedRig()
         defer { rig.close() }
         let connection = try #require(rig.connection()), router = rig.env.router
-        let voice = router.voiceDuck(on: connection, listener: rig.env.listener)
+        let voice = router.voiceDuck(on: connection, target: RecipientTestRig.target, listener: rig.env.listener)
         for round in 0..<6 {
             router.ambientPrivacy(true, connection: connection)
             #expect(await eventually { router.duckMode(connection: connection) && Self.lastSaid(rig) == "on" })

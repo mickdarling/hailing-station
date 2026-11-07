@@ -20,7 +20,9 @@ import Testing
         #expect(router.setMeeting(on: true, profile: .rubberDuck, connection: connection, reason: "voice") == 1)
         #expect(router.setDuck(true, connection: connection, reason: "voice") == 1)
         router.enqueuePrivacyClip(connection) { _ in {
-            _ = await router.confirmVoiceMute(AmbientStopConfirmation.privacyOn, on: connection, listener: listener)
+            _ = await router.confirmVoiceMute(AmbientStopConfirmation.privacyOn, on: connection,
+                target: RecipientTestRig.target,
+                listener: listener)
         } }
         latch.open()
         #expect(try await rig.confirmation() == MeetingRig.privacyOn.text)

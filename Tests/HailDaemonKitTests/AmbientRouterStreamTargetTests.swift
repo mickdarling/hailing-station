@@ -38,10 +38,10 @@ import Testing
             try #require(deliveries.count == 1)
             #expect(deliveries[0].target == (routed ? "scratch" : "deck"))
             #expect(deliveries[0].binding == (routed ? "s" : "d"))
-            // Routing back to the configured target only works if the dispatcher binds from STARTED's deck.
+            // Routing to scratch must still retain STARTED's deck as the dispatcher's source.
             #expect(blockReference(in: deliveries[0].text) != nil)
             #expect(router.streamTarget(on: connection) == VoiceRouteRig.deck)
-            #expect(router.status().target == VoiceRouteRig.scratch)
+            #expect(router.status().target == VoiceRouteRig.deck)
         } catch {
             await router.shutdown()
             await listener.stop()
@@ -68,46 +68,54 @@ import Testing
         )
         await listener.installFallbackSyntheticPeers([session])
         let router = AmbientRightyoRouter(configuration: .init(
-            executable: fake.executable, config: fake.config, target: VoiceRouteRig.scratch, binding: "s",
+            executable: fake.executable, config: fake.config, target: VoiceRouteRig.deck, binding: "d",
             allowSynthetic: true, timing: .init(eofGrace: 20, termGrace: 2)
         ))
         router.attach(listener)
         return Setup(session: session, listener: listener, router: router)
     }
 
-    enum MissingBinding: CaseIterable { case unlisted, unknownPolicy, offline, unbound, rebound }
-
-    @Test(arguments: MissingBinding.allCases)
-    func anUnresolvableBindingRefusesTheStreamAndLaunchesNothing(_ missing: MissingBinding) async throws {
+    @Test(arguments: [false, true])
+    func aDifferentTargetIsRefusedInlineWithoutDelayingTheConfiguredStart(workerHeld: Bool) async throws {
         let fake = try FakeRightyo("echo launched > launched.txt\n/bin/cat > /dev/null")
         defer { fake.cleanUp() }
         let rig = try await VoiceRouteRig.make()
-        var target = VoiceRouteRig.deck
-        switch missing {
-        case .unlisted: target = "tmux:missing"
-        case .unknownPolicy: target = "tmux:rogue"
-        case .offline: await rig.adapter.setTargets([AdapterTarget(name: "deck", alive: false, binding: "d")])
-        case .unbound: await rig.adapter.setTargets([AdapterTarget(name: "deck")])
-        case .rebound: await rig.adapter.setTargets([AdapterTarget(name: "deck", binding: "d2")])
-        }
-        let made = Mutex(0), events = AmbientEventNames()
+        let made = Mutex(0), events = DuckEvents()
         var config = AmbientRightyoRouter.Configuration(
             executable: fake.executable, config: fake.config, target: VoiceRouteRig.scratch, binding: "s",
             allowSynthetic: true, timing: .init(eofGrace: 0.1, termGrace: 0.1)
         )
         config.childMade = { _ in made.withLock { $0 += 1 } }
-        let router = AmbientRightyoRouter(configuration: config, log: events.record)
+        let router = AmbientRightyoRouter(configuration: config, log: { event in
+            events.list.withLock { $0.append(event) }
+        })
         router.attach(rig.listener)
-        let stream = UUID()
-        router.ambientAudio(.started(stream: stream, connection: UUID(), target: target))
-        router.ambientAudio(.segment(stream: stream, sequence: 0, bytes: Data(count: 3_200)))
-        router.ambientAudio(.ended(stream: stream, reason: .final))
-        await boundedSettle(router)
-        #expect(events.all == ["ambient_refused"])
+        if workerHeld { router.state.withLock { ($0.working, $0.reloading) = (true, true) } }
+        let refused = UUID(), stream = UUID(), connection = UUID()
+        // Deck is listed, alive and policy-bound: PR 1 still refuses it without consulting that listing.
+        router.ambientAudio(.started(stream: refused, connection: connection, target: VoiceRouteRig.deck))
+        #expect(events.list.withLock { $0.map { "\($0.event):\($0.detail ?? "")" } }
+                == ["ambient_refused:target_binding_unavailable"])
         #expect(made.withLock { $0 } == 0)
-        #expect(router.liveRuns == 0 && router.activeStream == nil)
+        #expect(router.liveRuns == 0 && router.activeStream == nil && router.state.withLock { $0.queue.isEmpty })
         #expect(fakeFileSize(fake, "launched.txt") == -1)
-        #expect(await rig.adapter.deliveries.isEmpty)
+        let start = AmbientAudioEvent.started(stream: stream, connection: connection, target: VoiceRouteRig.scratch)
+        let segment = AmbientAudioEvent.segment(stream: stream, sequence: 0, bytes: Data(count: 3_200))
+        let end = AmbientAudioEvent.ended(stream: stream, reason: .final)
+        router.ambientAudio(start)
+        router.ambientAudio(segment)
+        if workerHeld {
+            router.ambientAudio(end)
+            #expect(router.state.withLock { $0.queue } == [start, segment, end])
+            router.state.withLock { $0.reloading = false }
+        } else {
+            #expect(router.activeStream == stream)
+            #expect(made.withLock { $0 } == 1)
+            router.ambientAudio(end)
+        }
+        try #require(await eventually { made.withLock { $0 } == 1 && router.state.withLock { !$0.working } })
+        await boundedSettle(router)
+        #expect(events.list.withLock { $0.map(\.event) } == ["ambient_refused", "ambient_started", "ambient_ended"])
         await router.shutdown()
         await rig.listener.stop()
     }
@@ -131,6 +139,29 @@ import Testing
         await boundedSettle(router)
         await router.shutdown()
         await rig.listener.stop()
+    }
+    @Test func streamTargetsAreClearedByStopAndShutdownAndNeverSetWhileClosed() async throws {
+        let fake = try FakeRightyo("/bin/cat > /dev/null")
+        defer { fake.cleanUp() }
+        let router = AmbientRightyoRouter(configuration: .init(
+            executable: fake.executable, config: fake.config, target: VoiceRouteRig.scratch, binding: "s",
+            allowSynthetic: true
+        ))
+        let connection = UUID(), other = UUID()
+        router.state.withLock { state in
+            state.streamTargets = [connection: VoiceRouteRig.scratch, other: VoiceRouteRig.scratch]
+            // Retain the teardown mark while an in-flight child could still call back, as the real worker does.
+            (state.working, state.reloading) = (true, true)
+        }
+        router.stop(connection: connection)
+        #expect(router.state.withLock { $0.streamTargets[connection] == nil && $0.closed.contains(connection) })
+        router.ambientAudio(.started(stream: UUID(), connection: connection, target: VoiceRouteRig.scratch))
+        #expect(router.state.withLock { $0.streamTargets[connection] == nil })
+        router.state.withLock { $0.reloading = false }
+        await router.shutdown()
+        #expect(router.state.withLock { $0.streamTargets.isEmpty })
+        router.ambientAudio(.started(stream: UUID(), connection: other, target: VoiceRouteRig.scratch))
+        #expect(router.state.withLock { $0.streamTargets.isEmpty })
     }
 }
 #endif

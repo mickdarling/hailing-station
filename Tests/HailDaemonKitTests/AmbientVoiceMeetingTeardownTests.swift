@@ -17,7 +17,10 @@ import Testing
         late.starting(stream)
         router.stop(connection: connection)
         #expect(router.state.withLock { $0.closed.contains(connection) })
-        _ = router.state.withLock { router.register(late.pipeline, stream: stream, connection: connection, in: &$0) }
+        _ = router.state.withLock {
+            router.register(late.pipeline, stream: stream, connection: connection,
+                            target: RecipientTestRig.target, in: &$0)
+        }
         #expect(router.setMeeting(on: true, connection: connection, reason: "voice") == 0)
         #expect(router.setMedia(true, connection: connection, reason: "voice") == 0)
         #expect(!router.meetingMode(connection: connection) && !router.mediaMode(connection: connection))
@@ -39,7 +42,10 @@ import Testing
         router.ambientAudio(.started(stream: other, connection: UUID(), target: RecipientTestRig.target))
         #expect(router.state.withLock { $0.latest[connection] == nil && $0.newestStart == other })
         router.stop(connection: connection)
-        _ = router.state.withLock { router.register(late.pipeline, stream: stream, connection: connection, in: &$0) }
+        _ = router.state.withLock {
+            router.register(late.pipeline, stream: stream, connection: connection,
+                            target: RecipientTestRig.target, in: &$0)
+        }
         #expect(router.state.withLock { $0.closed.contains(connection) })
         #expect(router.setMeeting(on: true, connection: connection, reason: "voice") == 0)
         #expect(router.setMedia(true, connection: connection, reason: "voice") == 0)
@@ -78,7 +84,10 @@ import Testing
         if newStart { router.ambientAudio(.started(stream: other, connection: UUID(),
             target: RecipientTestRig.target)) }
         #expect(router.state.withLock { $0.latest[connection] == nil })
-        _ = router.state.withLock { router.register(late.pipeline, stream: stream, connection: connection, in: &$0) }
+        _ = router.state.withLock {
+            router.register(late.pipeline, stream: stream, connection: connection,
+                            target: RecipientTestRig.target, in: &$0)
+        }
         #expect(router.state.withLock { !$0.closed.contains(connection) })
         router.setMeeting(on: true, connection: connection, reason: "voice")
         #expect(router.meetingMode(connection: connection) && late.refusals == 0)

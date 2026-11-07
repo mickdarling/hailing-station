@@ -11,13 +11,24 @@ public enum AmbientStreamEndReason: Sendable, Equatable {
 }
 
 /// What the gate hands on. `segment` carries raw pcm16 bytes; nothing in this module logs or describes them.
-/// `started.target` is the admitted stream destination; for now it is always the gate's pinned target.
-/// `selection` is the selection generation the connection's session had when the stream opened (#636), nil from a
-/// caller that tracks none.
+/// STARTED keeps its destination and opening selection generation together in an immutable stream scope.
 public enum AmbientAudioEvent: Sendable, Equatable {
-    case started(stream: UUID, connection: UUID, target: String, selection: UUID? = nil)
+    case started(stream: UUID, connection: UUID, scope: AmbientStreamScope)
     case segment(stream: UUID, sequence: Int, bytes: Data)
     case ended(stream: UUID, reason: AmbientStreamEndReason)
+
+    public static func started(stream: UUID, connection: UUID, target: String,
+                               selection: UUID? = nil) -> Self {
+        .started(stream: stream, connection: connection,
+                 scope: AmbientStreamScope(target: target, selection: selection))
+    }
+}
+
+/// The gate-admitted destination (still its pinned target in PR 1) and the session's opening selection generation.
+/// A caller tracking no generation supplies nil; every start still names its destination explicitly.
+public struct AmbientStreamScope: Sendable, Equatable {
+    public let target: String
+    public let selection: UUID?
 }
 
 /// The gate's answer to one segment (#366). `tookOver` admits a segment whose new stream took ambient listening

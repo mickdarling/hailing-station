@@ -125,8 +125,8 @@ import Testing
         await Self.select(VoiceRouteRig.scratch, on: session)
         _ = await session.receive(Self.audio(UUID()))
         let streams = sink.events.compactMap { event -> AmbientListenerDispatcher? in
-            guard case .started(_, _, _, let selection) = event else { return nil }
-            return AmbientListenerDispatcher(listener: rig.listener, audit: nil, selection: selection)
+            guard case .started(_, _, let scope) = event else { return nil }
+            return AmbientListenerDispatcher(listener: rig.listener, audit: nil, selection: scope.selection)
         }
         try #require(streams.count == 2)
         let request = Self.request(await session.connectionID)
@@ -155,8 +155,8 @@ import Testing
         _ = await sessions[1].receive(Self.audio(UUID()))
         #expect(sink.endings == [.superseded])
         let streams = sink.events.compactMap { event -> AmbientListenerDispatcher? in
-            guard case .started(_, _, _, let selection) = event else { return nil }
-            return AmbientListenerDispatcher(listener: rig.listener, audit: nil, selection: selection)
+            guard case .started(_, _, let scope) = event else { return nil }
+            return AmbientListenerDispatcher(listener: rig.listener, audit: nil, selection: scope.selection)
         }
         try #require(streams.count == 2)
         await Self.select(VoiceRouteRig.other, on: sessions[0])

@@ -46,18 +46,18 @@ extension AmbientRightyoRouter {
     ///   (round 5, `already_unavailable`); each silence logged `ambient_privacy`.
     /// Every clip, the entries' and the refusals', is queued on the connection's one chain under the router's lock
     /// that decided it (round 4), so their order is the order decided. Nothing reaches the agent. Logs tokens only.
-    func voiceDuck(on connection: UUID, listener: WebSocketListener,
+    func voiceDuck(on connection: UUID, target: String, listener: WebSocketListener,
                    mark: AmbientRunMark? = nil) -> @Sendable (PrivacyCommand) -> Void {
-        { [weak self, weak listener] command in
+        return { [weak self, weak listener] command in
             guard let self else { return }
             switch command {
             case .unavailable:
-                announceRefusal(mark?.duck, connection: connection)
+                announceRefusal(mark?.duck, connection: connection, target: target)
             case .enter, .exit:
                 // An exit applies only while privacy is on, read under the lock that changes it.
                 let switched = switchDuck(command == .enter, connection: connection, reason: "voice",
                                           whileArming: { command == .enter || $0 != nil }, clip: { [weak self] in
-                    self?.voiceClip(command, $0, connection: connection, listener: listener)
+                    self?.voiceClip(command, $0, connection: connection, target: target, listener: listener)
                 })
                 guard switched == nil else { return }
                 emit("ambient_privacy", connection: connection, detail: "exit=ignored state=off")
@@ -65,24 +65,25 @@ extension AmbientRightyoRouter {
                 enqueuePrivacyClip(connection) { [weak self] on in
                     let entry = AmbientPrivacyEntry(reported: 0, entry: nil, wasOn: on, on: on)
                     let none: @Sendable () async -> Void = {}
-                    return self?.voiceClip(command, entry, connection: connection, listener: listener) ?? none
+                    return self?.voiceClip(command, entry, connection: connection, target: target,
+                        listener: listener) ?? none
                 }
             }
         }
     }
 
     /// The work that answers a voice command: its clip (`duckConfirmation`), or the entry's announcement.
-    private func voiceClip(_ command: PrivacyCommand, _ entry: AmbientPrivacyEntry, connection: UUID,
+    private func voiceClip(_ command: PrivacyCommand, _ entry: AmbientPrivacyEntry, connection: UUID, target: String,
                            listener: WebSocketListener?) -> @Sendable () async -> Void {
         guard entry.entry == nil else {
-            return entryClip(entry, outcome: "on=true", connection: connection, listener: listener)
+            return entryClip(entry, outcome: "on=true", connection: connection, target: target, listener: listener)
         }
         return { [weak self, weak listener] in
             guard let self else { return }
             // A status is decided when it plays, after the entries before it (6362119223): never "on" unannounced.
             let on = command == .status ? privacyHeardOn(connection: connection) : entry.on
             let (persona, outcome) = Self.duckConfirmation(command, reported: entry.reported, on: on)
-            await sayPrivacy(persona, outcome: outcome, connection: connection, listener: listener)
+            await sayPrivacy(persona, outcome: outcome, connection: connection, target: target, listener: listener)
         }
     }
 
@@ -127,29 +128,33 @@ extension AmbientRightyoRouter {
     /// Logged as state tokens only.
     func switchPrivacy(_ on: Bool, connection: UUID, armedAs armed: UUID?) {
         let listener = attachedListener
+        // Device-originated: snapshot the connection now, before its clip is queued.
+        let target = streamTarget(on: connection)
         let clip: (AmbientPrivacyEntry) -> (@Sendable () async -> Void)? = { [weak self] in
-            self?.deviceClip(on, $0, connection: connection, listener: listener)
+            self?.deviceClip(on, $0, connection: connection, target: target, listener: listener)
         }
         _ = switchDuck(on, connection: connection, reason: "device", whileArming: { $0 == armed }, clip: clip)
     }
 
-    private func deviceClip(_ on: Bool, _ entry: AmbientPrivacyEntry, connection: UUID,
+    private func deviceClip(_ on: Bool, _ entry: AmbientPrivacyEntry, connection: UUID, target: String,
                             listener: WebSocketListener?) -> @Sendable () async -> Void {
         let outcome = "on=\(on) reason=device"
         switch (on, entry.reported > 0) {
-        case (true, true): return entryClip(entry, outcome: outcome, connection: connection, listener: listener)
+        case (true, true): return entryClip(entry, outcome: outcome, connection: connection, target: target,
+            listener: listener)
         case (true, false):
             return { [weak self, weak listener] in
                 let device = await listener?.showDuckMode(false, reason: "device", expires: nil,
                                                           connection: connection) ?? "no_connection"
                 await self?.sayPrivacy(AmbientStopConfirmation.notSent,
                                        outcome: outcome + " refused=unsupported_version device=\(device)",
-                                       connection: connection, listener: listener)
+                                       connection: connection, target: target, listener: listener)
             }
         case (false, let took):
             let persona = took ? AmbientStopConfirmation.privacyOff : nil
             return { [weak self, weak listener] in
-                await self?.sayPrivacy(persona, outcome: outcome, connection: connection, listener: listener)
+                await self?.sayPrivacy(persona, outcome: outcome, connection: connection, target: target,
+                    listener: listener)
             }
         }
     }

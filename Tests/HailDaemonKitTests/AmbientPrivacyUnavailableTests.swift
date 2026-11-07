@@ -82,7 +82,8 @@ import Testing
         #expect(duck.close(entry: 1, refusePending: false).claimed)
         let mark = AmbientRunMark()
         mark.set(duck)
-        let say = rig.env.router.voiceDuck(on: connection, listener: rig.env.listener, mark: mark)
+        let say = rig.env.router.voiceDuck(on: connection, target: RecipientTestRig.target,
+            listener: rig.env.listener, mark: mark)
         say(.unavailable)
         say(.unavailable)
         _ = await rig.settledEvents()
@@ -100,13 +101,15 @@ import Testing
         let connection = try #require(rig.connection())
         let mark = AmbientRunMark()
         mark.set(Self.refused())
-        rig.env.router.voiceDuck(on: connection, listener: rig.env.listener, mark: mark)(.unavailable)
+        rig.env.router.voiceDuck(on: connection, target: RecipientTestRig.target,
+            listener: rig.env.listener, mark: mark)(.unavailable)
         #expect(await eventually { rig.details("ambient_privacy") == ["unavailable=superseded_by_off"] })
         #expect(await eventually { rig.env.router.activePipeline?.childStarted == true })
         #expect(rig.env.router.setDuck(true, connection: connection, reason: "voice") == 1)
         let other = AmbientRunMark()
         other.set(Self.refused())
-        rig.env.router.voiceDuck(on: connection, listener: rig.env.listener, mark: other)(.unavailable)
+        rig.env.router.voiceDuck(on: connection, target: RecipientTestRig.target,
+            listener: rig.env.listener, mark: other)(.unavailable)
         _ = await rig.settledEvents()
         await rig.finish()
         #expect(rig.details("ambient_privacy") == ["unavailable=superseded_by_off", "unavailable=superseded_by_keep"])

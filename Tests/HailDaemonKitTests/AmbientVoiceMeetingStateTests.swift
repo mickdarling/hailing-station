@@ -32,7 +32,8 @@ import Testing
         #expect(try await rig.confirmation() == "Privacy on. I'm only listening for my name.")
         _ = try await receiveFrame(on: rig.socket, step: "privacy on audio")
         let connection = try #require(rig.connection()), router = rig.env.router
-        router.voiceMeeting(on: connection, listener: rig.env.listener)(true, .rubberDuck)
+        router.voiceMeeting(on: connection, target: RecipientTestRig.target,
+            listener: rig.env.listener)(true, .rubberDuck)
         #expect(try await rig.confirmation() == "Privacy on. I'm only listening for my name.")
         #expect(await eventually {
             rig.details("ambient_meeting_confirmed") == [

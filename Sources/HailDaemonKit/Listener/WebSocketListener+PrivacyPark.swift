@@ -232,7 +232,7 @@ extension AmbientRightyoRouter {
     func reapplyOnLife(_ event: AmbientAudioEvent, in state: inout State) {
         guard !state.staleCleared.isEmpty else { return }
         switch event {
-        case .started(_, let connection, _, _): restoreFalseStale(connection, in: &state)
+        case .started(_, let connection, _): restoreFalseStale(connection, in: &state)
         case .segment(let stream, _, _):
             if let connection = state.latest.first(where: { $0.value == stream })?.key {
                 restoreFalseStale(connection, in: &state)

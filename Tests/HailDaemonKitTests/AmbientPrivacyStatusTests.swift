@@ -51,7 +51,7 @@ import Testing
         defer { rig.close() }
         #expect(await eventually { rig.details("ambient_duck").count == 1 })
         let connection = try #require(rig.connection())
-        rig.env.router.voiceMedia(on: connection, listener: rig.env.listener)(true)
+        rig.env.router.voiceMedia(on: connection, target: RecipientTestRig.target, listener: rig.env.listener)(true)
         #expect(await eventually { !rig.details("ambient_media_confirmed").isEmpty })
         await rig.finish()
         #expect(rig.details("ambient_media_confirmed") == ["on=true confirm=unreported"])
