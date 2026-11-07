@@ -1,11 +1,59 @@
 import CryptoKit
 
+/// One rule's positive evidence, from the evaluation that gated delivery (#1120). Contains no request text.
+public struct GuardHit: Sendable, Equatable {
+    public enum Outcome: Sendable, Equatable { case match, timeout }
+    public let name: String
+    public let outcome: Outcome
+
+    public init(name: String, outcome: Outcome) {
+        self.name = name
+        self.outcome = outcome
+    }
+}
+
+/// A decision and the guard evidence produced by that same evaluation (#1120). Legacy callers can
+/// keep using `evaluate`; read-back and refusal consumers can use `evaluateWithEvidence` without rescanning.
+public struct PolicyEvaluation: Sendable, Equatable {
+    public let decision: Decision
+    public let guardOutcomes: [GuardHit]
+}
+
+/// One utterance headed for one target: the id, the binding the caller's listing reported, the lines the
+/// sanitizer produced (guards run on those, never on the frame text), and the device it came from, so
+/// the rate limit applies per device as well as per target (#41 item 4).
+public struct DeliveryRequest: Sendable, Equatable {
+    public var target: String
+    public var binding: String?
+    public var lines: [String]
+    /// Every frame that reaches policy came from a paired device; the CLI passes its own name.
+    public var device: String
+    /// What the guard reads when it is not `lines`: for a framed paste (#608), only the spoken request's sanitized
+    /// lines (empty for a paste sent on its own). The paste body is screened for a validation flag instead. Only the
+    /// host's paste path sets it (#635 review): outside this module a request is always guarded on its `lines`.
+    var guardLines: [String]?
+
+    public init(target: String, binding: String?, lines: [String], device: String) {
+        self.target = target
+        self.binding = binding
+        self.lines = lines
+        self.device = device
+    }
+
+    init(target: String, binding: String?, lines: [String], device: String, guardLines: [String]?) {
+        self.init(target: target, binding: binding, lines: lines, device: device)
+        self.guardLines = guardLines
+    }
+}
+
 /// A read-back the caller must complete before the same utterance can go out (#41 item 2). `hash` binds
 /// the confirmation to these lines, this target and binding, and this device; the host accepts it once,
 /// within `HailHost.confirmationWindow`, and re-evaluates policy when it comes back.
 public struct ReadBack: Sendable, Equatable {
     public var reason: String
     public var guardHits: [String]
+    /// Same-evaluation evidence (#1120); names retain the policy's privacy boundary, just like `guardHits`.
+    public var guardOutcomes: [GuardHit] = []
     public var lines: [String]
     public var hash: String
 }

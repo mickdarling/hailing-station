@@ -116,8 +116,8 @@ import Testing
         // rescans; anchored lookaheads keep each rule linear.
         // CPU-work regression contract (#56), not a wall-time latency SLO. Synchronous matching
         // stays on this thread; other tests and scheduler pauses do not consume its CPU budget.
-        // Production still uses wall-time match deadlines and may fail closed before a full scan;
-        // this metric does not establish uninterrupted scanning or resolve budget contention (#50).
+        // Production uses a thread CPU budget with a wall cap (#1120) and may fail closed before a full scan;
+        // this metric does not establish uninterrupted scanning or wall-time latency (#50).
         let words = String(repeating: "chmod push rm dd branch reset git ", count: 60).prefix(2_000)
         let flags = "rm push branch chmod sh dd git reset -" + String(repeating: "r", count: 900)
             + String(repeating: "f", count: 900) + "9"

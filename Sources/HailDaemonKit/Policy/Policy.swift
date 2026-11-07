@@ -1,3 +1,19 @@
+/// One guard rule: a name the terminal can speak and a case-insensitive regular expression (#41 item 3).
+public struct GuardPattern: Codable, Sendable, Equatable {
+    public var name: String
+    public var regex: String
+
+    public init(name: String, regex: String) {
+        self.name = name
+        self.regex = regex
+    }
+}
+
+/// A rule that does not compile, reported by name so it can be fixed at the keyboard.
+public struct InvalidGuardPattern: Error, Equatable, Sendable {
+    public var name: String
+}
+
 /// How much friction a target gets (#41 item 2).
 public enum Tier: String, Codable, Sendable, CaseIterable {
     /// Deliver immediately, unless the guard escalates the utterance to `confirm`.
@@ -105,33 +121,6 @@ public enum Decision: Sendable, Equatable {
     case denied(Denial)
 }
 
-/// One utterance headed for one target: the id, the binding the caller's listing reported, the lines the
-/// sanitizer produced (guards run on those, never on the frame text), and the device it came from, so
-/// the rate limit applies per device as well as per target (#41 item 4).
-public struct DeliveryRequest: Sendable, Equatable {
-    public var target: String
-    public var binding: String?
-    public var lines: [String]
-    /// Every frame that reaches policy came from a paired device; the CLI passes its own name.
-    public var device: String
-    /// What the guard reads when it is not `lines`: for a framed paste (#608), only the spoken request's sanitized
-    /// lines (empty for a paste sent on its own). The paste body is screened for a validation flag instead. Only the
-    /// host's paste path sets it (#635 review): outside this module a request is always guarded on its `lines`.
-    var guardLines: [String]?
-
-    public init(target: String, binding: String?, lines: [String], device: String) {
-        self.target = target
-        self.binding = binding
-        self.lines = lines
-        self.device = device
-    }
-
-    init(target: String, binding: String?, lines: [String], device: String, guardLines: [String]?) {
-        self.init(target: target, binding: binding, lines: lines, device: device)
-        self.guardLines = guardLines
-    }
-}
-
 /// Decides delivery and capture from a `Policy` plus the moment's state (#41). Pure: the caller supplies
 /// the monotonic instant and the rate-limit history, so every rule is testable without time or files.
 public struct PolicyEvaluator: Sendable {
@@ -161,25 +150,38 @@ public struct PolicyEvaluator: Sendable {
     public func evaluate(
         _ request: DeliveryRequest, lockdown: Bool, limiter: RateLimiter, now: RateLimiter.Instant
     ) -> Decision {
-        let id = request.target
-        if lockdown { return .denied(.lockdown) }
-        guard !request.lines.isEmpty else { return .denied(.emptyRequest) }
-        guard let target = policy.targets[id] else { return .denied(.notAllowed(id)) }
-        guard let binding = request.binding, binding.contains(where: { !$0.isWhitespace }) else {
-            return .denied(.unbound(id))
+        evaluateWithEvidence(request, lockdown: lockdown, limiter: limiter, now: now).decision
+    }
+
+    /// Keeps match versus timeout evidence alongside the source-compatible decision; refusals skip the guard.
+    public func evaluateWithEvidence(
+        _ request: DeliveryRequest, lockdown: Bool, limiter: RateLimiter, now: RateLimiter.Instant
+    ) -> PolicyEvaluation {
+        func denied(_ denial: Denial) -> PolicyEvaluation {
+            PolicyEvaluation(decision: .denied(denial), guardOutcomes: [])
         }
-        guard target.binding == binding else { return .denied(.rebound(id)) }
-        if target.tier == .locked { return .denied(.locked(id)) }
+        let id = request.target
+        if lockdown { return denied(.lockdown) }
+        guard !request.lines.isEmpty else { return denied(.emptyRequest) }
+        guard let target = policy.targets[id] else { return denied(.notAllowed(id)) }
+        guard let binding = request.binding, binding.contains(where: { !$0.isWhitespace }) else {
+            return denied(.unbound(id))
+        }
+        guard target.binding == binding else { return denied(.rebound(id)) }
+        if target.tier == .locked { return denied(.locked(id)) }
         let waits = RateLimiter.keys(for: request).compactMap {
             limiter.retryAfter(
                 for: $0, now: now, limitPerMinute: policy.deliveriesPerMinute, consuming: request.lines.count
             )
         }
-        if let longest = waits.max() { return .denied(.rateLimited(retryAfter: longest)) }
-        let hits = guards.matches(in: request.guardLines ?? request.lines)
-        if target.tier == .confirm { return .confirm(reason: "confirm tier", guardHits: hits) }
-        if !hits.isEmpty { return .confirm(reason: "guarded: " + hits.joined(separator: ", "), guardHits: hits) }
-        return .deliver
+        if let longest = waits.max() { return denied(.rateLimited(retryAfter: longest)) }
+        let outcomes = guards.hits(in: request.guardLines ?? request.lines)
+        let hits = outcomes.map(\.name)
+        if target.tier == .confirm || !hits.isEmpty {
+            let reason = target.tier == .confirm ? "confirm tier" : "guarded: " + hits.joined(separator: ", ")
+            return PolicyEvaluation(decision: .confirm(reason: reason, guardHits: hits), guardOutcomes: outcomes)
+        }
+        return PolicyEvaluation(decision: .deliver, guardOutcomes: outcomes)
     }
 
     /// The guard rules that match a paste's lines, and those that ran out of budget (#608): reported to the session as
