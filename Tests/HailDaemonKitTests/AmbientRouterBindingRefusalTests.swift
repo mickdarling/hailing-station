@@ -8,9 +8,14 @@ import Testing
 extension AmbientRouterStreamTargetTests {
     @Test(arguments: [nil, ""] as [String?])
     func anUnboundStartQueuesAndSupersedesOlderFailure(binding: String?) async throws {
-        // A child that neither exits nor fails during the test: the only older failure is the one reported below.
-        let fake = try FakeRightyo("/bin/sleep 20")
+        // Drain stdin, then emit only the canonical fixture's session started/stopped events under this session.
+        // A silent child would fail finish() at EOF before the newer start could supersede it.
+        let fake = try FakeRightyo("""
+            /bin/cat > /dev/null
+            /usr/bin/sed -n '1p;$p' events.jsonl | /usr/bin/sed "s/tool-demo/$7/g"
+            """)
         defer { fake.cleanUp() }
+        try fake.install(fixture: "tool-events.jsonl")
         let events = AmbientEventNames(), made = Mutex(0)
         let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 0.1), events: events,
                                        childMade: { _ in made.withLock { $0 += 1 } })
@@ -21,6 +26,9 @@ extension AmbientRouterStreamTargetTests {
         router.ambientAudio(.started(stream: older, connection: connection, target: RecipientTestRig.target))
         router.ambientAudio(.ended(stream: older, reason: .final))
         await boundedSettle(router)
+        try #require(router.liveRuns == 0)
+        #expect(events.all.filter { $0 == "ambient_ended" }.count == 1)
+        try await pair.boundedBarrier(step: "older child ended cleanly")
         // Work already in flight: the refusal queues behind it, as every other start refusal does.
         router.state.withLock { ($0.working, $0.reloading) = (true, true) }
         let start = AmbientAudioEvent.started(stream: refused, connection: connection,
@@ -41,6 +49,7 @@ extension AmbientRouterStreamTargetTests {
         #expect(error.payload == .control(.error(code: .notAllowed,
                                                  message: "ambient unavailable: target_binding_unavailable")))
         try await pair.boundedBarrier(step: "no older failure after the newest refusal")
+        #expect(events.all.filter { $0 == "ambient_refused" }.count == 1)
         await env.listener.stop()
     }
 
