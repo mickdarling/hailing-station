@@ -334,6 +334,46 @@ record](testing/heard-turn-host.md), [the PR C1/C2 app test record](testing/hear
 test record](testing/heard-turn-protocol.md). The app still needs physical accessibility checks; this is not
 physical-device proof.
 
+### Held ambient requests (#1120) — PROPOSED
+
+PR 1 defines protocol types only. No host or app behavior, capability advertisement, Send / Discard UI or
+physical-device validation ships in this slice. A future device advertises `held_requests`
+(`HeldRequests.capability`) only when it can show a clear held-message notice, its reasons and Send / Discard.
+The host sends the following notices and resolutions only to that capable device:
+
+```json
+{"command":"request_held","held":"00000000-0000-4000-8000-000000001120","turn":"00000000-0000-4000-8000-000000000923","reasons":["rule_match","guard_timeout"],"rules":["sudo","custom"],"expires_in":60}
+{"command":"held_resolution","held":"00000000-0000-4000-8000-000000001120","outcome":"refused","reason":"policy_changed"}
+```
+
+The device's explicit choice has this shape:
+
+```json
+{"command":"held_decision","held":"00000000-0000-4000-8000-000000001120","action":"send"}
+```
+
+`held` is a fresh opaque UUID, never a hash, binding or text. Optional `turn` correlates the #923 heard entry
+and requires `heard_turns` as well. This proposed extension permits `turn` on `request_held`; current supported
+heard-turn commands retain their existing rules. Omission is valid; null and invalid UUIDs are refused.
+
+`reasons` is a nonempty unique list of at most four closed tokens: `rule_match`, `guard_timeout`, `confirm_tier`,
+`rate_limited`. Both a rule match and timeout can survive the same evaluation. `rules` is required but may be
+empty, with at most 16 tokens of at most 32 UTF-8 bytes each. Its closed vocabulary normalizes the built-in guard
+names to `rm_rf`, `sudo`, `force_push`, `git_reset_hard`, `git_clean`, `destructive_git`, `branch_delete`, `delete`,
+`disk_write`, `permissions`, `shell`, `fork_bomb`, `credential`; all configured rules use `custom`, never their
+name, pattern or request text. `expires_in` is the remaining lifetime from notice issuance, in whole seconds
+from 1 through 3,600 inclusive, rather than a wall-clock timestamp.
+
+The only actions are `send` and `discard`. Outcomes are `sent`, `discarded`, `expired`, `refused`, `stale`.
+Only `refused` requires `reason`, a 1–32 byte token made of lowercase ASCII letters, digits and underscores;
+other outcomes forbid it. All three controls reject unknown fields, unknown enum values, missing required
+fields, null optional fields, invalid UUIDs and out-of-bounds values. The generated schema mirrors these bounds.
+
+The future host must hold rather than drop or deliver unchecked, keep the stream alive, and revalidate Send
+against current policy, scope and expiry. These types provide no delivery authority or host retention mechanism.
+Host handling, guard outcomes, context exclusion, UI and audit remain later #1120 slices. Synthetic validation
+is recorded in [the PR 1 protocol test record](testing/held-requests-protocol.md).
+
 ### Overheard remarks (#398)
 
 Both sides advertise `ambient_overheard` (`AmbientOverheard.capability`) in their `hello`. A device sends

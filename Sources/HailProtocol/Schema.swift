@@ -196,12 +196,14 @@ public enum Schema {
         ])
     ])
 
-    /// Only the two heard-turn payloads may carry `turn`; an absent field preserves legacy error extensions.
+    /// Heard-turn payloads (#923, #1120) may carry `turn`; absent preserves legacy error extensions.
     private static let heardTurnPayloadRule: JSONValue = .object([
         "if": .object(["required": .array([.string("turn")])]),
         "then": .object([
             "properties": .object([
-                "command": .object(["enum": .array([.string("ambient_heard"), .string("error")])]),
+                "command": .object(["enum": .array(
+                    ["ambient_heard", "error", "request_held"].map(JSONValue.string)
+                )]),
                 "turn": .object([
                     "type": .string("string"), "format": .string("uuid"),
                     "pattern": .string("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
@@ -236,6 +238,69 @@ public enum Schema {
         ])
     ])
 
+    /// Proposed #1120 controls: closed fields and bounded metadata, matching the Swift payloads.
+    private static func heldRule(_ command: String, required: [String], fields: [String: JSONValue]) -> JSONValue {
+        .object([
+            "if": .object(["properties": .object(["command": .object(["const": .string(command)])])]),
+            "then": .object([
+                "required": .array((["command", "held"] + required).map(JSONValue.string)),
+                "additionalProperties": .bool(false),
+                "properties": .object(fields.merging(["command": .object([:]), "held": heldUUID]) { old, _ in old })
+            ])
+        ])
+    }
+
+    private static let heldUUID: JSONValue = .object([
+        "type": .string("string"), "format": .string("uuid"), "maxLength": .integer(36),
+        "pattern": .string("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+    ])
+
+    private static let heldRequestPayloadRules: [JSONValue] = [
+        heldRule("request_held", required: ["reasons", "rules", "expires_in"], fields: [
+            "turn": heldUUID,
+            "reasons": .object([
+                "type": .string("array"), "minItems": .integer(1), "maxItems": .integer(4),
+                "uniqueItems": .bool(true),
+                "items": .object(["enum": .array(HeldRequestReason.allCases.map { .string($0.rawValue) })])
+            ]),
+            "rules": .object([
+                "type": .string("array"), "maxItems": .integer(Int64(HeldRequests.maxRules)),
+                "items": .object([
+                    "enum": .array(HeldRequestRule.allCases.map { .string($0.rawValue) }),
+                    "maxLength": .integer(Int64(HeldRequests.maxRuleTokenBytes))
+                ])
+            ]),
+            "expires_in": integer(HeldRequests.expirySeconds)
+        ]),
+        heldRule("held_decision", required: ["action"], fields: [
+            "action": .object(["enum": .array(HeldRequestAction.allCases.map { .string($0.rawValue) })])
+        ]),
+        heldRule("held_resolution", required: ["outcome"], fields: [
+            "outcome": .object(["enum": .array(HeldRequestOutcome.allCases.map { .string($0.rawValue) })]),
+            "reason": .object([
+                "type": .string("string"), "minLength": .integer(1),
+                "maxLength": .integer(Int64(HeldRequests.maxRefusalTokenBytes)),
+                "pattern": .string("^[a-z0-9_]+$(?![\\s\\S])")
+            ])
+        ]),
+        .object([
+            "if": .object(["properties": .object([
+                "command": .object(["const": .string("held_resolution")]),
+                "outcome": .object(["const": .string("refused")])
+            ])]),
+            "then": .object(["required": .array([.string("reason")])])
+        ]),
+        .object([
+            "if": .object(["properties": .object([
+                "command": .object(["const": .string("held_resolution")]),
+                "outcome": .object(["enum": .array(
+                    HeldRequestOutcome.allCases.filter { $0 != .refused }.map { .string($0.rawValue) }
+                )])
+            ])]),
+            "then": .object(["properties": .object(["reason": .object(["enum": .array([])])])])
+        ])
+    ]
+
     private static let control: JSONValue = .object([
         "type": .string("object"), "required": .array([.string("command")]),
         "properties": .object([
@@ -245,7 +310,7 @@ public enum Schema {
                     "error", "diagnostic", "stop_playback", "ambient_moved_here", "ambient_heard",
                     "ambient_overheard", "overheard_scope", "set_reply_mute", "owner_voice", "ambient_input",
                     "session_update", "session_update_cancel", "health", "health_report", "media_mode",
-                    "duck_mode", "set_privacy", "reply_yield"
+                    "duck_mode", "set_privacy", "reply_yield", "request_held", "held_decision", "held_resolution"
                 ]
                     .map(JSONValue.string)
             )]),
@@ -321,7 +386,7 @@ public enum Schema {
             mediaModePayloadRule,
             duckModePayloadRule,
             setPrivacyPayloadRule
-        ])
+        ] + heldRequestPayloadRules)
     ])
 }
 // swiftlint:enable type_body_length
