@@ -10,6 +10,8 @@ enum HostDeliveryOutcome: Sendable, Equatable {
     /// carried no host-minted ambient reference (#230).
     case delivered(request: UUID?)
     case confirmationRequired
+    case held(RequestHeld)
+    case holdAdmissionRefused
     /// The connection selected another target while this input was suspended; nothing was handed off.
     case selectionChanged
     /// The target may have received the text, but no reply ownership survived the handoff.
@@ -112,7 +114,7 @@ extension HostSession {
         switch await deliver(input, recordsLastInput: true) {
         case .delivered:
             return HostSessionResult(frames: [])
-        case .confirmationRequired:
+        case .held, .holdAdmissionRefused, .confirmationRequired:
             let message = "target requires confirmation at the Mac"
             return failure(refusal(.notAllowed), message, close: false, version: version)
         case .selectionChanged:
@@ -127,6 +129,8 @@ extension HostSession {
         }
     }
 
+    // Keep reservation cleanup and all handoff outcomes in the same decision boundary.
+    // swiftlint:disable:next cyclomatic_complexity
     /// Lease, permit, capacity, lifetime and generation checks, then `HailHost.send` with its sanitizer,
     /// shape and policy gates; only a successful complete handoff commits the request record. The input
     /// type is the authorization proof: nothing reaches the host that the session's authorizer did not
@@ -142,6 +146,14 @@ extension HostSession {
         }
         // Local dispatch's final selection check relies on no suspension before this snapshot.
         let generation = selectionGeneration
+        let reservation: UUID?
+        if Self.ambientInputDispatch, HeldSendScope.current == nil {
+            guard let slot = await host.heldRequests.reserve(connection: connectionID) else {
+                return .holdAdmissionRefused
+            }
+            reservation = slot
+        } else { reservation = nil }
+        let evidence = HeldReadBackEvidence()
         do {
             try await host.requireSendPreflight()
             try input.policyGeneration.requireCurrent()
@@ -150,20 +162,45 @@ extension HostSession {
             // again after the handoff; a caller outside the peer's serialized receive loop can race `select`.
             guard selects(input.target, generation: generation) else {
                 if let owner { dropUncommitted(owner.context.id) }
+                if let reservation { await host.heldRequests.release(reservation) }
                 return .selectionChanged
             }
-            switch try await send(input, owner: owner) {
+            let outcome = try await HeldReadBackEvidence.$current.withValue(evidence) {
+                try await send(input, owner: owner)
+            }
+            switch outcome {
             case .delivered:
+                if let reservation { await host.heldRequests.release(reservation) }
                 return handedOff(input.target, owner: owner, generation: generation, recordsInput: recordsInput)
             case .needsConfirmation(let readBack):
-                // Ambient refusals say nothing was sent; other input keeps confirmation at the Mac.
-                if Self.ambientInputDispatch { await host.cancel(readBack.hash) }
                 if let owner { dropUncommitted(owner.context.id) }
-                return .confirmationRequired
+                guard Self.ambientInputDispatch else { return .confirmationRequired }
+                return await hold(input, owner: owner, generation: generation, readBack: readBack,
+                                  evidence: evidence, reservation: reservation)
             }
         } catch {
+            if let reservation { await host.heldRequests.release(reservation) }
+            HeldSendScope.current?.failure.record(error)
             return deliveryRefusal(error)
         }
+    }
+
+    // Immutable authority snapshot plus same-evaluation evidence.
+    // swiftlint:disable:next function_parameter_count
+    private func hold(
+        _ input: borrowing AuthorizedInput, owner: HostReplyOwnership?, generation: UUID, readBack: ReadBack,
+        evidence: HeldReadBackEvidence, reservation: UUID?
+    ) async -> HostDeliveryOutcome {
+        let scope = HeldSendScope.current
+        let entry = HeldRequestEntry(
+            id: scope?.entry.id ?? UUID(), connection: connectionID, text: input.text,
+            target: input.target, binding: owner?.context.binding.sessionID ?? input.expectedBinding ?? "",
+            selection: generation, policy: input.policyGeneration, reference: Self.ambientReplyReference,
+            route: Self.voiceRouted, readBack: readBack, evidence: evidence.value,
+            previous: scope?.entry, expires: requestClock() + host.heldNoticeWindow,
+            noticeWindow: host.heldNoticeWindow
+        )
+        return .held(await host.heldRequests.hold(entry, reservation: reservation))
     }
 
     private func deliveryRefusal(_ error: any Error) -> HostDeliveryOutcome {
@@ -237,7 +274,8 @@ extension HostSession {
                 // Keep the authorization generation and exact binding across host preflight suspensions (#1028).
                 return try await host.sendAuthorized(
                     text, policyGeneration: policyGeneration, from: device, expectedBinding: expectedBinding,
-                    context: owner.flatMap { $0.contextual ? $0.context : nil }
+                    context: owner.flatMap { $0.contextual ? $0.context : nil },
+                    confirmedHash: HeldSendScope.current.flatMap { $0.renewOnly ? nil : $0.entry.readBack.hash }
                 )
             }
         } catch {
@@ -344,6 +382,7 @@ extension HostSession {
             }
             if selectedTarget != targetID {
                 selectionGeneration = UUID()
+                host.heldRequests.select(selectionGeneration, connection: connectionID)
                 replyRequests.removeAll()
                 evictedForHandoff.removeAll() // The old selection's evictions can never be restored (#723).
                 selectedTarget = targetID

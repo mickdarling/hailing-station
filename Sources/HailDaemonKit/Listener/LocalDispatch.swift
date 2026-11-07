@@ -1,4 +1,5 @@
 public import Foundation
+import Synchronization
 import OSLog
 import HailProtocol
 
@@ -170,9 +171,19 @@ extension HostSession {
               listed.binding == request.binding else { throw LocalDispatchRefusal.bindingMismatch }
         // No suspension between this check and `deliver`'s own generation snapshot: the two cannot diverge.
         try requireSelection(of: request, generation: generation)
-        switch await deliver(input) {
+        return try dispatchOutcome(await deliver(input))
+    }
+
+    private func dispatchOutcome(_ outcome: HostDeliveryOutcome) throws -> UUID? {
+        switch outcome {
         case .delivered(let owner): return owner
         case .selectionChanged: throw LocalDispatchRefusal.selectionChanged
+        case .held(let notice):
+            LocalDispatchCapture.current?.record(.held(notice))
+            throw LocalDispatchRefusal.confirmationRequired
+        case .holdAdmissionRefused:
+            LocalDispatchCapture.current?.record(.holdAdmissionRefused)
+            throw LocalDispatchRefusal.capacityExceeded
         case .confirmationRequired: throw LocalDispatchRefusal.confirmationRequired
         case .unowned: throw LocalDispatchRefusal.ownershipLost
         case .refused(.rateLimited, _): throw LocalDispatchRefusal.capacityExceeded
@@ -246,5 +257,50 @@ extension LocalReplyEndpoint {
             dispatchLogger.error("Local dispatch decode failed: \(String(reflecting: error), privacy: .private)")
             throw LocalReplyRefusal.decodeFailure
         }
+    }
+}
+
+/// The structured API carries held identity while the existing consumer uses #874's per-request refusal.
+public enum LocalDispatchResult: Sendable, Equatable {
+    case delivered(UUID?)
+    case held(RequestHeld)
+    case holdAdmissionRefused
+}
+
+private final class LocalDispatchCapture: Sendable {
+    @TaskLocal static var current: LocalDispatchCapture?
+    private let storage = Mutex<LocalDispatchResult?>(nil)
+    var value: LocalDispatchResult? { storage.withLock { $0 } }
+    func record(_ value: LocalDispatchResult) { storage.withLock { $0 = value } }
+}
+
+extension HostSession {
+    func dispatchResult(_ request: LocalDispatchRequest, generation: UUID? = nil) async throws -> LocalDispatchResult {
+        let capture = LocalDispatchCapture()
+        return try await LocalDispatchCapture.$current.withValue(capture) {
+            do { return .delivered(try await dispatch(request, generation: generation)) } catch {
+                if let result = capture.value { return result }
+                throw error
+            }
+        }
+    }
+}
+
+extension WebSocketListener {
+    /// Only a live originating session may Send. UUID possession never transfers a hold to a new peer.
+    public func sendHeld(_ id: UUID, from connection: UUID) async -> HeldSendResult {
+        guard let peer = peers.values.first(where: { $0.session.connectionID == connection }), peer.isLive else {
+            return .refused(.connectionLost)
+        }
+        let result = await peer.session.sendHeld(id, from: connection)
+        // A completed handoff remains sent even if the owner disconnected while awaiting its result.
+        if result == .sent { return result }
+        guard peer.isLive, peers.values.contains(where: { $0 === peer }) else { return .refused(.connectionLost) }
+        return result
+    }
+
+    public func discardHeld(_ id: UUID, from connection: UUID) async -> HeldSendResult {
+        guard let peer = peers.values.first(where: { $0.session.connectionID == connection }) else { return .stale }
+        return await peer.session.discardHeld(id, from: connection)
     }
 }
