@@ -35,7 +35,8 @@ import Testing
         #expect(await rig.host.heldRequests.entries[entry.id]?.text == entry.text)
     }
 
-    @Test func policyChangeAfterEvaluationStillRefusesAtAdapterAuthority() async throws {
+    @Test(arguments: HeldHandoffChange.allCases)
+    func changesAfterEvaluationStillRefuseAtAdapterAuthority(_ change: HeldHandoffChange) async throws {
         let rig = try await HeldTestRig.make()
         let entry = try await rig.hold()
         let gate = HeldHandoffGate()
@@ -44,12 +45,20 @@ import Testing
             await rig.send(entry.id)
         })
         _ = await arrivals.next()
-        var policy = rig.store.stored
-        policy.guardPatterns = [.init(name: "new guard", regex: "NEVER_MATCHES")]
-        rig.store.overwrite(policy)
-        _ = await rig.host.refreshedPolicy()
+        switch change {
+        case .policy:
+            var policy = rig.store.stored
+            policy.guardPatterns = [.init(name: "new guard", regex: "NEVER_MATCHES")]
+            rig.store.overwrite(policy)
+            _ = await rig.host.refreshedPolicy()
+        case .lockdown: _ = await rig.host.engageLockdown(reason: "synthetic")
+        case .privacy: rig.privacy.isOn = true
+        case .expiry: rig.clock.advance(120_000)
+        }
         await gate.release()
-        #expect(await result == .refused(.policyChanged))
+        let reason: HeldRequestRefusalReason = change == .policy ? .policyChanged
+            : change == .expiry ? .denied : .lockdown
+        #expect(await result == .refused(reason))
         #expect(await rig.adapter.contexts.isEmpty)
         #expect(await rig.host.heldRequests.status(entry.id, from: entry.connection) == .pending)
     }
@@ -82,3 +91,5 @@ private actor HeldHandoffGate {
     }
     func release() { continuation?.resume(); continuation = nil }
 }
+
+enum HeldHandoffChange: CaseIterable, Sendable { case policy, lockdown, privacy, expiry }

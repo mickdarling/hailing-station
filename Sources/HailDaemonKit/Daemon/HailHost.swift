@@ -79,6 +79,7 @@ public actor HailHost {
     private var policy: Policy
     private var policyRevision = UUID()
     nonisolated private let heldPolicyRevision = Mutex(UUID())
+    nonisolated private let heldLockdown = Mutex(false)
     nonisolated let targetPolicy: TargetPolicyAuthority
     private let replyPublicationAuthority = ReplyPublicationAuthority()
     private var evaluator: PolicyEvaluator
@@ -384,6 +385,8 @@ extension HailHost {
         heldPolicyRevision.withLock { $0 == revision }
     }
 
+    nonisolated func heldSendUnlocked() -> Bool { heldLockdown.withLock { !$0 } }
+
     private func retireHeldPolicy() { heldPolicyRevision.withLock { $0 = UUID() } }
 
     private func requireCurrentLine(
@@ -559,6 +562,7 @@ extension HailHost {
     /// The synchronized invalidation is the reply revocation boundary. A completed policy/lockdown
     /// mutation has invalidated every earlier permit; publication already inside its gate finishes first.
     func revokeAuthority() {
+        heldLockdown.withLock { $0 = lockdown.isOn }
         replyPublicationAuthority.invalidate()
         (pending, policyRevision) = ([:], UUID())
     }

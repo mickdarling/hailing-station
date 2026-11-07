@@ -216,21 +216,23 @@ final class HeldSendFailure: Sendable {
     var reason: HeldRequestRefusalReason? { storage.withLock { $0 } }
     func record(_ error: any Error) {
         if Self.knownUnsent(error) { attempted.withLock { $0 = false } }
-        let reason: HeldRequestRefusalReason
+        storage.withLock { $0 = Self.refusalReason(error) }
+    }
+
+    private static func refusalReason(_ error: any Error) -> HeldRequestRefusalReason {
         switch error {
-        case HeldAuthorityError.selectionChanged: reason = .selectionChanged
-        case HeldAuthorityError.connectionLost: reason = .connectionLost
-        case HeldAuthorityError.policyChanged: reason = .policyChanged
+        case HeldAuthorityError.selectionChanged: return .selectionChanged
+        case HeldAuthorityError.connectionLost: return .connectionLost
+        case HeldAuthorityError.policyChanged: return .policyChanged
         case HostError.denied(.notAllowed) where HeldSendScope.current?.entry.policy.performIfCurrent({ true }) != true:
-            reason = .policyChanged
-        case HostError.denied(.lockdown): reason = .lockdown
-        case HostError.denied(.rateLimited): reason = .rateLimited
-        case HostError.unknownTarget: reason = .targetUnavailable
-        case HostError.denied(.rebound): reason = .bindingChanged
-        case ProviderContractError.capacityExceeded: reason = .capacity
-        default: reason = .denied
+            return .policyChanged
+        case HostError.denied(.lockdown): return .lockdown
+        case HostError.denied(.rateLimited): return .rateLimited
+        case HostError.unknownTarget: return .targetUnavailable
+        case HostError.denied(.rebound): return .bindingChanged
+        case ProviderContractError.capacityExceeded: return .capacity
+        default: return .denied
         }
-        storage.withLock { $0 = reason }
     }
     private static func knownUnsent(_ error: any Error) -> Bool {
         switch error {
@@ -272,7 +274,7 @@ extension HostSession {
         let snapshot = self.snapshot, connection = connectionID, store = host.heldRequests
         let requestClock = self.requestClock, host = self.host
         let scope = HeldSendScope(entry: entry, renewOnly: requestClock() >= entry.expires, allowed: {
-            !snapshot(connection).contains {
+            host.heldSendUnlocked() && !snapshot(connection).contains {
                 if case .duckMode(on: true, reason: _, expires: _) = $0 { return true }
                 return false
             }
