@@ -32,6 +32,20 @@ import Testing
         await listener.stop(reason: "synthetic complete")
     }
 
+    @Test func wireDecisionsCannotSendOrDiscardHeldContent() async throws {
+        let rig = try await HeldTestRig.make()
+        let entry = try await rig.hold()
+        #expect(!HostSession.capabilities.contains(HeldRequests.capability))
+        #expect(!PersonalTerminalAuthorizer().capabilities.contains(HeldRequests.capability))
+        for action in [HeldRequestAction.send, .discard] {
+            let frame = sessionFrame(payload: .control(.heldDecision(.init(held: entry.id, action: action))))
+            let result = await rig.session.receive(try FrameCoding.encode(frame))
+            #expect(!result.frames.isEmpty)
+            #expect(await rig.host.heldRequests.status(entry.id, from: entry.connection) == .pending)
+            #expect(await rig.adapter.contexts.isEmpty)
+        }
+    }
+
     @Test func expiredTimeoutNoticeWithFreshCleanEvaluationStillDoesNotAutoDeliver() async throws {
         let rig = try await HeldTestRig.make()
         let frozen = ContinuousClock.now

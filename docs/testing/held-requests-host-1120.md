@@ -30,13 +30,11 @@ which #874 already handles without ending the run. Non-ambient confirmation stil
 The generic local socket response is unchanged; structured held IDs are not sent on that socket or the wire.
 
 The public listener APIs are `sendHeld`, `discardHeld`, and content-free `heldStatus`, scoped to the originating
-session connection UUID. Send checks live peer membership/liveness, original selection generation (including
-away-and-back), live target and exact binding, original policy grant/revision, authorizer, privacy snapshot,
-lockdown, allowlist/tier, rate limits, fresh guard evaluation, reply permit/lease, capacity and request lifetime
-through normal session/registry/host delivery. Policy changes refuse rather than silently adopting new authority.
-Selection, privacy, lockdown, pinned policy revision and notice expiry also participate in adapter delivery
-authority checks. Listener liveness is checked again
-before host dispatch and each line handoff. Existing adapter authority contracts still define the handoff boundary.
+session connection UUID. Send uses the existing session/registry/host validation path with fresh evaluation and
+pinned selection, target, binding and policy. Policy changes refuse rather than silently adopting new authority.
+Held Send remains unreachable from any wire or device path in this PR: neither endpoint advertises the capability,
+the authorizer refuses held decisions, the session control router has no held-decision handler, and no production
+wire/socket/device caller invokes `sendHeld`.
 
 Only a fresh `.confirm` can consume a held read-back hash. A denial never becomes delivery. A fresh timeout or
 new guard evidence renews the hold rather than using old consent. Expired notices are renewed for the same held
@@ -45,9 +43,13 @@ adapter authority boundary, delivery is refused and the next explicit Send renew
 purges content. Ordinary refusals remain retryable and keep their hold slot. Privacy/lockdown refuse Send while
 Discard remains available. No held text is shown or spoken by these APIs.
 
-The store coalesces overlapping Sends and serializes Discard against an in-flight Send. Successful Send and
-explicit Discard release content and leave minimal terminal replay records: duplicates and conflicting later
-decisions replay the terminal result. An uncertain adapter handoff keeps the content, reports `unresolved`
+The store gives every decision attempt an identity, finalizes it exactly once, and queues decisions per hold.
+Adjacent overlapping Sends coalesce; a queued Discard waits for the active attempt and applies to its resulting
+state before a later retry. Discard after a successful Send replays `sent`. Successful Send and explicit Discard
+release content and leave minimal terminal replay records: the newest 32 per connection, capped at 256 per host.
+Duplicates and conflicting decisions replay the result while retained; retired terminal IDs return `stale`.
+Selection metadata exists only during active Send attempts, is removed when an attempt ends or its retired peer
+is observed, and is never created by idle connection selections. Cleanup preserves all unresolved content. An uncertain adapter handoff keeps the content, reports `unresolved`
 through `heldStatus`, and blocks further Sends until future reconciliation; explicit Discard remains possible.
 Unknown or inaccessible IDs on a live originating API path are `stale`. Terminal records contain no prompt or read-back.
 
@@ -57,7 +59,7 @@ custom rule name, pattern, hash, endpoint or identity. These OSLog records are n
 
 ## Files and PR shape
 
-Exactly four production files, counted against local stack head `160b770c` using `scripts/pr-shape.py` exclusions:
+Exactly four production files, counted against rebased main `76010ade` using `scripts/pr-shape.py` exclusions:
 
 - `Sources/HailDaemonKit/Listener/HeldRequests.swift`: store, snapshots, policy settings, serialized decisions.
 - `Sources/HailDaemonKit/Listener/HostSession+Routing.swift`: reserve, hold instead of cancel, pinned selection.
@@ -76,9 +78,10 @@ they explicitly asserted the ambient read-back cancellation that this change rem
 | `HeldRequestTestSupport.swift` | Shared synthetic rig with injected clocks and privacy state. |
 | `HeldRequestTests.swift` | Exact content/scope, reasons, Send/Discard, replay, ownership, selection, binding, target, policy, rate, expiry and admission bounds. |
 | `HeldAmbientStreamTests.swift` | One held request followed by a delivered request in the same consumer run; disconnect retains the hold. |
-| `HeldRequestConcurrencyTests.swift` | Concurrent decisions, away/back during suspension, policy/privacy/lockdown/expiry at the adapter boundary and uncertain handoff. |
+| `HeldRequestConcurrencyTests.swift` | Concurrent decisions, barrier-controlled refusal/retry/queued Discard, away/back during suspension, policy/privacy/lockdown/expiry changes and uncertain handoff. |
+| `HeldRequestMetadataTests.swift` | Per-connection and global terminal replay bounds, connection churn, stale retired IDs, selection tracking cleanup and preservation of unresolved content. |
 | `HeldRequestFreshChecksTests.swift` | Global guard-policy change, capacity, privacy retry, 64 actual host-wide holds and content-free fields. |
-| `HeldRequestLegacyTests.swift` | Listener APIs preserve the original #230 reference and exact prompt; expired notices with clean fresh evaluation still renew. |
+| `HeldRequestLegacyTests.swift` | Listener APIs preserve the original #230 reference and exact prompt; wire decisions cannot Send/Discard holds; expired notices with clean fresh evaluation still renew. |
 | `RightyoInputRequestRefusalSessionTests.swift` | Updated cancellation expectation, with non-ambient confirmation unchanged. |
 | `RightyoInputRequestRefusalTests.swift` | Existing consumer continuation expectation now distinguishes retained ambient read-backs from the unchanged direct host dispatcher. |
 
@@ -148,5 +151,14 @@ Existing regression suites retain their own timing mechanisms. No simulator or p
 - Capability advertisement, wire handlers/notices, clear Send/Discard UI, admission/backpressure/device buffering,
   authenticated same-device reconnect recovery, restart reconciliation, persistence decisions, uncertain-handoff
   reconciliation and provider-context exclusion remain later #1120 work.
+- Deferred: final adapter-boundary authority hardening, required before held Send is reachable from the wire (tracked separately).
 - Independent exact-head security review/second key and PR checks have not been requested or represented as complete.
   This worktree is local only and has not been pushed or opened as a PR.
+
+## Rebased review fixes (verification pending)
+
+New commits above `eba599ca` address attempt finalization/decision ordering and bounded metadata. The regression
+barriers explicitly cover refusal with an already waiting Discard followed by retry, and refusal followed by an
+active retry with Discard queued behind it (both successful and refused retry results). No host builds or tests
+run; the rebased source snapshot will be bundled into `~/codex-workspaces/vw1120c` after fetching `origin main`.
+The prior verification results above are historical evidence only, not verification of these new commits.

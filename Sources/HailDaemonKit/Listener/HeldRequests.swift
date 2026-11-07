@@ -78,20 +78,46 @@ struct HeldRequestEntry: Sendable {
     }
 }
 
-/// No eviction, expiry purge or connection teardown purge. Reservations count against the same bounds as holds.
+/// Unresolved content is never evicted or purged on teardown. Terminal replay metadata has separate bounds.
 actor HeldRequestStore {
     static let perConnection = 8
     static let hostLimit = 64
-    nonisolated private let selections = Mutex<[UUID: UUID]>([:])
-    nonisolated func select(_ generation: UUID, connection: UUID) {
-        selections.withLock { $0[connection] = generation }
+    static let terminalPerConnection = 32
+    static let terminalHostLimit = 256
+    private struct Selection {
+        let connection: UUID
+        let generation: UUID
+        var current = true
     }
-    nonisolated func selects(_ generation: UUID, connection: UUID) -> Bool {
-        selections.withLock { $0[connection] == generation }
+    nonisolated private let selections = Mutex<[UUID: Selection]>([:])
+
+    // Only active Send attempts register selection metadata; idle and retired connections retain none.
+    nonisolated var trackedSelectionCount: Int { selections.withLock { $0.count } }
+    nonisolated func trackSelection(_ generation: UUID, connection: UUID) -> UUID {
+        let identity = UUID()
+        selections.withLock { $0[identity] = Selection(connection: connection, generation: generation) }
+        return identity
+    }
+    nonisolated func select(_ generation: UUID, connection: UUID) {
+        selections.withLock { selections in
+            for (id, selection) in selections where selection.connection == connection {
+                selections[id]?.current = selection.current && selection.generation == generation
+            }
+        }
+    }
+    nonisolated func selects(_ identity: UUID) -> Bool {
+        selections.withLock { $0[identity]?.current == true }
+    }
+    nonisolated func endSelection(_ identity: UUID) {
+        selections.withLock { $0[identity] = nil }
+    }
+    nonisolated func retireSelection(connection: UUID) {
+        selections.withLock { $0 = $0.filter { $0.value.connection != connection } }
     }
     private var reservations: [UUID: UUID] = [:]
     private(set) var entries: [UUID: HeldRequestEntry] = [:]
     private var terminal: [UUID: (UUID, HeldSendResult)] = [:]
+    private var terminalOrder: [UUID] = []
     private struct Decision {
         let id: UUID
         let isSend: Bool
@@ -203,7 +229,7 @@ actor HeldRequestStore {
         running[id] = nil
         if decisions[id]?.id == identity { decisions[id] = nil }
         if entries[id] != nil, result == .sent || result == .discarded {
-            terminal[id] = (connection, result)
+            recordTerminal(id, connection: connection, result: result)
             entries[id] = nil
             unresolved.remove(id)
         }
@@ -211,6 +237,21 @@ actor HeldRequestStore {
 
     func discard(_ id: UUID, from connection: UUID) async -> HeldSendResult {
         await queueDiscard(id, from: connection).value
+    }
+}
+
+extension HeldRequestStore {
+    private func recordTerminal(_ id: UUID, connection: UUID, result: HeldSendResult) {
+        terminal[id] = (connection, result)
+        terminalOrder.append(id)
+        let owned = terminalOrder.filter { terminal[$0]?.0 == connection }
+        for retired in owned.prefix(max(0, owned.count - Self.terminalPerConnection)) {
+            terminal[retired] = nil
+            terminalOrder.removeAll { $0 == retired }
+        }
+        while terminalOrder.count > Self.terminalHostLimit {
+            terminal[terminalOrder.removeFirst()] = nil
+        }
     }
 }
 
@@ -299,6 +340,9 @@ extension HostSession {
     private func attemptHeld(_ entry: HeldRequestEntry) async -> HeldSendResult {
         guard case .ready = state else { return .refused(.connectionLost) }
         guard selectionGeneration == entry.selection, covers(entry.target) else { return .refused(.selectionChanged) }
+        let store = host.heldRequests
+        let selection = store.trackSelection(entry.selection, connection: connectionID)
+        defer { store.endSelection(selection) }
         guard let listing = try? await host.registry.listing(),
               let listed = listing.first(where: { $0.info.id == entry.target }), listed.info.alive else {
             return .refused(.targetUnavailable)
@@ -307,14 +351,14 @@ extension HostSession {
         _ = await host.refreshedPolicy()
         do { try entry.policy.requireCurrent() } catch { return .refused(.policyChanged) }
         guard await host.heldPolicyIsCurrent(entry.policyRevision) else { return .refused(.policyChanged) }
-        let snapshot = self.snapshot, connection = connectionID, store = host.heldRequests
+        let snapshot = self.snapshot, connection = connectionID
         let requestClock = self.requestClock, host = self.host
         let scope = HeldSendScope(entry: entry, renewOnly: requestClock() >= entry.expires, allowed: {
             host.heldSendUnlocked() && !snapshot(connection).contains {
                 if case .duckMode(on: true, reason: _, expires: _) = $0 { return true }
                 return false
             }
-        }, selected: { store.selects(entry.selection, connection: connection) },
+        }, selected: { store.selects(selection) },
            noticeCurrent: { requestClock() < entry.expires },
            policyCurrent: { host.heldPolicyIsCurrent(entry.policyRevision) })
         guard scope.selected() else { return .refused(.selectionChanged) }
