@@ -361,18 +361,67 @@ heard-turn commands retain their existing rules. Omission is valid; null and inv
 empty, with at most 16 tokens of at most 32 UTF-8 bytes each. Its closed vocabulary normalizes the built-in guard
 names to `rm_rf`, `sudo`, `force_push`, `git_reset_hard`, `git_clean`, `destructive_git`, `branch_delete`, `delete`,
 `disk_write`, `permissions`, `shell`, `fork_bomb`, `credential`; all configured rules use `custom`, never their
-name, pattern or request text. `expires_in` is the remaining lifetime from notice issuance, in whole seconds
+name, pattern or request text, even when a configured name matches a built-in name. `HeldRequestRule` in
+HailProtocol defines this closed vocabulary. Only built-in names are normalized by collapsing runs of spaces
+and hyphens to one underscore; arbitrary names must never be normalized into wire values.
+`HeldRequestRuleVocabularyTests.everyDaemonDefaultHasAClosedWireRule` checks the vocabulary against every
+`DangerousPatternGuard.defaults` name. `expires_in` is the remaining lifetime from notice issuance, in whole seconds
 from 1 through 3,600 inclusive, rather than a wall-clock timestamp.
 
 The only actions are `send` and `discard`. Outcomes are `sent`, `discarded`, `expired`, `refused`, `stale`.
-Only `refused` requires `reason`, a 1–32 byte token made of lowercase ASCII letters, digits and underscores;
-other outcomes forbid it. All three controls reject unknown fields, unknown enum values, missing required
+Only `refused` requires `reason`, a closed `HeldRequestRefusalReason` value; other outcomes forbid it.
+All three controls reject unknown fields, unknown enum values, missing required
 fields, null optional fields, invalid UUIDs and out-of-bounds values. The generated schema mirrors these bounds.
 
-The future host must hold rather than drop or deliver unchecked, keep the stream alive, and revalidate Send
-against current policy, scope and expiry. These types provide no delivery authority or host retention mechanism.
-Host handling, guard outcomes, context exclusion, UI and audit remain later #1120 slices. Synthetic validation
-is recorded in [the PR 1 protocol test record](testing/held-requests-protocol.md).
+**PROPOSED Send refusal checks.** The future held handler must revalidate against the real host gates below
+immediately before handoff. These are proposed mappings to existing checks, not shipped held-request handling.
+The nine reasons distinguish changes to pinned authority, current denials, and resource/liveness failures;
+none can contain a name, request fragment, hash, pattern or underlying error string. When several checks fail,
+use the first applicable row in this order so the reason is deterministic.
+
+| Closed reason | Host check that refuses Send (PROPOSED mapping) |
+| --- | --- |
+| `connection_lost` | Owning `WebSocketPeer.isLive` / listener peer membership fails before handoff. Record locally if the transport can no longer carry a resolution. |
+| `selection_changed` | `HostSession` selection generation or selected-target scope differs from the held snapshot (`LocalDispatch.requireSelection`). |
+| `target_unavailable` | `host.registry.listing()` has no live entry for the pinned target. |
+| `binding_changed` | The live listing binding differs from the held binding (`LocalDispatch.dispatchScoped` binding check). |
+| `policy_changed` | The snapshot captured with `HailHost.inputPolicyGeneration(for:)` fails `TargetPolicyGeneration.requireCurrent()`, including a reload, tier change or unreadable policy. |
+| `lockdown` | Current `Policy.evaluate` returns `.denied(.lockdown)`. |
+| `denied` | Current authorizer/policy/delivery gate refuses for another reason: missing authorization, allowlist/tier denial, confirmation still required, renewed guard match/timeout, pending target input or adapter refusal before handoff. Send never bypasses these checks. |
+| `rate_limited` | Current `Policy.evaluate` returns `.denied(.rateLimited)` for target/device rate limits. |
+| `capacity` | `HostSession` delivery admission cannot reserve a live reply/request slot. |
+
+**PROPOSED decision lifecycle.** A held UUID has states `held → sent | discarded | expired | refused | stale`.
+`sent` means one validated handoff; `discarded` means an explicit Discard before expiry; `refused` means Send
+failed revalidation. `expired` means its Send deadline passed before a decision was accepted. `stale` means no
+record belongs to this connection (including an invalidated hold). The host serializes expiry and decisions
+per UUID and consumes each hold at most once, recording the final resolution before any competing decision
+can run. Only an unexpired `held` state can attempt Send; an uncertain handoff must never be retried automatically.
+
+**PROPOSED replay and late decisions.** Look up a recorded terminal resolution first. A duplicate decision
+with the same action replays that resolution; a conflicting later action receives the recorded resolution
+unchanged. Neither can cause another handoff. For an unresolved hold at or past its host-monotonic deadline,
+record and return `expired` for either action, even if the expiry timer has not run yet. An unknown UUID gets
+`stale`: absence is never evidence of Send authority, and this avoids revealing whether another connection
+owns that UUID. Resolutions are scoped to the owning connection. All duplicate, conflicting, late, unknown,
+invalidated and refused paths fail closed with no new delivery. Holding and every resolution leave the ambient
+stream running; none sends an ambient stop or restarts the stream.
+
+**PROPOSED retention, distinct from Send authority.** On expiry the host retains the original held request
+text, heard-turn correlation, hold reasons and pinned target/binding/policy/selection metadata in host memory
+for exactly 3,600 seconds after the Send deadline, for recovery/display in a later UI slice. This retained
+content is inert: expiry never releases it, injects it into provider context, or renews Send authority. Recovery
+requires a fresh explicit submission with a new UUID and all current checks. Content is purged earlier on
+owning-connection teardown, host shutdown/restart, lockdown or explicit local deletion; Discard and other
+terminal outcomes purge their request content immediately. No recordings or disk persistence are introduced.
+After content deletion, keep a minimal UUID/final-outcome/closed-reason resolution record for the lifetime of
+the owning connection, so late decisions still receive `expired` and duplicates still replay unchanged.
+Bound admission of new holds rather than evict these records; after connection teardown an old UUID is
+unknown and gets `stale` on a new connection. Thus content loss cannot recreate delivery authority.
+
+These types provide no delivery authority or host retention mechanism. The lifecycle, refusal mapping and
+retention above are **PROPOSED**; host handling, guard outcomes, context exclusion, UI and audit remain later
+#1120 slices. Synthetic validation is recorded in [the PR 1 protocol test record](testing/held-requests-protocol.md).
 
 ### Overheard remarks (#398)
 

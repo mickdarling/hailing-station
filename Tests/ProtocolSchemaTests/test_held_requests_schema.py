@@ -84,13 +84,27 @@ class HeldRequestsSchemaTests(unittest.TestCase):
         for expiry in [1, 3600]:
             self.assertEqual(self.check(dict(self.notice(), expires_in=expiry)), [])
 
-    def test_refusal_requires_bounded_token_only_for_refused(self):
+    def test_refusal_requires_closed_reason_only_for_refused(self):
         refused = self.payloads()[2]
-        for reason in [None, False, "", "a" * 33, "not prose", "pattern=.*", "UPPER", "é", "line\n"]:
+        for reason in [None, False, "", "a" * 32, "a" * 33, "not prose", "pattern=.*", "UPPER", "é", "line\n",
+                       "policy_changed ", "policy_changed\n"]:
             self.assertTrue(self.check(dict(refused, reason=reason)), repr(reason))
         for outcome in ["sent", "discarded", "expired", "stale"]:
             self.assertTrue(self.check(dict(refused, outcome=outcome)))
-        self.assertEqual(self.check(dict(refused, reason="a" * 32)), [])
+        for reason in ["policy_changed", "target_unavailable", "binding_changed", "selection_changed", "lockdown",
+                       "denied", "rate_limited", "capacity", "connection_lost"]:
+            self.assertEqual(self.check(dict(refused, reason=reason)), [], reason)
+
+    def test_arbitrary_names_content_and_hashes_are_rejected(self):
+        for token in ["alice", "synthetic_name", "delete_database", "deadbeef", "0123456789abcdef0123456789abcdef",
+                      "a" * 40, "b" * 64]:
+            self.assertTrue(self.check(dict(self.notice(), rules=[token])), token)
+            self.assertTrue(self.check(dict(self.payloads()[2], reason=token)), token)
+
+    def test_every_builtin_rule_and_custom_are_accepted(self):
+        rules = ["rm_rf", "sudo", "force_push", "git_reset_hard", "git_clean", "destructive_git", "branch_delete",
+                 "delete", "disk_write", "permissions", "shell", "fork_bomb", "credential", "custom"]
+        self.assertEqual(self.check(dict(self.notice(), rules=rules)), [])
 
 
 if __name__ == "__main__":

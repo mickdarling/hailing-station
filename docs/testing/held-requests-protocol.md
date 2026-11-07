@@ -6,6 +6,9 @@ guard evaluation, context exclusion, retention, audit, deployment, simulator or 
 
 ## Wire contract and synthetic coverage
 
+The following initial evidence records commit `781f4041`. The review follow-up below supersedes its open
+refusal-token contract and adds closed-vocabulary regressions; both versions remain protocol-only proposals.
+
 `HeldRequestsProtocolTests` has 17 test functions (46 case executions). It round-trips the three controls through
 `FrameCoding`, all four reasons, both actions, all five outcomes, optional heard-turn correlation, combined match
 and timeout, all built-in rule tokens, empty/max-size rule lists, expiry endpoints and the longest refusal token.
@@ -63,3 +66,59 @@ Tests, docs and the generated schema JSON are excluded. No PR, push, online revi
 
 Host hold/revalidation, stream survival, UI/announcements, context exclusion and audit are deferred to subsequent
 #1120 slices; this protocol verification does not claim those acceptance criteria are shipped.
+
+## Review follow-up: closed metadata and PROPOSED lifecycle
+
+`HeldRequestRefusalReason` replaces the open refusal string with nine values: `policy_changed`,
+`target_unavailable`, `binding_changed`, `selection_changed`, `lockdown`, `denied`, `rate_limited`, `capacity`,
+`connection_lost`. The generated schema derives the same enum. `HeldRequestRule` remains closed to the 13
+built-in guard tokens plus `custom`. Swift and Python now reject arbitrary names, request fragments, short
+hex strings and 32/40/64-character hashes in both metadata fields; every refusal reason round-trips with its
+exact wire spelling. Missing refusal reasons and reasons on other outcomes still fail closed.
+`HeldRequestRuleVocabularyTests.everyDaemonDefaultHasAClosedWireRule` checks all daemon defaults against the
+HailProtocol vocabulary and excludes `custom` as a fallback for a missing built-in.
+
+The **PROPOSED** contract in `docs/reply-protocol.md` maps each refusal to a real host gate and defines
+at-most-once decisions, unchanged resolution replay for duplicate/conflicting decisions, late expiry,
+unknown-ID `stale`, ambient-stream survival, and content retention separately from expired Send authority.
+These lifecycle and retention rules are documentation only; no runtime implementation or device proof is claimed.
+
+The final Swift sources were synced by a temporary git-bundle snapshot to `~/codex-workspaces/vw1120a`.
+Each SSH invocation used `< /dev/null`, stayed blocking, and completed before the next VM job. VM commands:
+
+```sh
+WS=vw1120a ~/codex-workspaces/vw327-run.sh 'HailProtocolTests'
+WS=vw1120a ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests.HeldRequestRuleVocabularyTests'
+cd ~/codex-workspaces/vw1120a
+taskpolicy -b .build/debug/hail-protocol-gen
+git diff --exit-code -- fixtures/frames
+```
+
+Results: both runs reported `build=0`, `test=0`; **160 tests in 30 suites passed** for HailProtocolTests
+(0.190 seconds), and **1 test in 1 suite passed** for the daemon vocabulary (0.001 seconds). The same run
+script/CLT flags described above were used. The generator wrote 48 fixtures and the v1 schema; frame fixtures
+were byte-identical (drift check exit 0). The regenerated schema JSON was copied back to the host.
+
+The Python-only schema commands run on the host under background policy were:
+
+```sh
+taskpolicy -b python3 -m unittest discover -s Tests/ProtocolSchemaTests
+taskpolicy -b python3 -m unittest scripts/tests/test_check_schema.py
+taskpolicy -b python3 scripts/check_schema.py
+```
+
+The checker commands are the schema checks used in `.github/workflows/ci.yml`; `scripts/verify.sh` and
+`CONTRIBUTING.md` do not enumerate a separate Python schema lane. Results: **21 schema tests passed**,
+**11 checker unit tests passed**, **48 positive fixtures accepted and 98 negative fixtures rejected**, zero failures.
+
+Host lint:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict Sources/HailProtocol/HeldRequests.swift Sources/HailProtocol/Schema.swift Tests/HailProtocolTests/HeldRequestsProtocolTests.swift Tests/HailProtocolTests/HeldRequestsVocabularyTests.swift Tests/HailDaemonKitTests/HeldRequestRuleVocabularyTests.swift
+```
+
+Result: **zero violations in five Swift files**. `git diff --check` passed. Exact `scripts/pr-shape.py`
+exclusions count **two production files in this follow-up**, `HeldRequests.swift` and `Schema.swift`, and
+**three across PR 1**, including `Control.swift`. Tests, docs and generated schema JSON are excluded.
+No host Swift build/test, push, simulator build, installation or physical-device validation was performed.
+Independent review of this new head remains pending; the earlier REQUEST CHANGES is not an approval.

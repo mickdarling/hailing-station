@@ -33,7 +33,7 @@ import Testing
     @Test(arguments: HeldRequestOutcome.allCases)
     func everyResolutionRoundTrips(outcome: HeldRequestOutcome) throws {
         try roundTrip(.heldResolution(HeldResolution(held: try #require(held), outcome: outcome,
-                                                    reason: outcome == .refused ? "policy_changed" : nil)))
+                                                    reason: outcome == .refused ? .policyChanged : nil)))
     }
     @Test func boundsAndAllBuiltInRulesRoundTrip() throws {
         let identifier = try #require(held)
@@ -43,8 +43,6 @@ import Testing
         }
         try roundTrip(.requestHeld(RequestHeld(held: identifier, reasons: [.guardTimeout],
             rules: Array(repeating: .custom, count: HeldRequests.maxRules), expiresIn: 1)))
-        try roundTrip(.heldResolution(HeldResolution(held: identifier, outcome: .refused,
-            reason: String(repeating: "a", count: HeldRequests.maxRefusalTokenBytes))))
         #expect(HeldRequestRule.allCases.allSatisfy { $0.rawValue.utf8.count <= HeldRequests.maxRuleTokenBytes })
     }
     @Test(arguments: ["request_held", "held_decision", "held_resolution"])
@@ -134,7 +132,7 @@ import Testing
 
 extension HeldRequestsProtocolTests {
     @Test(arguments: ["", "not prose", "secret=pattern", "UPPER", "é", "line\nbreak",
-                      String(repeating: "a", count: HeldRequests.maxRefusalTokenBytes + 1)])
+                      "policy_changed ", "policy_changed\n"])
     func malformedRefusalTokensAreRefused(reason: String) throws {
         var value = try object("held_resolution")
         value["reason"] = reason
@@ -163,8 +161,7 @@ extension HeldRequestsProtocolTests {
             #expect(throws: EncodingError.self) { try JSONEncoder().encode(ControlPayload.requestHeld(notice)) }
         }
         for resolution in [HeldResolution(held: identifier, outcome: .refused),
-                           HeldResolution(held: identifier, outcome: .refused, reason: "prose here"),
-                           HeldResolution(held: identifier, outcome: .sent, reason: "unexpected")] {
+                           HeldResolution(held: identifier, outcome: .sent, reason: .policyChanged)] {
             #expect(throws: EncodingError.self) { try JSONEncoder().encode(ControlPayload.heldResolution(resolution)) }
         }
     }

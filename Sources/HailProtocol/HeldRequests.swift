@@ -10,7 +10,6 @@ public enum HeldRequests {
     public static let maxRuleTokenBytes = 32
     /// Remaining lifetime from notice issuance, in whole seconds, not a wall-clock timestamp.
     public static let expirySeconds = 1...3_600
-    public static let maxRefusalTokenBytes = 32
 
     static func container<Key: CodingKey>(
         _ type: Key.Type, command: String, allowed: [String], from decoder: any Decoder
@@ -31,12 +30,6 @@ public enum HeldRequests {
         case "held_decision": return .heldDecision(try HeldDecision(from: decoder))
         default: return .heldResolution(try HeldResolution(from: decoder))
         }
-    }
-
-    /// Refusal detail is a short machine token, never prose, patterns or request content (#1120).
-    static func validRefusal(_ reason: String?) -> Bool {
-        guard let reason, (1...maxRefusalTokenBytes).contains(reason.utf8.count) else { return false }
-        return reason.utf8.allSatisfy { (97...122).contains($0) || (48...57).contains($0) || $0 == 95 }
     }
 }
 
@@ -59,7 +52,14 @@ public enum HeldRequestAction: String, Codable, Sendable, CaseIterable {
     case send, discard
 }
 
-/// The host's final disposition of a held UUID (#1120), with a bounded token only for refusal.
+/// Closed Send revalidation failures (#1120). Never carry identities, request fragments, hashes or policy detail.
+public enum HeldRequestRefusalReason: String, Codable, Sendable, CaseIterable {
+    case policyChanged = "policy_changed", targetUnavailable = "target_unavailable", bindingChanged = "binding_changed"
+    case selectionChanged = "selection_changed", lockdown, denied, rateLimited = "rate_limited", capacity
+    case connectionLost = "connection_lost"
+}
+
+/// The host's final disposition of a held UUID (#1120), with a closed reason only for refusal.
 public enum HeldRequestOutcome: String, Codable, Sendable, CaseIterable {
     case sent, discarded, expired, refused, stale
 }
@@ -150,13 +150,13 @@ public struct HeldDecision: Codable, Sendable, Equatable {
 }
 
 /// Proposed host → device `held_resolution` (#1120). `reason` is required only for `refused`, and forbidden
-/// otherwise. It is a 1–32 byte lowercase ASCII snake_case token, never request text or policy detail.
+/// otherwise. Its closed vocabulary carries no request text or policy detail.
 public struct HeldResolution: Codable, Sendable, Equatable {
     public var held: UUID
     public var outcome: HeldRequestOutcome
-    public var reason: String?
+    public var reason: HeldRequestRefusalReason?
 
-    public init(held: UUID, outcome: HeldRequestOutcome, reason: String? = nil) {
+    public init(held: UUID, outcome: HeldRequestOutcome, reason: HeldRequestRefusalReason? = nil) {
         self.held = held
         self.outcome = outcome
         self.reason = reason
@@ -169,7 +169,8 @@ public struct HeldResolution: Codable, Sendable, Equatable {
             allowed: ["command", "held", "outcome", "reason"], from: decoder)
         held = try container.decode(UUID.self, forKey: .held)
         outcome = try container.decode(HeldRequestOutcome.self, forKey: .outcome)
-        reason = container.contains(.reason) ? try container.decode(String.self, forKey: .reason) : nil
+        reason = container.contains(.reason)
+            ? try container.decode(HeldRequestRefusalReason.self, forKey: .reason) : nil
         guard isValid else {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
                                                     debugDescription: "invalid held_resolution reason"))
@@ -189,6 +190,6 @@ public struct HeldResolution: Codable, Sendable, Equatable {
     }
 
     private var isValid: Bool {
-        outcome == .refused ? HeldRequests.validRefusal(reason) : reason == nil
+        outcome == .refused ? reason != nil : reason == nil
     }
 }

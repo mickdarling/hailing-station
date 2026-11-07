@@ -278,9 +278,7 @@ public enum Schema {
         heldRule("held_resolution", required: ["outcome"], fields: [
             "outcome": .object(["enum": .array(HeldRequestOutcome.allCases.map { .string($0.rawValue) })]),
             "reason": .object([
-                "type": .string("string"), "minLength": .integer(1),
-                "maxLength": .integer(Int64(HeldRequests.maxRefusalTokenBytes)),
-                "pattern": .string("^[a-z0-9_]+$(?![\\s\\S])")
+                "enum": .array(HeldRequestRefusalReason.allCases.map { .string($0.rawValue) })
             ])
         ]),
         .object([
