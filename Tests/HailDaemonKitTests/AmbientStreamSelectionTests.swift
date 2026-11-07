@@ -38,8 +38,10 @@ import Testing
         let reopened = await session.selectionGeneration
         #expect(await session.receive(Self.audio(second)).frames.isEmpty)
         let starts = sink.events.filter { if case .started = $0 { true } else { false } }
-        #expect(starts == [.started(stream: first, connection: connection, selection: opened),
-                           .started(stream: second, connection: connection, selection: reopened)])
+        #expect(starts == [.started(stream: first, connection: connection,
+            target: VoiceRouteRig.scratch, selection: opened),
+                           .started(stream: second, connection: connection,
+                               target: VoiceRouteRig.scratch, selection: reopened)])
         #expect(opened != reopened)
     }
 
@@ -123,7 +125,7 @@ import Testing
         await Self.select(VoiceRouteRig.scratch, on: session)
         _ = await session.receive(Self.audio(UUID()))
         let streams = sink.events.compactMap { event -> AmbientListenerDispatcher? in
-            guard case .started(_, _, let selection) = event else { return nil }
+            guard case .started(_, _, _, let selection) = event else { return nil }
             return AmbientListenerDispatcher(listener: rig.listener, audit: nil, selection: selection)
         }
         try #require(streams.count == 2)
@@ -153,7 +155,7 @@ import Testing
         _ = await sessions[1].receive(Self.audio(UUID()))
         #expect(sink.endings == [.superseded])
         let streams = sink.events.compactMap { event -> AmbientListenerDispatcher? in
-            guard case .started(_, _, let selection) = event else { return nil }
+            guard case .started(_, _, _, let selection) = event else { return nil }
             return AmbientListenerDispatcher(listener: rig.listener, audit: nil, selection: selection)
         }
         try #require(streams.count == 2)

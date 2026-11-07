@@ -16,7 +16,7 @@ import Testing
             #expect(await gate.admit(ambientSegment(stream: stream, sequence: sequence), connection: phone) == nil)
         }
         #expect(await gate.admit(ambientSegment(stream: stream, sequence: 8, isFinal: true), connection: phone) == nil)
-        #expect(sink.events.first == .started(stream: stream, connection: phone))
+        #expect(sink.events.first == .started(stream: stream, connection: phone, target: "tmux:a"))
         #expect(sink.segments == [0, 1, 3, 7, 8])
         #expect(sink.endings == [.final])
         #expect(await gate.activeStream == nil)

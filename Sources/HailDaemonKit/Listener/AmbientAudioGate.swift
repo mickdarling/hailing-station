@@ -11,10 +11,11 @@ public enum AmbientStreamEndReason: Sendable, Equatable {
 }
 
 /// What the gate hands on. `segment` carries raw pcm16 bytes; nothing in this module logs or describes them.
+/// `started.target` is the admitted stream destination; for now it is always the gate's pinned target.
 /// `selection` is the selection generation the connection's session had when the stream opened (#636), nil from a
 /// caller that tracks none.
 public enum AmbientAudioEvent: Sendable, Equatable {
-    case started(stream: UUID, connection: UUID, selection: UUID? = nil)
+    case started(stream: UUID, connection: UUID, target: String, selection: UUID? = nil)
     case segment(stream: UUID, sequence: Int, bytes: Data)
     case ended(stream: UUID, reason: AmbientStreamEndReason)
 }
@@ -452,7 +453,7 @@ extension AmbientAudioGate {
         active = Stream(id: stream, connection: connection, device: device, lastSequence: -1, lastActivity: clock(),
                         selection: selection)
         streamed.insert(connection)
-        emit(.started(stream: stream, connection: connection, selection: selection))
+        emit(.started(stream: stream, connection: connection, target: target, selection: selection))
         return nil
     }
 }

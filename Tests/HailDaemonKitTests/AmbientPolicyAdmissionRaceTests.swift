@@ -134,7 +134,7 @@ private struct PolicyBlockingSink: AmbientAudioSink {
             policyGeneration: generation
         )
         let expected: [AmbientAudioEvent] = [
-            .started(stream: stream, connection: connection),
+            .started(stream: stream, connection: connection, target: "tmux:a"),
             .segment(stream: stream, sequence: 0, bytes: Data(repeating: 0, count: 3_200)),
             .ended(stream: stream, reason: .final)
         ]

@@ -11,7 +11,7 @@ private struct PolicyRestartSink: AmbientAudioSink {
 
     func ambientAudio(_ event: AmbientAudioEvent) {
         recording.ambientAudio(event)
-        if case .started(let id, _, _) = event, id == stream { waiting.suspend() }
+        if case .started(let id, _, _, _) = event, id == stream { waiting.suspend() }
     }
 }
 
