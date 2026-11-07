@@ -199,7 +199,7 @@ extension HailHost {
             target: id, binding: listed.binding, lines: lines, device: dispatch.device, guardLines: guardLines
         )
         // No suspension from here to the first evaluation: the consumed token cannot go stale in between.
-        let confirmed = consume(dispatch.confirmedHash, for: request)
+        let confirmed = HeldSendScope.current == nil ? consume(dispatch.confirmedHash, for: request) : false
         let confirmedRevision = policyRevision
         var delivered: [String] = []
         for (index, line) in lines.enumerated() {
@@ -209,8 +209,12 @@ extension HailHost {
                 request, lockdown: lockdown.isOn, limiter: limiter, now: requestNow()
             )
             var decision = evaluation.decision
+            let heldConfirmation: Bool
+            if HeldSendScope.current != nil, case .confirm = decision {
+                heldConfirmation = consume(dispatch.confirmedHash, for: request)
+            } else { heldConfirmation = false }
             // A confirmation turns a read-back into delivery and nothing else: every denial stands.
-            if confirms(evaluation, confirmed: confirmed && confirmedRevision == policyRevision) {
+            if confirms(evaluation, confirmed: (confirmed || heldConfirmation) && confirmedRevision == policyRevision) {
                 decision = .deliver
             }
             switch decision {
@@ -513,7 +517,7 @@ extension HailHost {
             pending[oldest.key] = nil
         }
         HeldReadBackEvidence.current?.record(
-            readBackHash: hash, revision: policyRevision, reasons: heldReasons(reason, evaluation: evaluation),
+            readBackHash: hash, revision: policyRevision, expires: now + window, reasons: heldReasons(reason, evaluation: evaluation),
             rules: evaluation.guardOutcomes.map {
                 HeldRequestRule.wireRule(
                     for: $0.name, isBuiltIn: policy.guardPatterns == DangerousPatternGuard.defaults

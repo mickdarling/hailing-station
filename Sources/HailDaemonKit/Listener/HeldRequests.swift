@@ -23,6 +23,10 @@ public enum HeldSendResult: Sendable, Equatable {
     case held(RequestHeld)
 }
 
+/// Uncertain handoffs cannot be sent again until a future reconciliation path establishes their disposition.
+public enum HeldDeliveryStatus: Sendable, Equatable { case pending, unresolved, sent, discarded }
+
+
 struct HeldRequestEntry: Sendable {
     let id: UUID
     let connection: UUID
@@ -60,9 +64,14 @@ struct HeldRequestEntry: Sendable {
             reasons = previous?.reasons ?? [.confirmTier]
         }
         rules = Array(Set(evidence?.rules ?? previous?.rules ?? [])).sorted { $0.rawValue < $1.rawValue }
-        self.expires = expires
+        self.expires = evidence?.expires ?? expires
         let seconds = noticeWindow.components.seconds
         noticeSeconds = max(1, min(3_600, Int(seconds)))
+    }
+
+    var logDetail: String {
+        "reasons=" + reasons.map(\.rawValue).joined(separator: ",")
+            + " rules=" + rules.map(\.rawValue).joined(separator: ",")
     }
 
     var notice: RequestHeld {
@@ -102,9 +111,8 @@ actor HeldRequestStore {
     func hold(_ entry: HeldRequestEntry, reservation: UUID?) -> RequestHeld {
         if let reservation { reservations[reservation] = nil }
         entries[entry.id] = entry
-        let reasons = entry.reasons.map(\.rawValue).joined(separator: ",")
-        let rules = entry.rules.map(\.rawValue).joined(separator: ",")
-        logger.notice("ambient_request_held reasons=\(reasons, privacy: .public) rules=\(rules, privacy: .public)")
+        let detail = entry.logDetail
+        logger.notice("ambient_request_held \(detail, privacy: .public)")
         return entry.notice
     }
 
@@ -117,11 +125,31 @@ actor HeldRequestStore {
         let task = Task { await attempt(entry) }
         running[id] = task
         let result = await task.value
+        logResolution(result, entry: entry)
         finish(id, connection: connection, result: result)
         return result
     }
 
     func markUnresolved(_ id: UUID) { unresolved.insert(id) }
+
+    func status(_ id: UUID, from connection: UUID) -> HeldDeliveryStatus? {
+        if let final = terminal[id], final.0 == connection { return final.1 == .sent ? .sent : .discarded }
+        guard entries[id]?.connection == connection else { return nil }
+        return unresolved.contains(id) ? .unresolved : .pending
+    }
+
+    private func logResolution(_ result: HeldSendResult, entry: HeldRequestEntry) {
+        let outcome: String
+        switch result {
+        case .sent: outcome = "sent"
+        case .discarded: outcome = "discarded"
+        case .stale: outcome = "stale"
+        case .held: outcome = "held"
+        case .refused(let reason): outcome = "refused:" + reason.rawValue
+        }
+        let detail = entry.logDetail
+        logger.notice("ambient_request_resolution outcome=\(outcome, privacy: .public) \(detail, privacy: .public)")
+    }
 
     private func finish(_ id: UUID, connection: UUID, result: HeldSendResult) {
         running[id] = nil
@@ -140,6 +168,7 @@ actor HeldRequestStore {
             finish(id, connection: connection, result: result)
             return await discard(id, from: connection)
         }
+        if let entry = entries[id] { logResolution(.discarded, entry: entry) }
         finish(id, connection: connection, result: .discarded)
         return .discarded
     }
@@ -149,14 +178,18 @@ final class HeldReadBackEvidence: Sendable {
     struct Value: Sendable {
         let hash: String
         let revision: UUID
+        let expires: ContinuousClock.Instant
         let reasons: [HeldRequestReason]
         let rules: [HeldRequestRule]
     }
     @TaskLocal static var current: HeldReadBackEvidence?
     private let storage = Mutex<Value?>(nil)
     var value: Value? { storage.withLock { $0 } }
-    func record(readBackHash: String, revision: UUID, reasons: [HeldRequestReason], rules: [HeldRequestRule]) {
-        storage.withLock { $0 = Value(hash: readBackHash, revision: revision, reasons: reasons, rules: rules) }
+    func record(readBackHash: String, revision: UUID, expires: ContinuousClock.Instant,
+                reasons: [HeldRequestReason], rules: [HeldRequestRule]) {
+        storage.withLock {
+            $0 = Value(hash: readBackHash, revision: revision, expires: expires, reasons: reasons, rules: rules)
+        }
     }
 }
 
@@ -199,13 +232,15 @@ final class HeldSendFailure: Sendable {
         default: return false
         }
     }
-
 }
 
 extension HostSession {
     func discardHeld(_ id: UUID, from connection: UUID) async -> HeldSendResult {
         guard connection == connectionID else { return .stale }
-        return await host.heldRequests.discard(id, from: connection)
+        let hash = await host.heldRequests.entries[id]?.readBack.hash
+        let result = await host.heldRequests.discard(id, from: connection)
+        if result == .discarded, let hash { await host.cancel(hash) }
+        return result
     }
 
     func sendHeld(_ id: UUID, from connection: UUID) async -> HeldSendResult {
@@ -229,9 +264,9 @@ extension HostSession {
         let snapshot = self.snapshot, connection = connectionID, store = host.heldRequests
         let scope = HeldSendScope(entry: entry, renewOnly: requestClock() >= entry.expires, allowed: {
             !snapshot(connection).contains {
-                    if case .duckMode(on: true, reason: _, expires: _) = $0 { return true }
-                    return false
-                }
+                if case .duckMode(on: true, reason: _, expires: _) = $0 { return true }
+                return false
+            }
         }, selected: { store.selects(entry.selection, connection: connection) })
         guard scope.selected() else { return .refused(.selectionChanged) }
         guard scope.allowed(), await !host.currentLockdown.isOn else { return .refused(.lockdown) }

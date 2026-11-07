@@ -43,6 +43,7 @@ import Testing
         await rig.adapter.passHandoff()
         #expect(await rig.send(entry.id) == .refused(.denied))
         #expect(await rig.adapter.contexts.count == 1)
+        #expect(await rig.host.heldRequests.status(entry.id, from: entry.connection) == .unresolved)
         #expect(await rig.host.heldRequests.entries[entry.id]?.text == entry.text)
         #expect(await rig.discard(entry.id) == .discarded)
     }

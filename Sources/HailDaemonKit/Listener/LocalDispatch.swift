@@ -302,6 +302,10 @@ extension WebSocketListener {
         return result
     }
 
+    public func heldStatus(_ id: UUID, from connection: UUID) async -> HeldDeliveryStatus? {
+        await host.heldRequests.status(id, from: connection)
+    }
+
     private func ownsHeldPeer(_ peer: WebSocketPeer) async -> Bool {
         guard !stopped, peers.values.contains(where: { $0 === peer }) else { return false }
         return await peer.isLive
