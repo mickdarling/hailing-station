@@ -97,9 +97,7 @@ struct FinalDeliveryRig {
             .init(name: "synthetic guard", regex: "^synthetic guarded command$")
         ])
         try policy.allow(target, binding: "synthetic-binding", tier: .open)
-        let host = try HailHost(registry: registry, store: InMemoryPolicyStore(
-            policy, saveError: PolicyFileError.unwritable("synthetic persistence")
-        ))
+        let host = try HailHost(registry: registry, store: InMemoryPolicyStore(policy))
         let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "synthetic-host",
                                   requestClock: clock.instant)
         _ = await session.receive(helloFrame())

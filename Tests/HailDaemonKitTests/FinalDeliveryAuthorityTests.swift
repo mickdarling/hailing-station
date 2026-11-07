@@ -37,9 +37,7 @@ import Testing
         case .lease: rig.adapter.leaseAuthority.invalidate()
         case .permit:
             let generation = await rig.host.inputPolicyGeneration(for: FinalDeliveryRig.target)
-            await #expect(throws: PolicyFileError.unwritable("synthetic persistence")) {
-                try await rig.host.deny(FinalDeliveryRig.target)
-            }
+            await rig.host.revokeAuthority()
             try generation.requireCurrent()
         case .lifetime: rig.clock.advance(120_000)
         case .clock: rig.clock.advance(-1)
