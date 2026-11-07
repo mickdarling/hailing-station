@@ -18,17 +18,23 @@ public enum AmbientAudioEvent: Sendable, Equatable {
     case ended(stream: UUID, reason: AmbientStreamEndReason)
 
     public static func started(stream: UUID, connection: UUID, target: String,
-                               selection: UUID? = nil) -> Self {
+                               selection: UUID? = nil, binding: String? = nil) -> Self {
         .started(stream: stream, connection: connection,
-                 scope: AmbientStreamScope(target: target, selection: selection))
+                 scope: AmbientStreamScope(target: target, selection: selection, binding: binding))
     }
 }
 
-/// The gate-admitted destination (still its pinned target in PR 1) and the session's opening selection generation.
+/// The gate-admitted destination (still its pinned target) and the session's opening selection generation.
 /// A caller tracking no generation supplies nil; every start still names its destination explicitly.
 public struct AmbientStreamScope: Sendable, Equatable {
     public let target: String
     public let selection: UUID?
+    /// Resolved before admission, never by the router. Nil means no binding was resolved; the pinned gate emits nil.
+    public let binding: String?
+
+    public init(target: String, selection: UUID? = nil, binding: String? = nil) {
+        (self.target, self.selection, self.binding) = (target, selection, binding)
+    }
 }
 
 /// The gate's answer to one segment (#366). `tookOver` admits a segment whose new stream took ambient listening

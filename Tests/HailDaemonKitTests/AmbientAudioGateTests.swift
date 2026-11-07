@@ -17,6 +17,9 @@ import Testing
         }
         #expect(await gate.admit(ambientSegment(stream: stream, sequence: 8, isFinal: true), connection: phone) == nil)
         #expect(sink.events.first == .started(stream: stream, connection: phone, target: "tmux:a"))
+        if case .started(_, _, let scope) = sink.events.first {
+            #expect(scope.target == "tmux:a" && scope.binding == nil)
+        } else { Issue.record("expected the pinned gate's STARTED scope") }
         #expect(sink.segments == [0, 1, 3, 7, 8])
         #expect(sink.endings == [.final])
         #expect(await gate.activeStream == nil)
