@@ -1,7 +1,7 @@
 public import Foundation
 import Synchronization
 import OSLog
-import HailProtocol
+public import HailProtocol
 
 // Request shape, session gate, peer lifecycle binding and socket submission form one dispatch boundary.
 // swiftlint:disable file_length
@@ -289,13 +289,13 @@ extension HostSession {
 extension WebSocketListener {
     /// Only a live originating session may Send. UUID possession never transfers a hold to a new peer.
     public func sendHeld(_ id: UUID, from connection: UUID) async -> HeldSendResult {
-        guard let peer = peers.values.first(where: { $0.session.connectionID == connection }), peer.isLive else {
+        guard let peer = peers.values.first(where: { $0.session.connectionID == connection }), await peer.isLive else {
             return .refused(.connectionLost)
         }
         let result = await peer.session.sendHeld(id, from: connection)
         // A completed handoff remains sent even if the owner disconnected while awaiting its result.
         if result == .sent { return result }
-        guard peer.isLive, peers.values.contains(where: { $0 === peer }) else { return .refused(.connectionLost) }
+        guard await peer.isLive, peers.values.contains(where: { $0 === peer }) else { return .refused(.connectionLost) }
         return result
     }
 

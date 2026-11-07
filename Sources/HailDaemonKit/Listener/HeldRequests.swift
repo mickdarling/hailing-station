@@ -1,5 +1,5 @@
 import Foundation
-import HailProtocol
+public import HailProtocol
 import OSLog
 import Synchronization
 
@@ -209,7 +209,7 @@ extension HostSession {
         let scope = HeldSendScope(entry: entry, renewOnly: requestClock() >= entry.expires, allowed: {
             store.selects(entry.selection, connection: connection)
                 && !snapshot(connection).contains {
-                    if case .duckMode(on: true, reason: _) = $0 { return true }
+                    if case .duckMode(on: true, reason: _, expires: _) = $0 { return true }
                     return false
                 }
         })
