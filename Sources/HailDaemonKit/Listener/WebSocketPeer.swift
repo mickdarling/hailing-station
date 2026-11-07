@@ -33,7 +33,7 @@ actor WebSocketPeer {
     private let log: @Sendable (WebSocketListenerEvent) -> Void
     private let onEnd: @Sendable (UUID) -> Void
     private var helloTimer: Task<Void, Never>?
-    private let replyTransport = ReplyTransportLifecycle()
+    nonisolated let replyTransport = ReplyTransportLifecycle()
     private let submitClose: @Sendable (@escaping @Sendable () -> Void) -> Void
     private let submitReply: ReplySender?
     private var closing = false
@@ -115,7 +115,11 @@ actor WebSocketPeer {
 
     private func receiveNext() {
         guard !ended, !closing else { return }
-        connection.receiveMessage { [weak self] data, context, _, error in
+        connection.receiveMessage { [weak self, replyTransport] data, context, _, error in
+            let metadata = context?.protocolMetadata(
+                definition: NWProtocolWebSocket.definition
+            ) as? NWProtocolWebSocket.Metadata
+            if error != nil || metadata?.opcode == .close { replyTransport.retire() }
             Task { await self?.received(data, context: context, error: error) }
         }
     }
@@ -151,7 +155,10 @@ actor WebSocketPeer {
     }
 
     private func process(_ data: Data) async {
-        let result = await session.receive(data)
+        guard let permit = replyTransport.issuePermit() else { return }
+        let result = await HostSession.$deliveryPeer.withValue(permit) {
+            await session.receive(data)
+        }
         guard !ended, !closing else { return }
         if result.frames.contains(where: { frame in
             if case .control(.hello) = frame.payload { return true }

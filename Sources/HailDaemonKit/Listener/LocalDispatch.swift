@@ -123,14 +123,12 @@ extension WebSocketListener {
 }
 
 extension WebSocketPeer {
-    /// Binds the dispatch to this peer's own lifecycle (ended, closing, retired transport) at both ends of
-    /// the session handoff; the caller's task cancellation is a separate outcome and never revokes a live
-    /// peer's record. The handoff itself cannot hold the transport gate (the session cannot read it
-    /// synchronously), so a peer that ends during the handoff has its minted record revoked and the caller
-    /// is told the connection was lost.
+    /// Tighten final delivery authority checks at the adapter handoff.
     func dispatch(_ request: LocalDispatchRequest, generation: UUID? = nil) async throws -> UUID? {
-        guard isLive else { throw LocalDispatchRefusal.connectionEnded }
-        let owner = try await session.dispatch(request, generation: generation)
+        guard isLive, let permit = replyTransport.issuePermit() else { throw LocalDispatchRefusal.connectionEnded }
+        let owner = try await HostSession.$deliveryPeer.withValue(permit) {
+            try await session.dispatch(request, generation: generation)
+        }
         guard isLive else {
             await session.revokeDispatch(owner)
             throw LocalDispatchRefusal.connectionLost
