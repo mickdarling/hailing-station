@@ -60,7 +60,7 @@ class HeardTurnSchemaTests(unittest.TestCase):
         count = 0
         for path in (ROOT / "fixtures/frames").glob("*.json"):
             frame = json.loads(path.read_text())
-            if frame["type"] != "control" or frame["payload"]["command"] == "ambient_heard":
+            if frame["type"] != "control" or frame["payload"]["command"] in {"ambient_heard", "request_held"}:
                 continue
             with self.subTest(fixture=path.name):
                 frame["payload"]["turn"] = TURN

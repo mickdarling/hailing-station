@@ -61,6 +61,7 @@ import Testing
         for example in Fixtures.all {
             guard case .control(let control) = example.frame.payload else { continue }
             if case .ambientHeard = control { continue }
+            if case .requestHeld = control { continue } // #1120 also permits heard-turn correlation.
             var object = try #require(JSONSerialization.jsonObject(
                 with: JSONEncoder().encode(control)
             ) as? [String: Any])
