@@ -85,7 +85,7 @@ they explicitly asserted the ambient read-back cancellation that this change rem
 | `RightyoInputRequestRefusalSessionTests.swift` | Updated cancellation expectation, with non-ambient confirmation unchanged. |
 | `RightyoInputRequestRefusalTests.swift` | Existing consumer continuation expectation now distinguishes retained ambient read-backs from the unchanged direct host dispatcher. |
 
-## Verification
+## Earlier VM verification (before rebased review fixes)
 
 No host builds or tests. Host work is limited to source edits, Git, SSH and strict SwiftLint.
 
@@ -155,10 +155,39 @@ Existing regression suites retain their own timing mechanisms. No simulator or p
 - Independent exact-head security review/second key and PR checks have not been requested or represented as complete.
   This worktree is local only and has not been pushed or opened as a PR.
 
-## Rebased review fixes (verification pending)
+## Rebased review fixes: final verification
 
 New commits above `eba599ca` address attempt finalization/decision ordering and bounded metadata. The regression
 barriers explicitly cover refusal with an already waiting Discard followed by retry, and refusal followed by an
-active retry with Discard queued behind it (both successful and refused retry results). No host builds or tests
-run; the rebased source snapshot will be bundled into `~/codex-workspaces/vw1120c` after fetching `origin main`.
-The prior verification results above are historical evidence only, not verification of these new commits.
+active retry with Discard queued behind it (both successful and refused retry results). Metadata tests cover
+32-per-connection and 256-host terminal replay bounds, connection churn, `stale` after retirement, attempt-scoped
+selection cleanup, and preservation of unresolved holds. A wire-control regression verifies that neither Send
+nor Discard can resolve a hold through the device's frame ingress. Static call-site/route inspection confirms
+held Send remains unreachable from any wire, local socket or device path.
+
+The VM workspace `~/codex-workspaces/vw1120c` fetched `origin main` (`76010ade`) and applied the new git bundle,
+checking out source snapshot `fb06a242352897e571c209e13f0559651eff020a`. Before synchronizing/running, the blocking
+SSH wrapper (stdin `< /dev/null`) waited for the prior job with:
+
+```sh
+while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
+```
+
+It then fetched `origin main`, fetched the bundle's `HEAD`, checked out `FETCH_HEAD`, and ran exactly:
+
+```sh
+WS=vw1120c ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit)'
+```
+
+Result: **`build=0`, `test=0`; 987 tests in 175 suites passed in 540.800 seconds**, with **zero unexpected
+failures** and the same **five intentional known issues** in `LocalDispatchPreflightWaitTests`. All new regressions
+passed. Build time was 41.44 seconds; the existing missing-module-cache debug-info warnings remain. Snapshot logs
+are retained on the VM as `~/codex-workspaces/vw1120c-fb06a242-build.log` and
+`~/codex-workspaces/vw1120c-fb06a242-test.log` (also copied to the workspace-specific generic log names above).
+
+Strict host SwiftLint passed with **zero violations in all 13 changed Swift files** against rebased main, using
+`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict <file>` per file.
+`git diff --check` passed. The checker's exact exclusions and rename handling still count the same **four production
+files** listed above. `WebSocketPeer.swift` is unchanged. No host builds/tests, simulator/device validation, push,
+installation, upload or independent review was performed. This final documentation-only commit follows the tested
+source snapshot; the earlier verification section records historical evidence only.
