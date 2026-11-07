@@ -93,7 +93,9 @@ struct FinalDeliveryRig {
         } else {
             try await registry.register(adapter)
         }
-        var policy = Policy(guardPatterns: [])
+        var policy = Policy(guardPatterns: [
+            .init(name: "synthetic guard", regex: "^synthetic guarded command$")
+        ])
         try policy.allow(target, binding: "synthetic-binding", tier: .open)
         let host = try HailHost(registry: registry, store: InMemoryPolicyStore(
             policy, saveError: PolicyFileError.unwritable("synthetic persistence")
