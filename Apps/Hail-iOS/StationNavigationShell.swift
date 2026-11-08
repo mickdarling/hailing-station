@@ -9,9 +9,10 @@ import UIKit
 /// privacy, recipient or target. The production owners stay in the station root above it.
 ///
 /// The station page is never unmounted by navigation. Its capture view finishes capture and clears a pending send
-/// when it disappears, so other sections draw over it while it stays mounted, hidden and out of the accessibility
-/// tree. For the same reason iPhone uses a native tab bar over the pages instead of a `TabView`, which would make
-/// the station disappear on every tab switch.
+/// when it disappears, so the page is not a child of any navigation container: a tab switch, another section or a
+/// collapsed iPad split view going back to its sidebar would each remove it. It is drawn once, above the whole
+/// arrangement, over a transparent slot in the detail. While no slot is shown it stays mounted, collapsed and out of
+/// the accessibility tree. iPhone uses a native tab bar rather than a `TabView` for the same reason.
 struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     let state: StationNavigationState
     let idiom: StationNavigationIdiom
@@ -25,7 +26,21 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     #endif
 
     var body: some View {
-        // The idiom never changes while the app runs, so this never swaps one arrangement for the other.
+        arrangement
+            .overlayPreferenceValue(StationSlotKey.self) { slot in
+                GeometryReader { proxy in
+                    let frame = slot.map { proxy[$0] }
+                    page(.station)
+                        .frame(width: frame?.width ?? 0, height: frame?.height ?? 0)
+                        .position(x: frame?.midX ?? 0, y: frame?.midY ?? 0)
+                        .stationCollapsed(frame == nil)
+                }
+            }
+    }
+
+    /// The idiom never changes while the app runs, so this never swaps one arrangement for the other.
+    @ViewBuilder
+    private var arrangement: some View {
         switch state.layout(for: idiom) {
         case .split(let sidebarVisible):
             split(sidebarVisible: sidebarVisible)
@@ -66,18 +81,23 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        // At compact width the system presents the inspector as a sheet.
+        .inspector(isPresented: inspectorPresented) { inspector() }
         #else
         // The Mac always resolves to a split view; this keeps the type total on every platform.
         pages
         #endif
     }
 
-    /// The station page first and always; the selected other section, when there is one, above it.
+    /// The selected section's page, or, for the station, the slot the station page is drawn over.
     private var pages: some View {
         ZStack {
-            page(.station)
-                .stationCollapsed(state.section != .station)
-            if state.section != .station {
+            if state.section == .station {
+                Color.clear
+                    .anchorPreference(key: StationSlotKey.self, value: .bounds) { $0 }
+                    .stationHiddenNavigationBar()
+                    .accessibilityHidden(true)
+            } else {
                 page(state.section)
                     .id(state.section)
             }
@@ -123,46 +143,14 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     }
 }
 
-#if os(iOS)
-/// The system tab bar on its own, so the pages above it stay mounted (see `StationNavigationShell`). It shows the
-/// selection it is given and reports taps; it changes nothing itself.
-struct StationTabBar: UIViewRepresentable {
-    let selection: StationSection
-    let select: (StationSection) -> Void
+/// Where the station page is drawn: the station slot's bounds, or nothing while no slot is shown.
+private struct StationSlotKey: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
 
-    func makeCoordinator() -> Coordinator { Coordinator(select: select) }
-
-    func makeUIView(context: Context) -> UITabBar {
-        let bar = UITabBar()
-        bar.items = StationSection.allCases.enumerated().map { index, section in
-            let item = UITabBarItem(title: section.title, image: UIImage(systemName: section.systemImage), tag: index)
-            item.accessibilityIdentifier = "station.tab.\(section.rawValue)"
-            return item
-        }
-        bar.delegate = context.coordinator
-        return bar
-    }
-
-    func updateUIView(_ bar: UITabBar, context: Context) {
-        context.coordinator.select = select
-        let index = StationSection.allCases.firstIndex(of: selection)
-        bar.selectedItem = index.flatMap { bar.items?[$0] }
-    }
-
-    @MainActor
-    final class Coordinator: NSObject, UITabBarDelegate {
-        var select: (StationSection) -> Void
-
-        init(select: @escaping (StationSection) -> Void) { self.select = select }
-
-        func tabBar(_ tabBar: UITabBar, didSelect item: UITabBarItem) {
-            let sections = StationSection.allCases
-            guard sections.indices.contains(item.tag) else { return }
-            select(sections[item.tag])
-        }
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = value ?? nextValue()
     }
 }
-#endif
 
 #Preview("Navigation shell · synthetic") {
     @Previewable @State var state = StationNavigationState()
