@@ -87,12 +87,15 @@ delivery test bodies are unchanged. No existing assertion is weakened or removed
 | Same: established taint's delivered text and Enter | KEPT | Existing assertion unchanged. |
 | Same: no attempt at set-buffer preparation | KEPT | Existing assertion unchanged; additional paste-launch case below. |
 | Same: no delivered keys before preparation release | KEPT | Existing assertion unchanged. |
-| Same: delivered outcome, committed attempt and text/Enter after release | KEPT | All three existing assertions unchanged. |
+| Same: delivered outcome after release | KEPT | Existing assertion unchanged. |
+| Same: committed attempt after release | KEPT | Existing assertion unchanged. |
+| Same: exact text/Enter after release | KEPT | Existing assertion unchanged. |
 | New `wakeAttemptRemainsUncommittedBeforePasteLaunch`: attempt boundary | TIGHTENED | Parks on recorded paste-buffer in `beforeResponse`; asserts no attempt and no delivery before `launch.perform`, then delivered outcome, committed attempt and text/Enter after release. |
 | `TmuxRefusalEvidenceTests.aConfirmedInsertThatCameBackIsNamedStaleAndOwnWithItsLengthAndAge`: refusal type | KEPT | Existing assertion unchanged. |
 | Same: delivered text and Enter remain unchanged by refusal | KEPT | Existing assertion unchanged. |
 | Same: one confirmed submit evidence line | KEPT | Existing assertion unchanged. |
-| Same: exactly one refusal evidence line and parsed whole-second age | KEPT | Existing requirements unchanged. |
+| Same: exactly one refusal evidence line | KEPT | Existing requirement unchanged. |
+| Same: parsed whole-second age | KEPT | Existing requirement unchanged. |
 | Same: age is within 1...30 seconds | KEPT | Same monotonic deadline; suspending clock wait replaces yield-based polling. |
 | Same: exact refusal evidence with the observed age | KEPT | Existing assertion unchanged. |
 | Same: token-only evidence excludes synthetic payloads | KEPT | Existing assertion unchanged. |
@@ -100,12 +103,115 @@ delivery test bodies are unchanged. No existing assertion is weakened or removed
 | Same: next terminal message has exact notAllowed response | KEPT | Existing assertion unchanged. |
 | Same: only first text pasted | KEPT | Existing assertion unchanged. |
 | Same: no subsequent capture, set-buffer, paste-buffer or send-keys | TIGHTENED | Each argv element is searched for each command substring, including if-shell command strings. |
-| Same: exactly one Enter and empty input | KEPT | Both existing assertions unchanged. |
+| Same: exactly one Enter | KEPT | Existing assertion unchanged. |
+| Same: empty input | KEPT | Existing assertion unchanged. |
 
 All other tests in those files remain unchanged. The elapsed-age clock wait is intentionally a time
-measurement, not a replacement for an ordering barrier. The runner responder executes inside the
-guarded `launch.perform`; the paste-launch park precedes that call.
+measurement, not a replacement for an ordering barrier. For paste and Enter, the responder executes
+inside `launch.perform` on the guarded runner overload; the paste-launch park precedes that call.
 
 ## Verification
 
-Verification results are recorded after the VM runs. No host build or test is part of this evidence.
+The VM workspace `~/codex-workspaces/vwf4` was freshly cloned and checked out at
+`36259c1728edd5d2f8defadf28054e032a545668`. Host commits were synchronized with bundles made by
+`git bundle create /tmp/vwf4.bundle origin/main..HEAD`; VM checkout used `git fetch /tmp/vwf4.bundle HEAD`
+and `git checkout -B receive-verification FETCH_HEAD`. No source or test build ran on the host.
+
+Each remote script was invoked through SSH with stdin redirected from `/dev/null`, and the SSH call
+was joined before continuing. Every run first waited for the shared lane with the exact check below.
+The check lived in a script file, so the waiting shell's arguments did not contain its search pattern.
+A separate 600-second process-group watchdog reaped each phase on timeout or interruption.
+
+```sh
+while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
+```
+
+The initial targeted run passed 26 tests in four suites. An expanded snapshot at
+`d56b456db7c117d4a9a9e2ce06f700ecc4d9b45b` passed 28 tests in four suites three times. The final test
+snapshot is `fd5a61df23ad475659f171769003643b9fb241d0`. Relative to the expanded snapshot, it adds an
+exact protocol-error response assertion and permits either close/cancellation cleanup ordering in a
+new test. Production files are identical across those two snapshots.
+
+The targeted command, used initially and for each three-run repeat set, was:
+
+```sh
+WS=vwf4 python3 /tmp/vwf4-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(WebSocketReceivePump|TaskProgressTmuxAdmission|TmuxRefusalEvidence|TmuxAuthorityBoundary)'
+```
+
+The requested broad regression filter was split into these bounded groups, with the idle check
+before each command. All existing test bodies were unchanged except the two explicit carry edits.
+
+```sh
+WS=vwf4 python3 /tmp/vwf4-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(WebSocket|Listener|HostSession|FinalDelivery|DeliveryAdmission|TaskProgress|Held|LocalDispatch|HailHost|Host|Tmux|Reply|CommandLaunch)'
+WS=vwf4 python3 /tmp/vwf4-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.Ambient[A-M]'
+WS=vwf4 python3 /tmp/vwf4-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.Ambient([^A-M]|$)'
+```
+
+| Regression group | Result |
+| --- | --- |
+| Core | 502 tests, 105 suites passed; 10 expected known issues in unchanged wait-harness self-tests. |
+| Ambient A–M | 111 tests, 21 suites passed. |
+| Remaining ambient | 507 tests, 107 suites passed. |
+
+The ten known issues come from `LocalDispatchPreflightWaitTests` and `ReplyRecipientHandoffWaitTests`,
+which deliberately exercise deadline and cancellation reporting. They are not unexpected failures.
+
+The remaining verification commands, also preceded by the idle check, were:
+
+```sh
+cd ~/codex-workspaces/vwf4
+python3 /tmp/vwf4-phase.py python3 -m unittest discover -s Tests/ReplyCLITests
+PATH="$HOME/codex-workspaces/vwf4-tools:$PATH" python3 /tmp/vwf4-phase.py /bin/zsh ~/codex-workspaces/vw-werr.sh vwf4
+```
+
+The workspace-specific PATH wrapper delegates to `/usr/bin/swift`, adding `-j 4` only to `swift build`.
+The shared helpers were not edited; before/after SHA-256 checks compare both `vw327-run.sh` and
+`vw-werr.sh`. The ordinary test helper already supplies `-j 4` for build and test. No VM jobs are
+intentionally detached.
+
+The CLI suite passed all **124 tests** (215.092 seconds). Final changed-suite repeats at
+`fd5a61df23ad475659f171769003643b9fb241d0` passed **28 tests in four suites** each, in 2.982, 2.826 and
+2.590 seconds. Both warnings-as-errors invocations reported `werr build=0` and wrapper exit **0**,
+including the final test snapshot. Command Line Tools emitted module-cache debug-information warnings;
+there were no Swift warnings-as-errors failures. Shared-helper checksums matched after both runs.
+The toolchain was Apple Swift 6.3.3 on the macOS Dev Work VM.
+
+The existing real-tmux suites remain skipped when tmux is unavailable: `TmuxDeliveryCommitFakeTUITests`,
+`TmuxDeliveryCommitShellPromptTests`, `TmuxIntegrationTests`, `TmuxPasteAgentTests` and
+`TmuxPasteEnterTests`. No tmux binary was installed. All new pump, real-session and loopback tests ran.
+
+VM logs are `/tmp/vwf4-{repeat-1,repeat-2,repeat-3,core,ambient-am,ambient-rest}-{build,test}.log`,
+`/tmp/vwf4-final-repeat-{1,2,3}-{build,test}.log`, `/tmp/vwf4-cli.log`,
+`/tmp/vwf4-{werr,final-werr}-result.log`, and `~/codex-workspaces/vwf4-werr.log`. Inspection after the
+final run found no running phase, Swift build, Swift test or package-test process from this work.
+The VM tracked worktree was clean. The final commit adds documentation only after the final test
+snapshot; source and test identity are checked again during final bundle synchronization.
+
+Host strict lint and explicit line-length verification were run separately on all eight changed
+Swift files, with zero violations and no awk output:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict <file>
+awk 'length($0)>120 && $0 !~ /^[[:space:]]*\/\//' <file>
+```
+
+`git diff --check` also passes. Local source counting imports `scripts/pr-shape.py` with
+`runpy.run_path`, reads `git diff --name-status --find-renames 36259c17 HEAD`, includes both rename
+names and applies its exact prefix/suffix exclusions. It counts **two production files**, below the
+four-file limit. The GitHub-dependent checker entry point is not invoked.
+
+| Changed file | Role |
+| --- | --- |
+| `Sources/HailDaemonKit/Listener/WebSocketPeer.swift` | Peer integration and lifecycle retirement observation. |
+| `Sources/HailDaemonKit/Listener/WebSocketIngressPump.swift` | Bounded receive pump and serialized worker. |
+| `Tests/HailDaemonKitTests/WebSocketReceivePumpTests.swift` | Synthetic pump boundaries and transport classification. |
+| `Tests/HailDaemonKitTests/WebSocketReceivePumpLoopbackTests.swift` | Loopback delivery, overflow, selection and closure. |
+| `Tests/HailDaemonKitTests/WebSocketReceivePumpSessionTests.swift` | Real-session receive concurrency measurement. |
+| `Tests/HailDaemonKitTests/TaskProgressTmuxAdmissionTests.swift` | Additional paste-launch attempt boundary. |
+| `Tests/HailDaemonKitTests/TmuxRefusalEvidenceTests.swift` | Suspended elapsed-age clock wait. |
+| `Tests/HailDaemonKitTests/TmuxAuthorityBoundaryTests.swift` | All-argv command refusal assertion. |
+| `docs/testing/websocket-receive-pump.md` | Invariants, lock order, assertions and verification. |
+
+No installation, upload, daemon restart, launch-agent change, host configuration change or host tmux
+operation is part of this work. The evidence is synthetic VM and loopback evidence; there is no
+simulator, physical-device or live captured-output round-trip claim.
