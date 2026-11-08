@@ -53,11 +53,11 @@ actor WebSocketPeer {
                 event: "ambient_audio_dropped", sessionID: id,
                 detail: "count=\(count) stream_seq_range=\(sequence)-\(sequence)"
             ))
-        }) { callback in
+        }, receive: { callback in
             connection.receiveMessage { data, context, _, error in
                 callback(WebSocketIngressPump.classify(data, context: context, error: error))
             }
-        }
+        })
         self.id = id
         self.connection = connection
         self.session = session
@@ -73,12 +73,6 @@ actor WebSocketPeer {
                 completion: .contentProcessed { _ in completion() }
             )
         }
-    }
-
-    nonisolated static func protocolErrorCloseContext() -> NWConnection.ContentContext {
-        let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
-        metadata.closeCode = .protocolCode(.protocolError)
-        return NWConnection.ContentContext(identifier: "hail.close", isFinal: true, metadata: [metadata])
     }
 
     func start() {
@@ -196,6 +190,13 @@ actor WebSocketPeer {
 }
 
 extension WebSocketPeer {
+    nonisolated static func protocolErrorCloseContext() -> NWConnection.ContentContext {
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
+        metadata.closeCode = .protocolCode(.protocolError)
+        return NWConnection.ContentContext(identifier: "hail.close", isFinal: true, metadata: [metadata])
+    }
+
+
     /// Preparation is not an enqueue grant; its transport permit must remain current at final admission.
     func prepareReplyPublication(
         _ frame: Frame, onLateSuccess: (@Sendable () -> Void)? = nil

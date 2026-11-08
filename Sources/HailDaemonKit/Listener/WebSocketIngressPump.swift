@@ -18,53 +18,11 @@ final class WebSocketIngressPump: Sendable {
     static let maxNonAudioBytes = 2 * PayloadLimits.defaultMaxFrameBytes
     static let maxAudioBytes = maxQueuedAudio * PayloadLimits.defaultMaxFrameBytes
     static let maxQueuedBytes = maxNonAudioBytes + maxAudioBytes
-
-    private struct Message {
-        let frame: Frame?
-        let bytes: Int
-        let audioWindow: Bool
-        let droppableSequence: Int?
-
-        // Pure, bounded classification: no callbacks or locks. Failed decoding is never droppable.
-        init(_ data: Data) {
-            bytes = data.count
-            frame = try? FrameCoding.decode(data)
-            if let frame, case .audio(let audio) = frame.payload, audio.sequence > 0 {
-                audioWindow = true
-                droppableSequence = audio.isFinal ? nil : audio.sequence
-            } else {
-                audioWindow = false
-                droppableSequence = nil
-            }
-        }
-    }
-    private struct State {
-        var started = false
-        var stopped = false
-        var receiving = false
-        var working = false
-        var messages: [Message] = []
-        var bytes = 0
-        var nonAudioBytes = 0
-        var audioCount = 0
-        var nonDroppableCount = 0
-        var dropped = 0
-        var worker: Task<Void, Never>?
-
-        mutating func remove(at index: Int) -> Message {
-            let message = messages.remove(at: index)
-            bytes -= message.bytes
-            if message.audioWindow { audioCount -= 1 } else { nonAudioBytes -= message.bytes }
-            if message.droppableSequence == nil { nonDroppableCount -= 1 }
-            return message
-        }
-    }
     // Leaf lock: classification and queue bookkeeping only; no callbacks, awaits or other locks.
     private let state = Mutex(State())
     private let lifecycle: ReplyTransportLifecycle
     private let receive: Receive
     private let onDrop: @Sendable (Int, Int) -> Void
-
     init(
         lifecycle: ReplyTransportLifecycle,
         onDrop: @escaping @Sendable (Int, Int) -> Void = { _, _ in },
@@ -75,7 +33,6 @@ final class WebSocketIngressPump: Sendable {
         self.onDrop = onDrop
         lifecycle.observeRetirement { [weak self] in self?.clear() }
     }
-
     func start(process: @escaping Process, onEnd: @escaping End) {
         let start = state.withLock { state in
             guard !state.started, !state.stopped else { return false }
@@ -84,13 +41,11 @@ final class WebSocketIngressPump: Sendable {
         }
         if start { arm(process: process, onEnd: onEnd) }
     }
-
     /// Retirement never waits for the worker, responses, or peer/router cleanup.
     func stop() {
         lifecycle.retire()
         clear()
     }
-
     private func clear() {
         state.withLock { state in
             state.stopped = true
@@ -101,7 +56,6 @@ final class WebSocketIngressPump: Sendable {
             state.nonDroppableCount = 0
         }
     }
-
     private func arm(process: @escaping Process, onEnd: @escaping End) {
         let arm = state.withLock { state in
             guard !state.stopped, !state.receiving else { return false }
@@ -113,7 +67,6 @@ final class WebSocketIngressPump: Sendable {
             self?.received(event, process: process, onEnd: onEnd)
         }
     }
-
     private func received(_ event: Event, process: @escaping Process, onEnd: @escaping End) {
         if case .terminal(let reason, let protocolError) = event {
             stop()
@@ -136,13 +89,11 @@ final class WebSocketIngressPump: Sendable {
             }
         }
     }
-
     private struct Decision {
         var overflow = false
         var worker = false
         var droppedSequence: Int?
     }
-
     private func enqueue(_ event: Event) -> Decision {
         state.withLock { state in
             state.receiving = false
@@ -176,11 +127,9 @@ final class WebSocketIngressPump: Sendable {
             return decision
         }
     }
-
     var droppedAudioCount: Int { state.withLock { $0.dropped } }
     /// A snapshot for callers that explicitly join outside the peer actor and pump lock.
     var worker: Task<Void, Never>? { state.withLock { $0.worker } }
-
     private func next() -> Message? {
         state.withLock { state in
             guard !state.stopped, !state.messages.isEmpty else {
@@ -190,7 +139,6 @@ final class WebSocketIngressPump: Sendable {
             return state.remove(at: 0)
         }
     }
-
     static func classify(
         _ data: Data?, context: NWConnection.ContentContext?, error: NWError?
     ) -> Event {
@@ -207,6 +155,46 @@ final class WebSocketIngressPump: Sendable {
             guard let data else { return .terminal("WebSocket message had no content", protocolError: true) }
             return .application(data)
         default: return .terminal("unsupported WebSocket message", protocolError: true)
+        }
+    }
+}
+extension WebSocketIngressPump {
+    private struct Message {
+        let frame: Frame?
+        let bytes: Int
+        let audioWindow: Bool
+        let droppableSequence: Int?
+        // Pure, bounded classification: no callbacks or locks. Failed decoding is never droppable.
+        init(_ data: Data) {
+            bytes = data.count
+            frame = try? FrameCoding.decode(data)
+            if let frame, case .audio(let audio) = frame.payload, audio.sequence > 0 {
+                audioWindow = true
+                droppableSequence = audio.isFinal ? nil : audio.sequence
+            } else {
+                audioWindow = false
+                droppableSequence = nil
+            }
+        }
+    }
+    private struct State {
+        var started = false
+        var stopped = false
+        var receiving = false
+        var working = false
+        var messages: [Message] = []
+        var bytes = 0
+        var nonAudioBytes = 0
+        var audioCount = 0
+        var nonDroppableCount = 0
+        var dropped = 0
+        var worker: Task<Void, Never>?
+        mutating func remove(at index: Int) -> Message {
+            let message = messages.remove(at: index)
+            bytes -= message.bytes
+            if message.audioWindow { audioCount -= 1 } else { nonAudioBytes -= message.bytes }
+            if message.droppableSequence == nil { nonDroppableCount -= 1 }
+            return message
         }
     }
 }

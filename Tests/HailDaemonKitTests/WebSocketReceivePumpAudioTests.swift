@@ -46,50 +46,6 @@ extension WebSocketReceivePumpTests {
         #expect(rig.transport.maximumOutstanding == 1)
     }
 
-    @Test func privacyControlRemainsAheadOfLaterAudio() async throws {
-        let rig = PumpRig()
-        let park = PumpAudioPark()
-        let sink = RecordingAmbientSink()
-        let clock = AmbientTestClock()
-        let gate = ambientGate(sink: sink, clock: clock)
-        let connection = UUID()
-        let stream = UUID()
-        let applied = Mutex(false)
-        let admitted = Mutex<[Int]>([])
-        defer { park.release.finish(.success(())); rig.pump.stop() }
-        rig.start { frame in
-            guard let frame else { Issue.record("expected frame"); return }
-            switch frame.payload {
-            case .control(.setPrivacy(let on)):
-                await gate.setPrivacy(on, connection: connection)
-                applied.withLock { $0 = true }
-            case .audio(let audio):
-                #expect(applied.withLock { $0 })
-                clock.advance(.milliseconds(100))
-                let error = await gate.admit(audio, connection: connection)
-                #expect(error == nil)
-                admitted.withLock { $0.append(audio.sequence) }
-            default: await park.wait()
-            }
-        }
-        // Open the gate first, as privacy belongs to the active owner.
-        #expect(await gate.admit(ambientSegment(stream: stream, sequence: 0), connection: connection) == nil)
-        rig.transport.deliver(.application(try pumpMarker(1)))
-        try await park.entered.wait("privacy dispatch parked")
-        let worker = try #require(rig.pump.worker)
-        let privacy = sessionFrame(payload: .control(.setPrivacy(on: true)))
-        rig.transport.deliver(.application(try FrameCoding.encode(privacy)))
-        for sequence in 1...35 { rig.transport.deliver(.application(try pumpAudio(stream, sequence))) }
-        #expect(!applied.withLock { $0 })
-        #expect(sink.segments == [0])
-        park.release.finish(.success(()))
-        await worker.value
-        #expect(applied.withLock { $0 })
-        #expect(admitted.withLock { $0 } == Array(6...35))
-        #expect(sink.segments == [0] + Array(6...35))
-        #expect(!rig.lifecycle.isRetired)
-    }
-
     @Test func hostDropsMatchPhoneDropsAtGateAndAmbientSink() async throws {
         let rig = PumpRig()
         let park = PumpAudioPark()
@@ -133,64 +89,10 @@ extension WebSocketReceivePumpTests {
         #expect(hostSink.endings == [.final])
     }
 
-    @Test func aggregateByteCapTerminatesBeforeAnyEviction() async throws {
-        let rig = PumpRig()
-        let park = PumpAudioPark()
-        defer { park.release.finish(.success(())); rig.pump.stop() }
-        rig.start { _ in await park.wait() }
-        rig.transport.deliver(.application(try pumpMarker(1)))
-        try await park.entered.wait("byte cap dispatch parked")
-        let worker = try #require(rig.pump.worker)
-        for _ in 0..<2 {
-            rig.transport.deliver(.application(Data(repeating: 32, count: PayloadLimits.defaultMaxFrameBytes)))
-        }
-        let stream = UUID()
-        for sequence in 1...30 {
-            var data = try pumpAudio(stream, sequence)
-            data.append(Data(repeating: 32, count: PayloadLimits.defaultMaxFrameBytes - data.count))
-            rig.transport.deliver(.application(data))
-        }
-        #expect(!rig.lifecycle.isRetired)
-        #expect(rig.pump.droppedAudioCount == 0)
-        rig.transport.deliver(.application(try pumpAudio(stream, 31)))
-        #expect(rig.lifecycle.isRetired)
-        #expect(try await rig.ended.wait("aggregate cap termination") == "receive queue limit")
-        #expect(rig.pump.droppedAudioCount == 0)
-        park.release.finish(.success(()))
-        await worker.value
-    }
 
-    @Test(arguments: [false, true])
-    func unclassifiableFramesUseNonDroppableBound(malformed: Bool) async throws {
-        let rig = PumpRig()
-        let park = PumpAudioPark()
-        defer { park.release.finish(.success(())); rig.pump.stop() }
-        rig.start { _ in await park.wait() }
-        rig.transport.deliver(.application(try pumpMarker(1)))
-        try await park.entered.wait("fail closed dispatch parked")
-        let worker = try #require(rig.pump.worker)
-        let unknown = sessionFrame(payload: .unknown(type: "future", payload: .null))
-        let data = malformed ? Data("{\"type\":\"audio\"}".utf8) : try FrameCoding.encode(unknown)
-        for _ in 0..<8 { rig.transport.deliver(.application(data)) }
-        #expect(!rig.lifecycle.isRetired)
-        rig.transport.deliver(.application(data))
-        #expect(rig.lifecycle.isRetired)
-        #expect(rig.pump.droppedAudioCount == 0)
-        park.release.finish(.success(()))
-        await worker.value
-    }
-
-    @Test func singleOversizedMessageTerminates() async throws {
-        let rig = PumpRig()
-        rig.start { _ in Issue.record("oversized message must not reach worker") }
-        rig.transport.deliver(.application(Data(count: PayloadLimits.defaultMaxFrameBytes + 1)))
-        #expect(rig.lifecycle.isRetired)
-        #expect(try await rig.ended.wait("oversized termination") == "receive queue limit")
-        #expect(rig.transport.receives == 1)
-    }
 }
 
-private struct PumpAudioPark: Sendable {
+struct PumpAudioPark: Sendable {
     let entered = SelectionPreflightSignal<Void>()
     let release = SelectionPreflightSignal<Void>()
     func wait() async {
@@ -199,7 +101,7 @@ private struct PumpAudioPark: Sendable {
     }
 }
 
-private func pumpAudio(_ stream: UUID, _ sequence: Int, final: Bool = false) throws -> Data {
+func pumpAudio(_ stream: UUID, _ sequence: Int, final: Bool = false) throws -> Data {
     var audio = ambientSegment(stream: stream, sequence: sequence, isFinal: final)
     audio.bytes = Data(repeating: UInt8(sequence % 256), count: 3_200)
     return try FrameCoding.encode(sessionFrame(payload: .audio(audio)))
