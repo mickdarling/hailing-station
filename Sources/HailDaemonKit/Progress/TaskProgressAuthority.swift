@@ -32,8 +32,8 @@ enum TaskProgressWakeScope {
     @TaskLocal static var beforeHandoff: (@Sendable () throws -> Void)?
     @TaskLocal static var retained: RetainedDeliveryStages?
 
-    /// Existing adapters retain a committing, lock-only handoff check. Operation-bearing callers use
-    /// the composed authority directly; no check holds a gate through asynchronous adapter completion.
+    /// Existing adapters retain a committing, lock-only handoff check backed by composed admission.
+    /// No check holds a gate through asynchronous adapter completion.
     static func checkedHandoff(_ authority: DeliveryAuthority) -> DeliveryAuthority {
         DeliveryAuthority { try authority.admit {} }
     }
@@ -79,9 +79,8 @@ struct RetainedDeliveryStages: Sendable {
         guard held.noticeCurrent() else { throw HeldAuthorityError.noticeExpired }
     }
 
-    static func refusal(target: String, held: HeldSendScope?) -> @Sendable () throws -> Void {
+    static func refusal(target: String) -> @Sendable () throws -> Void {
         return {
-            try requireHeld(held)
             throw HostError.denied(.notAllowed(target))
         }
     }
@@ -93,16 +92,27 @@ struct RetainedDeliveryStages: Sendable {
         var stages = gates
         let matches = generation.map { $0.isSameGeneration(as: policy) } ?? true
         let heldMatches = held.map { $0.entry.policy.isSameGeneration(as: policy) } ?? true
-        stages[.targetPolicy] = Self.gate({ operation in
+        let policyGate = Self.gate({ operation in
             guard matches && heldMatches else { return false }
             return policy.performIfCurrent(operation) == true
         }, refusal: { throw HostError.denied(.notAllowed(policy.target)) })
+        let evaluate: @Sendable (() throws -> Void) throws -> Void = { operation in
+            do {
+                try policyGate.perform {
+                    try Self.requireHeld(held)
+                    try operation()
+                }
+            } catch {
+                // Re-evaluate refusal precedence only after every nested gate has released.
+                if case HostError.denied(.notAllowed) = error { try Self.requireHeld(held) }
+                throw error
+            }
+        }
+        stages[.targetPolicy] = DeliveryAdmission.Gate(validate: { try evaluate {} }, perform: evaluate)
         let decision = stages[.attemptCancellation]
         stages[.attemptCancellation] = DeliveryAdmission.Gate(validate: {
-            try Self.requireHeld(held)
             try decision?.validate()
         }, perform: { operation in
-            try Self.requireHeld(held)
             if let decision {
                 try decision.perform { try handoff?(); try operation() }
             } else {

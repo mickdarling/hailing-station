@@ -64,7 +64,8 @@ public enum AdapterInputShapeError: Error, Sendable, Equatable {
 
 /// Retained authority for one guarded dispatch, never a fresh grant.
 /// Validation and operation-bearing delivery admission are separate capabilities. Admission is ordered
-/// against retirement; check-only authority retains its existing validation contract.
+/// against retirement; check-only authority takes short locks only and performs no policy I/O.
+/// Guarded-delivery adapters check authority immediately before each target side effect.
 /// CheckedHandoffDelivering explicitly opts into a handoff-only check. Adapters supporting neither
 /// guarded delivery contract must refuse guarded delivery.
 public struct DeliveryAuthority: Sendable {
@@ -90,6 +91,8 @@ public struct DeliveryAuthority: Sendable {
     /// Operation-bearing delivery admission is ordered against retirement. The operation is synchronous
     /// and nonescaping; it must not suspend, wait for completion, retire or reacquire any authority gate.
     /// Check-only authority, including authority used by CheckedHandoffDelivering, fails closed here.
+    /// An error does not prove the operation did not run. Callers rely on the attempt/cancellation
+    /// record and never retry on error.
     public func admit<Value>(_ operation: () throws -> Value) throws -> Value {
         guard let admission else { throw DeliveryAdmissionError.unsupported }
         return try admission.admit(operation)

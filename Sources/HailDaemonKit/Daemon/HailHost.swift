@@ -36,10 +36,17 @@ private struct HostDispatchRequest: Sendable {
     let retained = TaskProgressWakeScope.retained
 
     var deliveryAuthority: DeliveryAuthority? {
-        guard let policyGeneration else { return nil }
-        return (retained ?? RetainedDeliveryStages()).composed(
-            policy: policyGeneration, handoff: taskHandoff, held: heldScope
-        )
+        get throws {
+            guard let policyGeneration else {
+                guard retained == nil, heldScope == nil, taskHandoff == nil else {
+                    throw HostError.denied(.notAllowed(target))
+                }
+                return nil
+            }
+            return (retained ?? RetainedDeliveryStages()).composed(
+                policy: policyGeneration, handoff: taskHandoff, held: heldScope
+            )
+        }
     }
 }
 
