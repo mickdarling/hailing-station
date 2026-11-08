@@ -217,7 +217,9 @@ final class TmuxSubmissionTicket: Sendable {
     private struct State { var admitted = false; var enters = 0 }
     private let state = Mutex(State())
 
-    init(delivery: UUID, executable: String, base: [String], session: TmuxAdapter.Session, buffer: String, payload: String) {
+    init(
+        delivery: UUID, executable: String, base: [String], session: TmuxAdapter.Session, buffer: String, payload: String
+    ) {
         self.delivery = delivery
         self.executable = executable
         self.base = base
@@ -269,12 +271,13 @@ extension TmuxAdapter {
                                            session: session, buffer: buffer, payload: text)
         try control.prepare(ticket)
         let launch = CommandLaunch { operation in
-            let admit = {
-                try control.abandoned.perform {
-                    try ticket.admit(operation)
+            if let authority = control.authority {
+                try authority.admit {
+                    try control.abandoned.perform { try ticket.admit(operation) }
                 }
+            } else {
+                try control.abandoned.perform { try ticket.admit(operation) }
             }
-            if let authority = control.authority { try authority.admit(admit) } else { try admit() }
         }
         let result: CommandResult
         do {

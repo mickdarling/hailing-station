@@ -40,7 +40,8 @@ import Testing
         }
         await #expect(throws: (any Error).self) { try await next.value }
         #expect(fixture.lines("launches").count == launches)
-        // Fresh authority proves the pane has no sticky taint, independent of the retired grant.
+        // A fresh delivery proves the pane has no sticky taint, independent of the retired grant.
+        try fixture.mark("no-barrier")
         try await rig.adapter.deliver("clean evidence", to: "codex", binding: SlowTmuxCommandFixture.binding)
         #expect(fixture.lines("writes") == ["paste", "enter", "paste", "enter"])
         #expect(!rig.log.all.contains { $0.event == "tmux_input_pending" })
