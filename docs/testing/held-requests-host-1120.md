@@ -10,8 +10,10 @@ allowlist, TestFlight build or app is changed.
 `HailHost` owns an in-memory `HeldRequestStore`. A new ambient dispatch can create a hold only when its
 originating session's negotiated peer capabilities contain `HeldRequests.capability` (`held_requests`). The session
 evaluates first and reserves a slot only when the request needs a hold. Deliverable requests never consult hold
-capacity. Reservations and unresolved holds share limits of eight per originating connection and 64 per host. There is no eviction, age purge or disconnect purge. Exhaustion returns `holdAdmissionRefused`
-through the structured local dispatch API. An opted-in consumer receives its per-request capacity refusal and keeps the run. Device-side admission/backpressure and local buffering are still required before advertisement.
+capacity. Reservations and unresolved holds share limits of eight per originating connection and 64 per host.
+There is no eviction, age purge or disconnect purge. Exhaustion returns `holdAdmissionRefused` through the
+structured local dispatch API. An opted-in consumer receives its per-request capacity refusal and keeps the run.
+Device-side admission/backpressure and local buffering are still required before advertisement.
 
 A hold retains the exact prepared prompt, including any already-minted #230 reply reference, connection,
 selection generation, target, binding, original target-policy grant and host policy revision, same-evaluation
@@ -201,7 +203,6 @@ files** listed above. `WebSocketPeer.swift` is unchanged. No host builds/tests, 
 installation, upload or independent review was performed. This final documentation-only commit follows the tested
 source snapshot; the earlier verification section records historical evidence only.
 
-
 ## Capability-gate follow-up after second-key review
 
 New commits above `2556bcfbca3ab4214b061a3f69f8d9102698bea1` fix only the major live-path admission regression.
@@ -209,6 +210,53 @@ Only `HostSession+Routing.swift` and `HailHost.swift` change in production; the 
 production files under the checker's exclusions and rename handling. No optional one-line #1134 fixes are included.
 The neutral adapter-boundary hardening deferral above is unchanged.
 
-The VM must fetch `origin feat/1120-host-hold` at `2556bcfb`, then apply the bundle of new local commits.
-Verification results will be recorded after the VM run. No host builds/tests, simulator or physical-device evidence
-is claimed. No push, installation or upload is in scope.
+The VM workspace `~/codex-workspaces/vw1120c` fetched `origin feat/1120-host-hold`, verified its full head as
+`2556bcfbca3ab4214b061a3f69f8d9102698bea1`, then fetched the bundle of new local commits. The final tested source
+snapshot is `97edc6b5a1e8145bdf29fb4baa537d14ba3af681`. Each run waited for VM idleness with the exact loop below,
+inside a VM script whose command line does not itself contain the runner name. SSH stdin was `< /dev/null`, and
+both runs were blocking:
+
+```sh
+while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
+WS=vw1120c ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit|Reply)'
+```
+
+The requested filter does not include the original #874 session suite, so that suite also ran, unchanged:
+
+```sh
+while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
+WS=vw1120c ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.RightyoInputRequestRefusalSessionTests'
+```
+
+The first snapshot, `878045c4bdae6c7b2cfc489b09b79c2eefd4bbf8`, built and ran 1,066 tests in 190 suites in
+582.926 seconds, with one unexpected failure and ten intentional known issues. The new rate-limit test incorrectly
+expected `.capacityExceeded`; inspection of the original #874 error mapping confirmed `.deliveryRefused`. A new
+commit corrected only that assertion before the final rerun. The original #874 session suite passed in that first
+validation as well. Initial logs are retained as `~/codex-workspaces/vw1120c-878045c4-build.log` and
+`~/codex-workspaces/vw1120c-878045c4-test.log`.
+
+Final main run: **`build=0`, `test=0`; 1,066 tests in 190 suites passed in 576.873 seconds**, with **zero
+unexpected failures** and ten intentional known issues: the five existing `LocalDispatchPreflightWaitTests` issues
+and five existing `ReplyRecipientHandoffWaitTests` issues included by the requested `Reply` filter. All new
+capability/admission tests and both capability variants of stream continuation passed. The VM build took
+61.55 seconds; existing missing-module-cache debug-info warnings remain.
+
+The additional unchanged #874 session suite returned **`build=0`, `test=0`; two tests in one suite passed in
+0.006 seconds**, with no issues. Its incremental VM build took 0.52 seconds. Main-run logs are retained as
+`~/codex-workspaces/vw1120c-capability-build.log` and `~/codex-workspaces/vw1120c-capability-test.log`; the additional
+suite's logs are `~/codex-workspaces/vw1120c-capability-874-build.log` and
+`~/codex-workspaces/vw1120c-capability-874-test.log`.
+
+Strict host SwiftLint passed with zero violations for all **14 changed or restored Swift files** (the union of the
+full PR's Swift diff and this follow-up's diff); the corrected test file was linted again after its one-line
+assertion change. Exact invocation per file:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict <file>
+```
+
+The original `RightyoInputRequestRefusalSessionTests.swift` and `RightyoInputRequestRefusalTests.swift` are
+byte-for-byte identical to `76010ade`. `git diff --check` passed. The checker still counts **four production
+files**, with only two changed by this follow-up. All evidence is synthetic VM package verification. No host
+builds/tests, simulator/physical-device validation, push, installation or upload was performed. This documentation
+commit follows the tested source snapshot; fresh independent exact-head review remains pending.
