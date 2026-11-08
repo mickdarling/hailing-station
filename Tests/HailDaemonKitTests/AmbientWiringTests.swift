@@ -85,7 +85,7 @@ import Testing
                 childPID = parsed
                 break
             }
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(20))
         }
         let pid = try #require(childPID, "Child did not record a positive Int32 PID within 15 seconds")
         pair.close()
