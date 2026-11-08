@@ -135,7 +135,9 @@ import Testing
         }
         #expect(fixture.lines("writes") == ["paste"])
     }
+}
 
+extension TmuxSubmissionAdmissionTests {
     enum Failure: CaseIterable { case enter, agent, binding }
     @Test(arguments: Failure.allCases)
     func admittedFailuresKeepStickyPendingInput(failure: Failure) async throws {
@@ -166,10 +168,7 @@ import Testing
         #expect(rig.log.all.last?.event == "tmux_input_pending")
     }
 
-}
-
-private extension TmuxSubmissionAdmissionTests {
-    struct Rig {
+    private struct Rig {
         let adapter: TmuxAdapter
         let policy: TargetPolicyAuthority
         let peer: ReplyTransportLifecycle
@@ -177,7 +176,7 @@ private extension TmuxSubmissionAdmissionTests {
         let log: EvidenceLog
     }
 
-    func submissionRig(
+    private func submissionRig(
         _ fixture: SlowTmuxCommandFixture, runner: ProcessCommandRunner = .init()
     ) throws -> Rig {
         var policy = Policy()
