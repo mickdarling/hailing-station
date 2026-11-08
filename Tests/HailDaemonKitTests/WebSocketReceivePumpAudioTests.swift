@@ -32,8 +32,8 @@ extension WebSocketReceivePumpTests {
         // A full window makes room for the final by evicting its oldest eligible segment.
         rig.transport.deliver(.application(try pumpAudio(stream, 36, final: true)))
         #expect(rig.pump.droppedAudioCount == 6)
-        #expect(rig.drops.withLock { $0.map { $0.0 } } == Array(1...6))
-        #expect(rig.drops.withLock { $0.map { $0.1 } } == Array(1...6))
+        #expect(rig.drops.counts == Array(1...6))
+        #expect(rig.drops.sequences == Array(1...6))
         #expect(delivered.withLock { $0.isEmpty })
         if closeDuringStall {
             rig.transport.deliver(.terminal("peer closed"))
