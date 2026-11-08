@@ -54,5 +54,71 @@ plus held notice expiry and selection at a suspended adapter handoff. All fixtur
 ## Verification
 
 The earlier branch snapshot `38a4096ac5a060f5e837af6145f5ca2ed3dddc13` passed 919 tests in 168 suites
-with 10 expected known issues, plus 124 reply CLI tests. Rebased-source verification is recorded below
-when complete. These earlier counts do not establish the rebased source's results.
+with 10 expected known issues, plus 124 reply CLI tests. Rebased-source verification follows below;
+these earlier counts are historical evidence only.
+
+The rebased source/test snapshot is `d86a833a31c37118450bdd9f475d84ab283e1ad8`, synced with
+`git bundle create /tmp/vwauth2.bundle origin/main..HEAD` into a fresh GitHub clone at
+`~/codex-workspaces/vwauth2`. The clone fetched the bundle's `HEAD`; subsequent source corrections
+were fast-forwarded from a new bundle with the same range. No source was pushed.
+
+Each VM job waits for the shared lane with the literal loop below, stored in a remote script so the
+process arguments do not match the wait pattern. SSH invocations are blocking with stdin `< /dev/null`.
+
+```sh
+while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
+WS=vwauth2 ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(FinalDelivery|Held|LocalDispatch|Ambient|HailHost|Host|Reply|RightyoInputConsumer|WebSocket|Listener|Guard|Policy)'
+```
+
+The first rebased run identified a same-target selection fixture that did not change selection, and
+held refusal-reason ordering when reply authority also retires. The fixture now selects another
+synthetic target and returns; held refusal reasons preserve their established order after final gates
+release. That initial run is not passing evidence.
+
+On the corrected snapshot, the focused diagnostic command passed with `build=0`, `test=0`:
+**48 tests in 10 suites**, 0.141 s, including the existing held concurrency checks.
+
+```sh
+WS=vwauth2 ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(FinalDelivery|Held)'
+```
+
+The full requested filter then passed with `build=0`, `test=0`: **1,032 tests in 186 suites**,
+591.241 s, with **10 expected known issues** from `LocalDispatchPreflightWaitTests` and
+`ReplyRecipientHandoffWaitTests`. There were no unexpected issues. Both final-authority suites passed
+inside that run. The new held suite has five test functions covering nine cases. These are synthetic
+macOS VM results using the supplied Command Line Tools runner, not physical-device proof.
+
+The reply CLI suite then passed: **124 tests in 215.892 s**, `OK`, exit **0**, using the VM-built
+executable in the same workspace:
+
+```sh
+cd ~/codex-workspaces/vwauth2
+python3 -m unittest discover -s Tests/ReplyCLITests
+```
+
+Host strict lint passed with **zero violations in all seven changed Swift files**:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict Sources/HailDaemonKit/Listener/WebSocketPeer.swift Sources/HailDaemonKit/Listener/WebSocketListener.swift Sources/HailDaemonKit/Listener/LocalDispatch.swift Sources/HailDaemonKit/Listener/HostSession+Routing.swift Tests/HailDaemonKitTests/FinalDeliveryAuthorityTests.swift Tests/HailDaemonKitTests/FinalDeliveryTestSupport.swift Tests/HailDaemonKitTests/FinalDeliveryHeldAuthorityTests.swift
+```
+
+The exact production exclusions in `scripts/pr-shape.py` count four changed production files:
+`WebSocketPeer.swift`, `WebSocketListener.swift`, `LocalDispatch.swift` and `HostSession+Routing.swift`.
+There are no renames. Tests and this document are excluded. No GitHub API call, push, deployment,
+host build/test, simulator build or physical-device validation was performed. Independent review is
+not claimed. Full repository verification remains outside this focused record.
+
+Finally, the requested warnings-as-errors build passed with **build exit 0** and **script exit 0**:
+
+```sh
+~/codex-workspaces/vw-werr.sh vwauth2
+```
+
+The CLT linker emitted missing module-cache debug-info warnings; the warnings-as-errors Swift build
+completed successfully. This is VM iteration evidence, not a shipping-Xcode build.
+
+Logs are retained in `~/codex-workspaces/vwauth2-{build,test,cli}.log`,
+`~/codex-workspaces/vwauth2-focused-{build,test}.log`, `~/codex-workspaces/vwauth2-werr.log` and
+`~/codex-workspaces/vwauth2-werr-result.log`. The initial nonpassing test log is retained separately as
+`~/codex-workspaces/vwauth2-initial-test.log`. Source and tests match the verified snapshot; the final
+follow-up updates this document only. `git diff --check` and its staged equivalent passed.
