@@ -48,10 +48,10 @@ actor WebSocketPeer {
     ) {
         let lifecycle = ReplyTransportLifecycle()
         replyTransport = lifecycle
-        ingress = WebSocketIngressPump(lifecycle: lifecycle, onDrop: { count, sequence in
+        ingress = WebSocketIngressPump(lifecycle: lifecycle, onDrop: { count, range in
             log(WebSocketListenerEvent(
                 event: "ambient_audio_dropped", sessionID: id,
-                detail: "count=\(count) stream_seq_range=\(sequence)-\(sequence)"
+                detail: "count=\(count) stream_seq_range=\(range.lowerBound)-\(range.upperBound)"
             ))
         }, receive: { callback in
             connection.receiveMessage { data, context, _, error in
@@ -100,9 +100,9 @@ actor WebSocketPeer {
             emit("session_connected", endpoint: "\(connection.endpoint)")
             ingress.start(process: { [weak self] data in
                 await self?.process(data)
-            }, onEnd: { [weak self, connection, submitClose] reason, protocolError in
+            }, onEnd: { [weak self, connection] reason, protocolError in
                 if protocolError {
-                    submitClose { [weak self] in Task { await self?.finish(reason: reason) } }
+                    Task { await self?.close(reason: reason) }
                 } else {
                     connection.cancel()
                     Task { await self?.finish(reason: reason) }

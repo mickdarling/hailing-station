@@ -3,6 +3,9 @@ import HailProtocol
 import Network
 import Synchronization
 
+// Queue state, classification and bounded drop reporting share one transport boundary.
+// swiftlint:disable file_length
+
 /// Keeps one transport receive armed independently of one ordered application worker.
 final class WebSocketIngressPump: Sendable {
     enum Event: Sendable {
@@ -16,16 +19,19 @@ final class WebSocketIngressPump: Sendable {
     static let maxQueuedMessages = 8
     static let maxQueuedAudio = 30
     static let maxNonAudioBytes = 2 * PayloadLimits.defaultMaxFrameBytes
-    static let maxAudioBytes = maxQueuedAudio * PayloadLimits.defaultMaxFrameBytes
-    static let maxQueuedBytes = maxNonAudioBytes + maxAudioBytes
-    // Leaf lock: classification and queue bookkeeping only; no callbacks, awaits or other locks.
+    static let ambientSegmentWireBytes = AmbientAudioGate.ambientSegmentWireBytes
+    static let maxAudioBytes = maxQueuedAudio * ambientSegmentWireBytes
+    // Allows one incoming eligible segment before eviction: 182,954 + 31 * 15,020 = 648,574.
+    static let maxQueuedBytes = maxNonAudioBytes + (maxQueuedAudio + 1) * ambientSegmentWireBytes
+    // Leaf lock: bookkeeping only; no decoding, callbacks, awaits or other locks.
     private let state = Mutex(State())
     private let lifecycle: ReplyTransportLifecycle
     private let receive: Receive
-    private let onDrop: @Sendable (Int, Int) -> Void
+    private let onDrop: @Sendable (Int, ClosedRange<Int>) -> Void
+    private let dropQueue = DispatchQueue(label: "hail.ingress.drops", qos: .utility)
     init(
         lifecycle: ReplyTransportLifecycle,
-        onDrop: @escaping @Sendable (Int, Int) -> Void = { _, _ in },
+        onDrop: @escaping @Sendable (Int, ClosedRange<Int>) -> Void = { _, _ in },
         receive: @escaping Receive
     ) {
         self.lifecycle = lifecycle
@@ -79,7 +85,7 @@ final class WebSocketIngressPump: Sendable {
             onEnd("receive queue limit", false)
             return
         }
-        if let sequence = decision.droppedSequence { onDrop(droppedAudioCount, sequence) }
+        if decision.logDrops { dropQueue.async { [self] in emitDrops() } }
         arm(process: process, onEnd: onEnd)
         if decision.worker {
             state.withLock { state in
@@ -92,29 +98,27 @@ final class WebSocketIngressPump: Sendable {
     private struct Decision {
         var overflow = false
         var worker = false
-        var droppedSequence: Int?
+        var logDrops = false
     }
     private func enqueue(_ event: Event) -> Decision {
-        state.withLock { state in
+        // The listener callback uses its shared serial Network queue. Classification is per frame there,
+        // before taking the leaf lock; protected decoded values are transient and never enter the queue.
+        let message = Message.classify(event)
+        return state.withLock { state in
             state.receiving = false
-            guard !state.stopped, case .application(let data) = event else { return Decision() }
-            guard data.count <= PayloadLimits.defaultMaxFrameBytes else { return Decision(overflow: true) }
-            let message = Message(data)
-            // The aggregate cap terminates before eviction; it is never converted into a drop policy.
-            guard data.count <= Self.maxQueuedBytes - state.bytes else { return Decision(overflow: true) }
-            if message.droppableSequence == nil, state.nonDroppableCount == Self.maxQueuedMessages {
-                return Decision(overflow: true)
-            }
-            if !message.audioWindow, data.count > Self.maxNonAudioBytes - state.nonAudioBytes {
-                return Decision(overflow: true)
-            }
+            guard !state.stopped, case .application = event else { return Decision() }
+            guard let message, state.fits(message) else { return Decision(overflow: true) }
             var decision = Decision()
             if message.audioWindow, state.audioCount == Self.maxQueuedAudio {
                 guard let index = state.messages.firstIndex(where: { $0.droppableSequence != nil }) else {
                     return Decision(overflow: true)
                 }
-                decision.droppedSequence = state.remove(at: index).droppableSequence
-                state.dropped += 1
+                let removed = state.remove(at: index)
+                if let sequence = removed.droppableSequence { state.recordDrop(sequence) }
+                if !state.loggingDrops {
+                    state.loggingDrops = true
+                    decision.logDrops = true
+                }
             }
             state.messages.append(message)
             state.bytes += message.bytes
@@ -139,6 +143,8 @@ final class WebSocketIngressPump: Sendable {
             return state.remove(at: 0)
         }
     }
+}
+extension WebSocketIngressPump {
     static func classify(
         _ data: Data?, context: NWConnection.ContentContext?, error: NWError?
     ) -> Event {
@@ -157,22 +163,58 @@ final class WebSocketIngressPump: Sendable {
         default: return .terminal("unsupported WebSocket message", protocolError: true)
         }
     }
-}
-extension WebSocketIngressPump {
-    private struct Message {
-        let frame: Frame?
+    private func emitDrops() {
+        while let report = state.withLock({ state -> (Int, ClosedRange<Int>)? in
+            guard let range = state.dropRange else {
+                state.loggingDrops = false
+                return nil
+            }
+            let count = state.pendingDrops
+            state.pendingDrops = 0
+            state.dropRange = nil
+            return (count, range)
+        }) {
+            onDrop(report.0, report.1)
+        }
+    }
+    /// Joins logging only when explicitly requested; transport and worker paths never wait for it.
+    func waitForDropLogging() async {
+        await withCheckedContinuation { continuation in
+            dropQueue.async { continuation.resume() }
+        }
+    }
+
+    struct Message {
+        enum Retained {
+            case raw(Data)
+            case audio(Frame)
+        }
+        let retained: Retained
         let bytes: Int
-        let audioWindow: Bool
         let droppableSequence: Int?
-        // Pure, bounded classification: no callbacks or locks. Failed decoding is never droppable.
+        var audioWindow: Bool { droppableSequence != nil }
+        // Only the worker requests this value, after removing the message and releasing the pump lock.
+        var frame: Frame? {
+            switch retained {
+            case .raw(let data): try? FrameCoding.decode(data)
+            case .audio(let frame): frame
+            }
+        }
+        static func classify(_ event: Event) -> Message? {
+            guard case .application(let data) = event, data.count <= PayloadLimits.defaultMaxFrameBytes else {
+                return nil
+            }
+            return Message(data)
+        }
         init(_ data: Data) {
             bytes = data.count
-            frame = try? FrameCoding.decode(data)
-            if let frame, case .audio(let audio) = frame.payload, audio.sequence > 0 {
-                audioWindow = true
-                droppableSequence = audio.isFinal ? nil : audio.sequence
+            let decoded = try? FrameCoding.decode(data)
+            if let decoded, AmbientAudioGate.isWindowEligible(decoded, wireBytes: data.count),
+               case .audio(let audio) = decoded.payload {
+                retained = .audio(decoded)
+                droppableSequence = audio.sequence
             } else {
-                audioWindow = false
+                retained = .raw(data)
                 droppableSequence = nil
             }
         }
@@ -188,6 +230,22 @@ extension WebSocketIngressPump {
         var audioCount = 0
         var nonDroppableCount = 0
         var dropped = 0
+        var pendingDrops = 0
+        var dropRange: ClosedRange<Int>?
+        var loggingDrops = false
+        func fits(_ message: Message) -> Bool {
+            // The hard cap terminates before eviction; its headroom permits every eligible replacement.
+            guard message.bytes <= maxQueuedBytes - bytes else { return false }
+            return message.audioWindow || (nonDroppableCount < maxQueuedMessages
+                && message.bytes <= maxNonAudioBytes - nonAudioBytes)
+        }
+        mutating func recordDrop(_ sequence: Int) {
+            dropped += 1
+            pendingDrops += 1
+            if let range = dropRange {
+                dropRange = min(range.lowerBound, sequence)...max(range.upperBound, sequence)
+            } else { dropRange = sequence...sequence }
+        }
         var worker: Task<Void, Never>?
         mutating func remove(at index: Int) -> Message {
             let message = messages.remove(at: index)

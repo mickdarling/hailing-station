@@ -5,7 +5,8 @@ import Testing
 @testable import HailDaemonKit
 
 extension WebSocketReceivePumpTests {
-    @Test func aggregateByteCapTerminatesBeforeAnyEviction() async throws {
+    @Test(arguments: [1, PayloadLimits.defaultMaxFrameBytes])
+    func aggregateCapAllowsEvictionAtMaximumEligibleWireSize(overflowBytes: Int) async throws {
         let rig = PumpRig()
         let park = PumpAudioPark()
         defer { park.release.finish(.success(())); rig.pump.stop() }
@@ -19,15 +20,22 @@ extension WebSocketReceivePumpTests {
         let stream = UUID()
         for sequence in 1...30 {
             var data = try pumpAudio(stream, sequence)
-            data.append(Data(repeating: 32, count: PayloadLimits.defaultMaxFrameBytes - data.count))
+            data.append(Data(repeating: 32, count: WebSocketIngressPump.ambientSegmentWireBytes - data.count))
             rig.transport.deliver(.application(data))
         }
         #expect(!rig.lifecycle.isRetired)
         #expect(rig.pump.droppedAudioCount == 0)
-        rig.transport.deliver(.application(try pumpAudio(stream, 31)))
+        var incoming = try pumpAudio(stream, 31)
+        incoming.append(Data(repeating: 32, count: WebSocketIngressPump.ambientSegmentWireBytes - incoming.count))
+        rig.transport.deliver(.application(incoming))
+        #expect(!rig.lifecycle.isRetired)
+        #expect(rig.pump.droppedAudioCount == 1)
+        #expect(rig.transport.outstanding == 1)
+        // The protected byte budget remains a terminating bound even alongside a full audio window.
+        rig.transport.deliver(.application(Data(repeating: 32, count: overflowBytes)))
         #expect(rig.lifecycle.isRetired)
-        #expect(try await rig.ended.wait("aggregate cap termination") == "receive queue limit")
-        #expect(rig.pump.droppedAudioCount == 0)
+        #expect(try await rig.ended.wait("protected cap termination") == "receive queue limit")
+        #expect(rig.pump.droppedAudioCount == 1)
         park.release.finish(.success(()))
         await worker.value
     }
@@ -80,11 +88,11 @@ extension WebSocketReceivePumpTests {
         }
         for sequence in 0...35 { rig.transport.deliver(.application(try pumpAudio(second, sequence))) }
         #expect(!rig.lifecycle.isRetired)
-        #expect(rig.pump.droppedAudioCount == 36)
+        #expect(rig.pump.droppedAudioCount == 35)
         park.release.finish(.success(()))
         await worker.value
         let startsAndFinal = ["first:0", "first:31", "second:0"]
-        let newest = (7...35).map { "second:\($0)" }
+        let newest = (6...35).map { "second:\($0)" }
         #expect(delivered.withLock { $0 } == startsAndFinal + newest)
     }
 }

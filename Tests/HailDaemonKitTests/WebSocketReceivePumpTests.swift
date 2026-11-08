@@ -146,11 +146,12 @@ struct PumpRig {
     let drops = PumpDropRecorder()
     let pump: WebSocketIngressPump
 
-    init() {
+    init(onDrop: @escaping @Sendable (Int, ClosedRange<Int>) -> Void = { _, _ in }) {
         let transport = transport
         let drops = drops
-        pump = WebSocketIngressPump(lifecycle: lifecycle, onDrop: { count, sequence in
-            drops.record(count, sequence)
+        pump = WebSocketIngressPump(lifecycle: lifecycle, onDrop: { count, range in
+            drops.record(count, range)
+            onDrop(count, range)
         }, receive: { transport.receive($0) })
     }
     func start(_ process: @escaping WebSocketIngressPump.Process) {
@@ -166,8 +167,8 @@ func pumpMarker(_ value: Int) throws -> Data {
 }
 
 final class PumpDropRecorder: Sendable {
-    private let values = Mutex<[(Int, Int)]>([])
-    var counts: [Int] { values.withLock { $0.map { $0.0 } } }
-    var sequences: [Int] { values.withLock { $0.map { $0.1 } } }
-    func record(_ count: Int, _ sequence: Int) { values.withLock { $0.append((count, sequence)) } }
+    private let values = Mutex<[(Int, ClosedRange<Int>)]>([])
+    var count: Int { values.withLock { $0.reduce(0) { $0 + $1.0 } } }
+    var ranges: [ClosedRange<Int>] { values.withLock { $0.map { $0.1 } } }
+    func record(_ count: Int, _ range: ClosedRange<Int>) { values.withLock { $0.append((count, range)) } }
 }

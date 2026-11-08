@@ -5,14 +5,15 @@ import Testing
 @testable import HailDaemonKit
 
 extension WebSocketReceivePumpTests {
-    // Virtual 100 ms sender ticks and acknowledged receives model a >3 s dispatch stall without sleeping.
-    @Test(arguments: [false, true])
-    func audioWindowSurvivesParkedDispatchAndObservesClose(closeDuringStall: Bool) async throws {
+    // Burst pressure equivalent to more than 3 s at 10 Hz; barriers establish ordering.
+    @Test(arguments: [false, true], [false, true])
+    func audioWindowSurvivesParkedDispatchAndObservesClose(
+        closeDuringStall: Bool, paced: Bool
+    ) async throws {
         let rig = PumpRig()
         let park = PumpAudioPark()
         let stream = UUID()
         let delivered = Mutex<[Int]>([])
-        let clock = AmbientTestClock()
         defer { park.release.finish(.success(())); rig.pump.stop() }
         rig.start { frame in
             guard let frame else { Issue.record("expected decoded frame"); return }
@@ -23,17 +24,21 @@ extension WebSocketReceivePumpTests {
         rig.transport.deliver(.application(try pumpMarker(1)))
         try await park.entered.wait("dispatch parked")
         let worker = try #require(rig.pump.worker)
+        let senderClock = ContinuousClock()
+        let senderStart = senderClock.now
         for sequence in 0...35 {
-            clock.advance(.milliseconds(100))
+            // Wall-clock pacing shapes arrival only; the acknowledged park owns the ordering proof.
+            if paced { try await senderClock.sleep(until: senderStart + .milliseconds(sequence * 100)) }
             rig.transport.deliver(.application(try pumpAudio(stream, sequence)))
             #expect(rig.transport.outstanding == 1)
             #expect(!rig.lifecycle.isRetired)
         }
-        // A full window makes room for the final by evicting its oldest eligible segment.
+        // A final uses protected capacity without evicting any eligible segment.
         rig.transport.deliver(.application(try pumpAudio(stream, 36, final: true)))
-        #expect(rig.pump.droppedAudioCount == 6)
-        #expect(rig.drops.counts == Array(1...6))
-        #expect(rig.drops.sequences == Array(1...6))
+        #expect(rig.pump.droppedAudioCount == 5)
+        await rig.pump.waitForDropLogging()
+        #expect(rig.drops.count == 5)
+        #expect(rig.drops.ranges.flatMap { Array($0) } == Array(1...5))
         #expect(delivered.withLock { $0.isEmpty })
         if closeDuringStall {
             rig.transport.deliver(.terminal("peer closed"))
@@ -42,9 +47,9 @@ extension WebSocketReceivePumpTests {
         }
         park.release.finish(.success(()))
         await worker.value
-        let expected = closeDuringStall ? [] : [0] + Array(7...36)
+        let expected = closeDuringStall ? [] : [0] + Array(6...36)
         #expect(delivered.withLock { $0 } == expected)
-        #expect(rig.pump.droppedAudioCount == 6)
+        #expect(rig.pump.droppedAudioCount == 5)
         #expect(rig.transport.maximumOutstanding == 1)
     }
 
@@ -72,22 +77,22 @@ extension WebSocketReceivePumpTests {
         for sequence in 0...36 {
             rig.transport.deliver(.application(try pumpAudio(stream, sequence, final: sequence == 36)))
         }
-        #expect(rig.pump.droppedAudioCount == 6)
+        #expect(rig.pump.droppedAudioCount == 5)
         park.release.finish(.success(()))
         await worker.value
         // Same wire stream with the same holes already present on arrival from the phone.
-        for sequence in [0] + Array(7...36) {
+        for sequence in [0] + Array(6...36) {
             let frame = try FrameCoding.decode(pumpAudio(stream, sequence, final: sequence == 36))
             guard case .audio(let audio) = frame.payload else { Issue.record("expected audio"); return }
             phoneClock.advance(.milliseconds(100))
             #expect(await phoneGate.admit(audio, connection: connection) == nil)
         }
-        #expect(hostSink.segments == [0] + Array(7...36))
+        #expect(hostSink.segments == [0] + Array(6...36))
         #expect(hostSink.events == phoneSink.events)
         let hostBytes = pumpSinkBytes(hostSink)
         let phoneBytes = pumpSinkBytes(phoneSink)
         #expect(hostBytes == phoneBytes)
-        #expect(hostBytes.count == 31 * 3_200)
+        #expect(hostBytes.count == 32 * 3_200)
         #expect(hostSink.endings == [.final])
     }
 }
@@ -97,7 +102,7 @@ struct PumpAudioPark: Sendable {
     let release = SelectionPreflightSignal<Void>()
     func wait() async {
         entered.finish(.success(()))
-        _ = try? await release.wait("audio dispatch release")
+        _ = try? await release.wait("audio dispatch release", timeout: .seconds(15))
     }
 }
 

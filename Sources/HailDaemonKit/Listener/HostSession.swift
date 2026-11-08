@@ -269,7 +269,7 @@ public actor HostSession {
         await receiveDecoded(try? FrameCoding.decode(data))
     }
 
-    /// Ingress decoded once under its frame bound; nil retains the data entry point's exact failure mapping.
+    /// Ingress supplies the worker-decoded value; nil retains the data entry point's exact failure mapping.
     func receiveDecoded(_ frame: Frame?) async -> HostSessionResult {
         guard let frame else { return failure(.malformed, "malformed or oversized frame", close: true) }
         return await receive(frame)
@@ -392,7 +392,7 @@ extension HostSession {
                 + (sessionUpdatesEnabled ? [SessionUpdateCard.capability, SessionUpdateCard.audioCapability] : []),
             deviceName: hostName
         )
-        // WebSocketPeer sends this whole batch before receiving the next frame. Reading the snapshot is
+        // WebSocketPeer sends this whole batch before processing the next frame. Reading the snapshot is
         // synchronous and does not arm privacy, hold replies, consume parks or start a child.
         let modes = peerCapabilities.contains(ModeSnapshot.capability) ? snapshot(connectionID) : []
         return HostSessionResult(frames: [response(.hello(info), version: version)]

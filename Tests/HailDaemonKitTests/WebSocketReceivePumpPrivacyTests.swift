@@ -35,11 +35,11 @@ extension WebSocketReceivePumpTests {
             rig.transport.deliver(.application(try pumpAudio(stream, sequence, final: sequence == 45)))
         }
         #expect(sink.calls == ["audio:0"])
-        #expect(rig.pump.droppedAudioCount == 15)
+        #expect(rig.pump.droppedAudioCount == 14)
         park.release.finish(.success(()))
         await worker.value
         let controls = ["audio:0", "privacy:true", "input:built_in_mic"]
-        let audio = (16...45).map { "audio:\($0)" }
+        let audio = (15...45).map { "audio:\($0)" }
         #expect(sink.calls == controls + audio)
         #expect(!rig.lifecycle.isRetired)
     }
