@@ -145,11 +145,15 @@ struct PumpRig {
     let transport = PumpTransport()
     let lifecycle = ReplyTransportLifecycle()
     let ended = SelectionPreflightSignal<String>()
+    let drops = Mutex<[(Int, Int)]>([])
     let pump: WebSocketIngressPump
 
     init() {
         let transport = transport
-        pump = WebSocketIngressPump(lifecycle: lifecycle, receive: { transport.receive($0) })
+        let drops = drops
+        pump = WebSocketIngressPump(lifecycle: lifecycle, onDrop: { count, sequence in
+            drops.withLock { $0.append((count, sequence)) }
+        }, receive: { transport.receive($0) })
     }
     func start(_ process: @escaping WebSocketIngressPump.Process) {
         let ended = ended

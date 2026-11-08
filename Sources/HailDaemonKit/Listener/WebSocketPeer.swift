@@ -196,7 +196,6 @@ extension WebSocketPeer {
         return NWConnection.ContentContext(identifier: "hail.close", isFinal: true, metadata: [metadata])
     }
 
-
     /// Preparation is not an enqueue grant; its transport permit must remain current at final admission.
     func prepareReplyPublication(
         _ frame: Frame, onLateSuccess: (@Sendable () -> Void)? = nil

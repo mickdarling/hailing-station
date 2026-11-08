@@ -54,4 +54,27 @@ extension WebSocketReceivePumpTests {
         #expect(metadata.closeCode == .protocolCode(.protocolError)) // RFC 6455 code 1002.
     }
 
+    @Test func malformedWireMessageSendsErrorThenCode1002() async throws {
+        let (host, _) = try await sessionHost()
+        let ended = SelectionPreflightSignal<String>()
+        let listener = try WebSocketListener(bindAddress: "127.0.0.1", port: 0, host: host) { event in
+            if event.event == "session_disconnected" { ended.finish(.success(event.detail ?? "")) }
+        }
+        let (session, socket) = try recipientSocket(port: await listener.start())
+        defer { socket.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
+        try await selectionPreflightStep("malformed wire send") { try await socket.send(.string("{")) }
+        let response = try await recipientSocketReceive(on: socket)
+        #expect(response.payload == .control(.error(code: .malformed, message: "malformed or oversized frame")))
+        try await selectionPreflightStep("protocol close receive") {
+            do {
+                _ = try await socket.receive()
+                Issue.record("expected protocol closure")
+            } catch {
+                #expect(socket.closeCode == .protocolError)
+            }
+        }
+        _ = try await ended.wait("malformed protocol disconnect")
+        await listener.stop(reason: "test complete")
+    }
+
 }

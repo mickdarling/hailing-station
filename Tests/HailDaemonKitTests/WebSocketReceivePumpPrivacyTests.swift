@@ -34,7 +34,7 @@ extension WebSocketReceivePumpTests {
         let worker = try #require(rig.pump.worker)
         for sequence in 1...10 { rig.transport.deliver(.application(try pumpAudio(stream, sequence))) }
         let privacy = sessionFrame(payload: .control(.setPrivacy(on: true)))
-        let input = sessionFrame(payload: .control(.ambientInput(route: "built_in")))
+        let input = sessionFrame(payload: .control(.ambientInput(route: "built_in_mic")))
         rig.transport.deliver(.application(try FrameCoding.encode(privacy)))
         rig.transport.deliver(.application(try FrameCoding.encode(input)))
         for sequence in 11...45 {
@@ -44,7 +44,7 @@ extension WebSocketReceivePumpTests {
         #expect(rig.pump.droppedAudioCount == 15)
         park.release.finish(.success(()))
         await worker.value
-        let controls = ["audio:0", "privacy:true", "input:built_in"]
+        let controls = ["audio:0", "privacy:true", "input:built_in_mic"]
         let audio = (16...45).map { "audio:\($0)" }
         #expect(sink.calls == controls + audio)
         #expect(!rig.lifecycle.isRetired)

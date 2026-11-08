@@ -32,6 +32,8 @@ extension WebSocketReceivePumpTests {
         // A full window makes room for the final by evicting its oldest eligible segment.
         rig.transport.deliver(.application(try pumpAudio(stream, 36, final: true)))
         #expect(rig.pump.droppedAudioCount == 6)
+        #expect(rig.drops.withLock { $0.map { $0.0 } } == Array(1...6))
+        #expect(rig.drops.withLock { $0.map { $0.1 } } == Array(1...6))
         #expect(delivered.withLock { $0.isEmpty })
         if closeDuringStall {
             rig.transport.deliver(.terminal("peer closed"))
@@ -88,8 +90,6 @@ extension WebSocketReceivePumpTests {
         #expect(hostBytes.count == 31 * 3_200)
         #expect(hostSink.endings == [.final])
     }
-
-
 }
 
 struct PumpAudioPark: Sendable {
@@ -104,7 +104,7 @@ struct PumpAudioPark: Sendable {
 func pumpAudio(_ stream: UUID, _ sequence: Int, final: Bool = false) throws -> Data {
     var audio = ambientSegment(stream: stream, sequence: sequence, isFinal: final)
     audio.bytes = Data(repeating: UInt8(sequence % 256), count: 3_200)
-    return try FrameCoding.encode(sessionFrame(payload: .audio(audio)))
+    return try FrameCoding.encode(sessionFrame(target: "tmux:a", payload: .audio(audio)))
 }
 
 private func pumpSinkBytes(_ sink: RecordingAmbientSink) -> Data {
