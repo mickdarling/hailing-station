@@ -1,8 +1,9 @@
 # Tmux submission admission
 
 Part of #1120. This records a local implementation stacked on the delivery stage-order work at
-`8a67c4e9186230a27195884e089204e0dbd9ddbb`, based on main
-`2f17d604a180e2af8b5d5e3a4769289028412fd0`. Evidence below is synthetic VM verification;
+`8a67c4e9186230a27195884e089204e0dbd9ddbb`. That stack parent has a tree identical to main
+`461b40c1d9886be237ef34bc7c9d20484895857d` (both trees are
+`f9c6228bb7c1896670d92315408c2dce6049db3f`). Evidence below is synthetic VM verification;
 this is not a shipped release, simulator run, physical-device proof or live captured-output round trip.
 
 ## Behavior as built
@@ -82,89 +83,211 @@ Tmux command fixtures use test-owned fake executables and never contact a tmux s
 | `CommandLaunchAdmissionTests.launchEvidenceDistinguishesRefusalFailureAndExecution` | Refusal, missing executable and a post-operation authority error retain distinct evidence. |
 | `CommandLaunchAdmissionTests.submissionTicketAllowsOnlyItsFixedCompletionBudget` | A ticket cannot move to another delivery, socket or pane, admit another paste, or authorize a third Enter. |
 | `TmuxLaunchCapabilityTests` | Unguarded runner and check-only authority refuse guarded paste while keeping the pane clean. |
+| `TaskProgressTmuxAdmissionTests.wakeAttemptCommitsOnlyAtPasteAdmission` | Production host, retained task authority and tmux adapter; no attempt during buffer preparation, attempt set before the paste side effect, no attempt or writing command on tainted pre-admission refusal. |
+| `TmuxRefusalEvidenceTests.rebindingAfterPasteKeepsUnsubmittedEvidenceAndStickyRefusal` | Rebind before submit, exact unobserved/unsubmitted evidence prefix and suffix on two later sticky refusals, no later capture or write. |
+| `TmuxDeliveryCommitTests.cancellationAfterTheCommitPointStillCompletesTheEnter` | Acknowledged Enter invocation with zero effects at cancellation; one completed Enter, directly observed clean input, and a fresh successful delivery. |
+| `TmuxSubmitConfirmationTests.cancellationDuringSettleCompletesTheSubmission` | An acknowledged injected-clock barrier holds the settle wait during cancellation; the admitted Enter and later fresh delivery complete. |
 | `DeliveryAdmissionStageOrderTests` and existing admission/held suites | Fixed composed order and checked-handoff semantics on the underlying stack. |
+
+## Assertion restoration batch
+
+The whole-submission rule is unchanged. This batch restores the exact single terminal refusal frame
+and message, the refusal's no-capture/no-write checks, the collapsed-paste exact single Enter vector
+and empty input, and the cancelled-paste exact total evidence count. A rebind-after-paste case retains
+the unsubmitted taint evidence prefix/suffix and checks repeated sticky refusals after recovery.
+
+The shared fake records invocation before its original delay and performs its responder only inside
+`launch.perform`; executed-command tracking keeps actual delivery distinct from an attempted invocation.
+Acknowledged Enter and settle barriers prove cancellation occurs while those operations are parked.
+Queued-delivery tests acknowledge initial authority and cross an adapter actor fence before cancellation.
+No fixed-duration sleep orders these tests; the own-insert age test waits for its clock condition.
+All barriers have watchdogs and are drained before checking results.
+
+`LaunchAdmittingDelivery` is internal. The public guarded runner and command-launch contracts are
+unchanged. `TaskProgressTmuxAdmissionTests` sends a wake prompt through retained task stages,
+`HailHost` and the production `TmuxAdapter`: buffer preparation leaves the attempt unset, the paste
+side effect sees it set, and a tainted pre-admission refusal leaves it unset and launches no capture or write.
 
 ## Existing expectations changed
 
-The following existing tests explicitly adopt whole-submission admission or retain genuine failure coverage:
+Compared with main `461b40c1d9886be237ef34bc7c9d20484895857d`, each changed assertion below is
+**KEPT**, **TIGHTENED**, or **WEAKENED**. A WEAKENED row identifies only a whole-submission-rule
+inversion of an old post-admission prohibition; its reason is explicit. Awaited successful completion
+replacing an exception expectation counts as an assertion. Unchanged assertions outside these rows remain
+in place. The unsubmitted evidence prefix/suffix and later refusal are retained in the rebind case.
+New task-wake and launch-capability suites are additional coverage, outside these existing-test counts.
 
-| Suite and test (current name) | Changed expectation and reason |
-| --- | --- |
-| `TmuxDeliveryAuthorityTests.retirementAfterPasteCompletesTheSubmission` | Formerly required suppressed Enter and taint. Now Enter completes, input clears and a fresh delivery succeeds. |
-| `TmuxDeliveryAuthorityTests.retirementDuringDefinitiveEnterRefusalTracksPriorEnter` | Agent departure remains a genuine failure; it retains taint, with agent-only refusal before Enter and possible submission after a prior Enter. |
-| `TmuxDeliveryAuthorityTests.retirementAfterPasteNeverClearsAReboundPane` | Rebinding remains a genuine failure and reports rebound rather than attributing unsent input to retirement. |
-| `TmuxAuthorityBoundaryTests.retirementDuringFinalBindingCheckCompletesTheSubmission` | Formerly required unsent input and suppressed Enter; unchanged binding completes the admitted submission. |
-| `TmuxAuthorityBoundaryTests.retirementBeforeRetryKeepsTheSingleRetryBudget` | Formerly suppressed the retry; permits the existing one retry, retaining failure taint when the fixture still holds input. |
-| `TmuxAuthorityBoundaryTests.collapsedAgentPasteCompletesAfterRetirement` | Formerly required unsent collapsed paste; framed Enter completes after retirement. |
-| `TmuxAuthorityBoundaryTests.retirementAfterPasteCompletesBeforeTheNextTerminalRefusal` | Current input completes; the next terminal input is refused without a new paste or Enter. |
-| `TmuxPolicyRetirementTests.retirementDuringLineTwoPreservesThePolicyReason` | A second line already pasted completes; a preparing second line remains unsent. Later lines are refused. |
-| `TmuxPolicyRetirementTests.possiblySubmittedLineIsIncludedEvenWhenEnterReplyFails` | The conditional retry remains permitted after retirement. Genuine first-Enter or retry failure keeps sticky taint and partial accounting. |
-| `TmuxPolicyRetirementTests.clearedInputKeepsFailureTaintAndDeviceRefusalUntilRestart` | Uses a real Enter failure to establish sticky taint; retirement alone completes rather than creating taint. |
-| `TmuxPolicyRetirementTests.lineTwoRetirementCompletesOnlyTheAdmittedLine` | Reports policy refusal for subsequent work; an admitted second line includes its Enter. |
-| `TmuxSubmitConfirmationTests.cancellationDuringSettleCompletesTheSubmission` | Formerly suppressed Enter and tainted on caller cancellation; admitted work completes and a later delivery succeeds. |
-| `TmuxRefusalEvidenceTests.aCancelledAdmittedPasteStillRecordsItsSubmit` | Formerly required no submit evidence and later pending refusal; now records the admitted submit and no pending refusal. |
-| `AmbientWiringPolicyRetirementTests.reallowedPolicyTaintRefusesTwoRequestsWithoutEndingAmbient` | Adds actual rebinding after paste to establish failure taint; reallowing policy alone does not taint an admitted submission. |
+Table counts: **29 KEPT, 31 TIGHTENED, 34 WEAKENED; 94 rows total**.
 
-`TmuxDeliveryCommitTests` changes only a stale coverage comment. Test runner support now explicitly models
-guarded launch, while the capability suite preserves coverage for a runner lacking that contract.
+| Suite/test | Assertion | Status | Reason |
+| --- | --- | --- | --- |
+| `TmuxAuthorityBoundaryTests.retirementDuringFinalBindingCheckCompletesTheSubmission` | Completion succeeds | WEAKENED | Whole-submission admission permits completion after retirement. |
+| `TmuxAuthorityBoundaryTests.retirementDuringFinalBindingCheckCompletesTheSubmission` | Input is empty | WEAKENED | Whole-submission admission permits the admitted Enter to clear input. |
+| `TmuxAuthorityBoundaryTests.retirementDuringFinalBindingCheckCompletesTheSubmission` | Enter count is one | WEAKENED | Whole-submission admission permits the admitted Enter. |
+| `TmuxAuthorityBoundaryTests.retirementBeforeRetryKeepsTheSingleRetryBudget` | Enter side-effect count is two | WEAKENED | Whole-submission admission retains the single conditional retry. |
+| `TmuxAuthorityBoundaryTests.retirementBeforeRetryKeepsTheSingleRetryBudget` | send-keys invocation count is two | WEAKENED | Whole-submission admission retains the single conditional retry. |
+| `TmuxAuthorityBoundaryTests.collapsedAgentPasteCompletesAfterRetirement` | Completion succeeds | WEAKENED | Whole-submission admission permits framed completion after retirement. |
+| `TmuxAuthorityBoundaryTests.collapsedAgentPasteCompletesAfterRetirement` | Input is empty | WEAKENED | Whole-submission admission permits the admitted Enter to clear input. |
+| `TmuxAuthorityBoundaryTests.collapsedAgentPasteCompletesAfterRetirement` | Enter side-effect count is one | WEAKENED | Whole-submission admission permits the admitted Enter. |
+| `TmuxAuthorityBoundaryTests.collapsedAgentPasteCompletesAfterRetirement` | send-keys invocation count is exactly one | WEAKENED | Whole-submission admission replaces zero keys with exactly the admitted Enter. |
+| `TmuxAuthorityBoundaryTests.collapsedAgentPasteCompletesAfterRetirement` | The sole key vector equals the framed Enter vector | TIGHTENED | No non-Enter key or additional invocation is accepted. |
+| `TmuxAuthorityBoundaryTests.collapsedAgentPasteCompletesAfterRetirement` | No retired-unsent evidence | WEAKENED | Whole-submission completion no longer reports an unsent paste. |
+| `TmuxAuthorityBoundaryTests.retirementAfterPasteCompletesBeforeTheNextTerminalRefusal` | Current outcome is delivered | WEAKENED | Whole-submission admission completes current input before refusing later input. |
+| `TmuxAuthorityBoundaryTests.retirementAfterPasteCompletesBeforeTheNextTerminalRefusal` | onlyControl equals the exact notAllowed error | KEPT | One frame and the actual locked-policy message remain mandatory. |
+| `TmuxAuthorityBoundaryTests.retirementAfterPasteCompletesBeforeTheNextTerminalRefusal` | No later capture, fill, paste or key invocation | TIGHTENED | Retains the capture prohibition and adds every input-writing command. |
+| `TmuxAuthorityBoundaryTests.retirementAfterPasteCompletesBeforeTheNextTerminalRefusal` | Enter count is one | WEAKENED | Whole-submission admission permits current Enter before the next refusal. |
+| `TmuxAuthorityBoundaryTests.retirementAfterPasteCompletesBeforeTheNextTerminalRefusal` | Input is empty | WEAKENED | Whole-submission admission permits current Enter to clear input. |
+| `TmuxDeliveryAuthorityTests.retirementAfterPasteCompletesTheSubmission` | Completion succeeds | WEAKENED | Whole-submission admission permits completion after retirement. |
+| `TmuxDeliveryAuthorityTests.retirementAfterPasteCompletesTheSubmission` | First pasted payload equals the sole original payload | KEPT | The exact initial paste assertion is retained. |
+| `TmuxDeliveryAuthorityTests.retirementAfterPasteCompletesTheSubmission` | Initial Enter count is one | WEAKENED | Whole-submission admission permits the admitted Enter. |
+| `TmuxDeliveryAuthorityTests.retirementAfterPasteCompletesTheSubmission` | Initial input is empty | WEAKENED | Whole-submission admission permits Enter to consume the original input. |
+| `TmuxDeliveryAuthorityTests.retirementAfterPasteCompletesTheSubmission` | Initial key vectors equal one exact Enter | WEAKENED | Whole-submission admission replaces the no-key prohibition with one exact Enter. |
+| `TmuxDeliveryAuthorityTests.retirementAfterPasteCompletesTheSubmission` | No retired-unsent evidence | WEAKENED | Whole-submission completion does not create retirement taint. |
+| `TmuxDeliveryAuthorityTests.retirementAfterPasteCompletesTheSubmission` | Fresh later delivery succeeds | WEAKENED | Whole-submission completion does not leave retirement taint. |
+| `TmuxDeliveryAuthorityTests.retirementAfterPasteCompletesTheSubmission` | Final pasted payloads equal both requests | WEAKENED | Whole-submission completion allows a fresh request to use the clean pane. |
+| `TmuxDeliveryAuthorityTests.retirementAfterPasteCompletesTheSubmission` | Final Enter count is exactly two | TIGHTENED | Bounds the newly successful later delivery. |
+| `TmuxDeliveryAuthorityTests.retirementAfterPasteCompletesTheSubmission` | Final key vectors equal exactly two Enters | WEAKENED | Whole-submission completion permits a fresh delivery with its own Enter. |
+| `TmuxDeliveryAuthorityTests.retirementAfterPasteCompletesTheSubmission` | Final input is empty | TIGHTENED | Checks pane cleanliness after the fresh delivery. |
+| `TmuxDeliveryAuthorityTests.retirementAfterPasteCompletesTheSubmission` | No pending-input evidence | WEAKENED | Whole-submission completion does not create sticky retirement taint. |
+| `TmuxDeliveryAuthorityTests.retirementDuringDefinitiveEnterRefusalTracksPriorEnter` | Exact first error distinguishes a prior Enter | KEPT | Genuine framed refusal remains exact; a prior Enter retains possiblySubmitted. |
+| `TmuxDeliveryAuthorityTests.retirementDuringDefinitiveEnterRefusalTracksPriorEnter` | Later error is exactly inputPending(tainted) | KEPT | Genuine failure retains sticky taint in both variants. |
+| `TmuxDeliveryAuthorityTests.retirementDuringDefinitiveEnterRefusalTracksPriorEnter` | No retired-unsent evidence | KEPT | The exact evidence expectation follows genuine framed failure rather than retirement. |
+| `TmuxDeliveryAuthorityTests.retirementAfterPasteNeverClearsAReboundPane` | Exact rebound error | KEPT | Binding mismatch remains a genuine refusal before Enter. |
+| `TmuxPolicyRetirementTests.retirementDuringLineTwoPreservesThePolicyReason` | Exact partial result includes an admitted second line | WEAKENED | Whole-submission admission includes that line after its Enter; an unadmitted line stays excluded. |
+| `TmuxPolicyRetirementTests.retirementDuringLineTwoPreservesThePolicyReason` | Enter count includes the admitted second line | WEAKENED | Whole-submission admission permits that line to finish. |
+| `TmuxPolicyRetirementTests.possiblySubmittedLineIsIncludedEvenWhenEnterReplyFails` | Enter count includes the permitted conditional retry | WEAKENED | Whole-submission admission retains the retry; a failed first Enter still prevents it. |
+| `TmuxPolicyRetirementTests.clearedInputKeepsFailureTaintAndDeviceRefusalUntilRestart` | First exact host inputPending result | KEPT | A real Enter failure supplies sticky taint. |
+| `TmuxPolicyRetirementTests.clearedInputKeepsFailureTaintAndDeviceRefusalUntilRestart` | Second exact host inputPending result after manual clear | KEPT | Manual clearing still cannot lift genuine failure taint. |
+| `TmuxPolicyRetirementTests.clearedInputKeepsFailureTaintAndDeviceRefusalUntilRestart` | Exact single terminal refusal frame | KEPT | The genuine pending-input reason remains exact. |
+| `TmuxPolicyRetirementTests.clearedInputKeepsFailureTaintAndDeviceRefusalUntilRestart` | Exactly one attempted Enter in the taint fixture | KEPT | The fixture now establishes genuine failure with that Enter. |
+| `TmuxPolicyRetirementTests.lineTwoRetirementCompletesOnlyTheAdmittedLine` | Exact terminal policy-refusal message | WEAKENED | Whole-submission completion removes the unsent-paste classification for the admitted line. |
+| `TmuxPolicyRetirementTests.lineTwoRetirementCompletesOnlyTheAdmittedLine` | Enter count includes an admitted second line | WEAKENED | Whole-submission admission completes that line before refusing later work. |
+| `TmuxPolicyRetirementTests.taintedRig (fixture)` | Exact possiblySubmitted error | KEPT | The fixture now uses genuine Enter failure, retaining prior-attempt classification. |
+| `TmuxPolicyRetirementTests.taintedRig (fixture)` | Exactly one Enter attempt | KEPT | The fixture establishes failure taint through that attempted Enter. |
+| `AmbientWiringPolicyRetirementTests.taintedRig (fixture)` | Exact rebound error | KEPT | Real rebinding establishes sticky failure taint before policy is reallowed. |
+| `TmuxSubmitConfirmationTests.cancellationDuringSettleCompletesTheSubmission` | Acknowledged settle barrier replaces the elapsed-time require | TIGHTENED | The timeout is only a watchdog; cancellation is delivered while settle is parked. |
+| `TmuxSubmitConfirmationTests.cancellationDuringSettleCompletesTheSubmission` | Only the paste is delivered at the barrier | TIGHTENED | Proves the admitted paste precedes cancellation. |
+| `TmuxSubmitConfirmationTests.cancellationDuringSettleCompletesTheSubmission` | Zero Enter effects before cancellation | TIGHTENED | Proves Enter has not completed before the boundary. |
+| `TmuxSubmitConfirmationTests.cancellationDuringSettleCompletesTheSubmission` | Zero Enter effects after cancellation and before release | TIGHTENED | Proves completion remains blocked until release. |
+| `TmuxSubmitConfirmationTests.cancellationDuringSettleCompletesTheSubmission` | Cancelled caller still receives completed delivery | WEAKENED | Whole-submission admission ignores later caller cancellation. |
+| `TmuxSubmitConfirmationTests.cancellationDuringSettleCompletesTheSubmission` | Fresh later delivery succeeds | WEAKENED | Whole-submission completion does not create cancellation taint. |
+| `TmuxSubmitConfirmationTests.cancellationDuringSettleCompletesTheSubmission` | Exact keys include both pastes and their Enters | WEAKENED | Whole-submission admission completes the first Enter and allows fresh work. |
+| `TmuxSubmitConfirmationTests.cancellationDuringSettleCompletesTheSubmission` | Exact outcomes are confirmed and unsettled | WEAKENED | Whole-submission completion records both admitted submit outcomes. |
+| `TmuxRefusalEvidenceTests.aConfirmedInsertThatCameBackIsNamedStaleAndOwnWithItsLengthAndAge` | Clock condition replaces a fixed age sleep | TIGHTENED | Waits for a whole second with a watchdog; exact age and evidence assertions are retained. |
+| `TmuxRefusalEvidenceTests.aCancelledAdmittedPasteStillRecordsItsSubmit` | Acknowledged settle barrier replaces eventual paste polling | TIGHTENED | Cancellation occurs during the parked settle wait. |
+| `TmuxRefusalEvidenceTests.aCancelledAdmittedPasteStillRecordsItsSubmit` | Only the paste has executed at the barrier | TIGHTENED | Separates actual side effects from recorded invocations. |
+| `TmuxRefusalEvidenceTests.aCancelledAdmittedPasteStillRecordsItsSubmit` | Cancelled delivery completes | WEAKENED | Whole-submission admission permits the admitted Enter after cancellation. |
+| `TmuxRefusalEvidenceTests.aCancelledAdmittedPasteStillRecordsItsSubmit` | Exact delivered keys include Enter | WEAKENED | Whole-submission admission completes the admitted Enter. |
+| `TmuxRefusalEvidenceTests.aCancelledAdmittedPasteStillRecordsItsSubmit` | Exact outcome is unverifiable | TIGHTENED | Requires the frozen fixture to record its specific outcome. |
+| `TmuxRefusalEvidenceTests.aCancelledAdmittedPasteStillRecordsItsSubmit` | Total evidence has exactly one record | KEPT | Unrelated extra evidence still fails the test. |
+| `TmuxRefusalEvidenceTests.aCancelledAdmittedPasteStillRecordsItsSubmit` | The sole record equals the exact submit line | TIGHTENED | Checks the whole record rather than an event-filtered subset. |
+| `TmuxRefusalEvidenceTests.aCancelledAdmittedPasteStillRecordsItsSubmit` | No pending-input evidence after cancellation | WEAKENED | Whole-submission completion does not create cancellation taint; genuine unsubmitted evidence is retained below. |
+| `TmuxRefusalEvidenceTests.rebindingAfterPasteKeepsUnsubmittedEvidenceAndStickyRefusal` | Exact tainted/unobserved prefix | KEPT | The original unsubmitted-state assertion is restored in the genuine rebind-before-submit case. |
+| `TmuxRefusalEvidenceTests.rebindingAfterPasteKeepsUnsubmittedEvidenceAndStickyRefusal` | Exact own_submitted=false last_submit=none suffix | KEPT | The original unsubmitted-state assertion is restored in the genuine rebind-before-submit case. |
+| `TmuxRefusalEvidenceTests.rebindingAfterPasteKeepsUnsubmittedEvidenceAndStickyRefusal` | Later delivery refuses | KEPT | A real rebound pane remains sticky after binding and input recover. |
+| `TmuxRefusalEvidenceTests.rebindingAfterPasteKeepsUnsubmittedEvidenceAndStickyRefusal` | Later refusal is exactly inputPending(tainted), twice | TIGHTENED | Checks both repeated refusals explicitly. |
+| `TmuxRefusalEvidenceTests.rebindingAfterPasteKeepsUnsubmittedEvidenceAndStickyRefusal` | Exactly two total evidence lines | TIGHTENED | Both refusals produce only the expected evidence. |
+| `TmuxRefusalEvidenceTests.rebindingAfterPasteKeepsUnsubmittedEvidenceAndStickyRefusal` | No submit outcomes | TIGHTENED | Rebinding occurs before any submit. |
+| `TmuxRefusalEvidenceTests.rebindingAfterPasteKeepsUnsubmittedEvidenceAndStickyRefusal` | No evidence before later refusals | TIGHTENED | The failed pre-submit path emits no unrelated record. |
+| `TmuxRefusalEvidenceTests.rebindingAfterPasteKeepsUnsubmittedEvidenceAndStickyRefusal` | Only two binding lookups after recovery | TIGHTENED | No capture, fill, paste or key call follows either refusal. |
+| `TmuxRefusalEvidenceTests.rebindingAfterPasteKeepsUnsubmittedEvidenceAndStickyRefusal` | Exact delivered keys contain only the initial paste | TIGHTENED | No Enter or later text reaches the pane. |
+| `TmuxDeliveryCommitTests.cancellationAfterTheCommitPointStillCompletesTheEnter` | Acknowledged recorded Enter replaces polling | TIGHTENED | The runner is parked before its responder side effect. |
+| `TmuxDeliveryCommitTests.cancellationAfterTheCommitPointStillCompletesTheEnter` | Only the paste has executed before cancellation | TIGHTENED | Invocation recording cannot stand in for the Enter effect. |
+| `TmuxDeliveryCommitTests.cancellationAfterTheCommitPointStillCompletesTheEnter` | Zero Enter effects before cancellation | TIGHTENED | Proves the in-flight Enter window. |
+| `TmuxDeliveryCommitTests.cancellationAfterTheCommitPointStillCompletesTheEnter` | Zero Enter effects before barrier release | TIGHTENED | Cancellation cannot accidentally follow completed Enter. |
+| `TmuxDeliveryCommitTests.cancellationAfterTheCommitPointStillCompletesTheEnter` | Exactly one Enter effect after completion | TIGHTENED | The admitted Enter completes once. |
+| `TmuxDeliveryCommitTests.cancellationAfterTheCommitPointStillCompletesTheEnter` | Observed pane has no pending payload | TIGHTENED | Checks the clean pane directly. |
+| `TmuxDeliveryCommitTests.cancellationAfterTheCommitPointStillCompletesTheEnter` | Exact original paste and Enter after completion | KEPT | Retains the original delivered-key assertion. |
+| `TmuxDeliveryCommitTests.cancellationAfterTheCommitPointStillCompletesTheEnter` | Fresh later delivery succeeds | TIGHTENED | Proves no sticky cancellation taint. |
+| `TmuxDeliveryCommitTests.cancellationAfterTheCommitPointStillCompletesTheEnter` | Exact final keys contain two pastes and two Enters | TIGHTENED | Bounds the fresh delivery as well. |
+| `TmuxDeliveryCommitTests.cancellationBeforeTheCommitPointNeverSendsEnter` | Acknowledged fill barrier replaces polling and cleanup sleep | TIGHTENED | Cancellation happens during preparation and the task is drained before assertions. |
+| `TmuxDeliveryCommitTests.cancellationBeforeTheCommitPointNeverSendsEnter` | Exact cancellation error | KEPT | Preparation remains cancellable before paste admission. |
+| `TmuxDeliveryCommitTests.cancellationBeforeTheCommitPointNeverSendsEnter` | No delivered keys | KEPT | The buffer is never pasted. |
+| `TmuxDeliveryCommitTests.cancellationBeforeTheCommitPointNeverSendsEnter` | Fewer than ten fill calls | KEPT | Cancellation stops chunk preparation. |
+| `TmuxDeliveryCommitTests.cancellationBeforeTheCommitPointNeverSendsEnter` | Last call deletes the buffer | KEPT | Unused-buffer cleanup remains required. |
+| `TmuxDeliveryCommitTests.aDeliveryAbandonedWhileQueuedTypesNothing` | Queued authority acknowledgement and actor fence | TIGHTENED | Proves enqueue before cancellation without fixed sleeps. |
+| `TmuxDeliveryCommitTests.aDeliveryAbandonedWhileQueuedTypesNothing` | Exact cancellation error | KEPT | The queued request remains unadmitted. |
+| `TmuxDeliveryCommitTests.aDeliveryAbandonedWhileQueuedTypesNothing` | Exact first-request keys only | KEPT | Queued input still types nothing. |
+| `TmuxTaintedPaneTests.anAttemptAbandonedWhileFillingLeavesThePaneCleanForTheQueuedAndLaterDeliveries` | Acknowledged fill and queued-enqueue barriers | TIGHTENED | Replaces timing-dependent ordering without changing delivery assertions. |
+| `TmuxTaintedPaneTests.anAttemptAbandonedWhileFillingLeavesThePaneCleanForTheQueuedAndLaterDeliveries` | Exact first-task cancellation | KEPT | The first delivery is abandoned before admission. |
+| `TmuxTaintedPaneTests.anAttemptAbandonedWhileFillingLeavesThePaneCleanForTheQueuedAndLaterDeliveries` | Exact queued and later delivered keys | KEPT | The clean pane still accepts both later requests. |
+| `TmuxTaintedPaneTests.anAttemptAbandonedWhileFillingLeavesThePaneCleanForTheQueuedAndLaterDeliveries` | Unused buffer is deleted | KEPT | Retains cleanup coverage. |
+| `TmuxTaintedPaneTests.abandonmentBeforeAnyChunkDoesNotTaintThePane` | Acknowledged fill and queued-enqueue barriers | TIGHTENED | Cancellation of the queued request precedes any of its chunks. |
+| `TmuxTaintedPaneTests.abandonmentBeforeAnyChunkDoesNotTaintThePane` | Exact queued-task cancellation | KEPT | The queued request remains unadmitted. |
+| `TmuxTaintedPaneTests.abandonmentBeforeAnyChunkDoesNotTaintThePane` | Exact first and later delivered keys | KEPT | The refused queued request leaves no input or taint. |
 
 ## Verification record
 
-The targeted regression run passed 271 tests in 62 suites. Strict lint passed all 17 changed Swift files.
-The combined broad filter reached the 600-second limit before completing. Its watchdog cleanup
-reported an error; a separate process inspection confirmed no phase processes remained. The watchdog
-was corrected to unwind the interrupted wait before cleanup. Completed broad coverage uses three
-disjoint groups whose union is the required filter; each phase remains limited to ten minutes.
+Final executable source and tests were verified at
+`6b0bdca092fa2374e3e31946788545b8acab651d`. The follow-up documentation commit changes this
+record only. The VM workspace `~/codex-workspaces/vwf3b` was re-synchronized from a local full-HEAD
+bundle and its `git rev-parse HEAD` matched before execution. No GitHub calls were made.
 
-| Group | Tests | Suites | Result |
+| Run/group | Tests | Suites | Result |
 | --- | --- | --- | --- |
-| Core broad families | 492 | 102 | Passed in 181.759 s; 10 deliberate known issues, zero unexpected issues |
-| Ambient A–M | 111 | 21 | Passed in 95.013 s |
-| Remaining Ambient | 507 | 107 | Passed in 414.561 s |
-| Reply CLI | 124 | — | Passed in 215.537 s; exit 0 |
-| Warnings as errors | — | — | `werr build=0`, exit 0; build completed in 105.74 s |
+| Targeted repeat 1 | 274 | 64 | Passed in 109.184 s |
+| Targeted repeat 2 | 274 | 64 | Passed in 112.499 s |
+| Targeted repeat 3 | 274 | 64 | Passed in 108.436 s |
+| Core broad families | 494 | 103 | Passed in 165.897 s; 10 known issues, zero unexpected issues |
+| Ambient A–M | 111 | 21 | Passed in 97.272 s |
+| Remaining Ambient | 507 | 107 | Passed in 425.728 s |
+| Reply CLI | 124 | — | Passed in 215.313 s; exit 0 |
+| Warnings as errors | — | — | `werr build=0`, exit 0; build completed in 41.49 s |
 
-The three completed broad groups cover **1,110 tests in 230 suites**, with zero unexpected issues.
-They ran on `83d983ac6cfff9707d31090338de57e4f5df2f78`; subsequent changes only record verification.
+The three targeted runs cover every suite changed by this batch and the shared tmux runner's regression
+families. Broad coverage is split into three disjoint bounded groups whose union is exactly the required
+`HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Ambient|Tmux|Reply|CommandLaunch)`
+filter, including the new `TaskProgressTmuxAdmissionTests` suite. Broad total: **1,112 tests in 231 suites**, zero unexpected issues.
+The ten deliberate known issues in the core group are the five each in the existing
+`LocalDispatchPreflightWaitTests` and `ReplyRecipientHandoffWaitTests` diagnostics.
 
-The warnings-as-errors build emitted the existing Command Line Tools missing module-cache debug-information
-warnings and completed successfully. Its temporary four-worker helper adjustment was restored.
+VM execution was synchronous over SSH with stdin redirected from `/dev/null`. Each phase finishes
+before the next begins. A 600-second process-group watchdog surrounds each phase and joins its child;
+termination/kill cleanup is available on timeout. Builds use `-j 4`, tests use `--no-parallel -j 4`.
+No host build or test was run. Strict host lint passed all **22 Swift files changed from main**, with
+zero violations. `git diff --check` passes. No physical-device, simulator or live tmux result is claimed.
 
-The core known issues are deliberate diagnostics in the existing `LocalDispatchPreflightWaitTests`
-and `ReplyRecipientHandoffWaitTests` self-tests (five each). The VM workspace is re-synchronized from a local
-`origin/main..HEAD` bundle before execution. The local main baseline was also transferred by bundle;
-no GitHub calls were made. Runs use at most four workers, no parallel test execution, and a 600-second
-process-group watchdog with termination/kill cleanup for each phase. SSH uses stdin from `/dev/null`.
-The host gate file must be absent before the broad suites and Reply CLI tests run.
-
-VM commands (SSH stdin redirected from `/dev/null`; each execution phase uses `/tmp/f3b-phase.py`):
+Exact remote commands, launched through `/bin/zsh /tmp/f3b-review-repeats.sh` over SSH with
+`< /dev/null`. Targeted round 1 passed before a log filter mistook a successful `outcome="failed"`
+parameter for a failure; correcting that filter required no source change. The continuation ran rounds
+2 and 3. The loop below shows the identical test command used for all three rounds:
 
 ```sh
-while pgrep -f '[v]w327-run.sh' >/dev/null; do sleep 20; done
-WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(Tmux|CommandLaunch|DeliveryAdmission|TaskProgress|Held)'
+while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
+cd ~/codex-workspaces/vwf3b
+git fetch /tmp/f3b-review.bundle HEAD
+git checkout -B submission-verification FETCH_HEAD
+git rev-parse HEAD
+export PATH="$HOME/codex-workspaces/vwf3b-tools:$PATH"
 
-while pgrep -f '[v]w327-run.sh' >/dev/null; do sleep 20; done
-WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Ambient|Tmux|Reply|CommandLaunch)'
+for round in 1 2 3; do
+  WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(Tmux|CommandLaunch|DeliveryAdmission|TaskProgress|Held|AmbientWiringPolicyRetirement)'
+done
 
-# Completed bounded broad groups, with the same idle check before each:
+# The same idle check precedes each bounded broad group:
 WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Tmux|Reply|CommandLaunch)'
 WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.Ambient[A-M]'
 WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.Ambient([^A-M]|$)'
 
-cd ~/codex-workspaces/vwf3b
 python3 /tmp/f3b-phase.py python3 -m unittest discover -s Tests/ReplyCLITests
-
 python3 /tmp/f3b-werr.py
 ```
 
 The warnings-as-errors wrapper invokes `~/codex-workspaces/vw-werr.sh vwf3b` under the same watchdog,
-temporarily adds `-j 4` to its build command, and restores the helper afterward. The watchdog creates
-a process group, sends termination on timeout/interruption, waits up to five seconds, then kills the
-process group and waits for the phase process. The idle check uses `[v]` to avoid matching its own shell command.
+temporarily adds `-j 4` to its build command, and restores that helper afterward. Its required result
+was `werr build=0` and wrapper exit 0. The helper's SHA-256 matched its pre-run value after restoration.
+The build emitted the existing Command Line Tools missing module-cache debug-information warnings
+and completed successfully.
+
+Logs on the VM are `/tmp/f3b-review-repeat-{1,2,3}-{build,test}.log`,
+`/tmp/f3b-review-{core,ambient-am,ambient-rest}-{build,test}.log`, `/tmp/f3b-review-cli.log`,
+`/tmp/f3b-review-werr-result.log`, and `~/codex-workspaces/vwf3b-werr.log`.
+Final inspection found no running phase, Swift build, Swift test or package-test process from this session.
+The VM's tracked worktree was clean, and its executable verification head still matched the full hash above.
 
 The existing real-tmux suites remain skipped when tmux is unavailable: `TmuxDeliveryCommitFakeTUITests`,
 `TmuxDeliveryCommitShellPromptTests`, `TmuxIntegrationTests`, `TmuxPasteAgentTests` and `TmuxPasteEnterTests`.
-The production-runner fixture tests above execute without tmux. No tmux binary was installed.
+Production-runner fixture tests execute without tmux. No tmux binary was installed.
 
 Host lint command, run separately for every changed Swift file:
 
@@ -172,8 +295,10 @@ Host lint command, run separately for every changed Swift file:
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict <file>
 ```
 
-Local `git diff --check` passes. Production count is computed from the checker's exact exclusion
-constants and both names of renamed files; it is four relative to the stage-order parent.
+Production-file counting loads `scripts/pr-shape.py` locally with `runpy.run_path`, reads
+`git diff --name-status --find-renames 461b40c1 HEAD`, includes both names of renames, and applies
+`EXCLUDED_PREFIXES` and `EXCLUDED_SUFFIXES` exactly. The result is **4**, equal to `MAX_SOURCE_FILES`.
+The GitHub-dependent PR checker entry point was not called.
 
 ## Launch hold measurement
 
@@ -182,8 +307,9 @@ production runner. The passing runs recorded the following gate-hold intervals:
 
 | Run | Launches | Minimum | Median | p95 | Maximum |
 | --- | --- | --- | --- | --- | --- |
-| Passing targeted run | 60 | 0.115250 ms | 0.186688 ms | 0.420709 ms | 0.773334 ms |
-| Final core broad group | 60 | 0.084916 ms | 0.175312 ms | 0.423375 ms | 0.555042 ms |
+| Targeted repeat 1 | 60 | 0.123708 ms | 0.2467705 ms | 0.800708 ms | 1.146042 ms |
+| Targeted repeat 2 | 60 | 0.109500 ms | 0.285583 ms | 0.800625 ms | 3.248750 ms |
+| Targeted repeat 3 | 60 | 0.109375 ms | 0.478500 ms | 0.985125 ms | 12.999167 ms |
 
 It measures 60 sequential production runner launches of `/usr/bin/true`, from immediately before the
 synchronous launch operation until it returns, with process completion outside the measured interval.
@@ -192,7 +318,7 @@ measurements, not device or production latency guarantees.
 
 ## Scope
 
-The checker excludes tests and documentation. Relative to the local stage-order parent, the four
+The checker excludes tests and documentation. Relative to main (and the tree-identical stage-order parent), the four
 production files are:
 
 - `Sources/HailDaemonKit/Adapters/Tmux/CommandRunner.swift`;
