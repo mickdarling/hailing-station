@@ -275,13 +275,13 @@ private extension ListenerTaskProgress {
         let authority = TaskProgressPublicationAuthority(generation: context.generation, binding: wake.task.binding,
                                                           taskFence: context.fence)
         guard
-              let commit = await listener.taskProgressHandoff(for: wake.task, authority: authority,
+              let retained = await listener.taskProgressDeliveryStages(for: wake.task, authority: authority,
                                                               privacyRevision: context.revision,
                                                               attempt: context.attempt,
                                                               lifetime: context.lifetime) else {
             throw CancellationError()
         }
-        return try await TaskProgressWakeScope.$beforeHandoff.withValue(commit) {
+        return try await TaskProgressWakeScope.$retained.withValue(retained) {
             try await host.sendAuthorized(wake.statusPrompt, policyGeneration: context.generation,
                                           from: "task-progress", expectedBinding: wake.task.binding, context: nil)
         }

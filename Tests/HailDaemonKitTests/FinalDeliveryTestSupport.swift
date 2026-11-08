@@ -30,6 +30,7 @@ actor FinalDeliveryAdapter: ProviderContextDelivering, ProviderReplyBindingLeasi
     nonisolated let leaseAuthority = ReplyPublicationAuthority()
     let listing = FinalDeliveryBarrier()
     let handoff = FinalDeliveryBarrier()
+    let completion = FinalDeliveryBarrier()
     private(set) var deliveries: [String] = []
     private(set) var contexts: [ProviderTurnContext] = []
 
@@ -53,6 +54,7 @@ actor FinalDeliveryAdapter: ProviderContextDelivering, ProviderReplyBindingLeasi
         await handoff.pause()
         try authority.requireCurrent()
         deliveries.append(text)
+        await completion.pause()
     }
     func deliver(
         _ text: String, to target: String, binding: String, context: ProviderTurnContext, authority: DeliveryAuthority
@@ -61,6 +63,7 @@ actor FinalDeliveryAdapter: ProviderContextDelivering, ProviderReplyBindingLeasi
         try authority.requireCurrent()
         deliveries.append(text)
         contexts.append(context)
+        await completion.pause()
     }
 }
 

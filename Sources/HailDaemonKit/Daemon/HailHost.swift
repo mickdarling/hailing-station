@@ -33,19 +33,13 @@ private struct HostDispatchRequest: Sendable {
     let heldScope = HeldSendScope.current
     let taskHandoff = TaskProgressWakeScope.beforeHandoff
 
+    let retained = TaskProgressWakeScope.retained
+
     var deliveryAuthority: DeliveryAuthority? {
-        let normal = TaskProgressWakeScope.deliveryAuthority(
-            policy: policyGeneration?.deliveryAuthority, handoff: taskHandoff
+        guard let policyGeneration else { return nil }
+        return (retained ?? RetainedDeliveryStages()).composed(
+            policy: policyGeneration, handoff: taskHandoff, held: heldScope
         )
-        guard let heldScope else { return normal }
-        return DeliveryAuthority {
-            try normal?.requireCurrent()
-            try heldScope.entry.policy.deliveryAuthority.requireCurrent()
-            guard heldScope.policyCurrent() else { throw HeldAuthorityError.policyChanged }
-            guard heldScope.selected() else { throw HeldAuthorityError.selectionChanged }
-            guard heldScope.allowed() else { throw HostError.denied(.lockdown) }
-            guard heldScope.noticeCurrent() else { throw HeldAuthorityError.noticeExpired }
-        }
     }
 }
 
@@ -417,7 +411,7 @@ extension HailHost {
             try await HeldPeerScope.requireCurrent()
             HeldSendScope.current?.failure.willHandoff()
             try await registry.deliver(line, to: request.target, binding: binding, context: request.turn,
-                                       authority: request.deliveryAuthority)
+                                       authority: request.deliveryAuthority.map(TaskProgressWakeScope.checkedHandoff))
         } catch {
             var partial = delivered
             // A possibly sent Enter is a handoff, like tmux's existing unverifiable submit outcome.
@@ -688,6 +682,10 @@ struct TargetPolicyGeneration: Sendable {
     fileprivate let policy: TargetPolicy?
     var binding: String? { policy?.binding }
     var wasGranted: Bool { generation != nil }
+
+    func isSameGeneration(as other: TargetPolicyGeneration) -> Bool {
+        authority === other.authority && target == other.target && generation == other.generation
+    }
 
     var deliveryAuthority: DeliveryAuthority {
         DeliveryAuthority {

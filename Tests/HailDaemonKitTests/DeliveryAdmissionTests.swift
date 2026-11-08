@@ -136,6 +136,8 @@ extension DeliveryAdmissionTests {
         try await blocked.waitUntilSuspended()
         let retirement = Task(executorPreference: RecipientPublicationExecutor()) {
             events.append("retirement invoked")
+            // This event marks the call site, not acquisition of the gate's lock. The assertions below
+            // cover completed event order, without proving this thread reached the blocked lock.
             retiring.continuation.yield(())
             gate.invalidate()
             events.append("retirement completed")
