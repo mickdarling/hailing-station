@@ -268,7 +268,8 @@ extension TmuxAdapter {
               session.paneID.hasPrefix("%"), session.paneID.dropFirst().allSatisfy(\.isNumber) else {
             throw AdapterError.deliveryFailed("unexpected tmux buffer or pane name")
         }
-        let ticket = TmuxSubmissionTicket(delivery: control.id, executable: tmuxPath, base: Self.baseArguments(socket: socket),
+        let ticket = TmuxSubmissionTicket(delivery: control.id, executable: tmuxPath,
+                                           base: Self.baseArguments(socket: socket),
                                            session: session, buffer: buffer, payload: text)
         try control.prepare(ticket)
         let launch = CommandLaunch { operation in
