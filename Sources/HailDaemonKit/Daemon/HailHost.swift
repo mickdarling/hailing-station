@@ -30,10 +30,22 @@ private struct HostDispatchRequest: Sendable {
     let expectedBinding: String?
     let turn: ProviderTurnContext?
     var policyGeneration: TargetPolicyGeneration?
+    let heldScope = HeldSendScope.current
     let taskHandoff = TaskProgressWakeScope.beforeHandoff
 
     var deliveryAuthority: DeliveryAuthority? {
-        TaskProgressWakeScope.deliveryAuthority(policy: policyGeneration?.deliveryAuthority, handoff: taskHandoff)
+        let normal = TaskProgressWakeScope.deliveryAuthority(
+            policy: policyGeneration?.deliveryAuthority, handoff: taskHandoff
+        )
+        guard let heldScope else { return normal }
+        return DeliveryAuthority {
+            try normal?.requireCurrent()
+            try heldScope.entry.policy.deliveryAuthority.requireCurrent()
+            guard heldScope.policyCurrent() else { throw HeldAuthorityError.policyChanged }
+            guard heldScope.selected() else { throw HeldAuthorityError.selectionChanged }
+            guard heldScope.allowed() else { throw HostError.denied(.lockdown) }
+            guard heldScope.noticeCurrent() else { throw HeldAuthorityError.noticeExpired }
+        }
     }
 }
 
@@ -60,10 +72,14 @@ public actor HailHost {
     private let dispatchSanitizing: SanitizePolicy
     private let pasteSanitizing: SanitizePolicy
     private let store: any PolicyStore
-    private let clock = ContinuousClock()
+    private let requestNow: @Sendable () -> ContinuousClock.Instant
+    nonisolated let heldRequests = HeldRequestStore()
+    nonisolated let heldNoticeWindow: Duration
     private let window: Duration
     private var policy: Policy
     private var policyRevision = UUID()
+    nonisolated private let heldPolicyRevision = Mutex(UUID())
+    nonisolated private let heldLockdown = Mutex(false)
     nonisolated let targetPolicy: TargetPolicyAuthority
     private let replyPublicationAuthority = ReplyPublicationAuthority()
     private var evaluator: PolicyEvaluator
@@ -73,7 +89,8 @@ public actor HailHost {
     public private(set) var policyFailure: String?
     public init(
         registry: Registry, sanitizing: SanitizePolicy = SanitizePolicy(), store: any PolicyStore,
-        confirmationWindow: Duration = HailHost.confirmationWindow
+        confirmationWindow: Duration = HailHost.confirmationWindow,
+        requestNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
     ) throws {
         self.registry = registry
         self.sanitizing = sanitizing
@@ -83,6 +100,8 @@ public actor HailHost {
         self.store = store
         targetPolicy = TargetPolicyAuthority(store: store)
         window = confirmationWindow
+        heldNoticeWindow = min(confirmationWindow, .seconds(3_600))
+        self.requestNow = requestNow
         var loaded = Policy()
         do {
             loaded = try store.load()
@@ -130,52 +149,6 @@ public actor HailHost {
         ))
     }
 
-    private func dispatch(_ text: String, request dispatch: HostDispatchRequest) async throws -> SendOutcome {
-        let id = dispatch.target
-        try requireSendPreflight()
-        try dispatch.policyGeneration?.requireCurrent()
-        var lines = try sanitizedLines(text)
-        let listed = try await dispatchListing(dispatch, lineCount: lines.count)
-        try dispatch.policyGeneration?.requireCurrent()
-        // Commit the first dispatch attempt after policy I/O, before consuming one-shot confirmation.
-        // No further cancellation observation occurs before its adapter handoff; later lines may stop.
-        try Task.checkCancellation()
-        let guardLines = try screenPaste(&lines)
-        var request = DeliveryRequest(
-            target: id, binding: listed.binding, lines: lines, device: dispatch.device, guardLines: guardLines
-        )
-        // No suspension from here to the first evaluation: the consumed token cannot go stale in between.
-        let confirmed = consume(dispatch.confirmedHash, for: request)
-        let confirmedRevision = policyRevision
-        var delivered: [String] = []
-        for (index, line) in lines.enumerated() {
-            try requireCurrentLine(delivered, index: index, policyGeneration: dispatch.policyGeneration)
-            request.lines = Array(lines[index...])
-            let evaluation = evaluator.evaluateWithEvidence(
-                request, lockdown: lockdown.isOn, limiter: limiter, now: clock.now
-            )
-            var decision = evaluation.decision
-            // A confirmation turns a read-back into delivery and nothing else: every denial stands.
-            if confirmed, confirmedRevision == policyRevision, case .confirm = decision { decision = .deliver }
-            switch decision {
-            case .deliver:
-                break
-            case .confirm(let reason, let hits):
-                guard delivered.isEmpty else { throw HostError.partial(delivered: delivered, reason: reason) }
-                RightyoGuardRefusal.current?.record(hits, patterns: policy.guardPatterns)
-                return .needsConfirmation(issue(request, reason: reason, evaluation: evaluation))
-            case .denied(let denial):
-                guard delivered.isEmpty else { throw HostError.partial(delivered: delivered, reason: "\(denial)") }
-                throw HostError.denied(denial)
-            }
-            // Recorded before the suspension, so concurrent sends cannot all pass admission on one history;
-            // an attempt the adapter then refuses still spent its slot (fail closed).
-            limiter.record(request, at: clock.now)
-            try await deliverLine(line, request: dispatch, binding: listed.binding, delivered: delivered)
-            delivered.append(line)
-        }
-        return .delivered(delivered)
-    }
     /// Sends one literal Escape to an allowed, still-bound target. Escape is a safety control rather
     /// than content delivery, so an explicit tap remains available at the confirm tier; locked targets
     /// and host lockdown still refuse it.
@@ -212,6 +185,72 @@ public actor HailHost {
     }
 }
 extension HailHost {
+    // Confirmation consumption and first evaluation must share this actor turn.
+    // swiftlint:disable:next function_body_length
+    private func dispatch(_ text: String, request dispatch: HostDispatchRequest) async throws -> SendOutcome {
+        let id = dispatch.target
+        try await HeldPeerScope.requireCurrent()
+        try requireSendPreflight()
+        try dispatch.policyGeneration?.requireCurrent()
+        var lines = try sanitizedLines(text)
+        let listed = try await dispatchListing(dispatch, lineCount: lines.count)
+        try dispatch.policyGeneration?.requireCurrent()
+        // Commit the first dispatch attempt after policy I/O, before consuming one-shot confirmation.
+        // No further cancellation observation occurs before its adapter handoff; later lines may stop.
+        try Task.checkCancellation()
+        let guardLines = try screenPaste(&lines)
+        var request = DeliveryRequest(
+            target: id, binding: listed.binding, lines: lines, device: dispatch.device, guardLines: guardLines
+        )
+        // No suspension from here to the first evaluation: the consumed token cannot go stale in between.
+        let confirmed = HeldSendScope.current == nil ? consume(dispatch.confirmedHash, for: request) : false
+        let confirmedRevision = policyRevision
+        var delivered: [String] = []
+        for (index, line) in lines.enumerated() {
+            try requireCurrentLine(delivered, index: index, policyGeneration: dispatch.policyGeneration)
+            request.lines = Array(lines[index...])
+            let evaluation = evaluator.evaluateWithEvidence(
+                request, lockdown: lockdown.isOn, limiter: limiter, now: requestNow()
+            )
+            var decision = evaluation.decision
+            let heldConfirmation: Bool
+            if HeldSendScope.current != nil, case .confirm = decision {
+                heldConfirmation = consume(dispatch.confirmedHash, for: request)
+            } else { heldConfirmation = false }
+            // A confirmation turns a read-back into delivery and nothing else: every denial stands.
+            if confirms(evaluation, confirmed: (confirmed || heldConfirmation) && confirmedRevision == policyRevision) {
+                decision = .deliver
+            }
+            switch decision {
+            case .deliver:
+                if let scope = HeldSendScope.current, scope.renewOnly || requestNow() >= scope.entry.expires {
+                    return .needsConfirmation(issue(request, reason: "notice renewal", evaluation: evaluation))
+                }
+            case .confirm(let reason, let hits):
+                guard delivered.isEmpty else { throw HostError.partial(delivered: delivered, reason: reason) }
+                RightyoGuardRefusal.current?.record(hits, patterns: policy.guardPatterns)
+                return .needsConfirmation(issue(request, reason: reason, evaluation: evaluation))
+            case .denied(let denial):
+                guard delivered.isEmpty else { throw HostError.partial(delivered: delivered, reason: "\(denial)") }
+                if case .rateLimited = denial, HostSession.ambientHeldRequests, HeldSendScope.current == nil {
+                    return .needsConfirmation(issue(request, reason: "rate_limited", evaluation: evaluation))
+                }
+                throw HostError.denied(denial)
+            }
+            // Recorded before the suspension, so concurrent sends cannot all pass admission on one history;
+            // an attempt the adapter then refuses still spent its slot (fail closed).
+            limiter.record(request, at: requestNow())
+            try await deliverLine(line, request: dispatch, binding: listed.binding, delivered: delivered)
+            delivered.append(line)
+        }
+        return .delivered(delivered)
+    }
+    private func confirms(_ evaluation: PolicyEvaluation, confirmed: Bool) -> Bool {
+        guard confirmed, case .confirm = evaluation.decision else { return false }
+        guard let previous = HeldSendScope.current?.entry.readBack.guardOutcomes else { return true }
+        return !evaluation.guardOutcomes.contains { $0.outcome == .timeout || !previous.contains($0) }
+    }
+
     /// Only fresh inputs retry a failed policy read; retained grants remain retired after recovery (#1028).
     func inputPolicyGeneration(for target: String) -> TargetPolicyGeneration {
         try? requirePolicy()
@@ -221,10 +260,10 @@ extension HailHost {
 
     func sendAuthorized(
         _ text: String, policyGeneration: TargetPolicyGeneration, from device: String,
-        expectedBinding: String?, context: ProviderTurnContext?
+        expectedBinding: String?, context: ProviderTurnContext?, confirmedHash: String? = nil
     ) async throws -> SendOutcome {
         try await dispatch(text, request: HostDispatchRequest(
-            target: policyGeneration.target, device: device, confirmedHash: nil,
+            target: policyGeneration.target, device: device, confirmedHash: confirmedHash,
             expectedBinding: expectedBinding ?? policyGeneration.binding, turn: context,
             policyGeneration: policyGeneration
         ))
@@ -342,11 +381,27 @@ extension HailHost {
         return listed
     }
 
+    nonisolated func heldPolicyIsCurrent(_ revision: UUID) -> Bool {
+        heldPolicyRevision.withLock { $0 == revision }
+    }
+
+    nonisolated func heldSendUnlocked() -> Bool { heldLockdown.withLock { !$0 } }
+
+    private func retireHeldPolicy() { heldPolicyRevision.withLock { $0 = UUID() } }
+
     private func requireCurrentLine(
         _ delivered: [String], index: Int, policyGeneration: TargetPolicyGeneration?
     ) throws {
         do {
+            if let scope = HeldSendScope.current {
+                guard scope.selected() else { throw HeldAuthorityError.selectionChanged }
+                guard scope.allowed() else { throw HostError.denied(.lockdown) }
+            }
             try policyGeneration?.requireCurrent()
+            try HeldSendScope.current?.entry.policy.requireCurrent()
+            if let scope = HeldSendScope.current, !heldPolicyIsCurrent(scope.entry.policyRevision) {
+                throw HeldAuthorityError.policyChanged
+            }
         } catch {
             guard !delivered.isEmpty else { throw error }
             throw HostError.partial(delivered: delivered, reason: "target_policy_changed")
@@ -359,6 +414,8 @@ extension HailHost {
         _ line: String, request: HostDispatchRequest, binding: String?, delivered: [String]
     ) async throws {
         do {
+            try await HeldPeerScope.requireCurrent()
+            HeldSendScope.current?.failure.willHandoff()
             try await registry.deliver(line, to: request.target, binding: binding, context: request.turn,
                                        authority: request.deliveryAuthority)
         } catch {
@@ -420,11 +477,13 @@ extension HailHost {
             compiled = try PolicyEvaluator(policy: update.policy)
         } catch {
             revokeAuthority()
+            retireHeldPolicy()
             targetPolicy.update(nil)
             policyFailure = "\(error)"
             throw error
         }
         revokeAuthority()
+        retireHeldPolicy()
         targetPolicy.update(update.policy)
         policy = update.policy
         evaluator = compiled
@@ -436,13 +495,14 @@ extension HailHost {
             let read = try tracking?.loadStable(comparedTo: targetPolicy.appliedPolicy)
             let next = try read?.policy ?? store.load()
             let compiled = try PolicyEvaluator(policy: next)
-            if next != policy { revokeAuthority() }
+            if next != policy { revokeAuthority(); retireHeldPolicy() }
             targetPolicy.update(next, retiring: read?.changedTargets ?? [])
             policy = next
             evaluator = compiled
             policyFailure = nil
         } catch {
             revokeAuthority()
+            retireHeldPolicy()
             targetPolicy.update(nil)
             policyFailure = "\(error)"
             throw HostError.policyUnavailable("\(error)")
@@ -461,7 +521,7 @@ extension HailHost {
         return listed
     }
     private func issue(_ request: DeliveryRequest, reason: String, evaluation: PolicyEvaluation) -> ReadBack {
-        let now = clock.now
+        let now = requestNow()
         pending = pending.filter { now - $0.value < window }
         let hash = request.confirmationHash
         pending[hash] = now
@@ -469,8 +529,25 @@ extension HailHost {
               let oldest = pending.min(by: { $0.value < $1.value }) {
             pending[oldest.key] = nil
         }
+        HeldReadBackEvidence.current?.record(
+            readBackHash: hash, revision: heldPolicyRevision.withLock { $0 }, expires: now + heldNoticeWindow,
+            reasons: heldReasons(reason, evaluation: evaluation),
+            rules: evaluation.guardOutcomes.map {
+                HeldRequestRule.wireRule(
+                    for: $0.name, isBuiltIn: policy.guardPatterns == DangerousPatternGuard.defaults
+                )
+            }
+        )
         return ReadBack(reason: reason, guardHits: evaluation.guardOutcomes.map(\.name),
                         guardOutcomes: evaluation.guardOutcomes, lines: request.lines, hash: hash)
+    }
+    private func heldReasons(_ reason: String, evaluation: PolicyEvaluation) -> [HeldRequestReason] {
+        var reasons: [HeldRequestReason] = []
+        if evaluation.guardOutcomes.contains(where: { $0.outcome == .match }) { reasons.append(.ruleMatch) }
+        if evaluation.guardOutcomes.contains(where: { $0.outcome == .timeout }) { reasons.append(.guardTimeout) }
+        if reason == "confirm tier" { reasons.append(.confirmTier) }
+        if reason == "rate_limited" { reasons.append(.rateLimited) }
+        return reasons
     }
     /// True once for a hash this host issued, still within the window, for exactly this request; then it
     /// is forgotten. Anything else (unknown, expired, already used, other utterance) confirms nothing, and
@@ -480,11 +557,12 @@ extension HailHost {
               let issued = pending.removeValue(forKey: hash) else {
             return false
         }
-        return clock.now - issued < window
+        return requestNow() - issued < window
     }
     /// The synchronized invalidation is the reply revocation boundary. A completed policy/lockdown
     /// mutation has invalidated every earlier permit; publication already inside its gate finishes first.
     func revokeAuthority() {
+        heldLockdown.withLock { $0 = lockdown.isOn }
         replyPublicationAuthority.invalidate()
         (pending, policyRevision) = ([:], UUID())
     }
