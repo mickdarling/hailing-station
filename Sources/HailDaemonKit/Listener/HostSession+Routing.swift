@@ -258,12 +258,13 @@ extension HostSession {
         }
         guard selects(target, generation: generation) else { return .unowned("request destination changed") }
         let record = {
-            if recordsInput { self.noteLastInput(to: target, generation: generation) }
+            if recordsInput { self.recordLastInput(to: target, generation: generation) }
             return true
         }
         guard peer.map({ $0.performIfCurrent(record) == true }) ?? record() else {
             return .unowned("reply authority changed")
         }
+        if recordsInput { didNoteLastInput() }
         return .delivered(request: nil)
     }
 
@@ -288,7 +289,7 @@ extension HostSession {
                 guard request.isCurrent(at: self.requestClock()) else { return false }
                 request.committed = true
                 self.replyRequests[context.id] = request
-                if recordsInput { self.noteLastInput(to: context.binding.targetID, generation: generation) }
+                if recordsInput { self.recordLastInput(to: context.binding.targetID, generation: generation) }
                 return true
             }
             return peer.map { $0.performIfCurrent(record) == true } ?? record()
@@ -297,7 +298,23 @@ extension HostSession {
             return .unowned("reply authority changed")
         }
         evictedForHandoff[context.id] = nil // Committed: the eviction stands.
+        if recordsInput { didNoteLastInput() }
         return .delivered(request: context.id)
+    }
+
+    /// Commit attribution under the retained gates; observers run after the gates release.
+    private func recordLastInput(to target: String, generation: UUID) {
+        let entry = LastInputLedger.Entry(connection: connectionID, generation: generation, at: requestClock())
+        lastInputLedger?.record(entry, for: target)
+    }
+
+    private func didNoteLastInput() {
+        if peerCapabilities.contains(ReplySegments.capability) {
+            let stopped = repliesInFlight.filter { segmentedReplies.contains($0) }
+            for reply in stopped { stopHeldReply(reply) }
+            if !stopped.isEmpty { logReplyEvent("reply_backstop", detail: "outcome=stopped count=\(stopped.count)") }
+        }
+        replyEvent(WebSocketListenerEvent(event: "session_update_interaction", sessionID: connectionID))
     }
 
     private func send(_ input: borrowing AuthorizedInput, owner: HostReplyOwnership?) async throws -> SendOutcome {
@@ -325,14 +342,14 @@ extension HostSession {
 
     /// Retain the reply permit, binding lease, peer and clock through every host suspension.
     /// HailHost supplies the single target-policy stage around these remaining stages.
-    private func finalDeliveryAuthority(
+    func finalDeliveryAuthority(
         owner: HostReplyOwnership?, target: String
     ) -> RetainedDeliveryStages {
-        let peer = Self.deliveryPeer, held = HeldSendScope.current
+        let peer = Self.deliveryPeer
         let request = owner.flatMap { replyRequests[$0.context.id] }
         let clock = requestClock, requiresOwner = owner != nil, createdAt = request?.createdAt
-        let refuse = RetainedDeliveryStages.refusal(target: target, held: held)
-        var retained = TaskProgressWakeScope.retained ?? RetainedDeliveryStages()
+        let refuse = RetainedDeliveryStages.refusal(target: target)
+        var retained = RetainedDeliveryStages()
         if let permit = request?.policyPermit {
             retained.gates[.replyPermit] = RetainedDeliveryStages.gate({ permit.performIfCurrent($0) == true },
                                                                       refusal: refuse)
@@ -345,7 +362,6 @@ extension HostSession {
             retained.gates[.peerLifecycle] = RetainedDeliveryStages.gate({ peer.performIfCurrent($0) == true },
                                                                         refusal: refuse)
         }
-        let decision = retained.gates[.attemptCancellation]
         let current: @Sendable () throws -> Void = {
             guard let createdAt else {
                 if requiresOwner { try refuse() }
@@ -356,10 +372,9 @@ extension HostSession {
         }
         retained.gates[.attemptCancellation] = DeliveryAdmission.Gate(validate: {
             try current()
-            try decision?.validate()
         }, perform: { operation in
             try current()
-            if let decision { try decision.perform(operation) } else { try operation() }
+            try operation()
         })
         return retained
     }
