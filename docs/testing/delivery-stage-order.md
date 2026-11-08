@@ -44,7 +44,7 @@ attempt/cancellation record and never retry on error. This delivery does not cha
 
 ## Synthetic evidence
 
-- `DeliveryStageOrderTests` instruments the real retained gates. Held predicates assert that the peer
+- `DeliveryAdmissionStageOrderTests` instruments the real retained gates. Held predicates assert that the peer
   gate is free on success and refusal. The task test wraps the actual router continuation and retained
   peer gate. Session stages are exercised with an earlier router contributor; ordinary session input
   has no router stage unless held predicates apply. These tests require no production recorder hook.

@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct DeliveryStageOrderTests {
+@Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct DeliveryAdmissionStageOrderTests {
     @Test func heldPredicatesPrecedePeerAndRequestClock() async throws {
         let rig = try await FinalDeliveryRig.make(held: true)
         let id = try await rig.hold()
