@@ -77,8 +77,17 @@ import Testing
         try await recipientSocketSend(audio(UUID(), 0), on: pair.sockets[0])
         try await pair.boundedBarrier(step: "segment before disconnect")
         #expect(env.router.liveRuns == 1)
-        #expect(await eventually { (try? fake.recorded("pid.txt")) != nil })
-        let pid = try #require(Int32(try fake.recorded("pid.txt").trimmingCharacters(in: .whitespacesAndNewlines)))
+        let deadline = ContinuousClock.now + .seconds(15)
+        var childPID: Int32?
+        while !Task.isCancelled, ContinuousClock.now < deadline {
+            if let text = try? fake.recorded("pid.txt"),
+               let parsed = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), parsed > 0 {
+                childPID = parsed
+                break
+            }
+            await Task.yield()
+        }
+        let pid = try #require(childPID, "Child did not record a positive Int32 PID within 15 seconds")
         pair.close()
         #expect(await eventually { env.router.liveRuns == 0 })
         errno = 0
