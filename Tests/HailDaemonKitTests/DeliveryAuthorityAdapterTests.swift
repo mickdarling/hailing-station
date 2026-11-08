@@ -97,6 +97,27 @@ import Testing
 }
 
 extension DeliveryAuthorityAdapterTests {
+    @Test func checkOnlyAuthorityRefusesOperationBearingAdmission() throws {
+        let authority = DeliveryAuthority { throw AdapterError.deliveryFailed("synthetic_validation") }
+        #expect(!authority.supportsAdmission)
+        #expect(throws: AdapterError.deliveryFailed("synthetic_validation")) { try authority.requireCurrent() }
+        var calls = 0
+        #expect(throws: DeliveryAdmissionError.unsupported) {
+            try authority.admit { calls += 1 }
+        }
+        #expect(calls == 0)
+    }
+
+    @Test func checkedHandoffDoesNotRequireOperationBearingAdmission() async throws {
+        let adapter = TaskProgressCheckedAdapter()
+        adapter.resume()
+        let authority = DeliveryAuthority {}
+        #expect(!authority.supportsAdmission)
+        try await adapter.deliver("one", to: "a", binding: "binding-a", authority: authority)
+        #expect(await adapter.accepted == ["one"])
+        #expect(!authority.supportsAdmission)
+    }
+
     @Test func diagnosticRefusesRetiredAuthorityBeforeQueueAdmission() async throws {
         let publisher = DiagnosticSyntheticPublisher()
         let adapter = try diagnosticBridge(publisher)

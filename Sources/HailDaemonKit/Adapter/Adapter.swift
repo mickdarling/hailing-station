@@ -62,17 +62,38 @@ public enum AdapterInputShapeError: Error, Sendable, Equatable {
     case singleLineRequired
 }
 
-/// Retained target authority for one guarded dispatch (#1028), never a fresh grant.
-/// Checks only the short policy-generation lock: no file I/O, actor hop or adapter I/O.
-/// Fully guarded adapters check immediately before each side effect, including a later Enter, without
-/// holding the generation lock across I/O. CheckedHandoffDelivering opts into a handoff-only check instead.
-/// Adapters supporting neither contract must refuse guarded delivery.
+/// Retained authority for one guarded dispatch, never a fresh grant.
+/// Validation and operation-bearing delivery admission are separate capabilities. Admission is ordered
+/// against retirement; check-only authority retains its existing validation contract.
+/// CheckedHandoffDelivering explicitly opts into a handoff-only check. Adapters supporting neither
+/// guarded delivery contract must refuse guarded delivery.
 public struct DeliveryAuthority: Sendable {
     private let check: @Sendable () throws -> Void
+    private let admission: DeliveryAdmission?
 
-    init(check: @escaping @Sendable () throws -> Void) { self.check = check }
+    init(check: @escaping @Sendable () throws -> Void) {
+        self.check = check
+        admission = nil
+    }
 
+    init(admission: DeliveryAdmission) {
+        check = { try admission.validate() }
+        self.admission = admission
+    }
+
+    /// Operation-bearing authority validates without committing cancellation or an attempt.
+    /// Check-only authority preserves its existing handoff check.
     public func requireCurrent() throws { try check() }
+
+    public var supportsAdmission: Bool { admission != nil }
+
+    /// Operation-bearing delivery admission is ordered against retirement. The operation is synchronous
+    /// and nonescaping; it must not suspend, wait for completion, retire or reacquire any authority gate.
+    /// Check-only authority, including authority used by CheckedHandoffDelivering, fails closed here.
+    public func admit<Value>(_ operation: () throws -> Value) throws -> Value {
+        guard let admission else { throw DeliveryAdmissionError.unsupported }
+        return try admission.admit(operation)
+    }
 }
 
 /// The adapter interface (#10 item 2). Implementations are actors or otherwise `Sendable`; every call is
