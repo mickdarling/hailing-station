@@ -96,7 +96,7 @@ import Testing
         #expect(outcome == HostDeliveryOutcome.delivered(request: nil))
         let calls = rig.runner.calls.count
         let control = try onlyControl(await session.receive(frame))
-        guard case ControlPayload.error(code: .notAllowed, message: _) = control else {
+        guard case ControlPayload.error(code: .notAllowed, message: _, turn: _) = control else {
             Issue.record("retired authority must refuse the next submission")
             return
         }

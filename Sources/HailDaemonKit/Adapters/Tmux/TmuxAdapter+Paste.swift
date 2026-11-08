@@ -218,7 +218,8 @@ final class TmuxSubmissionTicket: Sendable {
     private let state = Mutex(State())
 
     init(
-        delivery: UUID, executable: String, base: [String], session: TmuxAdapter.Session, buffer: String, payload: String
+        delivery: UUID, executable: String, base: [String], session: TmuxAdapter.Session,
+        buffer: String, payload: String
     ) {
         self.delivery = delivery
         self.executable = executable
