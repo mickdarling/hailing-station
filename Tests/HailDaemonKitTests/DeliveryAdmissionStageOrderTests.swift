@@ -93,7 +93,7 @@ import Testing
         #expect(throws: HeldAuthorityError.policyChanged) { try authority.requireCurrent() }
         #expect(throws: HeldAuthorityError.policyChanged) { try authority.admit {} }
         rig.host.targetPolicy.retire(FinalDeliveryRig.target)
-        #expect(throws: HeldAuthorityError.policyChanged) { try authority.admit {} }
+        #expect(throws: HostError.denied(.notAllowed(FinalDeliveryRig.target))) { try authority.admit {} }
         await rig.listener.stop()
     }
 
@@ -101,7 +101,7 @@ import Testing
         let rig = try await FinalDeliveryRig.make(held: true)
         let id = try await rig.hold()
         let entry = try #require(await rig.host.heldRequests.entries[id])
-        let scope = stageOrderHeldScope(entry, recorder: DeliveryStageRecorder())
+        let scope = stageOrderHeldScope(entry, recorder: DeliveryStageRecorder(), selected: { false })
         let authority = RetainedDeliveryStages().composed(policy: entry.policy, held: scope)
         rig.host.targetPolicy.retire(FinalDeliveryRig.target)
         HeldSendScope.$current.withValue(scope) {
@@ -114,4 +114,22 @@ import Testing
         await rig.listener.stop()
     }
 
+    @Test func heldClockRefusalReleasesPeerBeforePredicateChecks() async throws {
+        let rig = try await FinalDeliveryRig.make(held: true)
+        let id = try await rig.hold()
+        let entry = try #require(await rig.host.heldRequests.entries[id])
+        #expect(await rig.listener.sendHeld(id, from: rig.session.connectionID) == .sent)
+        let context = try #require(await rig.adapter.contexts.first)
+        let owner = HostReplyOwnership(context: context, contextual: true)
+        let peer = try #require(rig.peer.replyTransport.issuePermit())
+        let stages = await rig.session.stageOrderAuthority(peer: peer, owner: owner)
+        let recorder = DeliveryStageRecorder()
+        let scope = stageOrderHeldScope(entry, recorder: recorder)
+        let authority = recorder.instrument(stages).composed(policy: entry.policy, held: scope)
+        rig.clock.advance(120_000)
+        #expect(throws: HostError.denied(.notAllowed(FinalDeliveryRig.target))) { try authority.admit {} }
+        try recorder.expectRouterBeforePeer()
+        #expect(recorder.events.filter { $0 == "router" }.count == 2)
+        await rig.listener.stop()
+    }
 }

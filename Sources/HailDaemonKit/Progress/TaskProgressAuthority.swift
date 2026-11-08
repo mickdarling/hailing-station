@@ -97,15 +97,15 @@ struct RetainedDeliveryStages: Sendable {
             return policy.performIfCurrent(operation) == true
         }, refusal: { throw HostError.denied(.notAllowed(policy.target)) })
         let evaluate: @Sendable (() throws -> Void) throws -> Void = { operation in
-            do {
-                try policyGate.perform {
-                    try Self.requireHeld(held)
+            try policyGate.perform {
+                try Self.requireHeld(held)
+                do {
                     try operation()
+                } catch {
+                    // Re-evaluate refusal precedence only after every nested gate has released.
+                    if case HostError.denied(.notAllowed) = error { try Self.requireHeld(held) }
+                    throw error
                 }
-            } catch {
-                // Re-evaluate refusal precedence only after every nested gate has released.
-                if case HostError.denied(.notAllowed) = error { try Self.requireHeld(held) }
-                throw error
             }
         }
         stages[.targetPolicy] = DeliveryAdmission.Gate(validate: { try evaluate {} }, perform: evaluate)
