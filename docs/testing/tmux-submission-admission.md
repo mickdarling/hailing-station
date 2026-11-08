@@ -51,7 +51,7 @@ The first paste launch uses the composed authority in this fixed order, skipping
 10. synchronous launch.
 
 The adapter adds its cancellation decision and ticket state after the composed attempt stage.
-Ticket completion only locks its own state. Neither path takes peer, permit or lease and then router,
+Ticket completion acquires no retained authority gate. Neither path takes peer, permit or lease and then router,
 privacy or policy. The host supplies target policy once; task output uses its fence and retained
 generation comparison. Held predicates run at policy-gate entry, before the inner gates.
 No `await`, pipe wait or process wait occurs under any authority gate.
@@ -69,7 +69,7 @@ execution. This keeps the implementation within four production files without ch
 
 ## Acceptance coverage
 
-All executable fixtures are test-owned fake tmux programs. They never contact a tmux server.
+Tmux command fixtures use test-owned fake executables and never contact a tmux server.
 
 | Test | Invariant |
 | --- | --- |
@@ -96,7 +96,7 @@ The following existing tests explicitly adopt whole-submission admission or reta
 | `TmuxAuthorityBoundaryTests.retirementDuringFinalBindingCheckCompletesTheSubmission` | Formerly required unsent input and suppressed Enter; unchanged binding completes the admitted submission. |
 | `TmuxAuthorityBoundaryTests.retirementBeforeRetryKeepsTheSingleRetryBudget` | Formerly suppressed the retry; permits the existing one retry, retaining failure taint when the fixture still holds input. |
 | `TmuxAuthorityBoundaryTests.collapsedAgentPasteCompletesAfterRetirement` | Formerly required unsent collapsed paste; framed Enter completes after retirement. |
-| `TmuxAuthorityBoundaryTests.retirementAfterPasteCompletesBeforeTheNextTerminalRefusal` | Current input completes; the next terminal input is refused without new commands. |
+| `TmuxAuthorityBoundaryTests.retirementAfterPasteCompletesBeforeTheNextTerminalRefusal` | Current input completes; the next terminal input is refused without a new paste or Enter. |
 | `TmuxPolicyRetirementTests.retirementDuringLineTwoPreservesThePolicyReason` | A second line already pasted completes; a preparing second line remains unsent. Later lines are refused. |
 | `TmuxPolicyRetirementTests.possiblySubmittedLineIsIncludedEvenWhenEnterReplyFails` | The conditional retry remains permitted after retirement. Genuine first-Enter or retry failure keeps sticky taint and partial accounting. |
 | `TmuxPolicyRetirementTests.clearedInputKeepsFailureTaintAndDeviceRefusalUntilRestart` | Uses a real Enter failure to establish sticky taint; retirement alone completes rather than creating taint. |
@@ -111,7 +111,27 @@ guarded launch, while the capability suite preserves coverage for a runner lacki
 ## Verification record
 
 The targeted regression run passed 271 tests in 62 suites. Strict lint passed all 17 changed Swift files.
-The final broad VM phases remain pending. The VM workspace is re-synchronized from a local
+The combined broad filter reached the 600-second limit before completing. Its watchdog cleanup
+reported an error; a separate process inspection confirmed no phase processes remained. The watchdog
+was corrected to unwind the interrupted wait before cleanup. Completed broad coverage uses three
+disjoint groups whose union is the required filter; each phase remains limited to ten minutes.
+
+| Group | Tests | Suites | Result |
+| --- | --- | --- | --- |
+| Core broad families | 492 | 102 | Passed in 181.759 s; 10 deliberate known issues, zero unexpected issues |
+| Ambient A–M | 111 | 21 | Passed in 95.013 s |
+| Remaining Ambient | 507 | 107 | Passed in 414.561 s |
+| Reply CLI | 124 | — | Passed in 215.537 s; exit 0 |
+| Warnings as errors | — | — | `werr build=0`, exit 0; build completed in 105.74 s |
+
+The three completed broad groups cover **1,110 tests in 230 suites**, with zero unexpected issues.
+They ran on `83d983ac6cfff9707d31090338de57e4f5df2f78`; subsequent changes only record verification.
+
+The warnings-as-errors build emitted the existing Command Line Tools missing module-cache debug-information
+warnings and completed successfully. Its temporary four-worker helper adjustment was restored.
+
+The core known issues are deliberate diagnostics in the existing `LocalDispatchPreflightWaitTests`
+and `ReplyRecipientHandoffWaitTests` self-tests (five each). The VM workspace is re-synchronized from a local
 `origin/main..HEAD` bundle before execution. The local main baseline was also transferred by bundle;
 no GitHub calls were made. Runs use at most four workers, no parallel test execution, and a 600-second
 process-group watchdog with termination/kill cleanup for each phase. SSH uses stdin from `/dev/null`.
@@ -126,6 +146,11 @@ WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'Hai
 while pgrep -f '[v]w327-run.sh' >/dev/null; do sleep 20; done
 WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Ambient|Tmux|Reply|CommandLaunch)'
 
+# Completed bounded broad groups, with the same idle check before each:
+WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Tmux|Reply|CommandLaunch)'
+WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.Ambient[A-M]'
+WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.Ambient([^A-M]|$)'
+
 cd ~/codex-workspaces/vwf3b
 python3 /tmp/f3b-phase.py python3 -m unittest discover -s Tests/ReplyCLITests
 
@@ -134,8 +159,8 @@ python3 /tmp/f3b-werr.py
 
 The warnings-as-errors wrapper invokes `~/codex-workspaces/vw-werr.sh vwf3b` under the same watchdog,
 temporarily adds `-j 4` to its build command, and restores the helper afterward. The watchdog creates
-a process group, sends termination on timeout/interruption, waits up to five seconds, then kills and
-joins remaining children. The idle check uses `[v]` to avoid matching its own shell command.
+a process group, sends termination on timeout/interruption, waits up to five seconds, then kills the
+process group and waits for the phase process. The idle check uses `[v]` to avoid matching its own shell command.
 
 The existing real-tmux suites remain skipped when tmux is unavailable: `TmuxDeliveryCommitFakeTUITests`,
 `TmuxDeliveryCommitShellPromptTests`, `TmuxIntegrationTests`, `TmuxPasteAgentTests` and `TmuxPasteEnterTests`.
@@ -153,11 +178,12 @@ constants and both names of renamed files; it is four relative to the stage-orde
 ## Launch hold measurement
 
 `CommandLaunchAdmissionTests.productionLaunchGateHoldMeasurements` completed on the VM with the
-production runner. The passing targeted run recorded the following gate-hold intervals:
+production runner. The passing runs recorded the following gate-hold intervals:
 
-| Launches | Minimum | Median | p95 | Maximum |
-| --- | --- | --- | --- | --- |
-| 60 | 0.115250 ms | 0.186688 ms | 0.420709 ms | 0.773334 ms |
+| Run | Launches | Minimum | Median | p95 | Maximum |
+| --- | --- | --- | --- | --- | --- |
+| Passing targeted run | 60 | 0.115250 ms | 0.186688 ms | 0.420709 ms | 0.773334 ms |
+| Final core broad group | 60 | 0.084916 ms | 0.175312 ms | 0.423375 ms | 0.555042 ms |
 
 It measures 60 sequential production runner launches of `/usr/bin/true`, from immediately before the
 synchronous launch operation until it returns, with process completion outside the measured interval.
@@ -174,6 +200,6 @@ production files are:
 - `Sources/HailDaemonKit/Adapters/Tmux/TmuxAdapter+Paste.swift`;
 - `Sources/HailDaemonKit/Daemon/HailHost.swift`.
 
-`TmuxAdapter+Submit.swift` is unchanged. Existing independent exact-head reviews and current required
+`TmuxAdapter+Submit.swift` is unchanged. Independent exact-head reviews and current required
 GitHub protections remain separate release requirements; this local record does not claim those reviews.
 No source was pushed, no installed build was replaced and no delivery was uploaded.
