@@ -350,7 +350,7 @@ extension HostSession {
         guard listed.binding == entry.binding else { return .refused(.bindingChanged) }
         _ = await host.refreshedPolicy()
         do { try entry.policy.requireCurrent() } catch { return .refused(.policyChanged) }
-        guard await host.heldPolicyIsCurrent(entry.policyRevision) else { return .refused(.policyChanged) }
+        guard host.heldPolicyIsCurrent(entry.policyRevision) else { return .refused(.policyChanged) }
         let snapshot = self.snapshot, connection = connectionID
         let requestClock = self.requestClock, host = self.host
         let scope = HeldSendScope(entry: entry, renewOnly: requestClock() >= entry.expires, allowed: {
