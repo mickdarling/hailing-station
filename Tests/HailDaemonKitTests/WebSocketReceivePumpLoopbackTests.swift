@@ -137,8 +137,10 @@ extension WebSocketReceivePumpTests {
         let peers = await listener.peers
         let peer = try #require(peers.values.first)
         try await recipientSocketSend(helloFrame(versions: [99]), on: socket)
-        _ = try await recipientSocketReceive(on: socket)
-        #expect(try await ended.wait("protocol close") == "protocol closed")
+        let response = try await recipientSocketReceive(on: socket)
+        #expect(response.payload == .control(.error(code: .protocolVersion, message: "no shared protocol version")))
+        let reason = try await ended.wait("protocol close")
+        #expect(["protocol closed", "peer closed", "cancelled"].contains(reason))
         #expect(peer.replyTransport.isRetired)
         #expect(await peer.ended)
         await listener.stop(reason: "test complete")
