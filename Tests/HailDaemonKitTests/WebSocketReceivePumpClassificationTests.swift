@@ -76,5 +76,4 @@ extension WebSocketReceivePumpTests {
         _ = try await ended.wait("malformed protocol disconnect")
         await listener.stop(reason: "test complete")
     }
-
 }

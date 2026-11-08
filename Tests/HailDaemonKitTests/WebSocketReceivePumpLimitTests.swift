@@ -87,5 +87,4 @@ extension WebSocketReceivePumpTests {
         let newest = (7...35).map { "second:\($0)" }
         #expect(delivered.withLock { $0 } == startsAndFinal + newest)
     }
-
 }

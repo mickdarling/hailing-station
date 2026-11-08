@@ -75,8 +75,8 @@ transport ping/pong.
 ## Lock order
 
 The new pump state mutex protects only start/stop flags, receive reservation, worker ownership,
-queued decoded frames, classification, eviction and byte accounting. This mutex is a leaf: no synchronous callback, lifecycle operation, session operation,
-Network call or asynchronous wait runs while it is held. Worker task creation only records the task;
+queued decoded frames, classification, eviction and byte accounting. This mutex is a leaf: no synchronous
+callback, lifecycle operation, session operation, Network call or asynchronous wait runs while it is held. Worker task creation only records the task;
 the task must acquire the state mutex separately before removing any data.
 
 Pump stop first retires the lifecycle, releases its gates, and then acquires pump state to clear the

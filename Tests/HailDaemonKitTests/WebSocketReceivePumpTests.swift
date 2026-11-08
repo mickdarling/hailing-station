@@ -109,7 +109,6 @@ import Testing
         #expect(rig.transport.receives == receives)
     }
 
-
 }
 
 final class PumpTransport: Sendable {

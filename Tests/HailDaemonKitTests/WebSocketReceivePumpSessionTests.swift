@@ -65,7 +65,6 @@ extension WebSocketReceivePumpTests {
         #expect(try onlyControl(result) == onlyControl(expected))
         #expect(try onlyControl(result) == .error(code: .malformed, message: "malformed or oversized frame"))
     }
-
 }
 
 private struct PumpSessionAuthorizer: HostSessionAuthorizing {

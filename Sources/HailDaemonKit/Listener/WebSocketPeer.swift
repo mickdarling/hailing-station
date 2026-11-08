@@ -100,9 +100,9 @@ actor WebSocketPeer {
             emit("session_connected", endpoint: "\(connection.endpoint)")
             ingress.start(process: { [weak self] data in
                 await self?.process(data)
-            }, onEnd: { [weak self, connection] reason, protocolError in
+            }, onEnd: { [weak self, connection, submitClose] reason, protocolError in
                 if protocolError {
-                    Task { await self?.close(reason: reason) }
+                    submitClose { [weak self] in Task { await self?.finish(reason: reason) } }
                 } else {
                     connection.cancel()
                     Task { await self?.finish(reason: reason) }
@@ -149,7 +149,7 @@ actor WebSocketPeer {
         }
         for frame in result.frames {
             guard await send(frame) else {
-                finish(reason: "send failed")
+                if !replyTransport.isRetired { finish(reason: "send failed") }
                 return
             }
         }

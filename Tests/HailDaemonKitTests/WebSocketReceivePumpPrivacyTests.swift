@@ -11,13 +11,7 @@ extension WebSocketReceivePumpTests {
         let sink = PumpPrivacySink()
         let clock = AmbientTestClock()
         let gate = AmbientAudioGate(target: "tmux:a", sink: sink, sweepInterval: nil, clock: { clock.now })
-        var policy = Policy()
-        try policy.allow("tmux:a", binding: "binding-a", tier: .open)
-        let targets = [AdapterTarget(name: "a", binding: "binding-a")]
-        let (host, _) = try await sessionHost(targets: targets, policy: policy)
-        let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(ambientAudio: gate))
-        _ = await session.receive(helloFrame())
-        _ = await session.receive(sessionFrame(payload: .control(.select(targetID: "tmux:a"))))
+        let session = try await pumpPrivacySession(gate)
         let stream = UUID()
         let start = try FrameCoding.decode(pumpAudio(stream, 0))
         #expect(await session.receive(start).frames.isEmpty)
@@ -59,4 +53,15 @@ private final class PumpPrivacySink: AmbientAudioSink {
     }
     func ambientPrivacy(_ on: Bool, connection: UUID) { recorded.withLock { $0.append("privacy:\(on)") } }
     func ambientInputRoute(_ route: String, connection: UUID) { recorded.withLock { $0.append("input:\(route)") } }
+}
+
+private func pumpPrivacySession(_ gate: AmbientAudioGate) async throws -> HostSession {
+    var policy = Policy()
+    try policy.allow("tmux:a", binding: "binding-a", tier: .open)
+    let targets = [AdapterTarget(name: "a", binding: "binding-a")]
+    let (host, _) = try await sessionHost(targets: targets, policy: policy)
+    let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(ambientAudio: gate))
+    _ = await session.receive(helloFrame())
+    _ = await session.receive(sessionFrame(payload: .control(.select(targetID: "tmux:a"))))
+    return session
 }
