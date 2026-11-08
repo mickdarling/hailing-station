@@ -44,6 +44,30 @@ import Testing
         await rig.listener.stop()
     }
 
+    @Test func wakeAttemptRemainsUncommittedBeforePasteLaunch() async throws {
+        let attempt = TaskProgressWakeAttempt()
+        let barrier = TmuxCommandBarrier("paste-buffer")
+        defer { barrier.gate.fire() }
+        let (adapter, runner) = try await makeAdapter(tainted: false, attempt: attempt, barrier: barrier)
+        let rig = try await TaskProgressGuardedWakeRig.make(adapter: adapter, name: "codex", binding: Self.binding)
+        let generation = rig.host.targetPolicy.snapshot(for: rig.target)
+        let task = TaskProgressTask(session: rig.target, binding: Self.binding)
+        let retained = try await stages(rig, task: task, generation: generation, attempt: attempt)
+        let sending = Task {
+            try await TaskProgressWakeScope.$retained.withValue(retained) {
+                try await rig.host.sendAuthorized("synthetic input", policyGeneration: generation,
+                                                  from: "task-progress", expectedBinding: Self.binding, context: nil)
+            }
+        }
+        try await barrier.gate.waitUntilSuspended()
+        #expect(!attempt.hasAttempt, "a recorded paste command has not yet entered launch admission")
+        #expect(await runner.delivered.isEmpty)
+        #expect(try await barrier.gate.finish(sending) == .delivered(["synthetic input"]))
+        #expect(attempt.hasAttempt)
+        #expect(await runner.delivered == ["synthetic input", "Enter"])
+        await rig.listener.stop()
+    }
+
     private func makeAdapter(
         tainted: Bool, attempt: TaskProgressWakeAttempt, barrier: TmuxCommandBarrier
     ) async throws -> (TmuxAdapter, FakeCommandRunner) {

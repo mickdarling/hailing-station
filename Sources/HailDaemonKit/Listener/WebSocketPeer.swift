@@ -20,7 +20,6 @@ func parseBindAddress(_ address: String) -> (host: NWEndpoint.Host, canonical: S
 }
 
 // Lifecycle retirement and protocol closure remain one peer boundary.
-// swiftlint:disable type_body_length
 /// One socket and one `HostSession`; receive calls are serialized per peer while different peers progress
 /// independently. The parent listener owns bounded admission and shutdown.
 actor WebSocketPeer {
@@ -33,7 +32,8 @@ actor WebSocketPeer {
     private let log: @Sendable (WebSocketListenerEvent) -> Void
     private let onEnd: @Sendable (UUID) -> Void
     private var helloTimer: Task<Void, Never>?
-    nonisolated let replyTransport = ReplyTransportLifecycle()
+    nonisolated let replyTransport: ReplyTransportLifecycle
+    private nonisolated let ingress: WebSocketIngressPump
     private let submitClose: @Sendable (@escaping @Sendable () -> Void) -> Void
     private let submitReply: ReplySender?
     private var closing = false
@@ -46,6 +46,13 @@ actor WebSocketPeer {
         submitClose: (@Sendable (@escaping @Sendable () -> Void) -> Void)? = nil,
         submitReply: ReplySender? = nil
     ) {
+        let lifecycle = ReplyTransportLifecycle()
+        replyTransport = lifecycle
+        ingress = WebSocketIngressPump(lifecycle: lifecycle) { callback in
+            connection.receiveMessage { data, context, _, error in
+                callback(WebSocketIngressPump.classify(data, context: context, error: error))
+            }
+        }
         self.id = id
         self.connection = connection
         self.session = session
@@ -66,9 +73,9 @@ actor WebSocketPeer {
     }
 
     func start() {
-        connection.stateUpdateHandler = { [weak self, replyTransport] state in
+        connection.stateUpdateHandler = { [weak self, ingress] state in
             switch state {
-            case .failed, .cancelled: replyTransport.retire()
+            case .failed, .cancelled: ingress.stop()
             default: break
             }
             Task { await self?.connectionChanged(state) }
@@ -88,7 +95,12 @@ actor WebSocketPeer {
         switch state {
         case .ready:
             emit("session_connected", endpoint: "\(connection.endpoint)")
-            receiveNext()
+            ingress.start(process: { [weak self] data in
+                await self?.process(data)
+            }, onEnd: { [weak self, connection] reason in
+                connection.cancel()
+                Task { await self?.finish(reason: reason) }
+            })
         case .failed(let error): finish(reason: "failed: \(error)")
         case .cancelled: finish(reason: "cancelled")
         case .waiting(let error): emit("session_waiting", detail: "\(error)")
@@ -113,49 +125,10 @@ actor WebSocketPeer {
         finish(reason: "hello timeout")
     }
 
-    private func receiveNext() {
-        guard !ended, !closing else { return }
-        connection.receiveMessage { [weak self, replyTransport] data, context, _, error in
-            let metadata = context?.protocolMetadata(
-                definition: NWProtocolWebSocket.definition
-            ) as? NWProtocolWebSocket.Metadata
-            if error != nil || metadata?.opcode == .close { replyTransport.retire() }
-            Task { await self?.received(data, context: context, error: error) }
-        }
-    }
-
-    private func received(
-        _ data: Data?, context: NWConnection.ContentContext?, error: NWError?
-    ) async {
-        guard !ended, !closing else { return }
-        if let error {
-            finish(reason: "receive failed: \(error)")
-            return
-        }
-        guard let metadata = context?.protocolMetadata(
-            definition: NWProtocolWebSocket.definition
-        ) as? NWProtocolWebSocket.Metadata else {
-            await close(reason: "missing WebSocket metadata")
-            return
-        }
-        switch metadata.opcode {
-        case .close:
-            finish(reason: "peer closed")
-        case .ping, .pong:
-            receiveNext()
-        case .text, .binary:
-            guard let data else {
-                await close(reason: "WebSocket message had no content")
-                return
-            }
-            await process(data)
-        default:
-            await close(reason: "unsupported WebSocket message")
-        }
-    }
+    nonisolated var applicationWorker: Task<Void, Never>? { ingress.worker }
 
     private func process(_ data: Data) async {
-        guard let permit = replyTransport.issuePermit() else { return }
+        guard !ended, !closing, let permit = replyTransport.issuePermit() else { return }
         let result = await HostSession.$deliveryPeer.withValue(permit) {
             await session.receive(data)
         }
@@ -175,7 +148,7 @@ actor WebSocketPeer {
         }
         guard !ended else { return }
         switch result.disposition {
-        case .keepOpen: receiveNext()
+        case .keepOpen: break
         case .close: await close(reason: "protocol closed")
         }
     }
@@ -184,7 +157,7 @@ actor WebSocketPeer {
         guard !ended, !closing else { return }
         closing = true
         // Refuse reply publication before the close frame is submitted, not after its completion.
-        replyTransport.retire()
+        ingress.stop()
         await withCheckedContinuation { continuation in
             submitClose { continuation.resume() }
         }
@@ -194,7 +167,7 @@ actor WebSocketPeer {
     func finish(reason: String) {
         guard !ended else { return }
         // Complete invalidation before closure returns. Previously prepared replies cannot enqueue later.
-        replyTransport.retire()
+        ingress.stop()
         ended = true
         helloTimer?.cancel()
         helloTimer = nil
@@ -208,7 +181,6 @@ actor WebSocketPeer {
         log(WebSocketListenerEvent(event: event, sessionID: id, endpoint: endpoint, detail: detail))
     }
 }
-// swiftlint:enable type_body_length
 
 extension WebSocketPeer {
     /// Preparation is not an enqueue grant; its transport permit must remain current at final admission.
@@ -260,8 +232,8 @@ extension WebSocketPeer {
                 } ?? false
                 if !submitted { continuation.resume(returning: false) }
             }
-        } onCancel: { [replyTransport, connection] in
-            replyTransport.retire()
+        } onCancel: { [ingress, connection] in
+            ingress.stop()
             connection.cancel()
         }
     }
@@ -285,31 +257,49 @@ extension WebSocketPeer {
 /// One peer's terminal lifecycle. Unlike restorable policy authority, retired transport never reopens.
 /// Preparation and submission share this lock; revision rotation cannot issue a fresh usable ticket.
 final class ReplyTransportLifecycle: Sendable {
-    private let retired = Mutex(false)
+    private struct State {
+        var retired = false
+        var onRetirement: (@Sendable () -> Void)?
+    }
+    private let retired = Mutex(State())
     private let authority = ReplyPublicationAuthority()
 
     func issuePermit() -> ReplyTransportPermit? {
         retired.withLock { retired in
-            guard !retired else { return nil }
+            guard !retired.retired else { return nil }
             return ReplyTransportPermit(lifecycle: self, permit: authority.issuePermit())
         }
     }
 
     func retire() {
-        retired.withLock { retired in
-            guard !retired else { return }
-            retired = true
+        let callback = retired.withLock { state -> (@Sendable () -> Void)? in
+            guard !state.retired else { return nil }
+            state.retired = true
             authority.invalidate()
+            let callback = state.onRetirement
+            state.onRetirement = nil
+            return callback
         }
+        callback?()
     }
 
-    var isRetired: Bool { retired.withLock { $0 } }
+    /// The pump observes retirement outside the lifecycle gate, including listener-wide retirement.
+    func observeRetirement(_ callback: @escaping @Sendable () -> Void) {
+        let alreadyRetired = retired.withLock { state in
+            guard !state.retired else { return true }
+            state.onRetirement = callback
+            return false
+        }
+        if alreadyRetired { callback() }
+    }
+
+    var isRetired: Bool { retired.withLock { $0.retired } }
 
     fileprivate func performIfCurrent<Result: Sendable>(
         _ permit: ReplyPublicationPermit, operation: () throws -> Result
     ) rethrows -> Result? {
         try retired.withLock { retired in
-            guard !retired else { return nil }
+            guard !retired.retired else { return nil }
             return try permit.performIfCurrent(operation)
         }
     }
