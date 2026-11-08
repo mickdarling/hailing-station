@@ -319,7 +319,7 @@ extension HostSession {
             guard permit.map({ $0.performIfCurrent(leased) == true }) ?? leased() else {
                 // Held refusal reasons retain their order when final reply authority also retires.
                 if let held {
-                    try held.entry.policy.requireCurrent()
+                    try held.entry.policy.deliveryAuthority.requireCurrent()
                     guard held.policyCurrent() else { throw HeldAuthorityError.policyChanged }
                     guard held.selected() else { throw HeldAuthorityError.selectionChanged }
                     guard held.allowed() else { throw HostError.denied(.lockdown) }
