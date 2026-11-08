@@ -19,32 +19,19 @@ import Testing
         #expect(rig.runner.calls.last?.contains("delete-buffer") == true)
     }
 
-    @Test func retirementAfterPasteLeavesUnsentInputTaintedAndRefusesEnter() async throws {
+    @Test func retirementAfterPasteCompletesTheSubmission() async throws {
         let rig = try await TmuxAuthorityRig.make(.paste, input: "owner draft ")
         defer { rig.runner.gate.fire() }
         let sending = Task { try await rig.send() }
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
-        await #expect(throws: PolicyRetiredDelivery.pastedUnsent) {
-            try await rig.runner.gate.finish(sending)
-        }
+        try await rig.runner.gate.finish(sending)
         #expect(rig.runner.pasted == ["synthetic input"])
-        #expect(rig.runner.enters == 0)
-        #expect(rig.runner.input == "owner draft synthetic input")
-        #expect(!rig.runner.calls.contains { $0.contains("send-keys") })
-        #expect(rig.log.all.filter { $0.event == "tmux_policy_retired_unsent" } == [
-            TmuxDeliveryEvidence(event: "tmux_policy_retired_unsent", detail: "")
-        ])
-        await #expect(throws: PolicyRetiredDelivery.pastedUnsent) {
-            let adapter: any Adapter = rig.adapter
-            try await adapter.deliver(
-                "later input", to: "codex", binding: TmuxAuthorityRig.binding,
-                authority: rig.host.targetPolicy.snapshot(for: TmuxAuthorityRig.target).deliveryAuthority
-            )
-        }
-        #expect(rig.runner.pasted == ["synthetic input"])
-        #expect(!rig.runner.calls.contains { $0.joined(separator: " ").contains("send-keys") })
-        #expect(rig.log.all.last?.detail.contains("reason=tainted") == true)
+        #expect(rig.runner.enters == 1)
+        #expect(rig.runner.input.isEmpty)
+        #expect(!rig.log.all.contains { $0.event == "tmux_policy_retired_unsent" })
+        try await rig.adapter.deliver("later input", to: "codex", binding: TmuxAuthorityRig.binding)
+        #expect(rig.runner.enters == 2)
     }
 
     @Test(arguments: [false, true])
@@ -59,8 +46,11 @@ import Testing
         }
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
-        await #expect(throws: retry ? PolicyRetiredDelivery.possiblySubmitted : .pastedUnsent) {
+        await #expect {
             try await rig.runner.gate.finish(sending)
+        } throws: { error in
+            if retry { return (error as? PolicyRetiredDelivery) == .possiblySubmitted }
+            return (error as? AdapterError) == .deliveryFailed(PastedContent.agentOnlyRefusal)
         }
         #expect(rig.runner.pasted == [text])
         #expect(rig.runner.input == text + (retry ? "\n  " : ""))
@@ -72,14 +62,11 @@ import Testing
                 authority: rig.host.targetPolicy.snapshot(for: TmuxAuthorityRig.target).deliveryAuthority
             )
         } throws: { error in
-            if retry { return (error as? AdapterError) == .inputPending(reason: .tainted) }
-            return (error as? PolicyRetiredDelivery) == .pastedUnsent
+            (error as? AdapterError) == .inputPending(reason: .tainted)
         }
         #expect(rig.runner.pasted == [text])
         #expect(rig.runner.enters == (retry ? 1 : 0))
-        #expect(rig.log.all.filter { $0.event == "tmux_policy_retired_unsent" } == (retry ? [] : [
-            TmuxDeliveryEvidence(event: "tmux_policy_retired_unsent", detail: "")
-        ]))
+        #expect(!rig.log.all.contains { $0.event == "tmux_policy_retired_unsent" })
     }
 
     @Test func retirementAfterPasteNeverClearsAReboundPane() async throws {
@@ -89,7 +76,7 @@ import Testing
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
         rig.runner.rebind()
-        await #expect(throws: PolicyRetiredDelivery.pastedUnsent) {
+        await #expect(throws: AdapterError.rebound("codex")) {
             try await rig.runner.gate.finish(sending)
         }
         #expect(rig.runner.enters == 0)

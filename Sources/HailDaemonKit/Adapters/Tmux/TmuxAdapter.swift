@@ -42,8 +42,6 @@ public actor TmuxAdapter: Adapter {
     /// Panes holding pasted text from a delivery that never reached a known submit (abandoned or failed after
     /// the paste). No later delivery types into them. Cleared only by a new adapter (a `haild` restart).
     private var tainted: Set<String> = []
-    /// Subset of tainted panes whose paste was retired before any possible Enter; also sticky until restart.
-    private var policyRetiredUnsent: Set<String> = []
     /// The tail of the last text pasted into each pane, so a later delivery can see it still pending (#304).
     var lastTails: [String: PayloadTail] = [:]
     /// haild's own last insert per pane, and who hears each submit outcome and pending-input refusal (#894).
@@ -127,7 +125,7 @@ public actor TmuxAdapter: Adapter {
         }
         lastDelivery = Task { _ = await delivery.result }
         // The caller's cancellation (a timed-out socket submission, #200) abandons a delivery not yet committed to
-        // its Enter (no paste or Enter follows); a committed one completes for a caller that may have left.
+        // its paste admission (no paste or Enter follows); a committed one completes for a caller that may have left.
         try await withTaskCancellationHandler { try await delivery.value } onCancel: { control.abandoned.abandon() }
     }
 
@@ -169,7 +167,6 @@ extension TmuxAdapter {
         guard !tainted.contains(session.paneID) else {
             // Named, not generic (#894); clearing the pane by hand still needs a haild restart to lift the taint.
             evidence.inputPending(.tainted, in: session.paneID, seen: nil, own: lastTails[session.paneID])
-            if policyRetiredUnsent.contains(session.paneID) { throw PolicyRetiredDelivery.pastedUnsent }
             throw AdapterError.inputPending(reason: .tainted)
         }
         let tail = PayloadTail(text)
@@ -196,16 +193,13 @@ extension TmuxAdapter {
         // Before the paste, failures leave the pane clean. Any possibly pasted text keeps the 4a sticky taint.
         guard typed else { throw error }
         tainted.insert(session.paneID)
-        do { try control.authority?.requireCurrent() } catch {
-            guard !control.didEnter else { throw PolicyRetiredDelivery.possiblySubmitted }
-            policyRetiredUnsent.insert(session.paneID)
-            evidenceObserver?(TmuxDeliveryEvidence(event: "tmux_policy_retired_unsent", detail: ""))
-            throw PolicyRetiredDelivery.pastedUnsent
+        if control.didEnter {
+            do { try control.authority?.requireCurrent() } catch { throw PolicyRetiredDelivery.possiblySubmitted }
         }
         throw error
     }
 
-    /// The binding and policy are checked after every settle wait, immediately before the first Enter.
+    /// Binding is checked after settling. Authority and caller cancellation committed at paste launch.
     private func finishDelivery(
         _ session: Session, control: TmuxDeliveryControl, tail: PayloadTail, baseline: PaneObservation?
     ) async throws {
@@ -214,8 +208,6 @@ extension TmuxAdapter {
             submitTiming, baseline: baseline, tail: tail, clock: submitClock, observe: observe
         )
         _ = try await verified(control.target, binding: session.binding)
-        // Caller cancellation commits here; retained policy authority still gates every Enter.
-        guard control.abandoned.commit() else { throw CancellationError() }
         try await submit(session, control: control, tail: tail, acceptance: acceptance)
     }
 

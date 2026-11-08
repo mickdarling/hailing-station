@@ -162,7 +162,7 @@ import Testing
         #expect(await harness.keys == ["synthetic input", "Enter"])
     }
 
-    @Test func abandonmentDuringSettleSendsNoEnterAndTaintsThePane() async throws {
+    @Test func cancellationDuringSettleCompletesTheSubmission() async throws {
         let pane = ScriptedPane()
         // This cancellation boundary intentionally uses a real sleep so the caller can abandon mid-settle.
         let harness = SubmitHarness(
@@ -175,15 +175,10 @@ import Testing
             try await Task.sleep(for: .milliseconds(2))
         }
         delivery.cancel()
-        await #expect(throws: CancellationError.self) { try await delivery.value }
-        // Let the abandoned delivery finish its settle and reach the refused commit.
-        try await Task.sleep(for: .milliseconds(500))
-
-        await #expect(throws: AdapterError.self) {
-            try await harness.adapter.deliver("later input", to: "codex", binding: Self.binding)
-        }
-        #expect(await harness.keys == ["synthetic input"])
-        #expect(harness.log.all.isEmpty)
+        try await delivery.value
+        try await harness.adapter.deliver("later input", to: "codex", binding: Self.binding)
+        #expect(await harness.keys == ["synthetic input", "Enter", "later input", "Enter"])
+        #expect(harness.log.all == [.confirmed, .unsettled])
     }
 
     @Test func aPaneUnreadableOnlyDuringConfirmationKeepsTheSingleEnter() async throws {

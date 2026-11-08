@@ -46,9 +46,11 @@ import Testing
         let sending = Task { try await rig.send() }
         try await rig.runner.gate.waitUntilSuspended()
         _ = try await rig.host.setTier(.locked, for: TmuxAuthorityRig.target)
-        await #expect(throws: PolicyRetiredDelivery.pastedUnsent) {
+        rig.runner.rebind()
+        await #expect(throws: AdapterError.rebound("codex")) {
             try await rig.runner.gate.finish(sending)
         }
+        rig.runner.restoreBinding()
         _ = try await rig.host.setTier(.open, for: TmuxAuthorityRig.target)
         #expect(rig.runner.pasted == ["synthetic input"] && rig.runner.enters == 0)
         return rig

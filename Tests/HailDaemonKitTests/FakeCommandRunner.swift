@@ -2,7 +2,7 @@ import Synchronization
 @testable import HailDaemonKit
 
 /// Records every argv and answers from a scripted responder (#11 tests). No process is ever spawned.
-actor FakeCommandRunner: CommandRunner {
+actor FakeCommandRunner: GuardedCommandRunner {
     typealias Responder = @Sendable ([String]) -> CommandResult
 
     private(set) var calls: [[String]] = []
@@ -21,6 +21,15 @@ actor FakeCommandRunner: CommandRunner {
         if let delay { try await Task.sleep(for: delay) }
         await gate?.pass(arguments)
         return responder(arguments)
+    }
+
+    func run(_ executable: String, _ arguments: [String], launch: CommandLaunch) async throws -> CommandResult {
+        calls.append([executable] + arguments)
+        if let delay { try await Task.sleep(for: delay) }
+        await gate?.pass(arguments)
+        var result = CommandResult(exitCode: 0, stdout: "")
+        try launch.perform { result = responder(arguments) }
+        return result
     }
 
     /// The listing tmux would print for `sessions`, everything else succeeds silently.

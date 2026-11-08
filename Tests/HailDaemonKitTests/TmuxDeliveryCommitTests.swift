@@ -68,8 +68,7 @@ import Testing
 }
 
 /// #204 round 5, #304: text reaches a pane only as one paste, so a delivery abandoned while its buffer fills leaves
-/// the pane clean. A pane left holding a pasted, unsubmitted text is tainted; that path is covered with a scripted
-/// pane in `TmuxSubmitConfirmationTests.abandonmentDuringSettleSendsNoEnterAndTaintsThePane`.
+/// the pane clean. Genuine submit failures retain sticky pending-input refusal in confirmation tests.
 @Suite struct TmuxTaintedPaneTests {
     private static let binding = "$2@1758230001/%2:502"
 
