@@ -53,6 +53,38 @@ extension AmbientRouterStreamTargetTests {
         await env.listener.stop()
     }
 
+    @Test func aConfiguredStreamQueuedAfterAnUnboundStartLaunchesInOrder() async throws {
+        let fake = try FakeRightyo("""
+            /bin/cat > audio.bin
+            /usr/bin/sed -n '1p;$p' events.jsonl | /usr/bin/sed "s/tool-demo/$7/g"
+            """)
+        defer { fake.cleanUp() }
+        try fake.install(fixture: "tool-events.jsonl")
+        let events = AmbientEventNames(), made = Mutex(0)
+        let env = try await ambientRig(fake, timing: .init(eofGrace: 20, termGrace: 0.1), events: events,
+                                       childMade: { _ in made.withLock { $0 += 1 } })
+        let pair = try await FallbackSocketPair.boundedConnect(port: env.port, selecting: [RecipientTestRig.target])
+        defer { pair.close() }
+        let router = env.router, connection = try #require(await env.listener.peers.values.first?.session.connectionID)
+        let refused = UUID(), configured = UUID(), bytes = Data(repeating: 1, count: 3_200)
+        router.state.withLock { ($0.working, $0.reloading) = (true, true) }
+        router.ambientAudio(.started(stream: refused, connection: connection, target: "recipient:other"))
+        router.ambientAudio(.started(stream: configured, connection: connection, target: RecipientTestRig.target))
+        router.ambientAudio(.segment(stream: configured, sequence: 0, bytes: bytes))
+        router.ambientAudio(.ended(stream: configured, reason: .final))
+        #expect(!events.all.contains("ambient_refused") && made.withLock { $0 } == 0)
+        #expect(router.state.withLock { $0.latest[connection] == configured && $0.newestStart == configured })
+        router.state.withLock { $0.reloading = false }
+        await boundedSettle(router)
+        #expect(made.withLock { $0 } == 1)
+        #expect(events.all.filter { ["ambient_refused", "ambient_started", "ambient_ended"].contains($0) }
+                == ["ambient_started", "ambient_ended"])
+        #expect(fakeFileSize(fake, "audio.bin") == bytes.count)
+        #expect(router.state.withLock { $0.queue.isEmpty && !$0.working })
+        try await pair.boundedBarrier(step: "no stray refusal after the configured child ended")
+        await env.listener.stop()
+    }
+
     @Test(arguments: [false, true])
     func anUnboundStartNeverMakesRoomEvenWhenQueued(queued: Bool) async throws {
         let fake = try FakeRightyo("/bin/sleep 20")

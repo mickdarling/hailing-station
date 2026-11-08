@@ -1,6 +1,5 @@
 #if os(macOS)
 public import Foundation
-
 /// A connection's meeting state (#735 meeting mode (rightyo#227)): its guarded timeout, profile and original start.
 /// #735 meeting mode restore (MM-E): `meetingID` is minted at first entry and kept through a profile switch, a park
 /// and a restore; `expiresAt` is the absolute auto-end fixed when armed, so a restore re-arms only the time left.
@@ -18,7 +17,7 @@ struct AmbientMeetingTimer {
     var recording: Bool
     let armed: Int
     var resume: UUID?
-    /// The stream that armed this meeting also owns its eventual timeout confirmation.
+    /// The child target or session selection resolved when this meeting's on-change task ran; used at timeout.
     var target: String?
 }
 
@@ -108,8 +107,7 @@ extension AmbientRightyoRouter {
             if reason == "voice" {
                 discardParked(meeting: !on, media: on, reason: on ? "superseded" : "off", in: &state)
             }
-            let target = target ?? (reason == "timeout" ? state.meeting[connection]?.target
-                                    : streamTarget(on: connection, in: state))
+            let target = target ?? (reason == "timeout" ? state.meeting[connection]?.target : nil)
             guard on else {
                 return (endMeeting(connection: connection, reason: reason, target: target, in: &state), nil)
             }
@@ -147,10 +145,10 @@ extension AmbientRightyoRouter {
         let reported = report && reason != "connection" ? reportModes(connection: connection, in: state) : 0
         meetingChanged(AmbientMeetingChange(on: false, profile: meeting.profile, reason: reason, reported: reported,
                                             meetingID: meeting.meetingID, recording: false),
-                       connection: connection, target: target ?? meeting.target, in: &state)
+                       connection: connection, target: target ?? (reason == "timeout" ? meeting.target : nil),
+                       in: &state)
         return reported
     }
-
     /// Queues MM-C on `meetingChanges` (never awaiting clips), and voice/timeout/restore confirmations on the
     /// connection's privacy chain, under the state lock in change order. Renewals have no hook. Missing clips
     /// never undo the mode. On clips recheck the meeting before playback; superseded/private meetings stay silent.
@@ -172,13 +170,15 @@ extension AmbientRightyoRouter {
                           + "reported=\(change.reported)\(renewed)")
             self?.emit("ambient_meeting_control", connection: connection, detail: "meeting_control=\(held)")
         }
-        // Store before the persona guard, including restores/moves. Timeouts never borrow a newer stream's target.
-        let target = target ?? (change.reason == "timeout" ? configuration.target
-                               : streamTarget(on: connection, in: state))
+        // Child targets are immediate; connection changes resolve on the async chain before the persona guard.
         if change.on, state.meeting[connection]?.token == change.token { state.meeting[connection]?.target = target }
-        guard let persona = change.persona else { return }
+        guard change.on || change.persona != nil else { return }
+        // A timeout never borrows the current selection when its original target is absent: no target, no clip.
+        if change.reason == "timeout", target == nil { return }
         Self.clipChain(connection, in: &state).enqueue { [weak self, weak listener] in
             guard let self else { return }
+            let resolved = await meetingClipTarget(change, target: target, connection: connection, listener: listener)
+            guard let persona = change.persona, let target = resolved else { return }
             var confirm = "unreported"
             if change.reported > 0, !meetingCurrent(change, connection: connection) {
                 confirm = "superseded"

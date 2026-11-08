@@ -686,8 +686,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// Each live connection's most recent started stream (one entry per connection, dropped when it ends),
         /// so a normally ended stream's late failure is still reported until the connection starts another.
         var latest: [UUID: UUID] = [:]
-        /// Each connection's last gate-admitted stream destination, also for startup refusals and later mode clips.
-        /// Bounded by live connections and removed at teardown, like `inputRoutes`.
+        /// Each connection's last child-admitted destination, for bookkeeping only; clips use session selection.
+        /// Removed at teardown, like `inputRoutes`. A refused start never writes this snapshot.
         var streamTargets: [UUID: String] = [:]
         var retirements = 0
         /// Events waiting for the worker (#366). While a start is making room every later event queues behind it,
@@ -832,18 +832,16 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     /// Called in order from the gate's actor; only spawns, enqueues or signals, never awaits. A start that finds
     /// every child slot taken goes to the worker, which forces the oldest retired child out first (#366); until it
-    /// is done, every later event queues behind it. A rare late start after a closed mark is pruned can re-add a
-    /// target snapshot, bounded by connection ids; the gate never starts streams for torn-down peers.
+    /// is done, every later event queues behind it. A rare late start after a closed mark is pruned can re-add
+    /// `latest` (and a child-admitted target). The gate's bounded ended-connection ring is the real backstop;
+    /// the gate never starts streams for torn-down peers while their ids remain in that ring.
     public func ambientAudio(_ event: AmbientAudioEvent) {
         let queued = state.withLock { state -> Bool in
             switch event {
             // A start never lifts `closed`: a torn-down connection id never comes back (#735), so one that did
             // would still be dead.
-            case .started(let stream, let connection, let scope):
+            case .started(let stream, let connection, _):
                 state.latest[connection] = stream
-                if !state.shuttingDown, !state.closed.contains(connection) {
-                    state.streamTargets[connection] = scope.target
-                }
             // Taken over (#366): the old stream's late failure is not reported to its device as a stop.
             case .ended(let stream, .superseded): state.latest = state.latest.filter { $0.value != stream }
             default: break
@@ -1389,6 +1387,7 @@ extension AmbientRightyoRouter {
                   in state: inout State) -> UUID {
         let id = UUID()
         state.runs[id] = Run(stream: stream, connection: connection, pipeline: pipeline)
+        if !state.shuttingDown, !state.closed.contains(connection) { state.streamTargets[connection] = target }
         // A new or reloaded child starts with media mode off (#551). Told under the same lock `setMedia` changes it
         // under, so it can never miss a change made while it was starting.
         if state.media[connection] != nil || state.meeting[connection] != nil {
@@ -1409,19 +1408,26 @@ extension AmbientRightyoRouter {
         return id
     }
 
-    /// Snapshot for connection-scoped device and system clips, with an explicit configured-target fallback when
-    /// no admitted stream target exists. Delivery (`acknowledgementFrames` and related paths) still requires the
-    /// session to select that target, so a mismatch fails closed. PR 2b revisits this with the session's selection.
-    /// Child callbacks retain their captured target and never use this lookup at playback time.
-    func streamTarget(on connection: UUID) -> String {
-        state.withLock { streamTarget(on: connection, in: $0) }
+    /// Resolve a connection on-change before its persona guard and retain it only on the same meeting arming.
+    /// The caller is an async clip task; the listener/session hop never happens under the router lock.
+    func meetingClipTarget(_ change: AmbientMeetingChange, target: String?, connection: UUID,
+                           listener: WebSocketListener?) async -> String? {
+        let resolved: String?
+        if let target { resolved = target } else {
+            resolved = await listener?.ambientClipTarget(connection: connection)
+        }
+        if change.on {
+            state.withLock { state in
+                if state.meeting[connection]?.token == change.token { state.meeting[connection]?.target = resolved }
+            }
+        }
+        return resolved
     }
 
-    func streamTarget(on connection: UUID, in state: State) -> String {
-        guard let active = state.active, state.runs[active.run]?.connection == connection else {
-            return state.streamTargets[connection] ?? configuration.target
-        }
-        return active.target
+    /// Last child-admitted destination for diagnostics/tests only. Device/system clips use ambientClipTarget;
+    /// child callbacks retain their captured target. A refused start never becomes an admitted destination.
+    func streamTarget(on connection: UUID) -> String? {
+        state.withLock { $0.streamTargets[connection] }
     }
 
     /// Plays an acknowledgement clip on the phone that heard an admitted request (rightyo#105), in the addressed
@@ -2404,7 +2410,7 @@ extension AmbientRightyoRouter {
     /// registers or is swapped out meanwhile. A recovery entry its cap opened (round 5) is queued on the chain in that
     /// same step, after this entry's clip.
     func closePrivacyEntry(
-        _ entry: Int, connection: UUID, target: String
+        _ entry: Int, connection: UUID, target: String?
     ) -> AmbientPrivacyClose<RightyoAmbientPipeline> {
         let (now, bound) = (privacyNow, configuration.privacyBound)
         return state.withLock { state in
@@ -2444,8 +2450,9 @@ extension AmbientRightyoRouter {
         if let silent { emit("ambient_privacy", connection: connection, detail: silent) }
     }
 
-    /// The work that announces entry `entry` (`announceEntry`) and logs `outcome` with its tokens.
-    func entryClip(_ entry: AmbientPrivacyEntry, outcome: String, connection: UUID, target: String,
+    /// The work that announces entry `entry` and logs its tokens. A nil target still closes the privacy ledger
+    /// and handles refused children, but suppresses the spoken clip.
+    func entryClip(_ entry: AmbientPrivacyEntry, outcome: String, connection: UUID, target: String?,
                    listener: WebSocketListener?) -> @Sendable () async -> Void {
         { [weak self, weak listener] in
             guard let self else { return }
@@ -2456,10 +2463,12 @@ extension AmbientRightyoRouter {
     }
 
     /// Plays `persona` (nil: none) and logs `ambient_duck_confirmed` with `outcome` and the clip's token.
-    func sayPrivacy(_ persona: String?, outcome: String, connection: UUID, target: String,
+    func sayPrivacy(_ persona: String?, outcome: String, connection: UUID, target: String?,
                     listener: WebSocketListener?) async {
         var confirm = "unreported"
-        if let persona { confirm = await confirmVoiceMute(persona, on: connection, target: target, listener: listener) }
+        if let persona, let target {
+            confirm = await confirmVoiceMute(persona, on: connection, target: target, listener: listener)
+        }
         emit("ambient_duck_confirmed", connection: connection, detail: "\(outcome) confirm=\(confirm)")
     }
 
@@ -2467,7 +2476,7 @@ extension AmbientRightyoRouter {
     /// each within its own bound, then closes the entry and reads each child's answer in that one step
     /// (`closePrivacyEntry`). A clip is queued after a reply playing is stopped on the same chain, so the stop never
     /// cuts it. Returns the clip and the log tokens after `on=true`. Runs on the connection's clip chain.
-    func announceEntry(_ entry: AmbientPrivacyEntry, connection: UUID, target: String,
+    func announceEntry(_ entry: AmbientPrivacyEntry, connection: UUID, target: String?,
                        listener: WebSocketListener?) async -> (String?, String) {
         guard let number = entry.entry else { return (nil, " withdrawn") }
         let decision = await decideEntry(number, connection: connection, target: target)
@@ -2478,7 +2487,7 @@ extension AmbientRightyoRouter {
     }
 
     private func decideEntry(
-        _ entry: Int, connection: UUID, target: String
+        _ entry: Int, connection: UUID, target: String?
     ) async -> AmbientPrivacyDecision<RightyoAmbientPipeline> {
         while true {
             switch closePrivacyEntry(entry, connection: connection, target: target) {

@@ -125,18 +125,18 @@ extension AmbientRightyoRouter {
     ///   `confirm-not-sent/` plays, and playback is left alone.
     /// - off: the owner's exit path with reason `device`. `setDuck(false)` tells the children and the device, then
     ///   `confirm-privacy-off/` plays when a child took it.
-    /// Logged as state tokens only.
     func switchPrivacy(_ on: Bool, connection: UUID, armedAs armed: UUID?) {
         let listener = attachedListener
-        // Device-originated: snapshot the connection now, before its clip is queued.
-        let target = streamTarget(on: connection)
-        let clip: (AmbientPrivacyEntry) -> (@Sendable () async -> Void)? = { [weak self] in
-            self?.deviceClip(on, $0, connection: connection, target: target, listener: listener)
+        let clip: (AmbientPrivacyEntry) -> (@Sendable () async -> Void)? = { [weak self, weak listener] entry in
+            { [weak self, weak listener] in
+                guard let self else { return }
+                let target = await listener?.ambientClipTarget(connection: connection)
+                await deviceClip(on, entry, connection: connection, target: target, listener: listener)()
+            }
         }
         _ = switchDuck(on, connection: connection, reason: "device", whileArming: { $0 == armed }, clip: clip)
     }
-
-    private func deviceClip(_ on: Bool, _ entry: AmbientPrivacyEntry, connection: UUID, target: String,
+    private func deviceClip(_ on: Bool, _ entry: AmbientPrivacyEntry, connection: UUID, target: String?,
                             listener: WebSocketListener?) -> @Sendable () async -> Void {
         let outcome = "on=\(on) reason=device"
         switch (on, entry.reported > 0) {
