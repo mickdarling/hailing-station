@@ -144,6 +144,7 @@ extension HostSession {
     /// handoff this connection's last input to the target (#370), recorded in the same actor turn that confirmed
     /// the captured selection. A refused, unconfirmed or ownerless handoff records nothing.
     func deliver(_ input: consuming AuthorizedInput, recordsLastInput: Bool = false) async -> HostDeliveryOutcome {
+        let peer = Self.deliveryPeer
         let recordsInput = recordsLastInput || Self.ambientInputDispatch
         guard admitsInput(to: input.target) else {
             return .refused(.notAllowed, "select the destination before speaking")
@@ -169,7 +170,8 @@ extension HostSession {
             }
             switch outcome {
             case .delivered:
-                return handedOff(input.target, owner: owner, generation: generation, recordsInput: recordsInput)
+                return handedOff(input.target, owner: owner, generation: generation,
+                                 recordsInput: recordsInput, peer: peer)
             case .needsConfirmation(let readBack):
                 if let owner { dropUncommitted(owner.context.id) }
                 guard Self.ambientInputDispatch else { return .confirmationRequired }
@@ -235,17 +237,21 @@ extension HostSession {
     /// After a complete handoff, with no suspension: commit the owner's record, or recheck the captured selection for
     /// legacy generic input. Only a `.delivered` outcome records the last input device (#370).
     private func handedOff(
-        _ target: String, owner: HostReplyOwnership?, generation: UUID, recordsInput: Bool
+        _ target: String, owner: HostReplyOwnership?, generation: UUID, recordsInput: Bool,
+        peer: ReplyTransportPermit?
     ) -> HostDeliveryOutcome {
-        let outcome: HostDeliveryOutcome = if let owner {
-            commit(owner.context, generation: generation)
-        } else if selects(target, generation: generation) {
-            .delivered(request: nil)
-        } else {
-            .unowned("request destination changed")
+        if let owner {
+            return commit(owner.context, generation: generation, recordsInput: recordsInput, peer: peer)
         }
-        if recordsInput, case .delivered = outcome { noteLastInput(to: target, generation: generation) }
-        return outcome
+        guard selects(target, generation: generation) else { return .unowned("request destination changed") }
+        let record = {
+            if recordsInput { self.noteLastInput(to: target, generation: generation) }
+            return true
+        }
+        guard peer.map({ $0.performIfCurrent(record) == true }) ?? record() else {
+            return .unowned("reply authority changed")
+        }
+        return .delivered(request: nil)
     }
 
     /// The captured selection authority: still negotiated, same selection generation, and a target the selection
@@ -255,7 +261,9 @@ extension HostSession {
         return generation == selectionGeneration && covers(target)
     }
 
-    private func commit(_ context: ProviderTurnContext, generation: UUID) -> HostDeliveryOutcome {
+    private func commit(
+        _ context: ProviderTurnContext, generation: UUID, recordsInput: Bool, peer: ReplyTransportPermit?
+    ) -> HostDeliveryOutcome {
         guard selects(context.binding.targetID, generation: generation), var request = replyRequests[context.id] else {
             dropUncommitted(context.id)
             return .unowned("request destination changed")
@@ -263,10 +271,14 @@ extension HostSession {
         // Checked while still uncommitted, so a handoff held past the ordinary lifetime is refused rather than
         // revived by the late-answer bound or a provider turn's bound (#430), which only a committed record gets.
         guard request.withAuthority({
-            guard request.isCurrent(at: requestClock()) else { return false }
-            request.committed = true
-            replyRequests[context.id] = request
-            return true
+            let record = {
+                guard request.isCurrent(at: self.requestClock()) else { return false }
+                request.committed = true
+                self.replyRequests[context.id] = request
+                if recordsInput { self.noteLastInput(to: context.binding.targetID, generation: generation) }
+                return true
+            }
+            return peer.map { $0.performIfCurrent(record) == true } ?? record()
         }) == true else {
             dropUncommitted(context.id)
             return .unowned("reply authority changed")
@@ -284,7 +296,7 @@ extension HostSession {
             // A framed paste (#608) gets the paste line cap; every other gate is the same.
             return try await HailHost.$pastedIngress.withValue(input.carriesPaste) {
                 // Keep the authorization generation and exact binding across host preflight suspensions (#1028).
-                return try await TaskProgressWakeScope.$beforeHandoff.withValue(finalAuthority) {
+                return try await TaskProgressWakeScope.$retained.withValue(finalAuthority) {
                     try await host.sendAuthorized(
                         text, policyGeneration: policyGeneration, from: device, expectedBinding: expectedBinding,
                         context: owner.flatMap { $0.contextual ? $0.context : nil },
@@ -298,37 +310,45 @@ extension HostSession {
         }
     }
 
-    /// Final delivery authority includes a live-peer token and the reply permit, lease and lifetime.
-    /// Gate order is reply permit, binding lease, peer, then clock; all release before the prior hook.
-    /// HailHost composes the held-scope checks after this hook, without re-entering these gates.
+    /// Retain the reply permit, binding lease, peer and clock through every host suspension.
+    /// HailHost supplies the single target-policy stage around these remaining stages.
     private func finalDeliveryAuthority(
         owner: HostReplyOwnership?, target: String
-    ) -> @Sendable () throws -> Void {
-        let peer = Self.deliveryPeer, handoff = TaskProgressWakeScope.beforeHandoff, held = HeldSendScope.current
+    ) -> RetainedDeliveryStages {
+        let peer = Self.deliveryPeer, held = HeldSendScope.current
         let request = owner.flatMap { replyRequests[$0.context.id] }
-        let permit = request?.policyPermit, lease = request?.bindingLease, createdAt = request?.createdAt
-        let clock = requestClock, requiresOwner = owner != nil
-        return {
-            let current = {
-                guard let createdAt else { return !requiresOwner }
-                let elapsed = createdAt.duration(to: clock())
-                return elapsed >= .zero && elapsed < HostReplyRequest.lifetime
-            }
-            let live = { peer.map { $0.performIfCurrent(current) == true } ?? current() }
-            let leased = { lease.map { $0.performIfCurrent(live) == true } ?? live() }
-            guard permit.map({ $0.performIfCurrent(leased) == true }) ?? leased() else {
-                // Held refusal reasons retain their order when final reply authority also retires.
-                if let held {
-                    try held.entry.policy.deliveryAuthority.requireCurrent()
-                    guard held.policyCurrent() else { throw HeldAuthorityError.policyChanged }
-                    guard held.selected() else { throw HeldAuthorityError.selectionChanged }
-                    guard held.allowed() else { throw HostError.denied(.lockdown) }
-                    guard held.noticeCurrent() else { throw HeldAuthorityError.noticeExpired }
-                }
-                throw HostError.denied(.notAllowed(target))
-            }
-            try handoff?()
+        let clock = requestClock, requiresOwner = owner != nil, createdAt = request?.createdAt
+        let refuse = RetainedDeliveryStages.refusal(target: target, held: held)
+        var retained = TaskProgressWakeScope.retained ?? RetainedDeliveryStages()
+        if let permit = request?.policyPermit {
+            retained.gates[.replyPermit] = RetainedDeliveryStages.gate({ permit.performIfCurrent($0) == true },
+                                                                      refusal: refuse)
         }
+        if let lease = request?.bindingLease {
+            retained.gates[.bindingLease] = RetainedDeliveryStages.gate({ lease.performIfCurrent($0) == true },
+                                                                       refusal: refuse)
+        }
+        if let peer {
+            retained.gates[.peerLifecycle] = RetainedDeliveryStages.gate({ peer.performIfCurrent($0) == true },
+                                                                        refusal: refuse)
+        }
+        let decision = retained.gates[.attemptCancellation]
+        let current: @Sendable () throws -> Void = {
+            guard let createdAt else {
+                if requiresOwner { try refuse() }
+                return
+            }
+            let elapsed = createdAt.duration(to: clock())
+            guard elapsed >= .zero && elapsed < HostReplyRequest.lifetime else { return try refuse() }
+        }
+        retained.gates[.attemptCancellation] = DeliveryAdmission.Gate(validate: {
+            try current()
+            try decision?.validate()
+        }, perform: { operation in
+            try current()
+            if let decision { try decision.perform(operation) } else { try operation() }
+        })
+        return retained
     }
 
     /// Capability preflight does not grant execution. HailHost still checks shape, exact binding and policy.

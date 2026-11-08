@@ -108,4 +108,21 @@ import Testing
         await listener.stop(reason: "synthetic completion")
         await rig.listener.stop(reason: "synthetic completion")
     }
+    @Test(arguments: [false, true])
+    func peerRetirementBeforeCompletionCommitsNoOwnership(_ legacy: Bool) async throws {
+        let rig = try await FinalDeliveryRig.make(legacy: legacy)
+        await rig.adapter.completion.arm()
+        let delivery = Task { try await rig.ambient(reference: legacy ? UUID() : nil) }
+        await rig.adapter.completion.wait()
+        // Retire only the retained peer authority; session cleanup has not removed the pending record.
+        rig.peer.replyTransport.retire()
+        #expect(await rig.session.replyRequests.count == 1)
+        await rig.adapter.completion.resume()
+        await #expect(throws: LocalDispatchRefusal.ownershipLost) { try await delivery.value }
+        #expect(await rig.adapter.deliveries == ["synthetic input"])
+        #expect(await rig.session.replyRequests.isEmpty)
+        let ledger = await rig.listener.lastInput
+        #expect(ledger.latest(for: FinalDeliveryRig.target) == nil)
+        await rig.listener.stop(reason: "synthetic completion")
+    }
 }

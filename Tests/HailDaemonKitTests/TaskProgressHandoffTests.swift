@@ -63,4 +63,26 @@ import Testing
         #expect(state.task == id && !state.outstanding && state.nextDueInSeconds == nil)
         await rig.listener.stop()
     }
+    @Test func checkedHandoffRecordsTheComposedTaskAttempt() async throws {
+        let adapter = TaskProgressCheckedAdapter()
+        let rig = try await TaskProgressGuardedWakeRig.make(adapter: adapter)
+        defer { adapter.resume() }
+        var deadlines = rig.clock.scheduled.stream.makeAsyncIterator()
+        var arrivals = adapter.arrived.stream.makeAsyncIterator()
+        var finished = rig.finished.stream.makeAsyncIterator()
+        let id = try await rig.start()
+        _ = try #require(await deadlines.next())
+        rig.clock.advance(by: .seconds(60))
+        _ = try #require(await arrivals.next())
+        // The default checked handoff already committed its attempt before unguarded completion.
+        rig.wiring.disconnect()
+        adapter.resume()
+        _ = try #require(await finished.next())
+        let state = await rig.listener.taskProgress(.init(action: .status))
+        #expect(state.task == id)
+        #expect(state.outstanding)
+        #expect(state.nextDueInSeconds == nil)
+        #expect(await adapter.accepted.count == 1)
+        await rig.listener.stop()
+    }
 }

@@ -30,45 +30,128 @@ struct TaskProgressAdmissionLifetime: Sendable {
 
 enum TaskProgressWakeScope {
     @TaskLocal static var beforeHandoff: (@Sendable () throws -> Void)?
-    /// Carry the original task closure through registry/adapter suspension. The policy check releases its
-    /// lock before the retained task closure takes its own original generation and short admission gates.
-    /// Neither check spans adapter I/O. CheckedHandoffDelivering still checks only at its explicit handoff.
-    static func deliveryAuthority(
-        policy: DeliveryAuthority?, handoff: (@Sendable () throws -> Void)?
-    ) -> DeliveryAuthority? {
-        guard let handoff else { return policy }
-        return DeliveryAuthority {
-            try policy?.requireCurrent()
-            try handoff()
-        }
+    @TaskLocal static var retained: RetainedDeliveryStages?
+
+    /// Existing adapters retain a committing, lock-only handoff check. Operation-bearing callers use
+    /// the composed authority directly; no check holds a gate through asynchronous adapter completion.
+    static func checkedHandoff(_ authority: DeliveryAuthority) -> DeliveryAuthority {
+        DeliveryAuthority { try authority.admit {} }
     }
 
     /// Deterministic completion evidence for authored concurrency tests; absent in production.
     @TaskLocal static var didFinishWake: (@Sendable () -> Void)?
 }
 
+/// The host supplies target policy once. Contributors retain their original remaining stages.
+struct RetainedDeliveryStages: Sendable {
+    var generation: TargetPolicyGeneration?
+    var gates: [DeliveryAdmission.Stage: DeliveryAdmission.Gate] = [:]
+
+    /// Bridge synchronous Boolean gates without losing a thrown continuation result. The gate callbacks
+    /// are nonescaping and must finish on this stack before the operation reference is released.
+    private final class Invocation: @unchecked Sendable {
+        let operation: () throws -> Void
+        var result: Result<Void, any Error>?
+        init(_ operation: @escaping () throws -> Void) { self.operation = operation }
+        func run() -> Bool { result = Result(catching: operation); return true }
+    }
+
+    static func gate(
+        _ perform: @escaping @Sendable (_ operation: @Sendable () -> Bool) -> Bool,
+        refusal: @escaping @Sendable () throws -> Void = { throw CancellationError() }
+    ) -> DeliveryAdmission.Gate {
+        let run: @Sendable (() throws -> Void) throws -> Void = { operation in
+            try withoutActuallyEscaping(operation) { operation in
+                let invocation = Invocation(operation)
+                guard perform({ invocation.run() }) else { return try refusal() }
+                guard let result = invocation.result else { throw DeliveryAdmissionError.invalidGate }
+                try result.get()
+            }
+        }
+        return DeliveryAdmission.Gate(validate: { try run {} }, perform: run)
+    }
+
+    static func requireHeld(_ held: HeldSendScope?) throws {
+        guard let held else { return }
+        guard held.policyCurrent() else { throw HeldAuthorityError.policyChanged }
+        guard held.selected() else { throw HeldAuthorityError.selectionChanged }
+        guard held.allowed() else { throw HostError.denied(.lockdown) }
+        guard held.noticeCurrent() else { throw HeldAuthorityError.noticeExpired }
+    }
+
+    static func refusal(target: String, held: HeldSendScope?) -> @Sendable () throws -> Void {
+        return {
+            try requireHeld(held)
+            throw HostError.denied(.notAllowed(target))
+        }
+    }
+
+    func composed(
+        policy: TargetPolicyGeneration, handoff: (@Sendable () throws -> Void)? = nil,
+        held: HeldSendScope? = nil
+    ) -> DeliveryAuthority {
+        var stages = gates
+        let matches = generation.map { $0.isSameGeneration(as: policy) } ?? true
+        let heldMatches = held.map { $0.entry.policy.isSameGeneration(as: policy) } ?? true
+        stages[.targetPolicy] = Self.gate({ operation in
+            guard matches && heldMatches else { return false }
+            return policy.performIfCurrent(operation) == true
+        }, refusal: { throw HostError.denied(.notAllowed(policy.target)) })
+        let decision = stages[.attemptCancellation]
+        stages[.attemptCancellation] = DeliveryAdmission.Gate(validate: {
+            try Self.requireHeld(held)
+            try decision?.validate()
+        }, perform: { operation in
+            try Self.requireHeld(held)
+            let commit = { try handoff?(); try operation() }
+            if let decision { try decision.perform(commit) } else { try commit() }
+        })
+        return DeliveryAuthority(admission: DeliveryAdmission(gates: stages))
+    }
+}
+
 extension WebSocketListener {
-    /// Final input admission uses the same retained policy/task/privacy/quiet/ambient boundaries as output.
-    /// No await occurs while these gates mark a handoff attempt; their locks never span an adapter operation.
+    /// Compatibility entry point for retained handoff checks.
     func taskProgressHandoff(
         for task: TaskProgressTask, authority: TaskProgressPublicationAuthority,
         privacyRevision: UInt64, attempt: TaskProgressWakeAttempt, lifetime: TaskProgressAdmissionLifetime
     ) -> (@Sendable () throws -> Void)? {
+        guard let retained = taskProgressDeliveryStages(for: task, authority: authority,
+            privacyRevision: privacyRevision, attempt: attempt, lifetime: lifetime) else { return nil }
+        let composed = retained.composed(policy: authority.generation)
+        return { try composed.admit {} }
+    }
+
+    /// Target policy is supplied by HailHost; this contributor never reacquires that generation's lock.
+    func taskProgressDeliveryStages(
+        for task: TaskProgressTask, authority: TaskProgressPublicationAuthority,
+        privacyRevision: UInt64, attempt: TaskProgressWakeAttempt, lifetime: TaskProgressAdmissionLifetime
+    ) -> RetainedDeliveryStages? {
         guard !stopped, task.session == authority.generation.target, task.binding == authority.binding,
               let connection = updateAudience(for: task.session).target,
-              let audience = ambient?.taskProgressAudience(), audience.connection == connection else { return nil }
+              let audience = ambient?.taskProgressAudience(), audience.connection == connection,
+              let peer = peers.values.first(where: { $0.session.connectionID == connection }),
+              let permit = peer.replyTransport.issuePermit() else { return nil }
         let (fence, hold, ambient) = (sessionUpdateFence, replyHold, self.ambient)
-        return {
-            let admitted = authority.perform {
-                fence.enqueue {
-                    let commit: @Sendable () -> Bool = {
-                        hold.unlessAnyHeld(expectedRevision: privacyRevision) { attempt.begin(before: lifetime) }
-                    }
-                    return ambient?.withTaskProgressPermission(audience, commit: commit) ?? false
-                }
-            }
-            guard admitted else { throw CancellationError() }
+        var retained = RetainedDeliveryStages(generation: authority.generation)
+        if let taskFence = authority.taskFence {
+            retained.gates[.taskOutputFence] = RetainedDeliveryStages.gate { taskFence.perform($0) }
         }
+        retained.gates[.sessionUpdateFence] = RetainedDeliveryStages.gate { fence.enqueue($0) }
+        retained.gates[.ambientRouter] = RetainedDeliveryStages.gate { operation in
+            ambient?.withTaskProgressPermission(audience, commit: operation) ?? false
+        }
+        retained.gates[.privacyHold] = RetainedDeliveryStages.gate {
+            hold.unlessAnyHeld(expectedRevision: privacyRevision, $0)
+        }
+        retained.gates[.peerLifecycle] = RetainedDeliveryStages.gate { permit.performIfCurrent($0) == true }
+        retained.gates[.attemptCancellation] = DeliveryAdmission.Gate(validate: {
+            guard attempt.hasAttempt || !lifetime.isExpired else { throw CancellationError() }
+        }, perform: { operation in
+            guard attempt.begin(before: lifetime) else { throw CancellationError() }
+            try operation()
+        })
+        return retained
     }
 }
 

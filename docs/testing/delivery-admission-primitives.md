@@ -53,7 +53,7 @@ WS=vwf1 ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(DeliveryAdmission|
 
 SSH stdin is closed with `< /dev/null`; execution remains blocking.
 
-The run on source/test snapshot `3e4a2a7854a9d78a81c228d665c981152e3efd9d` passed with
+Verification ran on the pre-rebase stack. The run on source/test snapshot `3e4a2a7854a9d78a81c228d665c981152e3efd9d` passed with
 `build=0`, `test=0`: **211 tests in 40 suites**, in **65.955 seconds**. The five expected known issues
 belong to the existing `LocalDispatchPreflightWaitTests`; there were no unexpected issues.
 `DeliveryAdmissionTests` passed all seven tests, including 24 cases across ordinary and parameterized
