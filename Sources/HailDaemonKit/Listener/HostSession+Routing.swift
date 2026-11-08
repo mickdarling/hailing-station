@@ -6,8 +6,8 @@ import HailProtocol
 
 /// Both ingress paths share one lease, permit, handoff and commit; they differ only in how they report it.
 enum HostDeliveryOutcome: Sendable, Equatable {
-    /// Handed off; `request` is this connection's committed reply owner, or nil for legacy generic input that
-    /// carried no host-minted ambient reference (#230).
+    /// Handed off; `request`, when present, is this connection's committed reply owner.
+    /// The local peer wrapper still verifies connection liveness before returning a handoff to its caller.
     case delivered(request: UUID?)
     case confirmationRequired
     case held(RequestHeld)
@@ -237,6 +237,19 @@ extension HostSession {
     /// After a complete handoff, with no suspension: commit the owner's record, or recheck the captured selection for
     /// legacy generic input. Only a `.delivered` outcome records the last input device (#370).
     private func handedOff(
+        _ target: String, owner: HostReplyOwnership?, generation: UUID, recordsInput: Bool,
+        peer: ReplyTransportPermit?
+    ) -> HostDeliveryOutcome {
+        let outcome = commitHandoff(target, owner: owner, generation: generation,
+                                    recordsInput: recordsInput, peer: peer)
+        guard HailHost.localDispatchIngress, case .unowned = outcome, let peer,
+              peer.performIfCurrent({ true }) != true else { return outcome }
+        // Preserve the local peer wrapper's connectionLost result after a completed adapter handoff.
+        // This ownerless marker commits no authority or last-input; the retired peer cannot return it as success.
+        return .delivered(request: nil)
+    }
+
+    private func commitHandoff(
         _ target: String, owner: HostReplyOwnership?, generation: UUID, recordsInput: Bool,
         peer: ReplyTransportPermit?
     ) -> HostDeliveryOutcome {

@@ -118,7 +118,7 @@ import Testing
         rig.peer.replyTransport.retire()
         #expect(await rig.session.replyRequests.count == 1)
         await rig.adapter.completion.resume()
-        await #expect(throws: LocalDispatchRefusal.ownershipLost) { try await delivery.value }
+        await #expect(throws: LocalDispatchRefusal.connectionLost) { try await delivery.value }
         #expect(await rig.adapter.deliveries == ["synthetic input"])
         #expect(await rig.session.replyRequests.isEmpty)
         let ledger = await rig.listener.lastInput

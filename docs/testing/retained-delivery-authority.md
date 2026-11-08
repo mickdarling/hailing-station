@@ -31,6 +31,9 @@ production files.
 Post-handoff ownership and last-input attribution require the original peer permit. The commit orders
 reply permit, binding lease, then peer lifecycle; it checks the original request clock inside those
 gates. Peer retirement before completion prevents both commits, even before session cleanup runs.
+Local dispatch preserves the peer wrapper's existing `connectionLost` result after a completed adapter
+handoff. An ownerless internal handoff marker commits neither ownership nor last-input attribution;
+the retired peer refuses it before returning to the caller.
 
 ## Synthetic coverage
 
@@ -42,6 +45,19 @@ session record is present when only peer authority retires; neither ownership no
 attribution commits afterward. `TaskProgressHandoffTests` adds checked-handoff attempt accounting.
 Existing test cases remain unchanged. The new concurrency tests use injected barriers and clocks,
 without sleeps.
+
+| Invariant | Synthetic evidence |
+| --- | --- |
+| Independent policy, permit, lease and peer retirement | `retainedStagesRefuseIndependentRetirement`, existing final delivery tests |
+| Exact expiry and backwards request clock | `retainedStagesRefuseIndependentRetirement`, existing final reply/legacy tests |
+| Retained stages survive TaskLocal replacement | `retainedStagesSurviveTaskLocalReplacement` |
+| One target-policy acquisition and matching generation | `taskContributionUsesTheHostsSinglePolicyGate`, `aDifferentRetainedGenerationCannotCompose` |
+| Peer retirement before completion commits no ownership or last-input | `peerRetirementBeforeCompletionCommitsNoOwnership` |
+| Checked handoff records its attempt before cancellation | `checkedHandoffRecordsTheComposedTaskAttempt` |
+
+The earlier primitive retirement-ordering test now documents that its invocation event marks the
+call site rather than proof that the retirement thread reached a blocked lock. Its executable body
+is unchanged. The earlier verification record explicitly identifies its pre-rebase stack.
 
 ## Verification
 
