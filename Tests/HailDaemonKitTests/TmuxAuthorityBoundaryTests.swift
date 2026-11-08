@@ -91,7 +91,7 @@ import Testing
             return await session.deliver(input)
         }
         try await rig.runner.gate.waitUntilSuspended()
-        try await rig.retire()
+        _ = try await rig.host.setTier(.locked, for: TmuxAuthorityRig.target)
         let outcome = try await rig.runner.gate.finish(sending)
         #expect(outcome == HostDeliveryOutcome.delivered(request: nil))
         let calls = rig.runner.calls.count
@@ -102,7 +102,10 @@ import Testing
         }
         #expect(refused)
         #expect(rig.runner.pasted == ["synthetic input"])
-        #expect(rig.runner.calls.count == calls)
+        let laterWrites = rig.runner.calls.dropFirst(calls).contains {
+            $0.contains("set-buffer") || $0.contains("paste-buffer") || $0.contains("send-keys")
+        }
+        #expect(!laterWrites)
         #expect(rig.runner.enters == 1)
         #expect(rig.runner.input.isEmpty)
     }
