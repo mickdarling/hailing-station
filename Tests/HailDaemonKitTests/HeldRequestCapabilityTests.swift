@@ -85,7 +85,7 @@ import Testing
     @Test func unnegotiatedRateLimitKeepsTheExistingRefusal() async throws {
         let rig = try await HeldTestRig.make(limit: 1, capabilities: [])
         _ = try await rig.dispatch("first benign")
-        await #expect(throws: LocalDispatchRefusal.capacityExceeded) { try await rig.dispatch("second benign") }
+        await #expect(throws: LocalDispatchRefusal.deliveryRefused) { try await rig.dispatch("second benign") }
         #expect(await rig.host.cancel(hash("second benign")) == false)
         #expect(await rig.host.heldRequests.entries.isEmpty)
         rig.clock.advance(60_001)
