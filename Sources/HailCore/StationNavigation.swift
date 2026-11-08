@@ -45,6 +45,12 @@ public enum StationNavigationLayout: Equatable, Sendable {
     case tabs(tabBarVisible: Bool)
 }
 
+/// Which column a collapsed split view shows: a narrow iPad window, where the sidebar and detail become one stack.
+public enum StationCompactColumn: Sendable {
+    case sidebar
+    case detail
+}
+
 /// The only changes a navigation view sends. Each one is a request to the owner of `StationNavigationState`.
 public enum StationNavigationIntent: Equatable, Sendable {
     case select(StationSection)
@@ -52,6 +58,8 @@ public enum StationNavigationIntent: Equatable, Sendable {
     case toggleFullConversation
     /// The system's own sidebar control was used.
     case setSidebarHidden(Bool)
+    /// A collapsed split view went back to the sidebar, or forward to the detail.
+    case setCompactColumn(StationCompactColumn)
 }
 
 /// Owned above every navigation branch, by the station root, and passed down as a value.
@@ -62,6 +70,8 @@ public struct StationNavigationState: Equatable, Sendable {
     /// The conversation fills the window. It applies only to the station section.
     public private(set) var fullConversation: Bool
     public private(set) var sidebarHidden: Bool
+    /// Opens on the detail, so a narrow iPad starts on the station, not the section list.
+    public private(set) var compactColumn: StationCompactColumn = .detail
 
     public init(
         section: StationSection = .station, inspectorPresented: Bool = false,
@@ -85,10 +95,17 @@ public struct StationNavigationState: Equatable, Sendable {
     /// Full conversation hides the inspector without forgetting that the user opened it.
     public var showsInspector: Bool { inspectorPresented && !fullConversation }
 
+    /// The row the sidebar highlights. While a collapsed split view shows the sidebar, none is, so tapping any row,
+    /// including the current section, is a change that navigates to its detail.
+    public func sidebarSelection(collapsed: Bool) -> StationSection? {
+        collapsed && compactColumn == .sidebar ? nil : section
+    }
+
     public mutating func apply(_ intent: StationNavigationIntent) {
         switch intent {
         case .select(let next):
             section = next
+            compactColumn = .detail
             // Another section has no conversation to fill the window with, and full mode would hide the way back.
             if next != .station { fullConversation = false }
         case .toggleInspector:
@@ -102,6 +119,8 @@ public struct StationNavigationState: Equatable, Sendable {
             sidebarHidden = hidden
             // Revealing the sidebar asks for navigation, which full mode hides.
             if !hidden { fullConversation = false }
+        case .setCompactColumn(let column):
+            compactColumn = column
         }
     }
 }

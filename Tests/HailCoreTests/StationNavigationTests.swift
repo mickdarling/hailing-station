@@ -80,4 +80,30 @@ struct StationNavigationTests {
         state.apply(.setSidebarHidden(true))
         #expect(state.fullConversation)
     }
+
+    @Test func aCollapsedSplitOpensOnTheStationDetail() {
+        let state = StationNavigationState()
+        #expect(state.compactColumn == .detail)
+        #expect(state.sidebarSelection(collapsed: true) == .station)
+    }
+
+    // Codex review of #1148: in a collapsed iPad split view, choosing a section must navigate to its detail.
+    @Test func selectingFromACollapsedSidebarNavigatesToTheDetail() {
+        var state = StationNavigationState()
+        state.apply(.setCompactColumn(.sidebar))
+        state.apply(.select(.devices))
+        #expect(state.section == .devices)
+        #expect(state.compactColumn == .detail)
+    }
+
+    @Test func aCollapsedSidebarHighlightsNothingSoTheCurrentSectionCanBeReopened() {
+        var state = StationNavigationState()
+        state.apply(.setCompactColumn(.sidebar))
+        #expect(state.sidebarSelection(collapsed: true) == nil)
+        // An expanded split view always shows the current section.
+        #expect(state.sidebarSelection(collapsed: false) == .station)
+        state.apply(.select(.station))
+        #expect(state.compactColumn == .detail)
+        #expect(state.sidebarSelection(collapsed: true) == .station)
+    }
 }

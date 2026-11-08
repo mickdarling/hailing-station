@@ -20,6 +20,9 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     @ViewBuilder let inspector: () -> Inspector
     /// Drawn in the bottom safe area of a section, above the tab bar on iPhone.
     @ViewBuilder let dock: (StationSection) -> Dock
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    #endif
 
     var body: some View {
         // The idiom never changes while the app runs, so this never swaps one arrangement for the other.
@@ -32,7 +35,7 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     }
 
     private func split(sidebarVisible: Bool) -> some View {
-        NavigationSplitView(columnVisibility: columnVisibility(sidebarVisible)) {
+        NavigationSplitView(columnVisibility: columnVisibility(sidebarVisible), preferredCompactColumn: compactColumn) {
             List(selection: sectionSelection) {
                 ForEach(StationSection.allCases) { section in
                     Label(section.title, systemImage: section.systemImage)
@@ -87,7 +90,24 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     }
 
     private var sectionSelection: Binding<StationSection?> {
-        Binding(get: { state.section }, set: { next in if let next { send(.select(next)) } })
+        Binding(get: { state.sidebarSelection(collapsed: isCollapsed) }, set: { next in
+            if let next { send(.select(next)) }
+        })
+    }
+
+    /// A split view collapses into one stack at compact width, which only an iPad window reaches.
+    private var isCollapsed: Bool {
+        #if os(iOS)
+        sizeClass == .compact
+        #else
+        false
+        #endif
+    }
+
+    private var compactColumn: Binding<NavigationSplitViewColumn> {
+        Binding(get: { state.compactColumn == .sidebar ? .sidebar : .detail }, set: { column in
+            send(.setCompactColumn(column == .sidebar ? .sidebar : .detail))
+        })
     }
 
     private var inspectorPresented: Binding<Bool> {
