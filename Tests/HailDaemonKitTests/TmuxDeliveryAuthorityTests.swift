@@ -28,10 +28,16 @@ import Testing
         try await rig.runner.gate.finish(sending)
         #expect(rig.runner.pasted == ["synthetic input"])
         #expect(rig.runner.enters == 1)
+        let enter: [String] = ["send-keys", "-t", "%2", "Enter"]
+        #expect(rig.runner.calls.filter { $0.contains("send-keys") } == [enter])
         #expect(rig.runner.input.isEmpty)
         #expect(!rig.log.all.contains { $0.event == "tmux_policy_retired_unsent" })
         try await rig.adapter.deliver("later input", to: "codex", binding: TmuxAuthorityRig.binding)
         #expect(rig.runner.enters == 2)
+        #expect(rig.runner.pasted == ["synthetic input", "later input"])
+        #expect(rig.runner.calls.filter { $0.contains("send-keys") } == [enter, enter])
+        #expect(rig.runner.input.isEmpty)
+        #expect(!rig.log.all.contains { $0.event == "tmux_input_pending" })
     }
 
     @Test(arguments: [false, true])

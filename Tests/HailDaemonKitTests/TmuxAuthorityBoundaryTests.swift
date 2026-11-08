@@ -76,6 +76,12 @@ import Testing
         try await rig.retire()
         try await rig.runner.gate.finish(sending)
         #expect(rig.runner.enters == 1)
+        let keys = rig.runner.calls.filter { $0.joined(separator: " ").contains("send-keys") }
+        #expect(keys.count == 1)
+        let expected: [String] = ["if-shell", "-F", "-t", "%2", TmuxAdapter.isAgentFormat,
+                                  "send-keys -t %2 Enter", "display-message -p hail-enter-not-agent"]
+        #expect(keys.only == expected)
+        #expect(rig.runner.input.isEmpty)
         #expect(!rig.log.all.contains { $0.event == "tmux_policy_retired_unsent" })
     }
 
@@ -96,14 +102,11 @@ import Testing
         #expect(outcome == HostDeliveryOutcome.delivered(request: nil))
         let calls = rig.runner.calls.count
         let next = await session.receive(frame)
-        let refused = next.frames.contains {
-            if case .control(.error(code: .notAllowed, message: _, turn: _)) = $0.payload { return true }
-            return false
-        }
-        #expect(refused)
+        #expect(try onlyControl(next) == .error(code: .notAllowed, message: "target action was refused"))
         #expect(rig.runner.pasted == ["synthetic input"])
         let laterWrites = rig.runner.calls.dropFirst(calls).contains {
-            $0.contains("set-buffer") || $0.contains("paste-buffer") || $0.contains("send-keys")
+            $0.contains("capture-pane") || $0.contains("set-buffer")
+                || $0.contains("paste-buffer") || $0.contains("send-keys")
         }
         #expect(!laterWrites)
         #expect(rig.runner.enters == 1)

@@ -27,7 +27,7 @@ public protocol CommandRunner: Sendable {
 }
 
 /// An adapter explicitly owns operation-bearing launch admission rather than a checked handoff.
-public protocol LaunchAdmittingDelivery: Adapter {}
+protocol LaunchAdmittingDelivery: Adapter {}
 
 extension TmuxAdapter: LaunchAdmittingDelivery {}
 extension TmuxReplyAdapter: LaunchAdmittingDelivery {}

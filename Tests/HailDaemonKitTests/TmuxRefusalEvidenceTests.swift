@@ -17,8 +17,10 @@ import Testing
         let pane = ScriptedPane()
         let harness = EvidenceHarness(pane, timing: Self.timing())
         try await harness.adapter.deliver(Self.synthetic, to: "codex", binding: nil)
-        // A forced delay, so the age is a whole second at least.
-        try await Task.sleep(for: .milliseconds(1_100))
+        let agedAt = ContinuousClock.now.advanced(by: .seconds(1))
+        try await selectionPreflightStep("own insert reaches a whole second") {
+            while ContinuousClock.now < agedAt { try Task.checkCancellation(); await Task.yield() }
+        }
         pane.reset(baseline: ScriptedPane.absorbedScreen)
 
         await #expect(throws: AdapterError.self) {
@@ -167,17 +169,19 @@ import Testing
             }
             return CommandResult(exitCode: 0, stdout: "")
         }
-        // This externally cancelled wait uses real time; advancing virtual polls would outrun `eventually`.
-        let harness = EvidenceHarness(runner, timing: Self.timing(settleLimit: .seconds(60)), realTime: true)
+        let barrier = TmuxSettleBarrier(floor: .milliseconds(1))
+        defer { barrier.gate.fire() }
+        let harness = EvidenceHarness(runner, timing: Self.timing(), clock: barrier.clock)
         let delivery = Task { try await harness.adapter.deliver(Self.synthetic, to: "codex", binding: nil) }
-        // The repo's bounded wait (15 s), not a tight deadline: a loaded runner may take seconds to reach the paste.
-        try #require(await eventually { await !runner.delivered.isEmpty })
+        try await barrier.gate.waitUntilSuspended()
+        #expect(await runner.delivered == [Self.synthetic])
         delivery.cancel()
         drawn.withLock { $0 = true }
-        try await delivery.value
+        try await barrier.gate.finish(delivery)
         #expect(await runner.delivered == [Self.synthetic, "Enter"])
         #expect(harness.outcomes.all == [.unverifiable])
-        #expect(harness.evidence.lines("tmux_submit") == ["tmux_submit pane=p1 outcome=unverifiable"])
+        let line = try #require(harness.evidence.lines.only)
+        #expect(line == "tmux_submit pane=p1 outcome=unverifiable")
         #expect(harness.evidence.lines("tmux_input_pending").isEmpty)
         harness.evidence.expectTokensOnly(excluding: [Self.synthetic, "later input"])
     }
