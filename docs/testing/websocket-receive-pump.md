@@ -175,6 +175,17 @@ All other tests in those files remain unchanged. The elapsed-age clock wait is i
 measurement, not a replacement for an ordering barrier. For paste and Enter, the responder executes
 inside `launch.perform` on the guarded runner overload; the paste-launch park precedes that call.
 
+## Review-fix traceability
+
+| Condition | Implementation and synthetic proof |
+| --- | --- |
+| 1: ordered, protected queue | `WebSocketIngressPump.swift:112` evicts only eligible queued entries; `:133` removes the active entry before dispatch; `:168` protects sequence zero and final. `protectedAudioKeepsItsPositionDuringLaterPressure` preserves two starts and a final across subsequent pressure. |
+| 2: gap parity | `WebSocketReceivePumpAudioTests.swift:51` compares host/phone gate events and exact sink bytes; the pre-existing limitation and #1147 are documented above. |
+| 3: bounded, fail-closed, single decode | `WebSocketIngressPump.swift:101` bounds input before `:168` decodes once. `HostSession.swift:273` maps nil to the original malformed response, otherwise calls `receive(frame)`. Malformed/unknown bound tests and exact response/close tests cover both paths. |
+| 4: bounds and drop count | `WebSocketIngressPump.swift:16`, `:97` and `:130` define/enforce bounds and retain the counter. `WebSocketPeer.swift:51` emits count/sequence tokens outside the pump lock. |
+| 5: required test cases | Audio tests `:10` cover stalled dispatch, survival, close, full-window final and zero. Privacy tests `:8` use a real session. Limit tests `:8`, `:35`, `:55`, `:63` cover bytes, fail-closed overflow, single oversized input and protected audio. Gap parity is audio tests `:51`. All use acknowledged barriers and watchdog deadlines. |
+| 6: minor parity and documentation | `WebSocketIngressPump.swift:142` classifies terminal opcodes; `WebSocketPeer.swift:103` submits close after synchronous retirement and `:193` supplies code 1002. Classification tests `:32` and `:57` check metadata and a wire error/1002 exchange. The VM lane below has no host-local operational paths. |
+
 ## Verification
 
 The verification lane is **Dev Work VM, Swift 6.3.3**. Each source/test snapshot is synchronized from
@@ -201,10 +212,41 @@ python3 -m unittest discover -s Tests/ReplyCLITests
 vw-werr.sh "$WORKSPACE"
 ```
 
-Final batch verification results are recorded after all phases complete.
+The full verification sequence at `3092bdd4899bad8e8991cfd0df46c1d8a223ae10` passed:
 
-Host strict lint and explicit line-length verification apply separately to every Swift file changed
-from the original F4 base, including its test-only carries:
+| Phase | Result |
+| --- | --- |
+| Targeted, then three repeats | 38 tests in four suites each; 2.677, 2.710, 2.567 and 2.548 seconds. |
+| Core regression | 512 tests, 105 suites, 135.821 seconds; ten expected known issues. |
+| Ambient A–M | 111 tests, 21 suites, 64.768 seconds. |
+| Remaining ambient | 507 tests, 107 suites, 397.721 seconds. |
+| CLI unittest | 124 tests, 216.749 seconds; exit 0. |
+| Warnings as errors | `werr build=0`, wrapper exit 0. |
+
+The ten known issues are the unchanged deadline/cancellation self-tests in
+`LocalDispatchPreflightWaitTests` and `ReplyRecipientHandoffWaitTests`. The existing real-tmux suites
+remain skipped when tmux is unavailable: `TmuxDeliveryCommitFakeTUITests`,
+`TmuxDeliveryCommitShellPromptTests`, `TmuxIntegrationTests`, `TmuxPasteAgentTests` and
+`TmuxPasteEnterTests`. All new pump, real-session and loopback tests ran.
+
+The lint-clean snapshot `9bd82725e2a83e0d4c50231f686a59c950be843f` has byte-identical production
+source; its only test difference is removal of one blank line. That identity is checked locally and
+on the VM with an exact production diff and a whitespace/blank-line-ignoring test diff. The changed
+suite group passed three further repeats on that snapshot: **38 tests in four suites each**, in
+2.713, 2.604 and 2.706 seconds. Its warnings-as-errors build again reported **`werr build=0`** and
+wrapper exit **0**. The final commit updates documentation only; its source/test identity with this
+validated snapshot is checked during final synchronization.
+
+The warnings-as-errors lane emitted the existing Command Line Tools module-cache debug-information
+warnings; its Swift build and wrapper both exited 0. Shared-helper SHA-256 checksums matched after
+the full sequence. One superseded verification sequence was terminated through its process-group
+watchdog and joined before this final full sequence; it is not counted as final proof. After the final repeats
+and build, inspection found no remaining phase, runner, Swift build/test or package-test process from
+this work. The tracked VM worktree was clean, and shared-helper checksums still matched.
+
+Host strict lint passed separately on all **13 changed Swift files**, including the original F4
+test-only carries, with zero violations. The explicit line-length command printed nothing for all
+13 files. `git diff --check` passed. No host build or test ran. The commands were:
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict <file>
@@ -215,6 +257,21 @@ Production-file counting uses `scripts/pr-shape.py`'s exact prefix/suffix exclus
 for renames, applied locally to the diff from `36259c17`. It counts **three production files**:
 `WebSocketPeer.swift`, `WebSocketIngressPump.swift` and `HostSession.swift`. The GitHub-dependent
 checker entry point is not invoked. Tests and this document are excluded by that checker.
+The complete F4 diff has 14 files (three production, ten test, one document); this review-fix batch
+has ten files (three production, six test, one document):
+
+| Batch file | Role |
+| --- | --- |
+| `Sources/HailDaemonKit/Listener/WebSocketIngressPump.swift` | Ordered bounds, classification, eviction and counters. |
+| `Sources/HailDaemonKit/Listener/WebSocketPeer.swift` | Decoded dispatch, drop log and close-code parity. |
+| `Sources/HailDaemonKit/Listener/HostSession.swift` | Shared malformed mapping without a second decode. |
+| `Tests/HailDaemonKitTests/WebSocketReceivePumpTests.swift` | Existing ordered-worker and overflow assertions; drop recorder. |
+| `Tests/HailDaemonKitTests/WebSocketReceivePumpSessionTests.swift` | Serialized session receive and exact malformed mapping. |
+| `Tests/HailDaemonKitTests/WebSocketReceivePumpAudioTests.swift` | Audio pressure, close observation and gap parity. |
+| `Tests/HailDaemonKitTests/WebSocketReceivePumpClassificationTests.swift` | Terminal classification and close code 1002. |
+| `Tests/HailDaemonKitTests/WebSocketReceivePumpLimitTests.swift` | Aggregate/count/oversized limits and protected audio. |
+| `Tests/HailDaemonKitTests/WebSocketReceivePumpPrivacyTests.swift` | Real-session privacy and input-route ordering. |
+| `docs/testing/websocket-receive-pump.md` | Invariants, traceability, assertion accounting and evidence. |
 
 No installation, upload, daemon restart, launch-agent change, host configuration change or host tmux
 operation is part of this work. The evidence is synthetic VM and loopback evidence; there is no
