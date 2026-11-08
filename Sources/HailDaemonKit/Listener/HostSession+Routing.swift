@@ -46,6 +46,9 @@ extension HostSession {
     /// socket's `dispatch` kind and `haild rightyo --reply-to` never set it.
     @TaskLocal static var ambientInputDispatch = false
 
+    /// The originating session negotiated held requests; host evaluation may retain rate-limit read-backs.
+    @TaskLocal static var ambientHeldRequests = false
+
     func route(_ admitted: consuming AdmittedFrame, version: Int) async -> HostSessionResult {
         switch consume admitted {
         case .input(let input):
@@ -129,8 +132,6 @@ extension HostSession {
         }
     }
 
-    // Keep reservation cleanup and all handoff outcomes in the same decision boundary.
-    // swiftlint:disable cyclomatic_complexity
     /// Lease, permit, capacity, lifetime and generation checks, then `HailHost.send` with its sanitizer,
     /// shape and policy gates; only a successful complete handoff commits the request record. The input
     /// type is the authorization proof: nothing reaches the host that the session's authorizer did not
@@ -146,13 +147,7 @@ extension HostSession {
         }
         // Local dispatch's final selection check relies on no suspension before this snapshot.
         let generation = selectionGeneration
-        let reservation: UUID?
-        if Self.ambientInputDispatch, HeldSendScope.current == nil {
-            guard let slot = await host.heldRequests.reserve(connection: connectionID) else {
-                return .holdAdmissionRefused
-            }
-            reservation = slot
-        } else { reservation = nil }
+        let takesHolds = Self.ambientInputDispatch && peerCapabilities.contains(HeldRequests.capability)
         let evidence = HeldReadBackEvidence()
         do {
             try await host.requireSendPreflight()
@@ -162,38 +157,46 @@ extension HostSession {
             // again after the handoff; a caller outside the peer's serialized receive loop can race `select`.
             guard selects(input.target, generation: generation) else {
                 if let owner { dropUncommitted(owner.context.id) }
-                if let reservation { await host.heldRequests.release(reservation) }
                 return .selectionChanged
             }
-            let outcome = try await HeldReadBackEvidence.$current.withValue(evidence) {
-                try await send(input, owner: owner)
+            let outcome = try await Self.$ambientHeldRequests.withValue(takesHolds) {
+                try await HeldReadBackEvidence.$current.withValue(evidence) {
+                    try await send(input, owner: owner)
+                }
             }
             switch outcome {
             case .delivered:
-                if let reservation { await host.heldRequests.release(reservation) }
                 return handedOff(input.target, owner: owner, generation: generation, recordsInput: recordsInput)
             case .needsConfirmation(let readBack):
                 if let owner { dropUncommitted(owner.context.id) }
                 guard Self.ambientInputDispatch else { return .confirmationRequired }
-                return await hold(input, owner: owner, generation: generation, readBack: readBack,
-                                  evidence: evidence, reservation: reservation)
+                guard takesHolds else {
+                    await host.cancel(readBack.hash)
+                    return .confirmationRequired
+                }
+                return await hold(input, owner: owner, generation: generation, readBack: readBack, evidence: evidence)
             }
         } catch {
-            if let reservation { await host.heldRequests.release(reservation) }
             HeldSendScope.current?.failure.record(error)
             return deliveryRefusal(error)
         }
     }
 
-    // swiftlint:enable cyclomatic_complexity
-
     // Immutable authority snapshot plus same-evaluation evidence.
-    // swiftlint:disable:next function_parameter_count
     private func hold(
         _ input: borrowing AuthorizedInput, owner: HostReplyOwnership?, generation: UUID, readBack: ReadBack,
-        evidence: HeldReadBackEvidence, reservation: UUID?
+        evidence: HeldReadBackEvidence
     ) async -> HostDeliveryOutcome {
         let scope = HeldSendScope.current
+        // Evaluate first: a full store must never prevent a deliverable request from reaching its target.
+        let reservation: UUID?
+        if scope == nil {
+            guard let slot = await host.heldRequests.reserve(connection: connectionID) else {
+                await host.cancel(readBack.hash)
+                return .holdAdmissionRefused
+            }
+            reservation = slot
+        } else { reservation = nil }
         let entry = HeldRequestEntry(
             id: scope?.entry.id ?? UUID(), connection: connectionID, text: input.text,
             target: input.target, binding: owner?.context.binding.sessionID ?? input.expectedBinding ?? "",

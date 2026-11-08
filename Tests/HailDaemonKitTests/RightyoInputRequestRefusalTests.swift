@@ -33,7 +33,7 @@ extension RightyoInputConsumerTests {
         let hash = try DeliveryRequest(target: "tmux:demo", binding: "original",
                                        lines: [refused.prompt(speakers: "enrolled", target: "tmux:demo")],
                                        device: RightyoHostDispatcher.device).confirmationHash
-        #expect(await host.cancel(hash) == sessionDispatch)
+        #expect(await host.cancel(hash) == false)
         #expect(try await !consumer.consume(refused)) // Never retry a refused request.
         #expect(try await consumer.consume(request(consumer, 1, saying: "SYNTHETIC_BENIGN")))
         #expect(await consumer.lastDeliveryRefusal == nil)

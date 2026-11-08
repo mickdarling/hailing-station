@@ -45,7 +45,7 @@ import Testing
         for _ in 1..<8 { _ = try await rig.hold() }
         for _ in 1..<8 {
             let session = HostSession(host: rig.host, authorizer: PersonalTerminalAuthorizer())
-            _ = await session.receive(helloFrame())
+            _ = await session.receive(helloFrame(capabilities: [HeldRequests.capability]))
             _ = await session.receive(sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target))))
             let next = HeldTestRig(host: rig.host, adapter: rig.adapter, session: session,
                                    clock: rig.clock, privacy: rig.privacy, store: rig.store)
@@ -53,13 +53,21 @@ import Testing
         }
         #expect(await rig.host.heldRequests.entries.count == 64)
         let overflow = HostSession(host: rig.host, authorizer: PersonalTerminalAuthorizer())
-        _ = await overflow.receive(helloFrame())
+        _ = await overflow.receive(helloFrame(capabilities: [HeldRequests.capability]))
         _ = await overflow.receive(sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target))))
         let request = dispatchRequest(connection: await overflow.connectionID, text: "HELD_TOKEN")
         let result = try await HostSession.$ambientInputDispatch.withValue(true) {
             try await overflow.dispatchResult(request)
         }
         #expect(result == .holdAdmissionRefused)
+        let clean = dispatchRequest(connection: await overflow.connectionID, text: "benign with full host store")
+        let delivered = try await HostSession.$ambientInputDispatch.withValue(true) {
+            try await overflow.dispatchResult(clean)
+        }
+        guard case .delivered = delivered else {
+            Issue.record("full host hold capacity refused a deliverable request")
+            return
+        }
         #expect(await rig.host.heldRequests.entries[first.id]?.text == first.text)
         #expect(await rig.host.heldRequests.entries.count == 64)
     }

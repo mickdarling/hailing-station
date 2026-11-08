@@ -9,7 +9,7 @@ import Testing
         try policy.allow("tmux:demo", binding: "original", tier: .open)
         let (host, adapter) = try await sessionHost(targets: [.init(name: "demo", binding: "original")], policy: policy)
         let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer())
-        _ = await session.receive(helloFrame())
+        _ = await session.receive(helloFrame(capabilities: [HeldRequests.capability]))
         _ = await session.receive(sessionFrame(payload: .control(.select(targetID: "tmux:demo"))))
         let listener = try WebSocketListener(bindAddress: "127.0.0.1", port: 0, host: host,
                                              authorizer: PersonalTerminalAuthorizer())

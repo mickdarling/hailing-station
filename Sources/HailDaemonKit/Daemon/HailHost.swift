@@ -232,7 +232,7 @@ extension HailHost {
                 return .needsConfirmation(issue(request, reason: reason, evaluation: evaluation))
             case .denied(let denial):
                 guard delivered.isEmpty else { throw HostError.partial(delivered: delivered, reason: "\(denial)") }
-                if case .rateLimited = denial, HostSession.ambientInputDispatch, HeldSendScope.current == nil {
+                if case .rateLimited = denial, HostSession.ambientHeldRequests, HeldSendScope.current == nil {
                     return .needsConfirmation(issue(request, reason: "rate_limited", evaluation: evaluation))
                 }
                 throw HostError.denied(denial)

@@ -7,11 +7,11 @@ allowlist, TestFlight build or app is changed.
 
 ## Design
 
-`HailHost` owns an in-memory `HeldRequestStore`. Before evaluating a new ambient dispatch, the session reserves
-one possible hold slot. Reservations and unresolved holds share limits of eight per originating connection and
-64 per host. There is no eviction, age purge or disconnect purge. Exhaustion returns `holdAdmissionRefused`
-through the structured local dispatch API. The existing consumer receives its per-request capacity refusal and
-keeps the run. Device-side admission/backpressure and local buffering are still required before advertisement.
+`HailHost` owns an in-memory `HeldRequestStore`. A new ambient dispatch can create a hold only when its
+originating session's negotiated peer capabilities contain `HeldRequests.capability` (`held_requests`). The session
+evaluates first and reserves a slot only when the request needs a hold. Deliverable requests never consult hold
+capacity. Reservations and unresolved holds share limits of eight per originating connection and 64 per host. There is no eviction, age purge or disconnect purge. Exhaustion returns `holdAdmissionRefused`
+through the structured local dispatch API. An opted-in consumer receives its per-request capacity refusal and keeps the run. Device-side admission/backpressure and local buffering are still required before advertisement.
 
 A hold retains the exact prepared prompt, including any already-minted #230 reply reference, connection,
 selection generation, target, binding, original target-policy grant and host policy revision, same-evaluation
@@ -28,6 +28,11 @@ re-offer and host-local recovery/Discard UI remain deferred.
 ambient consumer deliberately continues to receive its established `.confirmationRequired` per-request refusal,
 which #874 already handles without ending the run. Non-ambient confirmation still says “confirm at the Mac”.
 The generic local socket response is unchanged; structured held IDs are not sent on that socket or the wire.
+
+Without the capability, ambient confirmation keeps #874's cancel-and-refuse behavior: cancel the read-back hash,
+refuse that one request with `.confirmationRequired`, and keep the stream. No hold or reservation is created.
+Rate limits keep their existing refusal rather than becoming holds. No production device advertises the capability,
+so production remains on the #874 path.
 
 The public listener APIs are `sendHeld`, `discardHeld`, and content-free `heldStatus`, scoped to the originating
 session connection UUID. Send uses the existing session/registry/host validation path with fresh evaluation and
@@ -62,16 +67,16 @@ custom rule name, pattern, hash, endpoint or identity. These OSLog records are n
 Exactly four production files, counted against rebased main `76010ade` using `scripts/pr-shape.py` exclusions:
 
 - `Sources/HailDaemonKit/Listener/HeldRequests.swift`: store, snapshots, policy settings, serialized decisions.
-- `Sources/HailDaemonKit/Listener/HostSession+Routing.swift`: reserve, hold instead of cancel, pinned selection.
+- `Sources/HailDaemonKit/Listener/HostSession+Routing.swift`: capability gate, evaluate before reserving, pinned selection.
 - `Sources/HailDaemonKit/Listener/LocalDispatch.swift`: structured outcomes and listener APIs.
 - `Sources/HailDaemonKit/Daemon/HailHost.swift`: authorized confirmation, rate-limit holds, same-evaluation evidence,
   fresh checks and injectable host clock.
 
 New `Held*Tests.swift` files cover admission/content/scope/reference, stream continuation, terminal replay,
 concurrent decisions, selection/binding/target/policy/privacy changes, rate/capacity, fresh timeout, expired notices,
-unknown/foreign IDs, discard, bounds and content-free log/notice fields. Two existing #874 tests are updated because
-they explicitly asserted the ambient read-back cancellation that this change removes. Direct host-local
-`RightyoHostDispatcher` and non-ambient confirmation behavior retain their existing expectations.
+unknown/foreign IDs, discard, bounds and content-free log/notice fields. Held-request rigs explicitly advertise the
+capability in hello. The two original #874 regression files are restored unchanged from `76010ade`; ambient
+read-back cancellation, direct host-local dispatch and non-ambient confirmation keep their original expectations.
 
 | Test file | Evidence |
 | --- | --- |
@@ -82,8 +87,9 @@ they explicitly asserted the ambient read-back cancellation that this change rem
 | `HeldRequestMetadataTests.swift` | Per-connection and global terminal replay bounds, connection churn, stale retired IDs, selection tracking cleanup and preservation of unresolved content. |
 | `HeldRequestFreshChecksTests.swift` | Global guard-policy change, capacity, privacy retry, 64 actual host-wide holds and content-free fields. |
 | `HeldRequestLegacyTests.swift` | Listener APIs preserve the original #230 reference and exact prompt; wire decisions cannot Send/Discard holds; expired notices with clean fresh evaluation still renew. |
-| `RightyoInputRequestRefusalSessionTests.swift` | Updated cancellation expectation, with non-ambient confirmation unchanged. |
-| `RightyoInputRequestRefusalTests.swift` | Existing consumer continuation expectation now distinguishes retained ambient read-backs from the unchanged direct host dispatcher. |
+| `HeldRequestCapabilityTests.swift` | No-capability cancellation/no admission, guard/confirm/timeout/rate behavior, 81 guarded requests across nine connections and full-store delivery. |
+| `RightyoInputRequestRefusalSessionTests.swift` | Original #874 cancellation and non-ambient confirmation tests, unchanged. |
+| `RightyoInputRequestRefusalTests.swift` | Original #874 consumer continuation and direct-host expectations, unchanged. |
 
 ## Earlier VM verification (before rebased review fixes)
 
@@ -152,8 +158,11 @@ Existing regression suites retain their own timing mechanisms. No simulator or p
   authenticated same-device reconnect recovery, restart reconciliation, persistence decisions, uncertain-handoff
   reconciliation and provider-context exclusion remain later #1120 work.
 - Deferred: final adapter-boundary authority hardening, required before held Send is reachable from the wire (tracked separately).
-- Independent exact-head security review/second key and PR checks have not been requested or represented as complete.
-  This worktree is local only and has not been pushed or opened as a PR.
+- Independent second-key review of draft PR #1132 at `2556bcfb` returned REQUEST CHANGES. The capability/admission
+  regression is addressed in the follow-up below; fresh exact-head review remains required after a future push.
+- Other independent-review findings remain deferred in [#1134](https://github.com/mickdarling/hailing-station/issues/1134):
+  multi-line held Send, renewal reason/rule consistency, queued terminal replay and serialized Discard read-back cleanup.
+  None is included in this capability fix.
 
 ## Rebased review fixes: final verification
 
@@ -191,3 +200,15 @@ Strict host SwiftLint passed with **zero violations in all 13 changed Swift file
 files** listed above. `WebSocketPeer.swift` is unchanged. No host builds/tests, simulator/device validation, push,
 installation, upload or independent review was performed. This final documentation-only commit follows the tested
 source snapshot; the earlier verification section records historical evidence only.
+
+
+## Capability-gate follow-up after second-key review
+
+New commits above `2556bcfbca3ab4214b061a3f69f8d9102698bea1` fix only the major live-path admission regression.
+Only `HostSession+Routing.swift` and `HailHost.swift` change in production; the full PR still touches the same four
+production files under the checker's exclusions and rename handling. No optional one-line #1134 fixes are included.
+The neutral adapter-boundary hardening deferral above is unchanged.
+
+The VM must fetch `origin feat/1120-host-hold` at `2556bcfb`, then apply the bundle of new local commits.
+Verification results will be recorded after the VM run. No host builds/tests, simulator or physical-device evidence
+is claimed. No push, installation or upload is in scope.

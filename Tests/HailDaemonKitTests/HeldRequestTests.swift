@@ -142,6 +142,10 @@ import Testing
         var ids: [UUID] = []
         for _ in 0..<8 { ids.append(try await rig.hold().id) }
         #expect(try await rig.dispatch() == .holdAdmissionRefused)
+        guard case .delivered = try await rig.dispatch("benign with full connection store") else {
+            Issue.record("full hold capacity refused a deliverable request")
+            return
+        }
         #expect(await rig.host.heldRequests.entries.count == 8)
         for id in ids { #expect(await rig.host.heldRequests.entries[id]?.text == "HELD_TOKEN") }
         #expect(await rig.discard(ids[0]) == .discarded)

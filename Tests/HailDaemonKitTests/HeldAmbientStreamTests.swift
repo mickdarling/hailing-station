@@ -14,12 +14,13 @@ private struct HeldStreamDispatcher: RightyoDispatching {
 }
 
 @Suite(.frozenGuardBudget) struct HeldAmbientStreamTests {
-    @Test func consumerKeepsTheSameRunAfterHoldingOneRequest() async throws {
+    @Test(arguments: [false, true])
+    func consumerKeepsTheSameRunAfterConfirmationRefusal(capable: Bool) async throws {
         var policy = Policy(guardPatterns: [.init(name: "private rule", regex: "HELD_TOKEN")])
         try policy.allow("tmux:demo", binding: "original", tier: .open)
         let (host, adapter) = try await sessionHost(targets: [.init(name: "demo", binding: "original")], policy: policy)
         let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer())
-        _ = await session.receive(helloFrame())
+        _ = await session.receive(helloFrame(capabilities: capable ? [HeldRequests.capability] : []))
         _ = await session.receive(sessionFrame(payload: .control(.select(targetID: "tmux:demo"))))
         let listener = try WebSocketListener(bindAddress: "127.0.0.1", port: 0, host: host,
                                              authorizer: PersonalTerminalAuthorizer())
@@ -31,12 +32,12 @@ private struct HeldStreamDispatcher: RightyoDispatching {
         _ = try await consumer.consume(helper.start(speakers: "enrolled"))
         let held = try await helper.request(consumer, 0, saying: "HELD_TOKEN")
         #expect(try await !consumer.consume(held))
-        #expect(await host.heldRequests.entries.count == 1)
+        #expect(await host.heldRequests.entries.count == (capable ? 1 : 0))
         #expect(await adapter.deliveries.isEmpty)
         #expect(try await consumer.consume(helper.request(consumer, 1, saying: "benign next request")))
         #expect(await adapter.deliveries.count == 1)
-        #expect(await host.heldRequests.entries.count == 1)
+        #expect(await host.heldRequests.entries.count == (capable ? 1 : 0))
         await listener.stop(reason: "synthetic complete")
-        #expect(await host.heldRequests.entries.count == 1) // Disconnect never purges content.
+        #expect(await host.heldRequests.entries.count == (capable ? 1 : 0)) // Disconnect never purges content.
     }
 }

@@ -12,7 +12,8 @@ struct HeldTestRig: Sendable {
     let privacy: HeldTestPrivacy
     let store: InMemoryPolicyStore
 
-    static func make(tier: Tier = .open, limit: Int = 100) async throws -> Self {
+    static func make(tier: Tier = .open, limit: Int = 100,
+                     capabilities: [String] = [HeldRequests.capability]) async throws -> Self {
         let clock = RecipientTestClock()
         let privacy = HeldTestPrivacy()
         let adapter = RecipientContextAdapter()
@@ -26,7 +27,7 @@ struct HeldTestRig: Sendable {
         let host = try HailHost(registry: registry, store: store, requestNow: clock.instant)
         let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(), requestClock: clock.instant,
                                   modeSnapshot: { _ in [.duckMode(on: privacy.isOn)] })
-        _ = await session.receive(helloFrame())
+        _ = await session.receive(helloFrame(capabilities: capabilities))
         _ = await session.receive(sessionFrame(payload: .control(.select(targetID: RecipientTestRig.target))))
         return Self(host: host, adapter: adapter, session: session, clock: clock, privacy: privacy, store: store)
     }
