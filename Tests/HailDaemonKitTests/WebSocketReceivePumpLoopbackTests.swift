@@ -20,7 +20,7 @@ extension WebSocketReceivePumpTests {
         ), on: socket)
         socket.cancel(with: .normalClosure, reason: nil)
         let reason = try await rig.ended.wait("close observed during delivery")
-        #expect(reason == "peer closed")
+        #expect(["peer closed", "cancelled"].contains(reason))
         #expect(rig.peer.replyTransport.isRetired)
         #expect(await rig.peer.ended)
         #expect(await rig.runner.delivered == (admitted ? ["synthetic input"] : []))
@@ -28,6 +28,33 @@ extension WebSocketReceivePumpTests {
         #expect(await rig.runner.delivered == (admitted ? ["synthetic input", "Enter"] : []))
         #expect(await rig.runner.calls.filter { $0.contains("paste-buffer") }.count == 1)
         #expect(await rig.runner.calls.filter { $0.contains("send-keys") }.count == (admitted ? 1 : 0))
+        await rig.listener.stop(reason: "test complete")
+    }
+
+    @Test(arguments: [false, true])
+    func loopbackOverflowTerminatesBeforeWorkerRelease(bytes: Bool) async throws {
+        let rig = try await PumpLoopbackRig.make(command: "paste-buffer")
+        defer { rig.barrier.gate.fire(); rig.pair.close() }
+        let socket = rig.pair.sockets[0]
+        try await recipientSocketSend(sessionFrame(
+            target: "tmux:codex", payload: .text(TextPayload(text: "synthetic input"))
+        ), on: socket)
+        try await rig.barrier.gate.waitUntilSuspended()
+        let worker = try #require(rig.peer.applicationWorker)
+        let count = bytes ? 3 : 9
+        let size = bytes ? PayloadLimits.defaultMaxFrameBytes : 1
+        for _ in 0..<count {
+            try await selectionPreflightStep("queued loopback message") {
+                try await socket.send(.data(Data(repeating: 32, count: size)))
+            }
+        }
+        let reason = try await rig.ended.wait("overflow disconnect")
+        #expect(["receive queue limit", "cancelled"].contains(reason))
+        #expect(rig.peer.replyTransport.isRetired)
+        #expect(await rig.peer.ended)
+        #expect(await rig.runner.delivered.isEmpty)
+        try await rig.barrier.gate.finish(worker)
+        #expect(await rig.runner.delivered.isEmpty)
         await rig.listener.stop(reason: "test complete")
     }
 

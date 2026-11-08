@@ -273,12 +273,11 @@ final class ReplyTransportLifecycle: Sendable {
 
     func retire() {
         let callback = retired.withLock { state -> (@Sendable () -> Void)? in
-            guard !state.retired else { return nil }
-            state.retired = true
-            authority.invalidate()
-            let callback = state.onRetirement
-            state.onRetirement = nil
-            return callback
+            if !state.retired {
+                state.retired = true
+                authority.invalidate()
+            }
+            return state.onRetirement
         }
         callback?()
     }
