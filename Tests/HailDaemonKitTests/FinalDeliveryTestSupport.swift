@@ -35,7 +35,8 @@ actor FinalDeliveryAdapter: ProviderContextDelivering, ProviderReplyBindingLeasi
 
     func listTargets() async throws -> [AdapterTarget] {
         await listing.pause()
-        return [AdapterTarget(name: "reply", binding: "synthetic-binding")]
+        return [AdapterTarget(name: "reply", binding: "synthetic-binding"),
+                AdapterTarget(name: "other", binding: "synthetic-other-binding")]
     }
     func capture(_ target: String) async throws -> String { "" }
     func acquireReplyBindingLease(_ binding: ProviderSessionBinding) async throws -> ProviderReplyBindingLease {
@@ -97,6 +98,7 @@ struct FinalDeliveryRig {
             .init(name: "synthetic guard", regex: held ? "^synthetic input$" : "^synthetic guarded command$")
         ])
         try policy.allow(target, binding: "synthetic-binding", tier: .open)
+        try policy.allow("final:other", binding: "synthetic-other-binding", tier: .open)
         let host = try HailHost(registry: registry, store: InMemoryPolicyStore(policy), requestNow: clock.instant)
         let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "synthetic-host",
                                   requestClock: clock.instant)

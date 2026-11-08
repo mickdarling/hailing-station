@@ -44,7 +44,8 @@ and the fresh reply owner's permit, lease and lifetime through the session's `be
 The held confirmation hash remains part of `sendAuthorized`. The fixed nested gate order is reply
 permit, binding lease, peer token, then clock. Those gates release before the prior task-progress
 hook runs; HailHost subsequently checks held policy, selection, permission and notice lifetime through
-the same `DeliveryAuthority`. No gate is acquired twice within a nested critical section. Peer close,
+the same `DeliveryAuthority`. When final reply authority is retired, held refusal reasons retain their existing order after the
+final gates release. No gate is acquired twice within a nested critical section. Peer close,
 transport close and listener shutdown continue to retire the peer token synchronously.
 
 `FinalDeliveryHeldAuthorityTests` exercises current held Send and independent final peer/reply authority,

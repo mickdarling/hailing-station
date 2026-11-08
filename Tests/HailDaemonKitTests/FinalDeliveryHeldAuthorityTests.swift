@@ -71,6 +71,7 @@ import Testing
         await rig.adapter.handoff.arm()
         let delivery = Task { await rig.listener.sendHeld(held, from: rig.session.connectionID) }
         await rig.adapter.handoff.wait()
+        _ = await rig.session.receive(sessionFrame(payload: .control(.select(targetID: "final:other"))))
         _ = await rig.session.receive(sessionFrame(payload: .control(.select(targetID: FinalDeliveryRig.target))))
         await rig.adapter.handoff.resume()
         #expect(await delivery.value == .refused(.selectionChanged))

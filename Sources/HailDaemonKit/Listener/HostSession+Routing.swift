@@ -304,7 +304,7 @@ extension HostSession {
     private func finalDeliveryAuthority(
         owner: HostReplyOwnership?, target: String
     ) -> @Sendable () throws -> Void {
-        let peer = Self.deliveryPeer, handoff = TaskProgressWakeScope.beforeHandoff
+        let peer = Self.deliveryPeer, handoff = TaskProgressWakeScope.beforeHandoff, held = HeldSendScope.current
         let request = owner.flatMap { replyRequests[$0.context.id] }
         let permit = request?.policyPermit, lease = request?.bindingLease, createdAt = request?.createdAt
         let clock = requestClock, requiresOwner = owner != nil
@@ -317,6 +317,14 @@ extension HostSession {
             let live = { peer.map { $0.performIfCurrent(current) == true } ?? current() }
             let leased = { lease.map { $0.performIfCurrent(live) == true } ?? live() }
             guard permit.map({ $0.performIfCurrent(leased) == true }) ?? leased() else {
+                // Held refusal reasons retain their order when final reply authority also retires.
+                if let held {
+                    try held.entry.policy.requireCurrent()
+                    guard held.policyCurrent() else { throw HeldAuthorityError.policyChanged }
+                    guard held.selected() else { throw HeldAuthorityError.selectionChanged }
+                    guard held.allowed() else { throw HostError.denied(.lockdown) }
+                    guard held.noticeCurrent() else { throw HeldAuthorityError.noticeExpired }
+                }
                 throw HostError.denied(.notAllowed(target))
             }
             try handoff?()
