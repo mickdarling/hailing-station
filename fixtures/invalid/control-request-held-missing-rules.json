@@ -1,0 +1,1 @@
+{"id":"0B0B0B0B-0000-4000-8000-000000001120","payload":{"command":"request_held","expires_in":60,"held":"0B0B0B0B-0000-4000-8000-000000001120","reasons":["rule_match","guard_timeout"]},"source":"host","ts":1,"type":"control","v":1}

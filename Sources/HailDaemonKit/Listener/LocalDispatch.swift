@@ -1,6 +1,7 @@
 public import Foundation
+import Synchronization
 import OSLog
-import HailProtocol
+public import HailProtocol
 
 // Request shape, session gate, peer lifecycle binding and socket submission form one dispatch boundary.
 // swiftlint:disable file_length
@@ -122,14 +123,12 @@ extension WebSocketListener {
 }
 
 extension WebSocketPeer {
-    /// Binds the dispatch to this peer's own lifecycle (ended, closing, retired transport) at both ends of
-    /// the session handoff; the caller's task cancellation is a separate outcome and never revokes a live
-    /// peer's record. The handoff itself cannot hold the transport gate (the session cannot read it
-    /// synchronously), so a peer that ends during the handoff has its minted record revoked and the caller
-    /// is told the connection was lost.
+    /// Tighten final delivery authority checks at the adapter handoff.
     func dispatch(_ request: LocalDispatchRequest, generation: UUID? = nil) async throws -> UUID? {
-        guard isLive else { throw LocalDispatchRefusal.connectionEnded }
-        let owner = try await session.dispatch(request, generation: generation)
+        guard isLive, let permit = replyTransport.issuePermit() else { throw LocalDispatchRefusal.connectionEnded }
+        let owner = try await HostSession.$deliveryPeer.withValue(permit) {
+            try await session.dispatch(request, generation: generation)
+        }
         guard isLive else {
             await session.revokeDispatch(owner)
             throw LocalDispatchRefusal.connectionLost
@@ -170,9 +169,19 @@ extension HostSession {
               listed.binding == request.binding else { throw LocalDispatchRefusal.bindingMismatch }
         // No suspension between this check and `deliver`'s own generation snapshot: the two cannot diverge.
         try requireSelection(of: request, generation: generation)
-        switch await deliver(input) {
+        return try dispatchOutcome(await deliver(input))
+    }
+
+    private func dispatchOutcome(_ outcome: HostDeliveryOutcome) throws -> UUID? {
+        switch outcome {
         case .delivered(let owner): return owner
         case .selectionChanged: throw LocalDispatchRefusal.selectionChanged
+        case .held(let notice):
+            LocalDispatchCapture.current?.record(.held(notice))
+            throw LocalDispatchRefusal.confirmationRequired
+        case .holdAdmissionRefused:
+            LocalDispatchCapture.current?.record(.holdAdmissionRefused)
+            throw LocalDispatchRefusal.capacityExceeded
         case .confirmationRequired: throw LocalDispatchRefusal.confirmationRequired
         case .unowned: throw LocalDispatchRefusal.ownershipLost
         case .refused(.rateLimited, _): throw LocalDispatchRefusal.capacityExceeded
@@ -246,5 +255,87 @@ extension LocalReplyEndpoint {
             dispatchLogger.error("Local dispatch decode failed: \(String(reflecting: error), privacy: .private)")
             throw LocalReplyRefusal.decodeFailure
         }
+    }
+}
+
+/// The structured API carries held identity while the existing consumer uses #874's per-request refusal.
+public enum LocalDispatchResult: Sendable, Equatable {
+    case delivered(UUID?)
+    case held(RequestHeld)
+    case holdAdmissionRefused
+}
+
+private final class LocalDispatchCapture: Sendable {
+    @TaskLocal static var current: LocalDispatchCapture?
+    private let storage = Mutex<LocalDispatchResult?>(nil)
+    var value: LocalDispatchResult? { storage.withLock { $0 } }
+    func record(_ value: LocalDispatchResult) { storage.withLock { $0 = value } }
+}
+
+extension HostSession {
+    func dispatchResult(_ request: LocalDispatchRequest, generation: UUID? = nil) async throws -> LocalDispatchResult {
+        let capture = LocalDispatchCapture()
+        return try await LocalDispatchCapture.$current.withValue(capture) {
+            do { return .delivered(try await dispatch(request, generation: generation)) } catch {
+                if let result = capture.value { return result }
+                throw error
+            }
+        }
+    }
+}
+
+extension WebSocketListener {
+    /// Future host consumers can retain held identity without changing #874's existing refusal contract.
+    func dispatchAmbientResult(
+        _ request: LocalDispatchRequest, reference: UUID? = nil, selection: UUID?, routedFrom: String? = nil
+    ) async throws -> LocalDispatchResult {
+        let capture = LocalDispatchCapture()
+        return try await LocalDispatchCapture.$current.withValue(capture) {
+            do {
+                return .delivered(try await dispatchAmbient(
+                    request, reference: reference, selection: selection, routedFrom: routedFrom
+                ))
+            } catch {
+                if let result = capture.value { return result }
+                throw error
+            }
+        }
+    }
+
+    /// Only a live originating session may Send. UUID possession never transfers a hold to a new peer.
+    public func sendHeld(_ id: UUID, from connection: UUID) async -> HeldSendResult {
+        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }),
+              let permit = peer.replyTransport.issuePermit(), await peer.isLive else {
+            host.heldRequests.retireSelection(connection: connection)
+            return .refused(.connectionLost)
+        }
+        let result = await HeldPeerScope.$current.withValue(
+            { await self.ownsHeldPeer(peer) },
+            operation: {
+                await HostSession.$deliveryPeer.withValue(permit) {
+                    await peer.session.sendHeld(id, from: connection)
+                }
+            }
+        )
+        // A completed handoff remains sent even if the owner disconnected while awaiting its result.
+        if result == .sent { return result }
+        guard await ownsHeldPeer(peer) else { return .refused(.connectionLost) }
+        return result
+    }
+
+    public func heldStatus(_ id: UUID, from connection: UUID) async -> HeldDeliveryStatus? {
+        await host.heldRequests.status(id, from: connection)
+    }
+
+    private func ownsHeldPeer(_ peer: WebSocketPeer) async -> Bool {
+        let member = !stopped && peers.values.contains(where: { $0 === peer })
+        let live = member ? await peer.isLive : false
+        if !live { host.heldRequests.retireSelection(connection: peer.session.connectionID) }
+        return live
+    }
+
+    public func discardHeld(_ id: UUID, from connection: UUID) async -> HeldSendResult {
+        guard let peer = peers.values.first(where: { $0.session.connectionID == connection }) else { return .stale }
+        return await peer.session.discardHeld(id, from: connection)
     }
 }

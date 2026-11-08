@@ -145,6 +145,7 @@ extension WebSocketListener {
     public func stop(reason: String = "requested") async {
         guard !stopped else { return }
         stopped = true
+        peers.values.forEach { $0.replyTransport.retire() }
         taskProgressOwnerLifetime.close()
         sessionUpdateFence.close()
         await taskProgressController?.stop()

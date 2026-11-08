@@ -10,6 +10,8 @@ enum HostDeliveryOutcome: Sendable, Equatable {
     /// carried no host-minted ambient reference (#230).
     case delivered(request: UUID?)
     case confirmationRequired
+    case held(RequestHeld)
+    case holdAdmissionRefused
     /// The connection selected another target while this input was suspended; nothing was handed off.
     case selectionChanged
     /// The target may have received the text, but no reply ownership survived the handoff.
@@ -32,6 +34,9 @@ struct HostReplyOwnership {
 }
 
 extension HostSession {
+    /// Tighten final delivery authority checks at the adapter handoff.
+    @TaskLocal static var deliveryPeer: ReplyTransportPermit?
+
     /// The opaque reply reference `WebSocketListener.dispatchAmbient` minted for one ambient handoff and wrote into
     /// that prompt's reply block (#230), bound only for the duration of that dispatch. On a legacy adapter only, it
     /// names the request record this session mints for its own connection, selection generation and exact target
@@ -43,6 +48,9 @@ extension HostSession {
     /// ambient input, so a delivered handoff makes this connection its target's last input device. The local
     /// socket's `dispatch` kind and `haild rightyo --reply-to` never set it.
     @TaskLocal static var ambientInputDispatch = false
+
+    /// The originating session negotiated held requests; host evaluation may retain rate-limit read-backs.
+    @TaskLocal static var ambientHeldRequests = false
 
     func route(_ admitted: consuming AdmittedFrame, version: Int) async -> HostSessionResult {
         switch consume admitted {
@@ -112,7 +120,7 @@ extension HostSession {
         switch await deliver(input, recordsLastInput: true) {
         case .delivered:
             return HostSessionResult(frames: [])
-        case .confirmationRequired:
+        case .held, .holdAdmissionRefused, .confirmationRequired:
             let message = "target requires confirmation at the Mac"
             return failure(refusal(.notAllowed), message, close: false, version: version)
         case .selectionChanged:
@@ -142,6 +150,8 @@ extension HostSession {
         }
         // Local dispatch's final selection check relies on no suspension before this snapshot.
         let generation = selectionGeneration
+        let takesHolds = Self.ambientInputDispatch && peerCapabilities.contains(HeldRequests.capability)
+        let evidence = HeldReadBackEvidence()
         do {
             try await host.requireSendPreflight()
             try input.policyGeneration.requireCurrent()
@@ -152,18 +162,56 @@ extension HostSession {
                 if let owner { dropUncommitted(owner.context.id) }
                 return .selectionChanged
             }
-            switch try await send(input, owner: owner) {
+            let outcome = try await Self.$ambientHeldRequests.withValue(takesHolds) {
+                try await HeldReadBackEvidence.$current.withValue(evidence) {
+                    try await send(input, owner: owner)
+                }
+            }
+            switch outcome {
             case .delivered:
                 return handedOff(input.target, owner: owner, generation: generation, recordsInput: recordsInput)
             case .needsConfirmation(let readBack):
-                // Ambient refusals say nothing was sent; other input keeps confirmation at the Mac.
-                if Self.ambientInputDispatch { await host.cancel(readBack.hash) }
                 if let owner { dropUncommitted(owner.context.id) }
-                return .confirmationRequired
+                guard Self.ambientInputDispatch else { return .confirmationRequired }
+                guard takesHolds else {
+                    await host.cancel(readBack.hash)
+                    return .confirmationRequired
+                }
+                return await hold(input, owner: owner, generation: generation, readBack: readBack, evidence: evidence)
             }
         } catch {
+            HeldSendScope.current?.failure.record(error)
             return deliveryRefusal(error)
         }
+    }
+
+    // Immutable authority snapshot plus same-evaluation evidence.
+    private func hold(
+        _ input: borrowing AuthorizedInput, owner: HostReplyOwnership?, generation: UUID, readBack: ReadBack,
+        evidence: HeldReadBackEvidence
+    ) async -> HostDeliveryOutcome {
+        let scope = HeldSendScope.current
+        // Evaluate first: a full store must never prevent a deliverable request from reaching its target.
+        let reservation: UUID?
+        if scope == nil {
+            guard let slot = await host.heldRequests.reserve(connection: connectionID) else {
+                await host.cancel(readBack.hash)
+                return .holdAdmissionRefused
+            }
+            reservation = slot
+        } else { reservation = nil }
+        let entry = HeldRequestEntry(
+            id: scope?.entry.id ?? UUID(), connection: connectionID, text: input.text,
+            target: input.target, binding: owner?.context.binding.sessionID ?? input.expectedBinding ?? "",
+            selection: generation, policy: input.policyGeneration, reference: Self.ambientReplyReference,
+            route: Self.voiceRouted, readBack: readBack, evidence: evidence.value,
+            previous: scope?.entry, expires: requestClock() + host.heldNoticeWindow,
+            noticeWindow: host.heldNoticeWindow
+        )
+        guard let notice = await host.heldRequests.hold(entry, reservation: reservation) else {
+            return .holdAdmissionRefused
+        }
+        return .held(notice)
     }
 
     private func deliveryRefusal(_ error: any Error) -> HostDeliveryOutcome {
@@ -231,18 +279,55 @@ extension HostSession {
         let (text, device) = (input.text, input.device)
         let expectedBinding = owner?.context.binding.sessionID ?? input.expectedBinding
         let policyGeneration = input.policyGeneration
+        let finalAuthority = finalDeliveryAuthority(owner: owner, target: input.target)
         do {
             // A framed paste (#608) gets the paste line cap; every other gate is the same.
             return try await HailHost.$pastedIngress.withValue(input.carriesPaste) {
                 // Keep the authorization generation and exact binding across host preflight suspensions (#1028).
-                return try await host.sendAuthorized(
-                    text, policyGeneration: policyGeneration, from: device, expectedBinding: expectedBinding,
-                    context: owner.flatMap { $0.contextual ? $0.context : nil }
-                )
+                return try await TaskProgressWakeScope.$beforeHandoff.withValue(finalAuthority) {
+                    try await host.sendAuthorized(
+                        text, policyGeneration: policyGeneration, from: device, expectedBinding: expectedBinding,
+                        context: owner.flatMap { $0.contextual ? $0.context : nil },
+                        confirmedHash: HeldSendScope.current.flatMap { $0.renewOnly ? nil : $0.entry.readBack.hash }
+                    )
+                }
             }
         } catch {
             if let owner { dropUncommitted(owner.context.id) }
             throw error
+        }
+    }
+
+    /// Final delivery authority includes a live-peer token and the reply permit, lease and lifetime.
+    /// Gate order is reply permit, binding lease, peer, then clock; all release before the prior hook.
+    /// HailHost composes the held-scope checks after this hook, without re-entering these gates.
+    private func finalDeliveryAuthority(
+        owner: HostReplyOwnership?, target: String
+    ) -> @Sendable () throws -> Void {
+        let peer = Self.deliveryPeer, handoff = TaskProgressWakeScope.beforeHandoff, held = HeldSendScope.current
+        let request = owner.flatMap { replyRequests[$0.context.id] }
+        let permit = request?.policyPermit, lease = request?.bindingLease, createdAt = request?.createdAt
+        let clock = requestClock, requiresOwner = owner != nil
+        return {
+            let current = {
+                guard let createdAt else { return !requiresOwner }
+                let elapsed = createdAt.duration(to: clock())
+                return elapsed >= .zero && elapsed < HostReplyRequest.lifetime
+            }
+            let live = { peer.map { $0.performIfCurrent(current) == true } ?? current() }
+            let leased = { lease.map { $0.performIfCurrent(live) == true } ?? live() }
+            guard permit.map({ $0.performIfCurrent(leased) == true }) ?? leased() else {
+                // Held refusal reasons retain their order when final reply authority also retires.
+                if let held {
+                    try held.entry.policy.deliveryAuthority.requireCurrent()
+                    guard held.policyCurrent() else { throw HeldAuthorityError.policyChanged }
+                    guard held.selected() else { throw HeldAuthorityError.selectionChanged }
+                    guard held.allowed() else { throw HostError.denied(.lockdown) }
+                    guard held.noticeCurrent() else { throw HeldAuthorityError.noticeExpired }
+                }
+                throw HostError.denied(.notAllowed(target))
+            }
+            try handoff?()
         }
     }
 
@@ -344,6 +429,7 @@ extension HostSession {
             }
             if selectedTarget != targetID {
                 selectionGeneration = UUID()
+                host.heldRequests.select(selectionGeneration, connection: connectionID)
                 replyRequests.removeAll()
                 evictedForHandoff.removeAll() // The old selection's evictions can never be restored (#723).
                 selectedTarget = targetID

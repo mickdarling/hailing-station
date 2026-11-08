@@ -107,6 +107,12 @@ public enum ErrorCode: Sendable, Equatable, Codable {
 
 /// The control command set. Encoded as `{"command": "...", ...fields}` inside the frame payload.
 public enum ControlPayload: Sendable, Equatable {
+    /// Proposed host to device held notice (#1120); requires `HeldRequests.capability`.
+    case requestHeld(RequestHeld)
+    /// Proposed device to host decision (#1120); never authorizes unchecked delivery.
+    case heldDecision(HeldDecision)
+    /// Proposed host to device disposition (#1120); requires `HeldRequests.capability`.
+    case heldResolution(HeldResolution)
     case hello(HelloInfo)
     case listTargets
     case targets([TargetInfo])
@@ -202,6 +208,7 @@ extension ControlPayload: Codable {
         case setReplyMute = "set_reply_mute", ownerVoice = "owner_voice", ambientInput = "ambient_input"
         case replyYield = "reply_yield", sessionUpdate = "session_update"
         case sessionUpdateCancel = "session_update_cancel"
+        case requestHeld = "request_held", heldDecision = "held_decision", heldResolution = "held_resolution"
         case health, healthReport = "health_report"
         case mediaMode = "media_mode", duckMode = "duck_mode", setPrivacy = "set_privacy"
     }
@@ -212,6 +219,7 @@ extension ControlPayload: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let turn = try Self.heardTurn(from: decoder)
         switch try container.decode(Command.self, forKey: .command) {
+        case .requestHeld, .heldDecision, .heldResolution: self = try HeldRequests.decode(from: decoder)
         case .hello: self = .hello(try container.decode(HelloInfo.self, forKey: .hello))
         case .listTargets: self = .listTargets
         case .targets: self = .targets(try container.decode([TargetInfo].self, forKey: .targets))
@@ -429,14 +437,14 @@ extension ControlPayload: Codable {
         return .ambientHeard(targetID: target, text: text, turn: turn)
     }
 
-    /// #923: absent keeps legacy decoding; present must be a UUID on one of the two heard-turn frames.
+    /// #923: absent keeps legacy decoding; present must be a UUID on a heard-turn frame (#1120 also permits request_held).
     private static func heardTurn(from decoder: any Decoder) throws -> UUID? {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         guard container.contains(.turn) else { return nil }
         let command = try container.decode(Command.self, forKey: .command)
         if command == .error, try container.decode(ErrorCode.self, forKey: .code) == .voiceRouteRefused {
             try requireOnly(["command", "code", "message", "turn"], "voice_route_refused", decoder)
-        } else if command != .ambientHeard {
+        } else if command != .ambientHeard && command != .requestHeld {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
                                                     debugDescription: "turn is not permitted on this command"))
         }
@@ -466,6 +474,9 @@ extension ControlPayload: Codable {
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
+        case .requestHeld(let notice): try notice.encode(to: encoder)
+        case .heldDecision(let decision): try decision.encode(to: encoder)
+        case .heldResolution(let resolution): try resolution.encode(to: encoder)
         case .hello(let info):
             try container.encode(Command.hello, forKey: .command)
             try container.encode(info, forKey: .hello)

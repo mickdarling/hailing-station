@@ -1,0 +1,262 @@
+# Held ambient requests: host foundation (#1120, PR 3)
+
+Status: host-only implementation on the local unmerged stack. Nothing advertises `held_requests`; no held notice,
+decision or resolution frame is sent. This is synthetic host groundwork, not a shipped build, physical-device
+proof, live captured-output round trip or delivery deployment. No installed daemon, private configuration,
+allowlist, TestFlight build or app is changed.
+
+## Design
+
+`HailHost` owns an in-memory `HeldRequestStore`. A new ambient dispatch can create a hold only when its
+originating session's negotiated peer capabilities contain `HeldRequests.capability` (`held_requests`). The session
+evaluates first and reserves a slot only when the request needs a hold. Deliverable requests never consult hold
+capacity. Reservations and unresolved holds share limits of eight per originating connection and 64 per host.
+There is no eviction, age purge or disconnect purge. Exhaustion returns `holdAdmissionRefused` through the
+structured local dispatch API. An opted-in consumer receives its per-request capacity refusal and keeps the run.
+Device-side admission/backpressure and local buffering are still required before advertisement.
+
+A hold retains the exact prepared prompt, including any already-minted #230 reply reference, connection,
+selection generation, target, binding, original target-policy grant and host policy revision, same-evaluation
+read-back/hash, closed reasons, frozen rule tokens and notice deadline. All configured guard names map to
+`custom`; only the daemon default rule set may map trusted built-in names. Hashing still uses the existing
+sanitized `DeliveryRequest`, so confirmation is checked against the same prepared content after sanitization.
+
+`HeldRequestPolicy` names the v1 choices: `onPrivacy = .keep`, `persistence = .memory`, and `reoffer = .sameDevice`.
+These are the settings seam for later issue decisions. No alternate deletion or persistence behavior is enabled.
+Host crash/restart loses memory. Reconnect does not transfer ownership: authenticated same-device recovery,
+re-offer and host-local recovery/Discard UI remain deferred.
+
+`HostDeliveryOutcome.held` and `LocalDispatchResult.held` carry the opaque ID and content-free notice. The existing
+ambient consumer deliberately continues to receive its established `.confirmationRequired` per-request refusal,
+which #874 already handles without ending the run. Non-ambient confirmation still says “confirm at the Mac”.
+The generic local socket response is unchanged; structured held IDs are not sent on that socket or the wire.
+
+Without the capability, ambient confirmation keeps #874's cancel-and-refuse behavior: cancel the read-back hash,
+refuse that one request with `.confirmationRequired`, and keep the stream. No hold or reservation is created.
+Rate limits keep their existing refusal rather than becoming holds. No production device advertises the capability,
+so production remains on the #874 path.
+
+The public listener APIs are `sendHeld`, `discardHeld`, and content-free `heldStatus`, scoped to the originating
+session connection UUID. Send uses the existing session/registry/host validation path with fresh evaluation and
+pinned selection, target, binding and policy. Policy changes refuse rather than silently adopting new authority.
+Held Send remains unreachable from any wire or device path in this PR: neither endpoint advertises the capability,
+the authorizer refuses held decisions, the session control router has no held-decision handler, and no production
+wire/socket/device caller invokes `sendHeld`.
+
+Only a fresh `.confirm` can consume a held read-back hash. A denial never becomes delivery. A fresh timeout or
+new guard evidence renews the hold rather than using old consent. Expired notices are renewed for the same held
+ID/content and cannot deliver automatically, including when fresh evaluation is clean. If expiry occurs at the
+adapter authority boundary, delivery is refused and the next explicit Send renews the notice. No timer sends or
+purges content. Ordinary refusals remain retryable and keep their hold slot. Privacy/lockdown refuse Send while
+Discard remains available. No held text is shown or spoken by these APIs.
+
+The store gives every decision attempt an identity, finalizes it exactly once, and queues decisions per hold.
+Adjacent overlapping Sends coalesce; a queued Discard waits for the active attempt and applies to its resulting
+state before a later retry. Discard after a successful Send replays `sent`. Successful Send and explicit Discard
+release content and leave minimal terminal replay records: the newest 32 per connection, capped at 256 per host.
+Duplicates and conflicting decisions replay the result while retained; retired terminal IDs return `stale`.
+Selection metadata exists only during active Send attempts, is removed when an attempt ends or its retired peer
+is observed, and is never created by idle connection selections. Cleanup preserves all unresolved content. An uncertain adapter handoff keeps the content, reports `unresolved`
+through `heldStatus`, and blocks further Sends until future reconciliation; explicit Discard remains possible.
+Unknown or inaccessible IDs on a live originating API path are `stale`. Terminal records contain no prompt or read-back.
+
+Content-free logs are `ambient_request_held reasons=... rules=...` and
+`ambient_request_resolution outcome=... reasons=... rules=...`. Values come only from closed enums, never prompt,
+custom rule name, pattern, hash, endpoint or identity. These OSLog records are not chain audit records.
+
+## Files and PR shape
+
+Exactly four production files, counted against rebased main `76010ade` using `scripts/pr-shape.py` exclusions:
+
+- `Sources/HailDaemonKit/Listener/HeldRequests.swift`: store, snapshots, policy settings, serialized decisions.
+- `Sources/HailDaemonKit/Listener/HostSession+Routing.swift`: capability gate, evaluate before reserving, pinned selection.
+- `Sources/HailDaemonKit/Listener/LocalDispatch.swift`: structured outcomes and listener APIs.
+- `Sources/HailDaemonKit/Daemon/HailHost.swift`: authorized confirmation, rate-limit holds, same-evaluation evidence,
+  fresh checks and injectable host clock.
+
+New `Held*Tests.swift` files cover admission/content/scope/reference, stream continuation, terminal replay,
+concurrent decisions, selection/binding/target/policy/privacy changes, rate/capacity, fresh timeout, expired notices,
+unknown/foreign IDs, discard, bounds and content-free log/notice fields. Held-request rigs explicitly advertise the
+capability in hello. The two original #874 regression files are restored unchanged from `76010ade`; ambient
+read-back cancellation, direct host-local dispatch and non-ambient confirmation keep their original expectations.
+
+| Test file | Evidence |
+| --- | --- |
+| `HeldRequestTestSupport.swift` | Shared synthetic rig with injected clocks and privacy state. |
+| `HeldRequestTests.swift` | Exact content/scope, reasons, Send/Discard, replay, ownership, selection, binding, target, policy, rate, expiry and admission bounds. |
+| `HeldAmbientStreamTests.swift` | One held request followed by a delivered request in the same consumer run; disconnect retains the hold. |
+| `HeldRequestConcurrencyTests.swift` | Concurrent decisions, barrier-controlled refusal/retry/queued Discard, away/back during suspension, policy/privacy/lockdown/expiry changes and uncertain handoff. |
+| `HeldRequestMetadataTests.swift` | Per-connection and global terminal replay bounds, connection churn, stale retired IDs, selection tracking cleanup and preservation of unresolved content. |
+| `HeldRequestFreshChecksTests.swift` | Global guard-policy change, capacity, privacy retry, 64 actual host-wide holds and content-free fields. |
+| `HeldRequestLegacyTests.swift` | Listener APIs preserve the original #230 reference and exact prompt; wire decisions cannot Send/Discard holds; expired notices with clean fresh evaluation still renew. |
+| `HeldRequestCapabilityTests.swift` | No-capability cancellation/no admission, guard/confirm/timeout/rate behavior, 81 guarded requests across nine connections and full-store delivery. |
+| `RightyoInputRequestRefusalSessionTests.swift` | Original #874 cancellation and non-ambient confirmation tests, unchanged. |
+| `RightyoInputRequestRefusalTests.swift` | Original #874 consumer continuation and direct-host expectations, unchanged. |
+
+## Earlier VM verification (before rebased review fixes)
+
+No host builds or tests. Host work is limited to source edits, Git, SSH and strict SwiftLint.
+
+The Dev Work VM workspace was freshly cloned from GitHub at `~/codex-workspaces/vw1120c`. Each validation snapshot
+was committed locally and synchronized with:
+
+```sh
+git bundle create /tmp/vw1120c.bundle origin/main..HEAD
+# Copy the bundle to the VM, then in its fresh clone:
+git fetch /tmp/vw1120c.bundle HEAD
+git checkout --detach FETCH_HEAD
+```
+
+Before each run, a VM script waits with the requested loop, with no runner name in its own command line:
+
+```sh
+while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
+WS=vw1120c ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit)'
+```
+
+SSH stdin is closed (`< /dev/null`) and the command runs synchronously. A different session's waiting command
+initially matched the literal pattern; it was left alone and the requested wait eventually cleared. No competing
+runner was stopped. The final wrapper preserves workspace-specific build/test logs.
+
+The final source validation snapshot is `bb44e03efefdd8be9f4afed1bc6debeae9480e2e`. A documentation-only
+commit records the final results afterward. Build time was 69.88 seconds; the existing missing-module-cache
+debug-info warnings were present. The requested full command returned **`build=0`, `test=0`**:
+**981 tests in 174 suites passed in 386.247 seconds**, with **zero unexpected failures** and the five
+intentional known issues described below. All five new held-request suites passed.
+
+Strict lint passed with zero violations for all **12 changed Swift files**, using this exact command per file:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict <file>
+```
+
+Earlier validation history is retained rather than described as passing:
+
+- Two initial compile runs found public-import/actor-isolation and test-helper type errors; these were fixed.
+- Snapshot `dee7a456` built successfully and ran **973 tests in 172 suites**, with **two unexpected failures**
+  plus **five known issues**, in 504.785 seconds. The failures exposed lockdown classification and premature
+  confirmation consumption on a rate denial; both were fixed. Logs are retained on the VM as
+  `~/codex-workspaces/vw1120c-dee7a456-build.log` and `vw1120c-dee7a456-test.log`.
+- Snapshot `ae10bead` built, then its own test process tree was stopped to include the additional adapter-boundary
+  lockdown/privacy/expiry checks in the final run. Its partial test log is not a completed verification result.
+- The five known issues are deliberately expected assertions in `LocalDispatchPreflightWaitTests` for missing
+  listing arrival, early dispatch exit and a suspended synthetic step. They are distinct from unexpected failures.
+
+The final full command's workspace-specific logs are `~/codex-workspaces/vw1120c-build.log` and
+`~/codex-workspaces/vw1120c-test.log`.
+
+All new time-sensitive tests use injected clocks or explicit continuation/stream barriers, without sleeps.
+Existing regression suites retain their own timing mechanisms. No simulator or physical device validation is claimed.
+
+## Deferred work and blockers before advertisement
+
+- Chain audit events for `held` and resolution, including target, reasons/rules, salted text hash and byte length.
+  This PR deliberately does not repurpose `delivered` as a held event. Adding truthful event kinds and their existing
+  hashed-text fields requires audit event/field/schema edits beyond the four-production-file budget; host Send
+  needs the fourth file. Audit serialization coverage for held events therefore remains deferred, not passed.
+- The optional #1123 carry-forward treating regex `internalError` as timeout requires the guard implementation
+  file and is deferred under the same limit.
+- Capability advertisement, wire handlers/notices, clear Send/Discard UI, admission/backpressure/device buffering,
+  authenticated same-device reconnect recovery, restart reconciliation, persistence decisions, uncertain-handoff
+  reconciliation and provider-context exclusion remain later #1120 work.
+- Deferred: final adapter-boundary authority hardening, required before held Send is reachable from the wire (tracked separately).
+- Independent second-key review of draft PR #1132 at `2556bcfb` returned REQUEST CHANGES. The capability/admission
+  regression is addressed in the follow-up below; fresh exact-head review remains required after a future push.
+- Other independent-review findings remain deferred in [#1134](https://github.com/mickdarling/hailing-station/issues/1134):
+  multi-line held Send, renewal reason/rule consistency, queued terminal replay and serialized Discard read-back cleanup.
+  None is included in this capability fix.
+
+## Rebased review fixes: final verification
+
+New commits above `eba599ca` address attempt finalization/decision ordering and bounded metadata. The regression
+barriers explicitly cover refusal with an already waiting Discard followed by retry, and refusal followed by an
+active retry with Discard queued behind it (both successful and refused retry results). Metadata tests cover
+32-per-connection and 256-host terminal replay bounds, connection churn, `stale` after retirement, attempt-scoped
+selection cleanup, and preservation of unresolved holds. A wire-control regression verifies that neither Send
+nor Discard can resolve a hold through the device's frame ingress. Static call-site/route inspection confirms
+held Send remains unreachable from any wire, local socket or device path.
+
+The VM workspace `~/codex-workspaces/vw1120c` fetched `origin main` (`76010ade`) and applied the new git bundle,
+checking out source snapshot `fb06a242352897e571c209e13f0559651eff020a`. Before synchronizing/running, the blocking
+SSH wrapper (stdin `< /dev/null`) waited for the prior job with:
+
+```sh
+while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
+```
+
+It then fetched `origin main`, fetched the bundle's `HEAD`, checked out `FETCH_HEAD`, and ran exactly:
+
+```sh
+WS=vw1120c ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit)'
+```
+
+Result: **`build=0`, `test=0`; 987 tests in 175 suites passed in 540.800 seconds**, with **zero unexpected
+failures** and the same **five intentional known issues** in `LocalDispatchPreflightWaitTests`. All new regressions
+passed. Build time was 41.44 seconds; the existing missing-module-cache debug-info warnings remain. Snapshot logs
+are retained on the VM as `~/codex-workspaces/vw1120c-fb06a242-build.log` and
+`~/codex-workspaces/vw1120c-fb06a242-test.log` (also copied to the workspace-specific generic log names above).
+
+Strict host SwiftLint passed with **zero violations in all 13 changed Swift files** against rebased main, using
+`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict <file>` per file.
+`git diff --check` passed. The checker's exact exclusions and rename handling still count the same **four production
+files** listed above. `WebSocketPeer.swift` is unchanged. No host builds/tests, simulator/device validation, push,
+installation, upload or independent review was performed. This final documentation-only commit follows the tested
+source snapshot; the earlier verification section records historical evidence only.
+
+## Capability-gate follow-up after second-key review
+
+New commits above `2556bcfbca3ab4214b061a3f69f8d9102698bea1` fix only the major live-path admission regression.
+Only `HostSession+Routing.swift` and `HailHost.swift` change in production; the full PR still touches the same four
+production files under the checker's exclusions and rename handling. No optional one-line #1134 fixes are included.
+The neutral adapter-boundary hardening deferral above is unchanged.
+
+The VM workspace `~/codex-workspaces/vw1120c` fetched `origin feat/1120-host-hold`, verified its full head as
+`2556bcfbca3ab4214b061a3f69f8d9102698bea1`, then fetched the bundle of new local commits. The final tested source
+snapshot is `97edc6b5a1e8145bdf29fb4baa537d14ba3af681`. Each run waited for VM idleness with the exact loop below,
+inside a VM script whose command line does not itself contain the runner name. SSH stdin was `< /dev/null`, and
+both runs were blocking:
+
+```sh
+while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
+WS=vw1120c ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit|Reply)'
+```
+
+The requested filter does not include the original #874 session suite, so that suite also ran, unchanged:
+
+```sh
+while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
+WS=vw1120c ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.RightyoInputRequestRefusalSessionTests'
+```
+
+The first snapshot, `878045c4bdae6c7b2cfc489b09b79c2eefd4bbf8`, built and ran 1,066 tests in 190 suites in
+582.926 seconds, with one unexpected failure and ten intentional known issues. The new rate-limit test incorrectly
+expected `.capacityExceeded`; inspection of the original #874 error mapping confirmed `.deliveryRefused`. A new
+commit corrected only that assertion before the final rerun. The original #874 session suite passed in that first
+validation as well. Initial logs are retained as `~/codex-workspaces/vw1120c-878045c4-build.log` and
+`~/codex-workspaces/vw1120c-878045c4-test.log`.
+
+Final main run: **`build=0`, `test=0`; 1,066 tests in 190 suites passed in 576.873 seconds**, with **zero
+unexpected failures** and ten intentional known issues: the five existing `LocalDispatchPreflightWaitTests` issues
+and five existing `ReplyRecipientHandoffWaitTests` issues included by the requested `Reply` filter. All new
+capability/admission tests and both capability variants of stream continuation passed. The VM build took
+61.55 seconds; existing missing-module-cache debug-info warnings remain.
+
+The additional unchanged #874 session suite returned **`build=0`, `test=0`; two tests in one suite passed in
+0.006 seconds**, with no issues. Its incremental VM build took 0.52 seconds. Main-run logs are retained as
+`~/codex-workspaces/vw1120c-capability-build.log` and `~/codex-workspaces/vw1120c-capability-test.log`; the additional
+suite's logs are `~/codex-workspaces/vw1120c-capability-874-build.log` and
+`~/codex-workspaces/vw1120c-capability-874-test.log`.
+
+Strict host SwiftLint passed with zero violations for all **14 changed or restored Swift files** (the union of the
+full PR's Swift diff and this follow-up's diff); the corrected test file was linted again after its one-line
+assertion change. Exact invocation per file:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict <file>
+```
+
+The original `RightyoInputRequestRefusalSessionTests.swift` and `RightyoInputRequestRefusalTests.swift` are
+byte-for-byte identical to `76010ade`. `git diff --check` passed. The checker still counts **four production
+files**, with only two changed by this follow-up. All evidence is synthetic VM package verification. No host
+builds/tests, simulator/physical-device validation, push, installation or upload was performed. This documentation
+commit follows the tested source snapshot; fresh independent exact-head review remains pending.
