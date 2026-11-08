@@ -9,8 +9,8 @@ fence, ambient audience, privacy revision, peer permit and attempt decision. The
 match the host generation; the task stage uses `TaskProgressOutputFence.perform`, without calling
 `TaskProgressPublicationAuthority.perform` or reacquiring target policy.
 
-The task wake caller explicitly binds the retained stages before host dispatch. This requires four
-production files: `HailHost.swift`, `HostSession+Routing.swift`, `TaskProgressAuthority.swift` and
+The task wake caller explicitly binds the retained stages before host dispatch. Relative to the
+prerequisite delivery, the production delta is four files: `HailHost.swift`, `HostSession+Routing.swift`, `TaskProgressAuthority.swift` and
 `ListenerTaskProgress.swift`. Original authority survives registry and adapter suspension and cannot
 be replaced by a later TaskLocal binding.
 
@@ -61,9 +61,9 @@ is unchanged. The earlier verification record explicitly identifies its pre-reba
 
 ## Verification
 
-Verification is pending on the Dev Work VM. The workspace is a fresh clone at
-`~/codex-workspaces/vwf2`, synchronized with a local bundle of `origin/main..HEAD`, including the
-prerequisite delivery. Each run waits for the shared lane in a remote script:
+The Dev Work VM workspace is a fresh clone at `~/codex-workspaces/vwf2`, synchronized with a local
+bundle of `origin/main..HEAD`, including the prerequisite delivery. Verification uses Apple Swift
+6.3.3 on arm64 macOS. Each run waits for the shared lane in a remote script:
 
 ```sh
 while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
@@ -72,6 +72,43 @@ python3 -m unittest discover -s Tests/ReplyCLITests
 ~/codex-workspaces/vw-werr.sh vwf2
 ```
 
-SSH stdin is closed with `< /dev/null`; each command completes before the next begins. Host checks
-are limited to strict lint per changed Swift file and diff checks. This record establishes no
-simulator, physical-device or live captured-output behavior.
+SSH stdin is closed with `< /dev/null`; each command completes before the next begins.
+
+The verified source/test snapshot is `bf95a5c13efa0263cddae665f2051c632852964e`, locally stacked on
+`b5923e5bb69550a6c35ad107e26e12ca73dc2412`; this evidence precedes the later integration rebase.
+A focused follow-up passed **26 tests in 5 suites** in **0.299 seconds** with `build=0`, `test=0`:
+
+```sh
+WS=vwf2 ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(DeliveryAdmissionComposition|FinalDelivery|LocalDispatchLifecycle|TaskProgressHandoff)'
+```
+
+The full requested Swift filter then passed with `build=0`, `test=0`: **1,089 tests in 225 suites**
+in **658.766 seconds**. Its ten expected known issues are the five each in
+`LocalDispatchPreflightWaitTests` and `ReplyRecipientHandoffWaitTests`; there were no unexpected
+issues. Existing test expectations remain unchanged. The follow-up preserves the established local
+connection-loss result while refusing ownership and last-input commit after peer retirement.
+
+Reply CLI verification passed: **124 tests in 215.572 seconds**, exit 0. The warnings-as-errors
+command finished with **`werr build=0`, exit 0**. Existing missing module-cache debug-info warnings
+were emitted; this is Command Line Tools VM iteration evidence.
+
+Saved VM logs are `~/codex-workspaces/vwf2-focused-build.log`,
+`~/codex-workspaces/vwf2-focused-test.log`, `~/codex-workspaces/vwf2-build.log` and
+`~/codex-workspaces/vwf2-test.log`. Reply CLI output is retained in
+`~/codex-workspaces/vwf2-cli.log`; warnings-as-errors output is retained in
+`~/codex-workspaces/vwf2-werr.log` and `~/codex-workspaces/vwf2-werr-result.log`.
+The final follow-up updates this record only; executable source and tests match the verified snapshot.
+
+Strict host lint passed with zero violations on all ten changed Swift files: the four production
+files, `DeliveryAdmissionCompositionTests.swift`, `DeliveryAdmissionTests.swift`,
+`FinalDeliveryAuthorityTests.swift`, `FinalDeliveryTestSupport.swift`,
+`TaskProgressGuardedAdapterTestSupport.swift` and `TaskProgressHandoffTests.swift`. Each file is
+checked separately with:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict <file>
+```
+
+`git diff --check` and the staged equivalent passed. Host checks are limited to lint and diff checks.
+No host build or test was run. This record establishes no simulator, physical-device or live
+captured-output behavior.
