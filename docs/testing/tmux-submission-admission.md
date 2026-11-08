@@ -110,15 +110,55 @@ guarded launch, while the capability suite preserves coverage for a runner lacki
 
 ## Verification record
 
-Pending final-source VM runs and final strict lint. The VM workspace is re-synchronized from a local
+The targeted regression run passed 271 tests in 62 suites. Strict lint passed all 17 changed Swift files.
+The final broad VM phases remain pending. The VM workspace is re-synchronized from a local
 `origin/main..HEAD` bundle before execution. The local main baseline was also transferred by bundle;
 no GitHub calls were made. Runs use at most four workers, no parallel test execution, and a 600-second
 process-group watchdog with termination/kill cleanup for each phase. SSH uses stdin from `/dev/null`.
 The host gate file must be absent before the broad suites and Reply CLI tests run.
 
+VM commands (SSH stdin redirected from `/dev/null`; each execution phase uses `/tmp/f3b-phase.py`):
+
+```sh
+while pgrep -f '[v]w327-run.sh' >/dev/null; do sleep 20; done
+WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(Tmux|CommandLaunch|DeliveryAdmission|TaskProgress|Held)'
+
+while pgrep -f '[v]w327-run.sh' >/dev/null; do sleep 20; done
+WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Ambient|Tmux|Reply|CommandLaunch)'
+
+cd ~/codex-workspaces/vwf3b
+python3 /tmp/f3b-phase.py python3 -m unittest discover -s Tests/ReplyCLITests
+
+python3 /tmp/f3b-werr.py
+```
+
+The warnings-as-errors wrapper invokes `~/codex-workspaces/vw-werr.sh vwf3b` under the same watchdog,
+temporarily adds `-j 4` to its build command, and restores the helper afterward. The watchdog creates
+a process group, sends termination on timeout/interruption, waits up to five seconds, then kills and
+joins remaining children. The idle check uses `[v]` to avoid matching its own shell command.
+
+The existing real-tmux suites remain skipped when tmux is unavailable: `TmuxDeliveryCommitFakeTUITests`,
+`TmuxDeliveryCommitShellPromptTests`, `TmuxIntegrationTests`, `TmuxPasteAgentTests` and `TmuxPasteEnterTests`.
+The production-runner fixture tests above execute without tmux. No tmux binary was installed.
+
+Host lint command, run separately for every changed Swift file:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict <file>
+```
+
+Local `git diff --check` passes. Production count is computed from the checker's exact exclusion
+constants and both names of renamed files; it is four relative to the stage-order parent.
+
 ## Launch hold measurement
 
-Pending final-source `CommandLaunchAdmissionTests.productionLaunchGateHoldMeasurements` on the VM.
+`CommandLaunchAdmissionTests.productionLaunchGateHoldMeasurements` completed on the VM with the
+production runner. The passing targeted run recorded the following gate-hold intervals:
+
+| Launches | Minimum | Median | p95 | Maximum |
+| --- | --- | --- | --- | --- |
+| 60 | 0.115250 ms | 0.186688 ms | 0.420709 ms | 0.773334 ms |
+
 It measures 60 sequential production runner launches of `/usr/bin/true`, from immediately before the
 synchronous launch operation until it returns, with process completion outside the measured interval.
 Median is the mean of the two central values; p95 uses nearest rank. These are synthetic VM dispatch
