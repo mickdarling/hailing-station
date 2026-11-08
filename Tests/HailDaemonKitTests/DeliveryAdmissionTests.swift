@@ -75,8 +75,12 @@ private func admissionGate(_ permit: ReplyPublicationPermit) -> DeliveryAdmissio
         try authority.requireCurrent()
         #expect(events.snapshot == expected.map { "validate \($0)" })
         try authority.admit { events.append("launch") }
-        #expect(events.snapshot == expected.map { "validate \($0)" } + expected.map { "enter \($0)" }
-                + ["launch"] + expected.reversed().map { "exit \($0)" })
+        // Built in typed steps: host Swift 6.2.4 cannot type-check the single concatenation in reasonable time.
+        let validated: [String] = expected.map { "validate \($0)" }
+        let entered: [String] = expected.map { "enter \($0)" }
+        let exited: [String] = expected.reversed().map { "exit \($0)" }
+        let admittedOrder: [String] = validated + entered + ["launch"] + exited
+        #expect(events.snapshot == admittedOrder)
         let sparseGates: [DeliveryAdmission.Stage: DeliveryAdmission.Gate?] = [
             .peerLifecycle: gates[.peerLifecycle], .targetPolicy: gates[.targetPolicy]
         ]
