@@ -131,7 +131,7 @@ import Testing
     }
 }
 
-private final class PumpTransport: Sendable {
+final class PumpTransport: Sendable {
     private struct State {
         var callback: (@Sendable (WebSocketIngressPump.Event) -> Void)?
         var receives = 0
@@ -160,7 +160,7 @@ private final class PumpTransport: Sendable {
     }
 }
 
-private struct PumpRig {
+struct PumpRig {
     let transport = PumpTransport()
     let lifecycle = ReplyTransportLifecycle()
     let ended = SelectionPreflightSignal<String>()
