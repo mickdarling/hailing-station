@@ -41,12 +41,14 @@ struct TaskProgressGuardedWakeRig {
     let clock: ProgressTestClock
     let finished = AsyncStream<Void>.makeStream()
 
-    static func make(adapter: any Adapter) async throws -> Self {
+    static func make(
+        adapter: any Adapter, name: String = "a", binding: String = "binding-a"
+    ) async throws -> Self {
         let registry = Registry()
         try await registry.register(adapter)
-        let target = Registry.id(kind: adapter.kind, name: "a")
+        let target = Registry.id(kind: adapter.kind, name: name)
         var policy = Policy(guardPatterns: [.init(name: "synthetic guard", regex: "^synthetic guarded command$")])
-        try policy.allow(target, binding: "binding-a", tier: .open)
+        try policy.allow(target, binding: binding, tier: .open)
         let host = try HailHost(registry: registry, store: InMemoryPolicyStore(policy))
         let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "synthetic-host")
         _ = await session.receive(helloFrame(capabilities: [SessionUpdateCard.capability]))

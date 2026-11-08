@@ -26,16 +26,61 @@ public protocol CommandRunner: Sendable {
     func run(_ executable: String, _ arguments: [String]) async throws -> CommandResult
 }
 
+/// An adapter explicitly owns operation-bearing launch admission rather than a checked handoff.
+protocol LaunchAdmittingDelivery: Adapter {}
+
+extension TmuxAdapter: LaunchAdmittingDelivery {}
+extension TmuxReplyAdapter: LaunchAdmittingDelivery {}
+
+/// A runner must place this operation immediately around its synchronous command launch.
+public protocol GuardedCommandRunner: CommandRunner {
+    func run(_ executable: String, _ arguments: [String], launch: CommandLaunch) async throws -> CommandResult
+}
+
+/// Synchronized launch evidence survives even an authority that throws after its operation returned.
+public final class CommandLaunch: Sendable {
+    public enum Evidence: Sendable, Equatable { case refused, failedBeforeExecution, possiblyExecuted }
+    private let state = Mutex(Evidence.refused)
+    private let admission: @Sendable (() throws -> Void) throws -> Void
+    public var evidence: Evidence { state.withLock { $0 } }
+
+    public init(admission: @escaping @Sendable (() throws -> Void) throws -> Void) {
+        self.admission = admission
+    }
+
+    /// Never retry an admission error. Only the runner knows whether its launch operation executed.
+    public func perform(_ operation: () throws -> Void) throws {
+        var result: Result<Void, any Error>?
+        try admission {
+            guard result == nil else { throw DeliveryAdmissionError.invalidGate }
+            state.withLock { $0 = .failedBeforeExecution }
+            // Launch errors are returned after the gates release, never thrown through held predicates.
+            result = Result(catching: operation)
+            if case .success = result { state.withLock { $0 = .possiblyExecuted } }
+        }
+        guard let result else { throw DeliveryAdmissionError.invalidGate }
+        try result.get()
+    }
+}
+
 #if os(macOS)
 /// `Foundation.Process` runner. stdout and stderr stay separate: stderr is drained on a Dispatch thread,
 /// not a second cooperative-pool task (which starved the pool under parallel tests), and stdout on the
 /// calling detached task; both run to EOF and the stderr drain is joined only after the process has
 /// exited, so a verbose child on either pipe cannot wedge the runner. Resolves `executable` through
 /// `/usr/bin/env` when it has no slash.
-public struct ProcessCommandRunner: CommandRunner {
-    public init() {}
+public struct ProcessCommandRunner: GuardedCommandRunner {
+    private let beforeLaunch: (@Sendable ([String]) -> Void)?
+    public init() { beforeLaunch = nil }
+    init(beforeLaunch: @escaping @Sendable ([String]) -> Void) { self.beforeLaunch = beforeLaunch }
 
     public func run(_ executable: String, _ arguments: [String]) async throws -> CommandResult {
+        try await run(executable, arguments, launch: CommandLaunch { try $0() })
+    }
+
+    public func run(
+        _ executable: String, _ arguments: [String], launch: CommandLaunch
+    ) async throws -> CommandResult {
         try await Task.detached(priority: .userInitiated) {
             let process = Process()
             if executable.contains("/") {
@@ -50,7 +95,12 @@ public struct ProcessCommandRunner: CommandRunner {
             process.standardOutput = out
             process.standardError = err
             process.standardInput = FileHandle.nullDevice
-            try process.run()
+            beforeLaunch?(arguments)
+            var admissionError: (any Error)?
+            do { try launch.perform { try process.run() } } catch {
+                guard launch.evidence == .possiblyExecuted else { throw error }
+                admissionError = error
+            }
             let errHandle = err.fileHandleForReading
             let errBox = DataBox()
             let drained = DispatchGroup()
@@ -65,6 +115,7 @@ public struct ProcessCommandRunner: CommandRunner {
                 drained.notify(queue: .global(qos: .utility)) { joined.resume() }
             }
             let stderr = String(bytes: errBox.get(), encoding: .utf8) ?? ""
+            if let admissionError { throw admissionError }
             return CommandResult(exitCode: process.terminationStatus, stdout: stdout, stderr: stderr)
         }.value
     }

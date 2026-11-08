@@ -2,25 +2,46 @@ import Synchronization
 @testable import HailDaemonKit
 
 /// Records every argv and answers from a scripted responder (#11 tests). No process is ever spawned.
-actor FakeCommandRunner: CommandRunner {
+actor FakeCommandRunner: GuardedCommandRunner {
     typealias Responder = @Sendable ([String]) -> CommandResult
 
     private(set) var calls: [[String]] = []
+    private var executed: [[String]] = []
     private let responder: Responder
     private let delay: Duration?
     private let gate: TypingGate?
+    private let beforeResponse: (@Sendable ([String]) async -> Void)?
 
-    init(delay: Duration? = nil, gate: TypingGate? = nil, _ responder: @escaping Responder) {
+    init(
+        delay: Duration? = nil, gate: TypingGate? = nil,
+        beforeResponse: (@Sendable ([String]) async -> Void)? = nil, _ responder: @escaping Responder
+    ) {
         self.responder = responder
         self.delay = delay
         self.gate = gate
+        self.beforeResponse = beforeResponse
     }
 
     func run(_ executable: String, _ arguments: [String]) async throws -> CommandResult {
         calls.append([executable] + arguments)
         if let delay { try await Task.sleep(for: delay) }
         await gate?.pass(arguments)
+        await beforeResponse?(arguments)
+        executed.append([executable] + arguments)
         return responder(arguments)
+    }
+
+    func run(_ executable: String, _ arguments: [String], launch: CommandLaunch) async throws -> CommandResult {
+        calls.append([executable] + arguments)
+        if let delay { try await Task.sleep(for: delay) }
+        await gate?.pass(arguments)
+        await beforeResponse?(arguments)
+        var result = CommandResult(exitCode: 0, stdout: "")
+        try launch.perform {
+            executed.append([executable] + arguments)
+            result = responder(arguments)
+        }
+        return result
     }
 
     /// The listing tmux would print for `sessions`, everything else succeeds silently.
@@ -59,7 +80,7 @@ func deliveredKeys(_ calls: [[String]], includingKeys: Bool = true) -> [String] 
 }
 
 extension FakeCommandRunner {
-    var delivered: [String] { deliveredKeys(calls) }
+    var delivered: [String] { deliveredKeys(executed) }
 }
 
 /// Lets the first `allowed` typing calls (`set-buffer`, `paste-buffer`, `send-keys`) through, then parks the rest

@@ -54,12 +54,15 @@ struct EvidenceHarness {
         self.init(FakeCommandRunner { pane.respond($0) }, timing: timing)
     }
 
-    init(_ runner: FakeCommandRunner, timing: TmuxSubmitTiming, realTime: Bool = false) {
+    init(
+        _ runner: FakeCommandRunner, timing: TmuxSubmitTiming, realTime: Bool = false,
+        clock: TmuxSubmitClock? = nil
+    ) {
         let (outcomes, evidence) = (outcomes, evidence)
         self.runner = runner
         adapter = TmuxAdapter(
             runner: runner, pollInterval: nil, submitTiming: timing,
-            submitClock: realTime ? .continuous : ManualSubmitClock().clock,
+            submitClock: clock ?? (realTime ? .continuous : ManualSubmitClock().clock),
             submitObserver: { outcomes.append($0) }, evidenceObserver: { evidence.append($0) }
         )
     }

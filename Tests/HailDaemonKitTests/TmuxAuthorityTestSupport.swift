@@ -4,7 +4,7 @@ import Testing
 @testable import HailDaemonKit
 
 /// Synthetic tmux only. A command can finish its side effect, then park its reply on a dedicated executor.
-final class AuthorityTmuxRunner: CommandRunner {
+final class AuthorityTmuxRunner: GuardedCommandRunner {
     enum Checkpoint { case none, fill, prePaste, paste, verification, enter, enterRefusal }
     private struct State {
         var calls: [[String]] = []
@@ -38,11 +38,18 @@ final class AuthorityTmuxRunner: CommandRunner {
     func requireRetry() { state.withLock { $0.retry = true } }
     func leaveAgent() { state.withLock { $0.agent = false } }
     func rebind() { state.withLock { $0.rebound = true } }
+    func restoreBinding() { state.withLock { $0.rebound = false } }
     func setInput(_ text: String) { state.withLock { $0.input = text } }
     func failEnter() { state.withLock { $0.enterFails = true } }
 
     func run(_ executable: String, _ arguments: [String]) async throws -> CommandResult {
-        let reply = state.withLock { state -> (CommandResult, Bool) in
+        try await run(executable, arguments, launch: CommandLaunch { try $0() })
+    }
+
+    func run(_ executable: String, _ arguments: [String], launch: CommandLaunch) async throws -> CommandResult {
+        var reply = (CommandResult(exitCode: 0, stdout: ""), false)
+        try launch.perform {
+            reply = state.withLock { state -> (CommandResult, Bool) in
             let argv = arguments.first == "-L" ? Array(arguments.dropFirst(2)) : arguments
             state.calls.append(argv)
             let refusesEnter = checkpoint == .enterRefusal && argv.first == "if-shell"
@@ -59,6 +66,7 @@ final class AuthorityTmuxRunner: CommandRunner {
             let pause = response.1 && !state.stopped && ordinal >= delivery
             if pause { state.stopped = true }
             return (response.0, pause)
+        }
         }
         if reply.1 {
             await Task(executorPreference: gate.executor) { self.gate.suspend() }.value
@@ -141,8 +149,8 @@ struct TmuxAuthorityRig {
         let host = try HailHost(
             registry: registry, sanitizing: .init(newlines: .split), store: InMemoryPolicyStore(policy)
         )
-        return Self(runner: runner, adapter: adapter, host: host,
-                    authority: host.targetPolicy.snapshot(for: target).deliveryAuthority, log: log)
+        let authority = RetainedDeliveryStages().composed(policy: host.targetPolicy.snapshot(for: target))
+        return Self(runner: runner, adapter: adapter, host: host, authority: authority, log: log)
     }
 
     func send() async throws {

@@ -29,22 +29,20 @@ import Testing
         #expect(rig.runner.enters == 0)
     }
 
-    @Test func retirementDuringFinalBindingCheckLeavesInputAndRefusesEnter() async throws {
+    @Test func retirementDuringFinalBindingCheckCompletesTheSubmission() async throws {
         let rig = try await TmuxAuthorityRig.make(.verification)
         defer { rig.runner.gate.fire() }
         let sending = Task { try await rig.send() }
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
-        await #expect(throws: PolicyRetiredDelivery.pastedUnsent) {
-            try await rig.runner.gate.finish(sending)
-        }
+        try await rig.runner.gate.finish(sending)
         #expect(rig.runner.pasted == ["synthetic input"])
-        #expect(!rig.runner.input.isEmpty)
-        #expect(rig.runner.enters == 0)
+        #expect(rig.runner.input.isEmpty)
+        #expect(rig.runner.enters == 1)
     }
 
     @Test(arguments: [false, true])
-    func retirementBeforeRetrySendsNoSecondEnter(framed: Bool) async throws {
+    func retirementBeforeRetryKeepsTheSingleRetryBudget(framed: Bool) async throws {
         let rig = try await TmuxAuthorityRig.make(.enter)
         rig.runner.requireRetry()
         defer { rig.runner.gate.fire() }
@@ -59,12 +57,12 @@ import Testing
         await #expect(throws: PolicyRetiredDelivery.possiblySubmitted) {
             try await rig.runner.gate.finish(sending)
         }
-        #expect(rig.runner.enters == 1)
-        #expect(rig.runner.calls.filter { $0.joined(separator: " ").contains("send-keys") }.count == 1)
+        #expect(rig.runner.enters == 2)
+        #expect(rig.runner.calls.filter { $0.joined(separator: " ").contains("send-keys") }.count == 2)
         #expect(!rig.log.all.contains { $0.event == "tmux_policy_retired_unsent" })
     }
 
-    @Test func collapsedAgentPasteIsNeverClearedAfterRetirement() async throws {
+    @Test func collapsedAgentPasteCompletesAfterRetirement() async throws {
         let rig = try await TmuxAuthorityRig.make(.paste)
         defer { rig.runner.gate.fire() }
         let text = try PastedContent.frame(spoken: "synthetic input", pasted: "synthetic data")
@@ -76,16 +74,18 @@ import Testing
         try await rig.runner.gate.waitUntilSuspended()
         rig.runner.collapsePaste()
         try await rig.retire()
-        await #expect(throws: PolicyRetiredDelivery.pastedUnsent) {
-            try await rig.runner.gate.finish(sending)
-        }
-        #expect(!rig.runner.input.isEmpty)
-        #expect(rig.runner.enters == 0)
-        #expect(!rig.runner.calls.contains { $0.joined(separator: " ").contains("send-keys") })
-        #expect(rig.log.all.contains { $0.event == "tmux_policy_retired_unsent" && $0.detail.isEmpty })
+        try await rig.runner.gate.finish(sending)
+        #expect(rig.runner.enters == 1)
+        let keys = rig.runner.calls.filter { $0.joined(separator: " ").contains("send-keys") }
+        #expect(keys.count == 1)
+        let expected: [String] = ["if-shell", "-F", "-t", "%2", TmuxAdapter.isAgentFormat,
+                                  "send-keys -t %2 Enter", "display-message -p hail-enter-not-agent"]
+        #expect(keys.only == expected)
+        #expect(rig.runner.input.isEmpty)
+        #expect(!rig.log.all.contains { $0.event == "tmux_policy_retired_unsent" })
     }
 
-    @Test func retirementAfterPasteReachesTheTerminalAsNotAllowed() async throws {
+    @Test func retirementAfterPasteCompletesBeforeTheNextTerminalRefusal() async throws {
         let rig = try await TmuxAuthorityRig.make(.paste)
         defer { rig.runner.gate.fire() }
         let session = HostSession(host: rig.host, authorizer: PersonalTerminalAuthorizer())
@@ -97,16 +97,19 @@ import Testing
             return await session.deliver(input)
         }
         try await rig.runner.gate.waitUntilSuspended()
-        try await rig.retire()
+        _ = try await rig.host.setTier(.locked, for: TmuxAuthorityRig.target)
         let outcome = try await rig.runner.gate.finish(sending)
-        let reason = "a line was pasted but not sent — clear it on the Mac; "
-            + "hand-offs to this target are paused until haild restarts"
-        #expect(outcome == .inputPending(reason: reason))
+        #expect(outcome == HostDeliveryOutcome.delivered(request: nil))
         let calls = rig.runner.calls.count
-        #expect(try onlyControl(await session.receive(frame)) == .error(code: .notAllowed, message: reason))
+        let next = await session.receive(frame)
+        #expect(try onlyControl(next) == .error(code: .notAllowed, message: "target action was refused"))
         #expect(rig.runner.pasted == ["synthetic input"])
-        #expect(!rig.runner.calls.dropFirst(calls).contains { $0.first == "capture-pane" })
-        #expect(rig.runner.enters == 0)
-        #expect(!rig.runner.input.isEmpty)
+        let laterWrites = rig.runner.calls.dropFirst(calls).contains {
+            $0.contains("capture-pane") || $0.contains("set-buffer")
+                || $0.contains("paste-buffer") || $0.contains("send-keys")
+        }
+        #expect(!laterWrites)
+        #expect(rig.runner.enters == 1)
+        #expect(rig.runner.input.isEmpty)
     }
 }

@@ -162,28 +162,26 @@ import Testing
         #expect(await harness.keys == ["synthetic input", "Enter"])
     }
 
-    @Test func abandonmentDuringSettleSendsNoEnterAndTaintsThePane() async throws {
+    @Test func cancellationDuringSettleCompletesTheSubmission() async throws {
         let pane = ScriptedPane()
-        // This cancellation boundary intentionally uses a real sleep so the caller can abandon mid-settle.
-        let harness = SubmitHarness(
-            pane, timing: Self.timing(settleLimit: .seconds(5), settleFloor: .milliseconds(300)), realTime: true
+        let barrier = TmuxSettleBarrier(floor: .milliseconds(1))
+        defer { barrier.gate.fire() }
+        let runner = FakeCommandRunner { pane.respond($0) }
+        let log = OutcomeLog()
+        let adapter = TmuxAdapter(
+            runner: runner, pollInterval: nil, submitTiming: Self.fast, submitClock: barrier.clock,
+            submitObserver: { log.append($0) }
         )
-        let delivery = Task { try await harness.adapter.deliver("synthetic input", to: "codex", binding: Self.binding) }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while await harness.keys.isEmpty {
-            try #require(ContinuousClock.now < deadline)
-            try await Task.sleep(for: .milliseconds(2))
-        }
+        let delivery = Task { try await adapter.deliver("synthetic input", to: "codex", binding: Self.binding) }
+        try await barrier.gate.waitUntilSuspended()
+        #expect(await runner.delivered == ["synthetic input"])
+        #expect(pane.enters == 0)
         delivery.cancel()
-        await #expect(throws: CancellationError.self) { try await delivery.value }
-        // Let the abandoned delivery finish its settle and reach the refused commit.
-        try await Task.sleep(for: .milliseconds(500))
-
-        await #expect(throws: AdapterError.self) {
-            try await harness.adapter.deliver("later input", to: "codex", binding: Self.binding)
-        }
-        #expect(await harness.keys == ["synthetic input"])
-        #expect(harness.log.all.isEmpty)
+        #expect(pane.enters == 0)
+        try await barrier.gate.finish(delivery)
+        try await adapter.deliver("later input", to: "codex", binding: Self.binding)
+        #expect(await runner.delivered == ["synthetic input", "Enter", "later input", "Enter"])
+        #expect(log.all == [.confirmed, .unsettled])
     }
 
     @Test func aPaneUnreadableOnlyDuringConfirmationKeepsTheSingleEnter() async throws {

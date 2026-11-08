@@ -11,12 +11,12 @@ import Testing
         let sending = Task { try await send("one\ntwo\nthree", rig: rig) }
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
-        await #expect(throws: HostError.partial(delivered: ["one"], reason: "target_policy_changed",
-                                               pastedUnsent: checkpoint == .paste)) {
+        let delivered = checkpoint == .paste ? ["one", "two"] : ["one"]
+        await #expect(throws: HostError.partial(delivered: delivered, reason: "target_policy_changed")) {
             try await rig.runner.gate.finish(sending)
         }
         #expect(rig.runner.pasted == (checkpoint == .paste ? ["one", "two"] : ["one"]))
-        #expect(rig.runner.enters == 1)
+        #expect(rig.runner.enters == (checkpoint == .paste ? 2 : 1))
     }
 
     @Test(arguments: [false, true], [1, 2])
@@ -34,7 +34,7 @@ import Testing
             try await rig.runner.gate.finish(sending)
         }
         #expect(rig.runner.pasted == delivered)
-        #expect(rig.runner.enters == lineCount)
+        #expect(rig.runner.enters == lineCount + (fails ? 0 : 1))
         #expect(!rig.log.all.contains { $0.event == "tmux_policy_retired_unsent" })
         rig.runner.setInput("")
         // An Enter may have gone out: clearing input never lifts the sticky taint.
@@ -43,11 +43,10 @@ import Testing
         }
     }
 
-    @Test func clearedInputKeepsThePolicyTaintAndDeviceRefusalUntilRestart() async throws {
+    @Test func clearedInputKeepsFailureTaintAndDeviceRefusalUntilRestart() async throws {
         let rig = try await taintedRig()
         let session = await session(rig)
-        let reason = "a line was pasted but not sent — clear it on the Mac; "
-            + "hand-offs to this target are paused until haild restarts"
+        let reason = "the target's input already holds unsent text"
         let expected = HostDeliveryOutcome.inputPending(reason: reason)
         #expect(try await deliver(session, text: "refused input") == expected)
         rig.runner.setInput("")
@@ -57,13 +56,13 @@ import Testing
         #expect(try onlyControl(await session.receive(frame)) == .error(code: .notAllowed, message: reason))
         #expect(rig.runner.input.isEmpty)
         #expect(rig.runner.pasted == ["synthetic input"])
-        #expect(rig.runner.enters == 0)
+        #expect(rig.runner.enters == 1)
         #expect(!rig.runner.calls.dropFirst(calls).contains { $0.first == "capture-pane" })
         #expect(rig.log.all.last?.detail.contains("reason=tainted") == true)
     }
 
     @Test(arguments: [AuthorityTmuxRunner.Checkpoint.fill, .paste])
-    func lineTwoRefusalExplainsAnUnsentPasteWithoutMislabelingAnEarlierStop(
+    func lineTwoRetirementCompletesOnlyTheAdmittedLine(
         checkpoint: AuthorityTmuxRunner.Checkpoint
     ) async throws {
         let rig = try await TmuxAuthorityRig.make(checkpoint, delivery: 2)
@@ -74,10 +73,10 @@ import Testing
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
         let result = try await rig.runner.gate.finish(sending)
-        let reason = checkpoint == .paste ? HostDeliveryOutcome.policyRetiredUnsentReason : "target action was refused"
+        let reason = "target action was refused"
         #expect(try onlyControl(result) == .error(code: .notAllowed, message: reason))
         #expect(rig.runner.pasted == (checkpoint == .paste ? ["one", "two"] : ["one"]))
-        #expect(rig.runner.enters == 1)
+        #expect(rig.runner.enters == (checkpoint == .paste ? 2 : 1))
     }
 
     private func send(_ text: String, rig: TmuxAuthorityRig) async throws -> SendOutcome {
@@ -90,13 +89,14 @@ import Testing
     private func taintedRig() async throws -> TmuxAuthorityRig {
         let rig = try await TmuxAuthorityRig.make(.paste)
         defer { rig.runner.gate.fire() }
+        rig.runner.failEnter()
         let sending = Task { try await rig.send() }
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
-        await #expect(throws: PolicyRetiredDelivery.pastedUnsent) {
+        await #expect(throws: PolicyRetiredDelivery.possiblySubmitted) {
             try await rig.runner.gate.finish(sending)
         }
-        #expect(rig.runner.enters == 0)
+        #expect(rig.runner.enters == 1)
         return rig
     }
 

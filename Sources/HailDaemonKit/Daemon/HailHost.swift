@@ -417,8 +417,12 @@ extension HailHost {
         do {
             try await HeldPeerScope.requireCurrent()
             HeldSendScope.current?.failure.willHandoff()
+            let adapter = try await registry.resolve(request.target).adapter
+            let authority = try request.deliveryAuthority
+            let handoff = adapter is any LaunchAdmittingDelivery
+                ? authority : authority.map(TaskProgressWakeScope.checkedHandoff)
             try await registry.deliver(line, to: request.target, binding: binding, context: request.turn,
-                                       authority: request.deliveryAuthority.map(TaskProgressWakeScope.checkedHandoff))
+                                       authority: handoff)
         } catch {
             var partial = delivered
             // A possibly sent Enter is a handoff, like tmux's existing unverifiable submit outcome.
