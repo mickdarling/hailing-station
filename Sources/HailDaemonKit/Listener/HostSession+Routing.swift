@@ -298,7 +298,9 @@ extension HostSession {
         }
     }
 
-    /// Final delivery authority includes a live-peer token and the reply permit and lease.
+    /// Final delivery authority includes a live-peer token and the reply permit, lease and lifetime.
+    /// Gate order is reply permit, binding lease, peer, then clock; all release before the prior hook.
+    /// HailHost composes the held-scope checks after this hook, without re-entering these gates.
     private func finalDeliveryAuthority(
         owner: HostReplyOwnership?, target: String
     ) -> @Sendable () throws -> Void {

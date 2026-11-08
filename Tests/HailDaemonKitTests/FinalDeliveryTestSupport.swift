@@ -86,7 +86,7 @@ struct FinalDeliveryRig {
     let clock: RecipientTestClock
     let id: UUID
 
-    static func make(legacy: Bool = false) async throws -> Self {
+    static func make(legacy: Bool = false, held: Bool = false) async throws -> Self {
         let adapter = FinalDeliveryAdapter(), registry = Registry(), clock = RecipientTestClock()
         if legacy {
             try await registry.register(FinalDeliveryLegacyAdapter(adapter: adapter))
@@ -94,13 +94,13 @@ struct FinalDeliveryRig {
             try await registry.register(adapter)
         }
         var policy = Policy(guardPatterns: [
-            .init(name: "synthetic guard", regex: "^synthetic guarded command$")
+            .init(name: "synthetic guard", regex: held ? "^synthetic input$" : "^synthetic guarded command$")
         ])
         try policy.allow(target, binding: "synthetic-binding", tier: .open)
-        let host = try HailHost(registry: registry, store: InMemoryPolicyStore(policy))
+        let host = try HailHost(registry: registry, store: InMemoryPolicyStore(policy), requestNow: clock.instant)
         let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "synthetic-host",
                                   requestClock: clock.instant)
-        _ = await session.receive(helloFrame())
+        _ = await session.receive(helloFrame(capabilities: held ? [HeldRequests.capability] : []))
         _ = await session.receive(sessionFrame(payload: .control(.select(targetID: target))))
         let listener = try WebSocketListener(bindAddress: "127.0.0.1", port: 0, host: host,
                                              authorizer: PersonalTerminalAuthorizer())
@@ -115,6 +115,15 @@ struct FinalDeliveryRig {
             dispatchRequest(connection: session.connectionID, target: Self.target, binding: "synthetic-binding"),
             reference: reference, selection: await session.selectionGeneration
         )
+    }
+
+    func hold() async throws -> UUID {
+        let result = try await listener.dispatchAmbientResult(
+            dispatchRequest(connection: session.connectionID, target: Self.target, binding: "synthetic-binding"),
+            selection: await session.selectionGeneration
+        )
+        guard case .held(let notice) = result else { throw HeldTestError.expectedHold }
+        return notice.held
     }
 
     func expectEmpty() async {

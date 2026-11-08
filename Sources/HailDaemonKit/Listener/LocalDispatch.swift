@@ -304,13 +304,18 @@ extension WebSocketListener {
 
     /// Only a live originating session may Send. UUID possession never transfers a hold to a new peer.
     public func sendHeld(_ id: UUID, from connection: UUID) async -> HeldSendResult {
-        guard let peer = peers.values.first(where: { $0.session.connectionID == connection }), await peer.isLive else {
+        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }),
+              let permit = peer.replyTransport.issuePermit(), await peer.isLive else {
             host.heldRequests.retireSelection(connection: connection)
             return .refused(.connectionLost)
         }
         let result = await HeldPeerScope.$current.withValue(
             { await self.ownsHeldPeer(peer) },
-            operation: { await peer.session.sendHeld(id, from: connection) }
+            operation: {
+                await HostSession.$deliveryPeer.withValue(permit) {
+                    await peer.session.sendHeld(id, from: connection)
+                }
+            }
         )
         // A completed handoff remains sent even if the owner disconnected while awaiting its result.
         if result == .sent { return result }
