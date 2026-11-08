@@ -4,8 +4,8 @@ Part of #1120.
 
 The host evaluates held predicates inside the target-policy gate before its continuation. Their order
 is policy revision, selection, allowed mode, then notice lifetime. They precede the request clock.
-A final session refusal re-evaluates those predicates only after all nested gates have released, so
-its reason retains that precedence. A retired held generation still resolves to `policyChanged`.
+A refusal from an inner session stage re-evaluates those predicates only after all nested gates have
+released, so its reason retains that precedence. A retired held generation still resolves to `policyChanged`.
 
 `DeliveryAdmission.Stage` retains the order target policy, task output fence, reply permit, binding
 lease, session-update fence, ambient router, privacy hold, peer lifecycle, attempt/cancellation, then
@@ -29,9 +29,13 @@ locks have already released. Actor turns and asynchronous preflight are not lock
 | Ownerless post-handoff commit | Peer lifecycle → last-input ledger. Selection is checked before entering peer lifecycle. A retired peer records no attribution. Local completion keeps `connectionLost`; phone completion keeps `.unowned("reply authority changed")`. |
 | Post-commit observers | Every commit gate releases before segmented-reply stopping, stopped-reply recording, reply events, logging and callback task creation. `didNoteLastInput` runs synchronously in the same session actor turn. Commit paths use `recordLastInput`, not the combined `noteLastInput` helper. |
 | Held request preflight and resolution | `HeldRequests.attemptHeld` performs selection, listing, policy and mode checks separately before dispatch; no peer lock encloses them. Failure recording and policy-reason classification happen after delivery gates unwind. The store serializes decisions with actor tasks and does not hold a mutex across dispatch. |
-| Task enrollment | `TaskProgressEnrollmentAdmission.perform`: owner-state lock → controller lifetime. No router, policy or peer gate is entered by the scheduler's enrollment commit. |
-| Task owner control | `TaskProgressRetainedOwnerAdmission.perform`: owner-state lock → controller lifetime → ambient owner permission (router) for an ambient source; a local source skips router. The control commit does not enter a peer gate. |
+| Task enrollment | `TaskProgressEnrollmentAdmission.perform`: owner-state lock → controller lifetime. No router, policy or peer gate is entered by the scheduler's enrollment commit. Initial `ownerState.enroll` orders owner state → controller lifetime → previous output fence closure; direct retirement orders owner state → output fence. |
+| Task owner control | `TaskProgressRetainedOwnerAdmission.perform`: owner-state lock → controller lifetime → ambient owner permission (router) for an ambient source; a local source skips router. The control commit does not enter a peer gate. After router and lifetime release, pause/stop may close the output fence while owner state remains held. |
 | Task reports and session-update cards/audio | `TaskProgressPublicationAuthority.perform`: target policy → optional task output fence → reply permit → binding lease → session-update fence → ambient router → privacy hold → prepared transport enqueue (peer lifecycle). `enqueueSessionUpdate`, `deliverSessionUpdate`, and `enqueueSessionUpdateAudio` share this order; renderer admission omits the final transport gate. Preparation and completion waits happen outside these gates. |
+
+Peer lifecycle contains its retirement-state mutex → its original transport publication permit.
+Prepared transport enqueue briefly enters its own submission state after that permit and never
+re-enters router, privacy or target policy.
 
 The host's policy observation and transaction paths order observation → target-policy state; admission
 uses only target-policy state. Held policy-revision and lockdown snapshots do not reacquire that state.
@@ -45,8 +49,8 @@ attempt/cancellation record and never retry on error. This delivery does not cha
 ## Synthetic evidence
 
 - `DeliveryAdmissionStageOrderTests` instruments the real retained gates. Held predicates assert that the peer
-  gate is free on success and refusal. The task test wraps the actual router continuation and retained
-  peer gate. Session stages are exercised with an earlier router contributor; ordinary session input
+  gate is free on success, peer refusal and request-clock refusal. The task test wraps the actual router
+  continuation and retained peer gate. Session stages are exercised with an earlier router contributor; ordinary session input
   has no router stage unless held predicates apply. These tests require no production recorder hook.
 - `FinalDeliveryCommitTests.lastInputObserversRunAfterCommitGatesRelease` synchronously reacquires the
   original reply permit, binding lease and peer permit from stopped-reply and event observers. It also
@@ -57,5 +61,55 @@ attempt/cancellation record and never retry on error. This delivery does not cha
 
 ## Verification
 
-Verification is pending on the Dev Work VM. This record covers synthetic package checks and host lint;
-it establishes no simulator, physical-device or live captured-output behavior.
+The Dev Work VM workspace is a fresh clone at `~/codex-workspaces/vwf3a`, checked out at
+`1f2a4dc1b6c8f14699a9df971957d88f5c90995e` and synchronized by a local `origin/main..HEAD` bundle.
+Each run waits for the shared lane from a remote script whose process arguments contain only its
+filename, avoiding a match against the waiting shell itself:
+
+```sh
+while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
+WS=vwf3a ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Ambient|Tmux|Reply)'
+python3 -m unittest discover -s Tests/ReplyCLITests
+~/codex-workspaces/vw-werr.sh vwf3a
+```
+
+SSH stdin is closed with `< /dev/null`; each command finishes before the next begins. The package
+runner uses four workers. The warnings-as-errors helper runs with a workspace-specific `swift` wrapper
+on `PATH` that executes `/usr/bin/swift "$@" -j 4`, keeping that build at four workers too. The wrapper
+and runner scripts are outside the repository.
+
+The initial source/test snapshot `f3156e0c693bbfde082f9588d36aa93f5ae673f2` passed **1,098 tests in 227 suites** in **544.729 seconds**,
+with `build=0`, `test=0` and the ten existing known issues.
+
+The final source/test snapshot `4970484837b0f02e00f407d0f1a6e2770ebe3aaa` passed **1,099 tests in
+227 suites** in **637.580 seconds**, with **`build=0`, `test=0`**. Its ten known issues are the five
+each in the existing `LocalDispatchPreflightWaitTests` and `ReplyRecipientHandoffWaitTests`; there
+were no unexpected issues. The final ordering and commit suites passed, including the request-clock
+refusal assertion. Reply CLI verification passed **124 tests in 216.158 seconds**, exit 0.
+The warnings-as-errors helper finished with **`werr build=0`, exit 0**. Existing missing
+module-cache debug-info warnings were emitted by the Command Line Tools iteration build.
+
+Final VM logs are `~/codex-workspaces/vwf3a-build.log`, `~/codex-workspaces/vwf3a-test.log`,
+`~/codex-workspaces/vwf3a-cli.log`, `~/codex-workspaces/vwf3a-werr.log` and
+`~/codex-workspaces/vwf3a-werr-result.log`. The final follow-up changes this document only;
+executable source and tests match the verified snapshot.
+
+Strict host lint passed with zero violations on the four production files and three new test files:
+`DeliveryAdmissionStageOrderTests.swift`, `DeliveryStageOrderTestSupport.swift` and
+`FinalDeliveryCommitTests.swift`.
+Each file is checked separately with:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict <file>
+```
+
+Production files are `Progress/TaskProgressAuthority.swift`, `Listener/HostSession+Routing.swift`,
+`Daemon/HailHost.swift` and `Adapter/Adapter.swift`, all under `Sources/HailDaemonKit`. Loading
+`scripts/pr-shape.py` locally and applying its exact exclusions and rename handling counts **four**
+production files. Its GitHub-dependent PR checks are not invoked. No existing test file is modified.
+`git diff --check` and its staged equivalent passed. All verification commands completed; no VM job
+is left running by this session.
+
+This record covers synthetic VM package checks and host lint. It establishes no simulator,
+physical-device or live captured-output behavior. No host build or test, daemon or configuration
+change, install, upload or push is part of this verification.
