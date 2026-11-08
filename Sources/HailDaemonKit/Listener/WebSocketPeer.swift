@@ -48,7 +48,12 @@ actor WebSocketPeer {
     ) {
         let lifecycle = ReplyTransportLifecycle()
         replyTransport = lifecycle
-        ingress = WebSocketIngressPump(lifecycle: lifecycle) { callback in
+        ingress = WebSocketIngressPump(lifecycle: lifecycle, onDrop: { count, sequence in
+            log(WebSocketListenerEvent(
+                event: "ambient_audio_dropped", sessionID: id,
+                detail: "count=\(count) stream_seq_range=\(sequence)-\(sequence)"
+            ))
+        }) { callback in
             connection.receiveMessage { data, context, _, error in
                 callback(WebSocketIngressPump.classify(data, context: context, error: error))
             }
@@ -62,14 +67,18 @@ actor WebSocketPeer {
         self.onEnd = onEnd
         self.submitReply = submitReply
         self.submitClose = submitClose ?? { completion in
-            let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
-            metadata.closeCode = .protocolCode(.protocolError)
-            let context = NWConnection.ContentContext(identifier: "hail.close", isFinal: true, metadata: [metadata])
+            let context = Self.protocolErrorCloseContext()
             connection.send(
                 content: nil, contentContext: context, isComplete: true,
                 completion: .contentProcessed { _ in completion() }
             )
         }
+    }
+
+    nonisolated static func protocolErrorCloseContext() -> NWConnection.ContentContext {
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
+        metadata.closeCode = .protocolCode(.protocolError)
+        return NWConnection.ContentContext(identifier: "hail.close", isFinal: true, metadata: [metadata])
     }
 
     func start() {
@@ -97,9 +106,13 @@ actor WebSocketPeer {
             emit("session_connected", endpoint: "\(connection.endpoint)")
             ingress.start(process: { [weak self] data in
                 await self?.process(data)
-            }, onEnd: { [weak self, connection] reason in
-                connection.cancel()
-                Task { await self?.finish(reason: reason) }
+            }, onEnd: { [weak self, connection] reason, protocolError in
+                if protocolError {
+                    Task { await self?.close(reason: reason) }
+                } else {
+                    connection.cancel()
+                    Task { await self?.finish(reason: reason) }
+                }
             })
         case .failed(let error): finish(reason: "failed: \(error)")
         case .cancelled: finish(reason: "cancelled")
@@ -127,10 +140,10 @@ actor WebSocketPeer {
 
     nonisolated var applicationWorker: Task<Void, Never>? { ingress.worker }
 
-    private func process(_ data: Data) async {
+    private func process(_ frame: Frame?) async {
         guard !ended, !closing, let permit = replyTransport.issuePermit() else { return }
         let result = await HostSession.$deliveryPeer.withValue(permit) {
-            await session.receive(data)
+            await session.receiveDecoded(frame)
         }
         guard !ended, !closing else { return }
         if result.frames.contains(where: { frame in

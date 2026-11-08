@@ -15,12 +15,12 @@ extension WebSocketReceivePumpTests {
         let rig = PumpRig()
         let observations = Mutex((active: 0, peak: 0, replies: [ControlPayload]()))
         defer { release.finish(.success(())); rig.pump.stop() }
-        rig.start { data in
+        rig.start { frame in
             observations.withLock { state in
                 state.active += 1
                 state.peak = max(state.peak, state.active)
             }
-            let result = await session.receive(data)
+            let result = await session.receiveDecoded(frame)
             observations.withLock { state in
                 state.active -= 1
                 for frame in result.frames {
@@ -47,6 +47,25 @@ extension WebSocketReceivePumpTests {
         #expect(observations.withLock { $0.replies } == [.pong(nonce: "first"), .pong(nonce: "second")])
         #expect(rig.transport.maximumOutstanding == 1)
     }
+    @Test func malformedIngressRetainsDataEntryPointResponseAndClosure() async throws {
+        let (host, _) = try await sessionHost()
+        let direct = HostSession(host: host)
+        let pumped = HostSession(host: host)
+        let rig = PumpRig()
+        let completed = SelectionPreflightSignal<HostSessionResult>()
+        defer { rig.pump.stop() }
+        let data = Data("{\"type\":\"audio\",\"sequence\":1}".utf8)
+        let expected = await direct.receive(data)
+        rig.start { frame in completed.finish(.success(await pumped.receiveDecoded(frame))) }
+        rig.transport.deliver(.application(data))
+        let result = try await completed.wait("malformed ingress response")
+        await rig.pump.worker?.value
+        #expect(result.disposition == .close)
+        #expect(result.disposition == expected.disposition)
+        #expect(try onlyControl(result) == onlyControl(expected))
+        #expect(try onlyControl(result) == .error(code: .malformed, message: "malformed or oversized frame"))
+    }
+
 }
 
 private struct PumpSessionAuthorizer: HostSessionAuthorizing {

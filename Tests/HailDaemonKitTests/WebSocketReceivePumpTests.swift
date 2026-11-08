@@ -13,26 +13,27 @@ import Testing
         let completed = SelectionPreflightSignal<Void>()
         let observations = Mutex((active: 0, peak: 0, values: [UInt8]()))
         defer { release.finish(.success(())); rig.pump.stop() }
-        rig.start { data in
+        rig.start { frame in
+            let value = UInt8(frame?.timestamp ?? 0)
             observations.withLock { state in
                 state.active += 1
                 state.peak = max(state.peak, state.active)
-                state.values.append(data[0])
+                state.values.append(value)
             }
-            if data[0] == 1 {
+            if value == 1 {
                 entered.finish(.success(()))
                 _ = try? await release.wait("worker release")
             }
             observations.withLock { $0.active -= 1 }
-            if data[0] == 3 { completed.finish(.success(())) }
+            if value == 3 { completed.finish(.success(())) }
         }
-        rig.transport.deliver(.application(Data([1])))
+        rig.transport.deliver(.application(try pumpMarker(1)))
         try await entered.wait("first application entry")
         let worker = try #require(rig.pump.worker)
-        rig.transport.deliver(.application(Data([2])))
+        rig.transport.deliver(.application(try pumpMarker(2)))
         rig.transport.deliver(.control)
         rig.transport.deliver(.control)
-        rig.transport.deliver(.application(Data([3])))
+        rig.transport.deliver(.application(try pumpMarker(3)))
         #expect(rig.transport.outstanding == 1)
         #expect(observations.withLock { $0.values } == [1])
         release.finish(.success(()))
@@ -113,7 +114,10 @@ import Testing
         let closeContext = NWConnection.ContentContext(identifier: "test.close", metadata: [close])
         let text = NWProtocolWebSocket.Metadata(opcode: .text)
         let textContext = NWConnection.ContentContext(identifier: "test.text", metadata: [text])
+        let unsupported = NWProtocolWebSocket.Metadata(opcode: .cont)
+        let unsupportedContext = NWConnection.ContentContext(identifier: "test.unsupported", metadata: [unsupported])
         let events: [WebSocketIngressPump.Event] = [
+            WebSocketIngressPump.classify(Data(), context: unsupportedContext, error: nil),
             .terminal("peer closed"),
             WebSocketIngressPump.classify(nil, context: closeContext, error: nil),
             WebSocketIngressPump.classify(Data(), context: nil, error: nil),
@@ -129,6 +133,31 @@ import Testing
             #expect(rig.transport.receives == 1)
         }
     }
+    @Test func invalidTransportMessagesRequireProtocolErrorClose() throws {
+        let unsupported = NWProtocolWebSocket.Metadata(opcode: .cont)
+        let text = NWProtocolWebSocket.Metadata(opcode: .text)
+        let unsupportedContext = NWConnection.ContentContext(identifier: "unsupported", metadata: [unsupported])
+        let textContext = NWConnection.ContentContext(identifier: "text", metadata: [text])
+        let events: [WebSocketIngressPump.Event] = [
+            WebSocketIngressPump.classify(nil, context: nil, error: nil),
+            WebSocketIngressPump.classify(nil, context: textContext, error: nil),
+            WebSocketIngressPump.classify(Data(), context: unsupportedContext, error: nil)
+        ]
+        for event in events {
+            guard case .terminal(_, let protocolError) = event else {
+                Issue.record("invalid transport input must be terminal")
+                continue
+            }
+            #expect(protocolError)
+        }
+        let context = WebSocketPeer.protocolErrorCloseContext()
+        let metadata = try #require(context.protocolMetadata(
+            definition: NWProtocolWebSocket.definition
+        ) as? NWProtocolWebSocket.Metadata)
+        #expect(metadata.opcode == .close)
+        #expect(metadata.closeCode == .protocolCode(.protocolError)) // RFC 6455 code 1002.
+    }
+
 }
 
 final class PumpTransport: Sendable {
@@ -172,6 +201,12 @@ struct PumpRig {
     }
     func start(_ process: @escaping WebSocketIngressPump.Process) {
         let ended = ended
-        pump.start(process: process, onEnd: { ended.finish(.success($0)) })
+        pump.start(process: process, onEnd: { reason, _ in ended.finish(.success(reason)) })
     }
+}
+
+func pumpMarker(_ value: Int) throws -> Data {
+    var frame = sessionFrame(payload: .control(.ping(nonce: "marker")))
+    frame.timestamp = Int64(value)
+    return try FrameCoding.encode(frame)
 }
