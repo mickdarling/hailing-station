@@ -96,7 +96,8 @@ import Testing
         }
         samples.sort()
         let median = (samples[29] + samples[30]) / 2
-        let message = "Process.run gate hold ms n=60 min=\(samples[0]) median=\(median) p95=\(samples[56]) max=\(samples[59])"
+        let message = "Process.run gate hold ms n=60 min=\(samples[0]) median=\(median) "
+            + "p95=\(samples[56]) max=\(samples[59])"
         print(message)
     }
 }

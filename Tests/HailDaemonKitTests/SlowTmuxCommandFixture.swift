@@ -31,7 +31,9 @@ final class SlowTmuxCommandFixture: Sendable {
 
     func release() { _ = "continue\n".withCString { write(releaseFD, $0, strlen($0)) } }
     func mark(_ name: String) throws { try Data().write(to: directory.appendingPathComponent(name)) }
-    func exists(_ name: String) -> Bool { FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path) }
+    func exists(_ name: String) -> Bool {
+        FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path)
+    }
     func lines(_ name: String) -> [String] {
         let text = (try? String(contentsOf: directory.appendingPathComponent(name), encoding: .utf8)) ?? ""
         return text.split(separator: "\n").map(String.init)

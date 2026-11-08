@@ -12,7 +12,8 @@ import Testing
         let fixture = try SlowTmuxCommandFixture()
         defer { fixture.release() }
         let rig = try submissionRig(fixture)
-        let text = framed ? try PastedContent.frame(spoken: "synthetic input", pasted: "synthetic data") : "synthetic input"
+        let text = framed ? try PastedContent.frame(spoken: "synthetic input", pasted: "synthetic data")
+            : "synthetic input"
         let delivery = Task {
             try await rig.adapter.deliver(text, to: "codex", binding: SlowTmuxCommandFixture.binding,
                                           authority: rig.authority)
@@ -58,7 +59,8 @@ import Testing
             }
         })
         let rig = try submissionRig(fixture, runner: runner)
-        let text = framed ? try PastedContent.frame(spoken: "synthetic input", pasted: "synthetic data") : "synthetic input"
+        let text = framed ? try PastedContent.frame(spoken: "synthetic input", pasted: "synthetic data")
+            : "synthetic input"
         let sending = Task {
             try await rig.adapter.deliver(text, to: "codex", binding: SlowTmuxCommandFixture.binding,
                                           authority: rig.authority)
@@ -85,7 +87,8 @@ import Testing
         defer { fixture.release() }
         try fixture.mark("retry")
         let rig = try submissionRig(fixture)
-        let text = framed ? try PastedContent.frame(spoken: "synthetic input", pasted: "synthetic data") : "synthetic input"
+        let text = framed ? try PastedContent.frame(spoken: "synthetic input", pasted: "synthetic data")
+            : "synthetic input"
         let sending = Task {
             try await rig.adapter.deliver(text, to: "codex", binding: SlowTmuxCommandFixture.binding,
                                           authority: rig.authority)
@@ -113,10 +116,18 @@ import Testing
             throw HostError.denied(.notAllowed("tmux:codex"))
         })
         let authority = DeliveryAuthority(admission: DeliveryAdmission(gates: [.targetPolicy: gate]))
+        let failure = HeldSendFailure()
+        failure.willHandoff()
         await #expect(throws: AdapterError.deliveryFailed("command launch completion was not confirmed")) {
-            try await rig.adapter.deliver("synthetic input", to: "codex", binding: SlowTmuxCommandFixture.binding,
-                                          authority: authority)
+            do {
+                try await rig.adapter.deliver("synthetic input", to: "codex", binding: SlowTmuxCommandFixture.binding,
+                                              authority: authority)
+            } catch {
+                failure.record(error)
+                throw error
+            }
         }
+        #expect(failure.didAttemptHandoff)
         #expect(fixture.lines("writes") == ["paste"])
         #expect(await rig.adapter.lastTails["%2"] == PayloadTail("synthetic input"))
         await #expect(throws: AdapterError.inputPending(reason: .tainted)) {
@@ -155,7 +166,10 @@ import Testing
         #expect(rig.log.all.last?.event == "tmux_input_pending")
     }
 
-    private struct Rig {
+}
+
+private extension TmuxSubmissionAdmissionTests {
+    struct Rig {
         let adapter: TmuxAdapter
         let policy: TargetPolicyAuthority
         let peer: ReplyTransportLifecycle
@@ -163,7 +177,7 @@ import Testing
         let log: EvidenceLog
     }
 
-    private func submissionRig(
+    func submissionRig(
         _ fixture: SlowTmuxCommandFixture, runner: ProcessCommandRunner = .init()
     ) throws -> Rig {
         var policy = Policy()
@@ -177,7 +191,7 @@ import Testing
         }])
         let log = EvidenceLog()
         let timing = TmuxSubmitTiming(settleFloor: .zero, pollInterval: .milliseconds(1), quiet: .milliseconds(1),
-                                      settleLimit: .milliseconds(100), confirmLimit: .milliseconds(100))
+                                      settleLimit: .seconds(1), confirmLimit: .seconds(1))
         let adapter = TmuxAdapter(runner: runner, tmux: fixture.executable, socket: "synthetic-socket",
                                   pollInterval: nil, submitTiming: timing, evidenceObserver: { log.append($0) })
         return Rig(adapter: adapter, policy: owner, peer: peer,

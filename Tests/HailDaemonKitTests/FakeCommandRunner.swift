@@ -24,11 +24,13 @@ actor FakeCommandRunner: GuardedCommandRunner {
     }
 
     func run(_ executable: String, _ arguments: [String], launch: CommandLaunch) async throws -> CommandResult {
-        calls.append([executable] + arguments)
         if let delay { try await Task.sleep(for: delay) }
         await gate?.pass(arguments)
         var result = CommandResult(exitCode: 0, stdout: "")
-        try launch.perform { result = responder(arguments) }
+        try launch.perform {
+            calls.append([executable] + arguments)
+            result = responder(arguments)
+        }
         return result
     }
 

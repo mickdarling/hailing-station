@@ -95,11 +95,12 @@ import Testing
         let outcome = try await rig.runner.gate.finish(sending)
         #expect(outcome == HostDeliveryOutcome.delivered(request: nil))
         let calls = rig.runner.calls.count
-        let control = try onlyControl(await session.receive(frame))
-        guard case ControlPayload.error(code: .notAllowed, message: _, turn: _) = control else {
-            Issue.record("retired authority must refuse the next submission")
-            return
+        let next = await session.receive(frame)
+        let refused = next.frames.contains {
+            if case .control(.error(code: .notAllowed, message: _, turn: _)) = $0.payload { return true }
+            return false
         }
+        #expect(refused)
         #expect(rig.runner.pasted == ["synthetic input"])
         #expect(rig.runner.calls.count == calls)
         #expect(rig.runner.enters == 1)

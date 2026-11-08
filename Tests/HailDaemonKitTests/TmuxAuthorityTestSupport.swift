@@ -149,8 +149,8 @@ struct TmuxAuthorityRig {
         let host = try HailHost(
             registry: registry, sanitizing: .init(newlines: .split), store: InMemoryPolicyStore(policy)
         )
-        return Self(runner: runner, adapter: adapter, host: host,
-                    authority: RetainedDeliveryStages().composed(policy: host.targetPolicy.snapshot(for: target)), log: log)
+        let authority = RetainedDeliveryStages().composed(policy: host.targetPolicy.snapshot(for: target))
+        return Self(runner: runner, adapter: adapter, host: host, authority: authority, log: log)
     }
 
     func send() async throws {
