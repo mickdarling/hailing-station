@@ -64,7 +64,7 @@ import Testing
         await rig.listener.stop()
     }
     @Test func checkedHandoffRecordsTheComposedTaskAttempt() async throws {
-        let adapter = TaskProgressCheckedAdapter()
+        let adapter = TaskProgressCheckedAdapter(cancelAfter: true)
         let rig = try await TaskProgressGuardedWakeRig.make(adapter: adapter)
         defer { adapter.resume() }
         var deadlines = rig.clock.scheduled.stream.makeAsyncIterator()
@@ -74,7 +74,7 @@ import Testing
         _ = try #require(await deadlines.next())
         rig.clock.advance(by: .seconds(60))
         _ = try #require(await arrivals.next())
-        // The default checked handoff already committed its attempt before unguarded completion.
+        // The default checked handoff commits its attempt before a later cancellation result.
         rig.wiring.disconnect()
         adapter.resume()
         _ = try #require(await finished.next())

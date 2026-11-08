@@ -103,8 +103,12 @@ struct RetainedDeliveryStages: Sendable {
             try decision?.validate()
         }, perform: { operation in
             try Self.requireHeld(held)
-            let commit = { try handoff?(); try operation() }
-            if let decision { try decision.perform(commit) } else { try commit() }
+            if let decision {
+                try decision.perform { try handoff?(); try operation() }
+            } else {
+                try handoff?()
+                try operation()
+            }
         })
         return DeliveryAuthority(admission: DeliveryAdmission(gates: stages))
     }

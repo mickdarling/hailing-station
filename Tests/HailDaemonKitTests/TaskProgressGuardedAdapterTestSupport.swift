@@ -64,12 +64,15 @@ actor TaskProgressCheckedAdapter: CheckedHandoffDelivering {
     nonisolated let arrived = AsyncStream<Void>.makeStream()
     nonisolated let barrier = TaskProgressAdapterBarrier()
     private(set) var accepted: [String] = []
+    private let cancelAfter: Bool
+    init(cancelAfter: Bool = false) { self.cancelAfter = cancelAfter }
     func listTargets() async throws -> [AdapterTarget] { [.init(name: "a", binding: "binding-a")] }
     func capture(_ target: String) async throws -> String { "" }
     func deliver(_ text: String, to target: String, binding: String?) async throws {
         arrived.continuation.yield(())
         await barrier.wait()
         accepted.append(text)
+        if cancelAfter { throw CancellationError() }
     }
     nonisolated func resume() { barrier.resume() }
 }
