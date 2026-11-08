@@ -185,7 +185,7 @@ extension TmuxAdapter {
     }
 }
 
-/// One delivery's submit decision: the caller's cancellation and the Enter race for it under one lock.
+/// One delivery's submit decision: caller cancellation and paste admission share one lock.
 final class DeliveryAbandonment: Sendable {
     private enum State { case pending, abandoned, committed }
     private let state = Mutex(State.pending)
@@ -318,7 +318,14 @@ extension TmuxAdapter {
         _ arguments: [String], control: TmuxDeliveryControl, launch: CommandLaunch
     ) async throws -> CommandResult {
         if let runner = runner as? any GuardedCommandRunner {
-            return try await runner.run(tmuxPath, arguments, launch: launch)
+            do {
+                return try await runner.run(tmuxPath, arguments, launch: launch)
+            } catch {
+                // A gate may throw after launch. Preserve uncertain execution through handoff accounting;
+                // held-refusal classification cannot establish that this command was unsent.
+                guard launch.evidence == .possiblyExecuted else { throw error }
+                throw AdapterError.deliveryFailed("command launch completion was not confirmed")
+            }
         }
         guard control.authority == nil else { throw DeliveryAdmissionError.unsupported }
         // Unguarded synthetic runners retain their ordinary asynchronous command contract.

@@ -63,7 +63,12 @@ final class SlowTmuxCommandFixture: Sendable {
         else printf '%s' "$1" > "$root/$buffer"; fi
         touch "$root/filled" ;;
       delete-buffer) rm -f "$root/$3"; touch "$root/deleted" ;;
-      capture-pane) printf '> \n2,0,200\n' ;;
+      capture-pane)
+        if [ -e "$root/retry" ] && [ -e "$root/paste-started" ] && [ ! -e "$root/retried" ]; then
+          if [ -e "$root/entered" ]; then echo after; else echo before; fi
+          input='> [Pasted text #1]'
+          printf '%s\n%s,1,200\n' "$input" "${#input}"
+        else printf '> \n2,0,200\n'; fi ;;
       paste-buffer|if-shell|send-keys)
         if [ "$1" = if-shell ]; then
           command="$6"
@@ -84,6 +89,7 @@ final class SlowTmuxCommandFixture: Sendable {
         else
           echo enter >> "$root/writes"
           if [ -e "$root/enter-fails" ]; then exit 1; fi
+          if [ -e "$root/entered" ]; then touch "$root/retried"; fi
           touch "$root/entered"
         fi ;;
     esac

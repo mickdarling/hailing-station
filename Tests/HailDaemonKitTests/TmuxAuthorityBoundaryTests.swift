@@ -93,10 +93,10 @@ import Testing
         try await rig.runner.gate.waitUntilSuspended()
         try await rig.retire()
         let outcome = try await rig.runner.gate.finish(sending)
-        #expect(outcome == .delivered(["synthetic input"]))
+        #expect(outcome == HostDeliveryOutcome.delivered(request: nil))
         let calls = rig.runner.calls.count
         let control = try onlyControl(await session.receive(frame))
-        guard case .error(code: .notAllowed, message: _) = control else {
+        guard case ControlPayload.error(code: .notAllowed, message: _) = control else {
             Issue.record("retired authority must refuse the next submission")
             return
         }

@@ -47,8 +47,8 @@ import Testing
         #expect(!rig.log.all.contains { $0.event == "tmux_input_pending" })
     }
 
-    @Test(arguments: [false, true])
-    func retirementImmediatelyBeforeLaunchStartsNoWritingChild(framed: Bool) async throws {
+    @Test(arguments: Retirement.allCases, [false, true])
+    func retirementImmediatelyBeforeLaunchStartsNoWritingChild(retirement: Retirement, framed: Bool) async throws {
         let fixture = try SlowTmuxCommandFixture()
         let gate = RecipientPublicationGate(timeout: .seconds(15))
         defer { gate.release(); fixture.release() }
@@ -65,7 +65,11 @@ import Testing
         }
         try await gate.waitEntered()
         let launches = fixture.lines("launches").count
-        rig.peer.retire()
+        switch retirement {
+        case .peer: rig.peer.retire()
+        case .policy: rig.policy.retire("tmux:codex")
+        case .caller: sending.cancel()
+        }
         gate.release()
         await #expect(throws: (any Error).self) { try await sending.value }
         #expect(!gate.timedOut)
@@ -73,6 +77,52 @@ import Testing
         #expect(fixture.lines("launches").count == launches + 1) // unused buffer deletion only
         #expect(fixture.exists("deleted"))
         #expect(rig.log.all.isEmpty)
+    }
+
+    @Test(arguments: [false, true])
+    func admittedSubmissionKeepsItsConditionalRetryAfterRetirement(framed: Bool) async throws {
+        let fixture = try SlowTmuxCommandFixture()
+        defer { fixture.release() }
+        try fixture.mark("retry")
+        let rig = try submissionRig(fixture)
+        let text = framed ? try PastedContent.frame(spoken: "synthetic input", pasted: "synthetic data") : "synthetic input"
+        let sending = Task {
+            try await rig.adapter.deliver(text, to: "codex", binding: SlowTmuxCommandFixture.binding,
+                                          authority: rig.authority)
+        }
+        try await fixture.wait("paste-started")
+        rig.peer.retire()
+        fixture.release()
+        try await sending.value
+        #expect(fixture.lines("writes") == ["paste", "enter", "enter"])
+        #expect(rig.log.all.contains { $0.event == "tmux_submit" && $0.detail.contains("retried") })
+        let launches = fixture.lines("launches").count
+        await #expect(throws: (any Error).self) {
+            try await rig.adapter.deliver("next input", to: "codex", binding: SlowTmuxCommandFixture.binding,
+                                          authority: rig.authority)
+        }
+        #expect(fixture.lines("launches").count == launches)
+    }
+
+    @Test func postLaunchAuthorityErrorRetainsExecutionEvidenceWithoutRetry() async throws {
+        let fixture = try SlowTmuxCommandFixture()
+        try fixture.mark("no-barrier")
+        let rig = try submissionRig(fixture)
+        let gate = DeliveryAdmission.Gate(validate: {}, perform: { operation in
+            try operation()
+            throw HostError.denied(.notAllowed("tmux:codex"))
+        })
+        let authority = DeliveryAuthority(admission: DeliveryAdmission(gates: [.targetPolicy: gate]))
+        await #expect(throws: AdapterError.deliveryFailed("command launch completion was not confirmed")) {
+            try await rig.adapter.deliver("synthetic input", to: "codex", binding: SlowTmuxCommandFixture.binding,
+                                          authority: authority)
+        }
+        #expect(fixture.lines("writes") == ["paste"])
+        #expect(await rig.adapter.lastTails["%2"] == PayloadTail("synthetic input"))
+        await #expect(throws: AdapterError.inputPending(reason: .tainted)) {
+            try await rig.adapter.deliver("later input", to: "codex", binding: SlowTmuxCommandFixture.binding)
+        }
+        #expect(fixture.lines("writes") == ["paste"])
     }
 
     enum Failure: CaseIterable { case enter, agent, binding }
@@ -127,7 +177,7 @@ import Testing
         }])
         let log = EvidenceLog()
         let timing = TmuxSubmitTiming(settleFloor: .zero, pollInterval: .milliseconds(1), quiet: .milliseconds(1),
-                                      settleLimit: .milliseconds(5), confirmLimit: .milliseconds(5))
+                                      settleLimit: .milliseconds(100), confirmLimit: .milliseconds(100))
         let adapter = TmuxAdapter(runner: runner, tmux: fixture.executable, socket: "synthetic-socket",
                                   pollInterval: nil, submitTiming: timing, evidenceObserver: { log.append($0) })
         return Rig(adapter: adapter, policy: owner, peer: peer,
