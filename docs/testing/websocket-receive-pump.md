@@ -142,6 +142,49 @@ watchdogs, except the hello timeout and the existing elapsed-age assertion, whic
 time. No sleep or scheduler-yield loop establishes message ordering. Scripted runners execute no tmux
 process. These tests do not establish device capture, playback or a live captured-output round trip.
 
+## Parked text followed by malformed JSON
+
+| Test | Synthetic loopback proof |
+| --- | --- |
+| `malformedBehindParkedTextCompletesThenCloses` | Ordered response/error/1002 and no later dispatch. |
+
+`WebSocketReceivePumpTests.malformedBehindParkedTextCompletesThenCloses` uses the production
+listener and peer, parking the first text before paste launch. Invalid JSON within the size limit,
+a valid select and a valid text follow; a transport pong acknowledges wire progress before release.
+The first paste and Enter complete once. Its synthetic provider response precedes the exact malformed
+error and close 1002. Joining the application worker precedes checks for retirement, ended peer,
+closed session, unchanged selection/generation and no later valid-frame authorization or command launch.
+
+Successful text delivery itself returns no protocol acknowledgement. The scripted runner publishes the
+synthetic response through `WebSocketPeer.send` after Enter, during the first submission's completion;
+the test checks its exact frame before reading the malformed error. This is synthetic reply evidence,
+not a provider process or captured-output round trip. The existing idle malformed-wire case remains
+`malformedWireMessageSendsErrorThenCode1002`.
+
+The recording authorizer observes valid frames entering authorization, not every invocation of
+`HostSession.receiveDecoded`: a closed-session no-op would bypass authorization. The worker join,
+closed peer and unchanged selection/command assertions establish no later observable processing;
+there is no direct session-entry counter in the existing production seams.
+
+Follow-up verification used the re-synchronized `vwf4` VM workspace at the requested baseline.
+Every phase waited for the shared runner to be idle; SSH stdin was `/dev/null`, and all jobs were joined.
+The shared helpers and production files were unchanged. The targeted command used the filter
+`HailDaemonKitTests\.WebSocketReceivePumpTests/malformedBehindParkedTextCompletesThenCloses`;
+the suite filter was `HailDaemonKitTests\.WebSocketReceivePumpTests`, and the final prefix filter was
+`HailDaemonKitTests\.WebSocketReceivePump`. All used `WS=vwf4` and `vw327-run.sh`.
+
+| Follow-up phase | Result |
+| --- | --- |
+| New test, three runs | 1 test each; 0.016, 0.016 and 0.014 seconds; every build/test exit 0. |
+| Its suite, three runs | 30 tests each; 8.434, 8.466 and 8.206 seconds; every build/test exit 0. |
+| All receive-pump suites, once | 30 tests; 8.513 seconds; build/test exit 0. |
+| `~/codex-workspaces/vw-werr.sh vwf4` | `werr build=0`; wrapper exit 0; existing module-cache warnings. |
+| Host strict SwiftLint | New Swift file: zero violations, exit 0, with the required Xcode developer directory. |
+| Host width check | Swift output empty; document's 40 existing long lines unchanged; no new long lines. |
+
+This follow-up is synthetic package evidence only. It performs no host build/test, physical-device
+validation, upload, GitHub call or push.
+
 ## Existing test assertion accounting
 
 The original three test-only carries and first-batch accounting remain below. The worker seam supplies
