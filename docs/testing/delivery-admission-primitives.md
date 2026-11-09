@@ -46,11 +46,9 @@ A fresh GitHub clone on the Dev Work VM receives the local stack using a git bun
 with `origin/main..HEAD`. Each run waits for the shared VM lane in a remote script
 whose process arguments contain only its filename, then builds and runs the targeted filter:
 
-```sh
-# Wait for the shared VM verification lane to become idle.
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|Tmux|LocalDispatch|HailHost)'
-```
+Each run waited for the shared VM lane to be idle.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|Tmux|LocalDispatch|HailHost)'`.
 
 SSH stdin is closed with `< /dev/null`; execution remains blocking.
 

@@ -65,11 +65,9 @@ were fast-forwarded from a new bundle with the same range. No source was pushed.
 Each VM job waits for the shared lane using a remote script whose
 process arguments do not match the wait pattern. SSH invocations are blocking with stdin `< /dev/null`.
 
-```sh
-# Wait for the shared VM verification lane to become idle.
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(FinalDelivery|Held|LocalDispatch|Ambient|HailHost|Host|Reply|RightyoInputConsumer|WebSocket|Listener|Guard|Policy)'
-```
+Each run waited for the shared VM lane to be idle.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(FinalDelivery|Held|LocalDispatch|Ambient|HailHost|Host|Reply|RightyoInputConsumer|WebSocket|Listener|Guard|Policy)'`.
 
 The first rebased run identified a same-target selection fixture that did not change selection, and
 held refusal-reason ordering when reply authority also retires. The fixture now selects another
@@ -79,10 +77,7 @@ release. That initial run is not passing evidence.
 On the corrected snapshot, the focused diagnostic command passed with `build=0`, `test=0`:
 **48 tests in 10 suites**, 0.141 s, including the existing held concurrency checks.
 
-```sh
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(FinalDelivery|Held)'
-```
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(FinalDelivery|Held)'`.
 
 The full requested filter then passed with `build=0`, `test=0`: **1,032 tests in 186 suites**,
 591.241 s, with **10 expected known issues** from `LocalDispatchPreflightWaitTests` and
@@ -111,9 +106,7 @@ not claimed. Full repository verification remains outside this focused record.
 
 Finally, the requested warnings-as-errors build passed with **build exit 0** and **script exit 0**:
 
-```sh
-swift build --build-tests -Xswiftc -warnings-as-errors
-```
+The VM warnings-as-errors build of the package and tests.
 
 The CLT linker emitted missing module-cache debug-info warnings; the warnings-as-errors Swift build
 completed successfully. This is VM iteration evidence, not a shipping-Xcode build.

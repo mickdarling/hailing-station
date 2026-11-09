@@ -76,11 +76,9 @@ commits on `feat/327-attribution`. Source and tests must match the final verifie
 Each VM invocation waits for the shared lane to become idle, then runs, over blocking SSH with stdin
 `< /dev/null`:
 
-```sh
-# Wait for the shared VM verification lane to become idle.
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(Ambient|TaskProgress|GuardBudget)'
-```
+Each run waited for the shared VM lane to be idle.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(Ambient|TaskProgress|GuardBudget)'`.
 
 The runner builds all Swift package tests with `swift build --build-tests -j 4` and its Command Line Tools
 Testing framework/plugin/linker flags, then uses `swift test --skip-build --no-parallel -j 4` with the filter

@@ -66,13 +66,15 @@ The Dev Work VM workspace is a fresh clone, checked out at
 Each run waits for the shared lane from a remote script whose process arguments contain only its
 filename, avoiding a match against the waiting shell itself:
 
+Each run waited for the shared VM lane to be idle.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Ambient|Tmux|Reply)'`.
+
 ```sh
-# Wait for the shared VM verification lane to become idle.
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Ambient|Tmux|Reply)'
 python3 -m unittest discover -s Tests/ReplyCLITests
-swift build --build-tests -Xswiftc -warnings-as-errors
 ```
+
+The VM warnings-as-errors build of the package and tests.
 
 SSH stdin is closed with `< /dev/null`; each command finishes before the next begins. The package
 runner uses four workers. The warnings-as-errors helper runs with a workspace-specific `swift` wrapper

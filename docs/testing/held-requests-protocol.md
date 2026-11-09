@@ -27,12 +27,9 @@ reasons. The generated schema changed; existing generated frame fixtures did not
 A fresh GitHub clone on the Dev Work VM received the unpushed commit by git bundle. Runs were sequential;
 each SSH command closed stdin with `< /dev/null`. No Swift build or test ran on the live voice host.
 
-Equivalent VM-side build and filtered test commands (with the CLT flags described below):
+VM-side verification (with the CLT flags described below):
 
-```sh
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter HailProtocolTests
-```
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailProtocolTests'`.
 
 The supplied run script built tests with `taskpolicy -b swift build --build-tests -j 4`, then ran
 `taskpolicy -b swift test --skip-build --no-parallel -j 4 --filter HailProtocolTests`, with its configured CLT
@@ -87,11 +84,11 @@ These lifecycle and retention rules are documentation only; no runtime implement
 The final Swift sources were synced by a temporary git-bundle snapshot to the VM verification clone.
 Each SSH invocation used `< /dev/null`, stayed blocking, and completed before the next VM job. VM commands:
 
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailProtocolTests'`.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests.HeldRequestRuleVocabularyTests'`.
+
 ```sh
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailProtocolTests'
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests.HeldRequestRuleVocabularyTests'
 taskpolicy -b .build/debug/hail-protocol-gen
 git diff --exit-code -- fixtures/frames
 ```
@@ -174,14 +171,11 @@ all schema tests passed. No CI/workflow/script enforcement file changed.
 
 Sources and fixtures were copied to the existing VM iteration workspace. Every SSH
 invocation was blocking with stdin `< /dev/null`; each VM job completed before the next started. No Swift build
-or test ran on the voice host. Equivalent VM-side build and filtered test commands:
+or test ran on the voice host. VM-side verification:
 
-```sh
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailProtocolTests'
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests.HeldRequestRuleVocabularyTests'
-```
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailProtocolTests'`.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests.HeldRequestRuleVocabularyTests'`.
 
 Both reported `build=0`, `test=0`. Final results: **161 tests in 30 suites passed** (0.147 seconds) and
 **1 test in 1 suite passed** (0.001 seconds), respectively. The protocol run was repeated after a formatting-only

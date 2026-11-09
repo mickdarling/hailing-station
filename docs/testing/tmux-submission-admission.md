@@ -250,36 +250,35 @@ zero violations. `git diff --check` passes. No physical-device, simulator or liv
 `VM_TOOLS` below is a generic location for verification wrappers outside the repository;
 `SYNC_BUNDLE` is the transferred git bundle.
 
-Equivalent remote commands, run serially under the watchdog over SSH with
+Remote verification ran serially under the watchdog over SSH with
 `< /dev/null`. Targeted round 1 passed before a log filter mistook a successful `outcome="failed"`
 parameter for a failure; correcting that filter required no source change. The continuation ran rounds
-2 and 3. The loop below represents the same build and test filter used for all three rounds:
+2 and 3. Each run waited for the shared VM lane to be idle. Synchronization used:
 
 ```sh
-# Wait for the shared VM verification lane to become idle.
 git fetch "$SYNC_BUNDLE" HEAD
 git checkout -B submission-verification FETCH_HEAD
 git rev-parse HEAD
 export PATH="$VM_TOOLS:$PATH"
-
-for round in 1 2 3; do
-  swift build --build-tests -j 4
-  swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(Tmux|CommandLaunch|DeliveryAdmission|TaskProgress|Held|AmbientWiringPolicyRetirement)'
-done
-
-# The same idle check precedes each bounded broad group:
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Tmux|Reply|CommandLaunch)'
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.Ambient[A-M]'
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.Ambient([^A-M]|$)'
-
-python3 "$VM_TOOLS/phase.py" python3 -m unittest discover -s Tests/ReplyCLITests
-python3 "$VM_TOOLS/phase.py" swift build --build-tests -Xswiftc -warnings-as-errors -j 4
 ```
 
-The warnings-as-errors build (`swift build --build-tests -Xswiftc -warnings-as-errors`) uses the same watchdog.
+For each of rounds 1, 2 and 3, the VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(Tmux|CommandLaunch|DeliveryAdmission|TaskProgress|Held|AmbientWiringPolicyRetirement)'`.
+
+The same idle check preceded each bounded broad group:
+
+- The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Tmux|Reply|CommandLaunch)'`.
+
+- The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.Ambient[A-M]'`.
+
+- The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.Ambient([^A-M]|$)'`.
+
+Reply CLI verification used:
+
+```sh
+python3 "$VM_TOOLS/phase.py" python3 -m unittest discover -s Tests/ReplyCLITests
+```
+
+The VM warnings-as-errors build of the package and tests uses the same watchdog.
 Its helper temporarily adds `-j 4` to the build command and is restored afterward. Its required result
 was `werr build=0` and wrapper exit 0. The helper's SHA-256 matched its pre-run value after restoration.
 The build emitted the existing Command Line Tools missing module-cache debug-information warnings

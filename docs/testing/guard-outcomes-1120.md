@@ -76,10 +76,7 @@ pattern completed the wait.
 
 Then, with SSH stdin closed (`< /dev/null`), run synchronously:
 
-```sh
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(Guard|DangerousPattern|Policy|Confirmation|HailHost|Host|RightyoInputConsumer)'
-```
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(Guard|DangerousPattern|Policy|Confirmation|HailHost|Host|RightyoInputConsumer)'`.
 
 Host strict lint passed with **zero violations for all eight Swift files** changed cumulatively
 from the branch base, using this command once per file:

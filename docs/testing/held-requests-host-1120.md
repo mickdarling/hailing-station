@@ -110,11 +110,9 @@ git checkout --detach FETCH_HEAD
 
 Before each run, a VM script waits for the shared lane, with no runner name in its own command line:
 
-```sh
-# Wait for the shared VM verification lane to become idle.
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit)'
-```
+Each run waited for the shared VM lane to be idle.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit)'`.
 
 SSH stdin is closed (`< /dev/null`) and the command runs synchronously. A different session's waiting command
 initially matched the literal pattern; it was left alone and the requested wait eventually cleared. No competing
@@ -179,18 +177,11 @@ held Send remains unreachable from any wire, local socket or device path.
 
 The VM verification clone fetched `origin main` (`76010ade`) and applied the new git bundle,
 checking out source snapshot `fb06a242352897e571c209e13f0559651eff020a`. Before synchronizing/running, the blocking
-SSH wrapper (stdin `< /dev/null`) waited for the prior job with:
+SSH wrapper (stdin `< /dev/null`) waited for the shared VM lane to be idle.
 
-```sh
-# Wait for the shared VM verification lane to become idle.
-```
+It then fetched `origin main`, fetched the bundle's `HEAD`, checked out `FETCH_HEAD`, and ran the following verification:
 
-It then fetched `origin main`, fetched the bundle's `HEAD`, checked out `FETCH_HEAD`, and ran the build and filter represented below:
-
-```sh
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit)'
-```
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit)'`.
 
 Result: **`build=0`, `test=0`; 987 tests in 175 suites passed in 540.800 seconds**, with **zero unexpected
 failures** and the same **five intentional known issues** in `LocalDispatchPreflightWaitTests`. All new regressions
@@ -218,19 +209,15 @@ snapshot is `97edc6b5a1e8145bdf29fb4baa537d14ba3af681`. Each run waited for VM i
 inside a VM script whose command line does not itself contain the runner name. SSH stdin was `< /dev/null`, and
 both runs were blocking:
 
-```sh
-# Wait for the shared VM verification lane to become idle.
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit|Reply)'
-```
+Each run waited for the shared VM lane to be idle.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit|Reply)'`.
 
 The requested filter does not include the original #874 session suite, so that suite also ran, unchanged:
 
-```sh
-# Wait for the shared VM verification lane to become idle.
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.RightyoInputRequestRefusalSessionTests'
-```
+Each run waited for the shared VM lane to be idle.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.RightyoInputRequestRefusalSessionTests'`.
 
 The first snapshot, `878045c4bdae6c7b2cfc489b09b79c2eefd4bbf8`, built and ran 1,066 tests in 190 suites in
 582.926 seconds, with one unexpected failure and ten intentional known issues. The new rate-limit test incorrectly

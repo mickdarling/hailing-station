@@ -65,13 +65,15 @@ The Dev Work VM workspace is a fresh clone, synchronized with a local
 bundle of `origin/main..HEAD`, including the prerequisite delivery. Verification uses Apple Swift
 6.3.3 on arm64 macOS. Each run waits for the shared lane in a remote script:
 
+Each run waited for the shared VM lane to be idle.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Ambient|Tmux|Reply)'`.
+
 ```sh
-# Wait for the shared VM verification lane to become idle.
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Ambient|Tmux|Reply)'
 python3 -m unittest discover -s Tests/ReplyCLITests
-swift build --build-tests -Xswiftc -warnings-as-errors
 ```
+
+The VM warnings-as-errors build of the package and tests.
 
 SSH stdin is closed with `< /dev/null`; each command completes before the next begins.
 
@@ -79,10 +81,7 @@ The verified source/test snapshot is `bf95a5c13efa0263cddae665f2051c632852964e`,
 `b5923e5bb69550a6c35ad107e26e12ca73dc2412`; this evidence precedes the later integration rebase.
 A focused follow-up passed **26 tests in 5 suites** in **0.299 seconds** with `build=0`, `test=0`:
 
-```sh
-swift build --build-tests -j 4
-swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(DeliveryAdmissionComposition|FinalDelivery|LocalDispatchLifecycle|TaskProgressHandoff)'
-```
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(DeliveryAdmissionComposition|FinalDelivery|LocalDispatchLifecycle|TaskProgressHandoff)'`.
 
 The full requested Swift filter then passed with `build=0`, `test=0`: **1,089 tests in 225 suites**
 in **658.766 seconds**. Its ten expected known issues are the five each in
