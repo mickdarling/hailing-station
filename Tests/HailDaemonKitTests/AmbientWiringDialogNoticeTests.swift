@@ -26,14 +26,15 @@ import Testing
         let told = AmbientWiringInputPendingTests.acknowledged
             + [.control(.error(code: .voiceRouteRefused, message: notice.message(target: "Scratch")))]
         #expect(try await run.seen(3) == told)
-        if notice.untouched {
+        let shouldPlayClip = effects == .none && earlier == 0
+        if shouldPlayClip {
             #expect(try await run.seen(2) == [.text("Nothing was sent."), .audio])
         }
         #expect(await eventually { !run.log.details("ambient_delivery_refused").isEmpty })
-        let confirm = notice.untouched ? "confirmnotsent/0:sent" : "suppressed_effects"
+        let confirm = shouldPlayClip ? "confirmnotsent/0:sent" : "suppressed_effects"
         #expect(run.log.details("ambient_delivery_refused") == ["reason=blockedByDialog shown=sent confirm=\(confirm)"])
         let connection = try #require(await run.connection)
-        #expect(run.queued.count(for: connection) == (notice.untouched ? 1 : 0))
+        #expect(run.queued.count(for: connection) == (shouldPlayClip ? 1 : 0))
         #expect(await run.env.gate.activeStream != nil)
         #expect(await run.lastInput == nil)
         await run.adapter.passHandoff()

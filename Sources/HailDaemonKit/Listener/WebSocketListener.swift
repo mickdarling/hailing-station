@@ -34,7 +34,7 @@ struct DialogDeliveryNotice {
         guard earlierDelivered > 0 else {
             switch block.effects {
             case .none:
-                return block.cause == .uninspectable ? "Nothing was submitted." : "Nothing was sent."
+                return "Nothing was sent."
             case .pasteMayHaveExecuted:
                 return "Your words may be in the input box, but nothing was submitted."
             case .enterMayHaveExecuted:
@@ -45,9 +45,9 @@ struct DialogDeliveryNotice {
         switch block.effects {
         case .none: return "\(lines) went through; the rest were not sent."
         case .pasteMayHaveExecuted:
-            return "\(lines) went through. The next may be in the input box, but the rest were not submitted."
+            return "\(lines) went through. The next line may be in the input box; the rest were not submitted."
         case .enterMayHaveExecuted:
-            return "\(lines) went through, and the next may have too; check the Mac before resending."
+            return "\(lines) went through, and the next line may have too; check the Mac before resending."
         }
     }
 }

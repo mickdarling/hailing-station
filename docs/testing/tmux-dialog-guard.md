@@ -401,6 +401,19 @@ input-box text, possible submission, and singular or plural earlier delivered li
 refusal codes, request UUIDs, heard-turn correlation, notice order and acknowledgement snapshots are
 preserved. No notice prefix is added.
 
+The current wording table uses the first sentence above, followed by the exact text below.
+`E` is the number of earlier delivered lines. Each cause uses every row; `L` is
+`1 earlier line` for E=1 and `2 earlier lines` for E=2 (and the corresponding plural for larger counts).
+
+| Effects | E | Text after the first sentence | Not-sent clip eligible |
+| --- | --- | --- | --- |
+| none | 0 | `Nothing was sent.` | Yes |
+| paste | 0 | `Your words may be in the input box, but nothing was submitted.` | No |
+| enter | 0 | `Your words may have gone through; check the Mac before resending.` | No |
+| none | >0 | `<L> went through; the rest were not sent.` | No |
+| paste | >0 | `<L> went through. The next line may be in the input box; the rest were not submitted.` | No |
+| enter | >0 | `<L> went through, and the next line may have too; check the Mac before resending.` | No |
+
 The `confirm-not-sent` clip is eligible only when effects are `none` and no earlier line was delivered.
 Possible paste, possible Enter, or any earlier delivered line suppresses it. Existing privacy and
 connection-teardown checks still apply to eligible clips. The existing delivery-refusal audit remains.
@@ -408,7 +421,7 @@ Tests use synthetic typed errors, adapters, child events and loopback device fra
 a live dialog, device hearing, an installed build, or a captured-output round trip.
 
 Verification used Swift 6.3.3 on the Dev Work VM, in a fresh checkout synchronized by local bundles.
-The source/test snapshot is `b3ddae98f61b4a1358128f306470e6fbb9a12009`. Before every run, verification
+The prior source/test snapshot is `b3ddae98f61b4a1358128f306470e6fbb9a12009`. Before every run, verification
 waited for the shared lane; each attached SSH run had closed stdin, background task policy, at most
 four workers, a 600-second cap, signal handling and process-group cleanup.
 
