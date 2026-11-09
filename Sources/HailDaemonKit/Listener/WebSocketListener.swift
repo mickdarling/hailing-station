@@ -14,6 +14,11 @@ public enum WebSocketListenerError: Error, Sendable, Equatable {
     case failed(String)
 }
 
+enum PeerAmbientTeardownScope {
+    /// Deterministic cleanup barrier for lifecycle tests; absent in production.
+    @TaskLocal static var beforeEnd: (@Sendable () async -> Void)?
+}
+
 /// Structured lifecycle data only. Frame payloads and transcript text never enter listener logs.
 public struct WebSocketListenerEvent: Codable, Sendable, Equatable {
     public var event: String
@@ -382,8 +387,10 @@ public struct AmbientRouterStatus: Sendable, Equatable {
 }
 
 extension WebSocketListener {
-    fileprivate func peerEnded(_ id: UUID) async {
+    func peerEnded(_ id: UUID) async {
         guard let peer = peers.removeValue(forKey: id) else { return }
+        // Retire input authority before any asynchronous ambient cleanup or environment refresh.
+        peer.replyTransport.retire()
         transports[peer.session.connectionID] = nil
         heardTurns.removeValue(forKey: peer.session.connectionID)?.close()
         lastInput.forget(connection: peer.session.connectionID)
@@ -400,6 +407,7 @@ extension WebSocketListener {
 
     /// Ends the peer's ambient stream, if it owns one, and stops its children. Never cancels a run (#203).
     fileprivate func endAmbient(of peer: WebSocketPeer) async {
+        if let beforeEnd = PeerAmbientTeardownScope.beforeEnd { await beforeEnd() }
         guard let gate = authorizer.ambientAudio else { return }
         let connection = peer.session.connectionID
         // Read first, so nothing is awaited between the gate's end and the teardown that may park a mode (MM-E).

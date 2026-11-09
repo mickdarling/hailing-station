@@ -137,6 +137,9 @@ extension WebSocketListener {
     }
 
     /// Target policy is supplied by HailHost; this contributor never reacquires that generation's lock.
+    /// Audience and its peer permit are captured together on the listener actor without suspension.
+    /// Admission nests policy → task → session update → router → privacy → transport → attempt.
+    /// No gate awaits; in particular transport never surrounds a router acquisition or ambient teardown.
     func taskProgressDeliveryStages(
         for task: TaskProgressTask, authority: TaskProgressPublicationAuthority,
         privacyRevision: UInt64, attempt: TaskProgressWakeAttempt, lifetime: TaskProgressAdmissionLifetime
