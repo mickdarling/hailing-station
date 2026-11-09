@@ -82,7 +82,7 @@ the other retirement cases keep their refusal accounting assertions.
 Verification lane: Dev Work VM, Swift 6.3.3. Swift build/test concurrency is limited to four workers.
 The checkout starts at `d13765e79ffc52dcbff55af091b7c2552c28a7d5`; local bundles supply the branch changes.
 
-Initial F5 verification:
+Initial verification:
 
 | Gate | Result |
 | --- | --- |
@@ -111,4 +111,4 @@ The production-file count uses the PR-shape checker's exclusions and rename hand
 `Sources/HailDaemonKit/Listener/WebSocketListener.swift`, below the four-file limit. The remaining additions
 are the new peer-admission suite, its support file and this record; all earlier suites and fixtures remain unchanged.
 
-No host build/test, simulator run, installed-build change or physical-device validation is part of this record.
+The host gate (Xcode Swift 6.2.4: build, the touched test families without parallelism, the reply CLI tests, and the simulator and macOS app builds) is recorded on the pull request. No installed-build change or physical-device validation is part of this record.
