@@ -46,7 +46,8 @@ struct TaskProgressPeerRig {
     let fixture: SlowTmuxCommandFixture
     let files: TaskProgressPeerFileWatch
     let launch: RecipientPublicationGate
-    let teardown = OwnerAdmissionTestBarrier()
+    let teardown: OwnerAdmissionTestBarrier
+    let watchdog: any DispatchSourceTimer
 
     static func make(beforeAdmission: Bool) async throws -> Self {
         let fixture = try SlowTmuxCommandFixture()
@@ -65,16 +66,41 @@ struct TaskProgressPeerRig {
                                                             binding: SlowTmuxCommandFixture.binding)
         let (peerID, peer) = try await wake.listener.taskProgressPeerFixture()
         let controller = try #require(await wake.listener.taskProgressController)
+        let teardown = OwnerAdmissionTestBarrier()
+        let watchdog = DispatchSource.makeTimerSource()
+        let deadlines = wake.clock.scheduled.continuation, finished = wake.finished.continuation
+        let entered = teardown.entered.continuation
+        watchdog.setEventHandler { deadlines.finish(); finished.finish(); entered.finish() }
+        watchdog.schedule(deadline: .now() + .seconds(20))
+        watchdog.resume()
         return Self(wake: wake, peerID: peerID, peer: peer, controller: controller,
-                    fixture: fixture, files: files, launch: launch)
+                    fixture: fixture, files: files, launch: launch, teardown: teardown, watchdog: watchdog)
     }
 
-    func endPeer(task: TaskProgressTask, stopping: Bool = false) -> Task<Void, Never> {
+    private func endPeer(task: TaskProgressTask, stopping: Bool = false) -> Task<Void, Never> {
         Task {
             await PeerAmbientTeardownScope.$beforeEnd.withValue({ await teardown.hold(task) }, operation: {
                 if stopping { await wake.listener.stop() } else { await wake.listener.peerEnded(peerID) }
             })
         }
+    }
+
+    func withEndedPeer(
+        task: TaskProgressTask, stopping: Bool = false, operation: () async throws -> Void
+    ) async throws {
+        var entered = teardown.entered.stream.makeAsyncIterator()
+        let ending = endPeer(task: task, stopping: stopping)
+        do {
+            _ = try #require(await entered.next())
+            try await operation()
+        } catch {
+            release()
+            await ending.value
+            await wake.listener.stop()
+            throw error
+        }
+        teardown.release()
+        await ending.value
     }
 
     func replacePeer(sameAudience: Bool) async throws -> WebSocketPeer {
@@ -97,7 +123,7 @@ struct TaskProgressPeerRig {
         return successor
     }
 
-    func release() { launch.release(); teardown.release(); fixture.release() }
+    func release() { watchdog.cancel(); launch.release(); teardown.release(); fixture.release() }
 }
 
 extension WebSocketListener {
