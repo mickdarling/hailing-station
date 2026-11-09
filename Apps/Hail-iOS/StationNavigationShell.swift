@@ -24,16 +24,19 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
     #endif
+    /// Hides the station's whole stack from VoiceOver while no slot shows it (see `StationStackAccessibility`).
+    @State private var stationStack = StationStackAccessibility()
 
     var body: some View {
         arrangement
             .overlayPreferenceValue(StationSlotKey.self) { slot in
                 GeometryReader { proxy in
                     let frame = slot.map { proxy[$0] }
-                    page(.station)
+                    page(.station, hidden: frame == nil)
                         .frame(width: frame?.width ?? 0, height: frame?.height ?? 0)
                         .position(x: frame?.midX ?? 0, y: frame?.midY ?? 0)
                         .stationCollapsed(frame == nil)
+                        .onChange(of: frame == nil, initial: true) { _, hidden in stationStack.hidden = hidden }
                 }
             }
     }
@@ -106,11 +109,13 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
         }
     }
 
-    private func page(_ section: StationSection) -> some View {
+    private func page(_ section: StationSection, hidden: Bool = false) -> some View {
         NavigationStack {
             // The station's root sits under the slot's bar, so it shows none of its own; a pushed tool keeps its own.
             if section == .station {
-                detail(section).stationHiddenNavigationBar()
+                detail(section)
+                    .stationHiddenNavigationBar()
+                    .stationStackAccessibility(stationStack, hidden: hidden)
             } else {
                 detail(section)
             }
