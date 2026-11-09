@@ -296,13 +296,24 @@ Five came from `LocalDispatchPreflightWaitTests` and five from `ReplyRecipientHa
 these deliberately exercise deadline and cancellation failure paths. The same ten tmux-dependent
 functions in the five suites listed above were skipped because tmux was unavailable. All new tests ran.
 
-`python3 -m unittest discover -s Tests/ReplyCLITests` ran 124 tests in 231.936 seconds and exited 1
-with one setup error. The unchanged `DeliveryMappingCleanupCLITests` fixture extracts only the
-`case partial(...)` line into an isolated Swift enum. That probe has neither `HostPartialReason` nor
-the String convenience overload, so it fails to compile. The actual package and CLI compile, and
-unchanged Swift partial-equality tests and the new CLI-text pins pass. Updating this extraction fixture
-requires an exception to the requirement that existing tests remain unchanged; no fixture or assertion
-has been changed for this result.
+At that snapshot, `python3 -m unittest discover -s Tests/ReplyCLITests` ran 124 tests in 231.936
+seconds and exited 1 with one setup error. The `DeliveryMappingCleanupCLITests` fixture then extracted
+only the `case partial(...)` line into an isolated Swift enum, without `HostPartialReason` or the
+String convenience overload, so its probe failed to compile.
+
+With maintainer approval, `1ce33c633b916a90d39bf6139a7b4d245c0f9bbc` changed only that fixture's source
+extraction. It now splices `HostPartialReason`, the String overload, `AdapterError`, `DialogBlock` and
+`PendingInputReason` from the production sources; no definition is hand-copied. Its assertions are
+unchanged: exact stderr text including pluralization and the trailing newline, empty stdout, and exit 6,
+for all three reasons with zero, one and two delivered lines. On the Dev Work VM, under the same lane
+conditions, the focused fixture passed (1 test), the full Reply CLI suite passed (125 tests, 231.110
+seconds), and the warnings-as-errors build exited 0.
+
+`c880200b6e636ac4c442b6feb67d2835dca1788b` adds only a setup assertion that fails if the extraction no
+longer finds the partial reason, its overload or the adapter declarations. At that head, on the host
+with Swift 6.2.4, a package-and-test build (`swift build --build-tests`, four jobs, background task
+policy) exited 0, and the `test_delivery_mapping_cleanup.py` fixture alone passed (1 test, 4.544
+seconds). The full Reply CLI suite was not rerun on the host.
 
 The repository's policy CLI checks passed with exit 0 and no output after a successful
 `swift build --product haild -j 4` with the lane's CLT Testing flags.
