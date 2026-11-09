@@ -30,16 +30,22 @@ final class StationStackAccessibility {
 
     private func apply() {
         #if os(iOS)
-        stackView?.accessibilityElementsHidden = hidden
+        guard let stackView, stackView.accessibilityElementsHidden != hidden else { return }
+        stackView.accessibilityElementsHidden = hidden
+        // Tells assistive technologies the tree changed, so a station shown again is read afresh rather than from the
+        // tree they last had (a station shown again stayed out of the tree in #1183's iPad test before this).
+        UIAccessibility.post(notification: .layoutChanged, argument: nil)
         #endif
     }
 }
 
 extension View {
-    /// Placed on the stack's root: finds the stack for `accessibility`, and hides the root itself too.
+    /// Placed on the stack's root. On iOS it finds the stack for `accessibility`, whose flag covers the root and any
+    /// pushed view, so nothing else hides the root there. Elsewhere the root is hidden directly.
+    @ViewBuilder
     func stationStackAccessibility(_ accessibility: StationStackAccessibility, hidden: Bool) -> some View {
         #if os(iOS)
-        background(StationStackProbe(accessibility: accessibility)).accessibilityHidden(hidden)
+        background(StationStackProbe(accessibility: accessibility))
         #else
         accessibilityHidden(hidden)
         #endif
