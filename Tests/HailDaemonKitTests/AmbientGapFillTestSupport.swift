@@ -53,6 +53,8 @@ struct AmbientGapFillRig {
 
     static func chunk(_ sequence: Int) -> Data { Data(repeating: UInt8(sequence % 251 + 1), count: 3_200) }
     static func silence(_ segments: Int) -> Data { Data(repeating: 0, count: min(segments, 30) * 3_200) }
+    /// Concatenates expected child bytes in one typed step; chained `+` exceeds host Swift 6.2.4's type-check budget.
+    static func joined(_ parts: Data...) -> Data { parts.reduce(into: Data()) { $0.append($1) } }
 
     func heard(_ session: String) throws -> Data {
         try Data(contentsOf: fake.directory.appendingPathComponent("\(session).raw"))

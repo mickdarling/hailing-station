@@ -45,8 +45,8 @@ extension AmbientGapFillTests {
             try await rig.send(stream, 11, final: true)
             await rig.env.router.settle()
             let slices = milliseconds == 1_000 ? 9 : 10
-            #expect(try rig.heard(session) == AmbientGapFillRig.chunk(0)
-                    + AmbientGapFillRig.silence(slices) + AmbientGapFillRig.chunk(11))
+            #expect(try rig.heard(session) == AmbientGapFillRig.joined(
+                AmbientGapFillRig.chunk(0), AmbientGapFillRig.silence(slices), AmbientGapFillRig.chunk(11)))
             #expect(rig.fills.map(\.detail) == [
                 "fills=1 missing=10 filled_ms=\(slices * 100) capped=\(slices == 10 ? 0 : 1)"
             ])

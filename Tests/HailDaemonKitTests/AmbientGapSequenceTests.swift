@@ -39,8 +39,8 @@ extension AmbientGapFillTests {
             #expect(accepted.accepted && accepted.gap?.missing == 1 && accepted.gap?.bytes == 3_200)
             pipeline.finishInput()
             await rig.env.router.settle()
-            #expect(try rig.heard(pipeline.session) == AmbientGapFillRig.chunk(0)
-                    + AmbientGapFillRig.silence(1) + AmbientGapFillRig.chunk(2))
+            #expect(try rig.heard(pipeline.session) == AmbientGapFillRig.joined(
+                AmbientGapFillRig.chunk(0), AmbientGapFillRig.silence(1), AmbientGapFillRig.chunk(2)))
         } catch { await rig.finish(); throw error }
         await rig.finish()
     }

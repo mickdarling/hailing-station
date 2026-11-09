@@ -24,9 +24,14 @@ import Testing
         worker.resume()
         worker.sync {}
         let bytes = FileHandle(fileDescriptor: descriptors[0], closeOnDealloc: false).readDataToEndOfFile()
-        #expect(bytes == Data(repeating: 0, count: 3_200) + pcm + pcm + pcm)
+        // Built in typed steps: host Swift 6.2.4 cannot type-check the single concatenation in reasonable time.
+        var expected = Data(repeating: 0, count: 3_200)
+        for _ in 0..<3 { expected.append(pcm) }
+        #expect(bytes == expected)
         #expect(writer.counters.writtenBytes == 9_600) // Synthetic silence is excluded.
-        #expect(writer.counters.writtenBytes + writer.counters.droppedBytes == 4 * pcm.count)
+        let accounted: Int = writer.counters.writtenBytes + writer.counters.droppedBytes
+        let offered: Int = 4 * pcm.count
+        #expect(accounted == offered)
     }
 
     @Test func evictedPrefixDoesNotCountAsDroppedRealAudio() throws {

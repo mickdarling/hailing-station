@@ -54,9 +54,14 @@ import Testing
             let secondSession = try #require(rig.env.router.activePipeline?.session)
             try await rig.send(second, 1, final: true)
             await rig.env.router.settle()
-            #expect(try rig.heard(firstSession) == AmbientGapFillRig.chunk(0)
-                    + AmbientGapFillRig.silence(3) + AmbientGapFillRig.chunk(4))
-            #expect(try rig.heard(secondSession) == AmbientGapFillRig.chunk(0) + AmbientGapFillRig.chunk(1))
+            // Typed steps keep host Swift 6.2.4 type-checking bounded.
+            var firstExpected: Data = AmbientGapFillRig.chunk(0)
+            firstExpected.append(AmbientGapFillRig.silence(3))
+            firstExpected.append(AmbientGapFillRig.chunk(4))
+            var secondExpected: Data = AmbientGapFillRig.chunk(0)
+            secondExpected.append(AmbientGapFillRig.chunk(1))
+            #expect(try rig.heard(firstSession) == firstExpected)
+            #expect(try rig.heard(secondSession) == secondExpected)
             #expect(rig.fills.count == 1)
         } catch { await rig.finish(); throw error }
         await rig.finish()

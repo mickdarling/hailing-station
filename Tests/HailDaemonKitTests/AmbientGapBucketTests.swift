@@ -32,8 +32,8 @@ extension AmbientGapFillTests {
             pipeline.finishInput()
             await rig.env.router.settle()
             let slowPCM = mode == "slow" ? Data((0..<120).map { $0.isMultiple(of: 2) ? UInt8(1) : 2 }) : Data()
-            #expect(try rig.heard(pipeline.session) == AmbientGapFillRig.chunk(0)
-                    + slowPCM + first.bytes + second.bytes)
+            #expect(try rig.heard(pipeline.session) == AmbientGapFillRig.joined(
+                AmbientGapFillRig.chunk(0), slowPCM, first.bytes, second.bytes))
             #expect(pipeline.counters.writtenBytes == 4_000 + slowPCM.count)
             #expect(pipeline.counters.droppedBytes == 0)
         } catch { await rig.finish(); throw error }

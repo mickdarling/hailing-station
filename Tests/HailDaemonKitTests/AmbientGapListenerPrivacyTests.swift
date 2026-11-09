@@ -38,8 +38,8 @@ extension AmbientGapFillTests {
             _ = try await AmbientPrivacySwitchTests.untilPong(socket, step: "final resumed segment")
             await rig.env.router.settle()
             let slices = milliseconds == 1_500 ? 14 : 30
-            #expect(try rig.heard(pipeline.session) == AmbientGapFillRig.chunk(0)
-                    + AmbientGapFillRig.silence(slices) + AmbientGapFillRig.chunk(50))
+            #expect(try rig.heard(pipeline.session) == AmbientGapFillRig.joined(
+                AmbientGapFillRig.chunk(0), AmbientGapFillRig.silence(slices), AmbientGapFillRig.chunk(50)))
             #expect(pipeline.counters.writtenBytes == 6_400 && pipeline.counters.droppedBytes == 0)
             #expect(rig.fills.map(\.detail) == ["fills=1 missing=49 filled_ms=\(slices * 100) capped=1"])
         } catch { await rig.finish(); throw error }
