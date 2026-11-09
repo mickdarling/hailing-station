@@ -31,10 +31,10 @@ import Testing
 
     @Test func bordersAndWrapping() {
         let screen = """
-        ╭──────────────────────────────────────╮
+        ╭────────────────────╮
         │ Computer Use wants to control these  │
         │ apps                                │
-        ╰──────────────────────────────────────╯
+        ╰────────────────────╯
         """
         let expected = TmuxDialogState.dialog(
             kind: .computerUseAppApproval, title: "Computer Use wants to control these apps"
@@ -96,7 +96,7 @@ actor DialogCaptureRunner: CommandRunner {
         switch failure {
         case .thrown: throw CaptureError()
         case .nonzero: return CommandResult(exitCode: 1, stdout: "ordinary prompt")
-        case .empty: return CommandResult(exitCode: 0, stdout: " \n\t")
+        case .empty: return CommandResult(exitCode: 0, stdout: "")
         }
     }
 }

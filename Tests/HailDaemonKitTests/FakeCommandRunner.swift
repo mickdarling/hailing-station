@@ -44,11 +44,12 @@ actor FakeCommandRunner: GuardedCommandRunner {
         return result
     }
 
-    /// The listing tmux would print for `sessions`, everything else succeeds silently.
+    /// The listing tmux would print for `sessions`, plus an explicitly clear visible screen for input safety.
     static func serving(
         _ sessions: SessionListing, delay: Duration? = nil, gate: TypingGate? = nil
     ) -> FakeCommandRunner {
         FakeCommandRunner(delay: delay, gate: gate) { arguments in
+            if let capture = clearDialogCapture(arguments) { return capture }
             guard arguments.contains("list-sessions") else { return CommandResult(exitCode: 0, stdout: "") }
             let listing = sessions.get()
             guard !listing.isEmpty else {
@@ -135,3 +136,10 @@ final class SessionListing: Sendable {
 }
 
 let twoSessions = "$1|1758230000|%1|501|claude-hail\n$2|1758230001|%2|502|codex\n"
+
+/// Default visible prompt for listing-only fixtures. Cursor observations and history captures stay unchanged.
+func clearDialogCapture(_ arguments: [String]) -> CommandResult? {
+    guard arguments.contains("capture-pane"), !arguments.contains("display-message"),
+          !arguments.contains("-J") else { return nil }
+    return CommandResult(exitCode: 0, stdout: "> synthetic prompt\n")
+}

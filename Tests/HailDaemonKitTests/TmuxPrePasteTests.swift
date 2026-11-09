@@ -13,6 +13,7 @@ import Testing
         let listings = Mutex(0)
         let delivery = Mutex<Task<Void, any Error>?>(nil)
         let runner = FakeCommandRunner { arguments in
+            if let capture = clearDialogCapture(arguments) { return capture }
             guard arguments.contains("list-sessions") else { return CommandResult(exitCode: 0, stdout: "") }
             if listings.withLock({ value -> Int in value += 1; return value }) == 2 {
                 let deadline = Date().addingTimeInterval(5)

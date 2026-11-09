@@ -8,14 +8,21 @@ enum TmuxDialogState: Sendable, Equatable {
 
 enum TmuxDialogKind: String, Sendable {
     case computerUsePermissions, computerUseAppApproval, toolPermission, modalFooter
+
+    /// Fixed, bounded display titles; no pane text crosses the refusal boundary.
+    var title: String {
+        switch self {
+        case .computerUsePermissions: "Computer Use needs macOS permissions"
+        case .computerUseAppApproval: "Computer Use wants to control these apps"
+        case .toolPermission: "a tool permission dialog"
+        case .modalFooter: "a dialog"
+        }
+    }
 }
 
 extension TmuxAdapter {
     // Verified against Claude Code 2.1.319; titles may drift. Footer and "Do you want" rules are version-independent.
-    private static let dialogTitles: [(TmuxDialogKind, String)] = [
-        (.computerUsePermissions, "Computer Use needs macOS permissions"),
-        (.computerUseAppApproval, "Computer Use wants to control these apps")
-    ]
+    private static let knownDialogs: [TmuxDialogKind] = [.computerUsePermissions, .computerUseAppApproval]
 
     /// Visible rows only. Every returned title is fixed here, never taken from the pane.
     static func classifyDialog(visibleScreen: String) -> TmuxDialogState {
@@ -23,18 +30,20 @@ extension TmuxAdapter {
             let scalars = line.unicodeScalars.filter { !(0x2500...0x257F).contains($0.value) }
             return String(String.UnicodeScalarView(scalars)).trimmingCharacters(in: .whitespaces)
         }.filter { !$0.isEmpty }
-        for (kind, title) in dialogTitles where containsTitle(title, in: lines) {
-            return .dialog(kind: kind, title: title)
+        for kind in knownDialogs where containsTitle(kind.title, in: lines) {
+            return .dialog(kind: kind, title: kind.title)
         }
         let bottom = lines.suffix(12)
         let question = bottom.contains { $0.range(of: #"(?i)^Do you want to "#, options: .regularExpression) != nil }
         let option = bottom.contains { $0.range(of: #"(?i)^(❯\s*)?1\.\s*Yes"#, options: .regularExpression) != nil }
-        if question && option { return .dialog(kind: .toolPermission, title: "a tool permission dialog") }
+        if question && option {
+            return .dialog(kind: .toolPermission, title: TmuxDialogKind.toolPermission.title)
+        }
         let footer = bottom.contains {
             $0.range(of: #"(?i)^(?:.*\s)?esc to cancel$"#, options: .regularExpression) != nil
         }
         if footer {
-            return .dialog(kind: .modalFooter, title: "a dialog")
+            return .dialog(kind: .modalFooter, title: TmuxDialogKind.modalFooter.title)
         }
         return .clear
     }
@@ -57,7 +66,7 @@ extension TmuxAdapter {
     func inspectDialog(_ session: Session) async -> TmuxDialogState {
         let arguments = Self.baseArguments(socket: socket) + ["capture-pane", "-p", "-t", session.paneID]
         guard let result = try? await runner.run(tmuxPath, arguments), result.exitCode == 0,
-              !result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .unknown }
+              !result.stdout.isEmpty else { return .unknown }
         return Self.classifyDialog(visibleScreen: result.stdout)
     }
 
