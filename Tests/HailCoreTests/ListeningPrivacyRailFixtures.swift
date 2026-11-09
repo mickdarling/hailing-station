@@ -33,43 +33,41 @@ enum RailFixtures {
     ]
     static let connections: [RailConnection?] = [nil, .reconnecting, .stopped(reason: "Connection dropped")]
 
-    struct Case {
+    static let talks: [TalkCapturePhase?] = [nil, .idle, .starting, .recording, .finishing]
+
+    struct Case: Sendable, CustomStringConvertible {
         let mic: MicLiveState?
         let listening: StationMenuStatus.Listening?
-        let privacy: RailPrivacy?
-        let handoff: AmbientHandoff?
-        let availability: StationAvailability
-        let connection: RailConnection?
-        var state: ListeningPrivacyRailState {
-            .resolve(mic: mic, listening: listening, host: RailHost(
-                privacy: privacy, handoff: handoff, availability: availability, connection: connection))
-        }
+        let talk: TalkCapturePhase?
+        let host: RailHost
+        var state: ListeningPrivacyRailState { .resolve(mic: mic, listening: listening, talk: talk, host: host) }
+        var description: String { "mic \(String(describing: mic)), listening \(String(describing: listening)), "
+            + "talk \(String(describing: talk)), \(host)" }
     }
 
-    static var everyCase: [Case] {
-        var cases: [Case] = []
-        for mic in mics {
-            for listening in listenings {
-                for privacy in privacies {
-                    for handoff in handoffs {
-                        for availability in availabilities {
-                            for connection in connections {
-                                cases.append(Case(mic: mic, listening: listening, privacy: privacy, handoff: handoff,
-                                                  availability: availability, connection: connection))
-                            }
-                        }
-                    }
+    /// Every combination of the inputs above.
+    static let everyCase: [Case] = {
+        let hosts = privacies.flatMap { privacy in
+            handoffs.flatMap { handoff in
+                availabilities.flatMap { availability in
+                    connections.map { RailHost(privacy: privacy, handoff: handoff, availability: availability,
+                                               connection: $0) }
                 }
             }
         }
-        return cases
-    }
+        return mics.flatMap { mic in
+            listenings.flatMap { listening in
+                talks.flatMap { talk in hosts.map { Case(mic: mic, listening: listening, talk: talk, host: $0) } }
+            }
+        }
+    }()
 
     static func resolve(
-        mic: MicLiveState?, listening: StationMenuStatus.Listening? = .listening, privacy: RailPrivacy?,
-        handoff: AmbientHandoff? = nil, availability: StationAvailability = .ready, connection: RailConnection? = nil
+        mic: MicLiveState?, listening: StationMenuStatus.Listening? = .listening, talk: TalkCapturePhase? = .idle,
+        privacy: RailPrivacy?, handoff: AmbientHandoff? = nil, availability: StationAvailability = .ready,
+        connection: RailConnection? = nil
     ) -> ListeningPrivacyRailState {
-        .resolve(mic: mic, listening: listening, host: RailHost(
+        .resolve(mic: mic, listening: listening, talk: talk, host: RailHost(
             privacy: privacy, handoff: handoff, availability: availability, connection: connection))
     }
 }

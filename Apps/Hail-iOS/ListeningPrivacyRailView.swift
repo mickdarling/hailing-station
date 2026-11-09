@@ -84,21 +84,21 @@ struct ListeningPrivacyRailView: View {
     let unavailable = RailPrivacy.status(PrivacySwitchStatus(
         ready: true, duck: DuckModeStatus(on: true), requested: nil, listeningStopped: true, now: now))
     let states: [ListeningPrivacyRailState] = [
-        .resolve(mic: nil, listening: nil, host: RailHost(
+        .resolve(mic: nil, listening: nil, talk: .idle, host: RailHost(
             privacy: nil, handoff: nil, availability: .ready, connection: nil)),
-        .resolve(mic: .uncertain, listening: .paused, host: RailHost(
+        .resolve(mic: .uncertain, listening: .paused, talk: .idle, host: RailHost(
             privacy: notPrivate, handoff: nil, availability: .ready, connection: nil)),
-        .resolve(mic: .live, listening: .listening, host: RailHost(
+        .resolve(mic: .live, listening: .listening, talk: .idle, host: RailHost(
             privacy: confirmed, handoff: nil, availability: .ready, connection: nil)),
-        .resolve(mic: .live, listening: .listening, host: RailHost(
+        .resolve(mic: .live, listening: .listening, talk: .idle, host: RailHost(
             privacy: .unsupported, handoff: nil, availability: .ready, connection: nil)),
-        .resolve(mic: .off, listening: .off, host: RailHost(
+        .resolve(mic: .off, listening: .off, talk: .idle, host: RailHost(
             privacy: unavailable, handoff: nil, availability: .ready, connection: nil)),
-        .resolve(mic: .off, listening: .elsewhere, host: RailHost(
+        .resolve(mic: .off, listening: .elsewhere, talk: .idle, host: RailHost(
             privacy: nil, handoff: .movedAway(to: "pad"), availability: .ready, connection: nil)),
-        .resolve(mic: .off, listening: .off, host: RailHost(
+        .resolve(mic: .off, listening: .off, talk: .idle, host: RailHost(
             privacy: nil, handoff: nil, availability: .reconnecting, connection: .reconnecting)),
-        .resolve(mic: .off, listening: .off, host: RailHost(
+        .resolve(mic: .off, listening: .off, talk: .idle, host: RailHost(
             privacy: notPrivate, handoff: nil, availability: .ready, connection: nil))
     ]
     ScrollView {

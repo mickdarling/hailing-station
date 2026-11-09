@@ -9,18 +9,24 @@ struct ListeningPrivacyRailSweepTests {
     // Jarvis, PR 4 plan: whenever the microphone isn't off, the tone is alert or private, never neutral. Private
     // needs confirmed privacy on a ready station with no tap waiting.
     @Test func everyMicrophoneThatIsNotOffIsAlertOrPrivate() {
+        // 4 mics × 6 listening × 5 talk × 7 privacy × 3 handoffs × 11 availabilities × 3 connections.
+        #expect(Fixture.everyCase.count == 83_160)
         for item in Fixture.everyCase {
             let state = item.state
-            let micOff = item.mic == .off && item.listening?.isOn != true
+            let talkCapturing = item.talk.map { $0 != .idle } ?? false
+            let micOff = item.mic == .off && item.listening?.isOn != true && !talkCapturing
             if !micOff {
                 #expect(state.tone != .neutral, "\(item)")
                 #expect(state.mic != .off, "\(item)")
                 #expect(state.kind != .off, "\(item)")
             }
-            if state.tone == .private, state.kind == .privateConfirmed {
-                #expect(item.privacy == Fixture.confirmedPrivate, "\(item)")
-                #expect(item.availability == .ready, "\(item)")
-                #expect(item.privacy != Fixture.pending, "\(item)")
+            if state.kind == .privateConfirmed {
+                #expect(item.host.privacy == Fixture.confirmedPrivate, "\(item)")
+                #expect(item.host.availability == .ready, "\(item)")
+                #expect(item.host.privacy != Fixture.pending, "\(item)")
+                // Codex review of #1153: privacy covers ambient listening only, never talk.
+                #expect(item.talk == .idle, "\(item)")
+                #expect(item.listening == .listening, "\(item)")
             }
             #expect(state.mic == item.mic || item.mic == nil || state.mic == .uncertain, "\(item)")
         }

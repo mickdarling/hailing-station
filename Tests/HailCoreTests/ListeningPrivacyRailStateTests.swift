@@ -6,16 +6,18 @@ struct ListeningPrivacyRailStateTests {
     private typealias Fixture = RailFixtures
 
     private func resolve(
-        mic: MicLiveState?, listening: StationMenuStatus.Listening? = .listening, privacy: RailPrivacy?,
-        handoff: AmbientHandoff? = nil, availability: StationAvailability = .ready, connection: RailConnection? = nil
+        mic: MicLiveState?, listening: StationMenuStatus.Listening? = .listening, talk: TalkCapturePhase? = .idle,
+        privacy: RailPrivacy?, handoff: AmbientHandoff? = nil, availability: StationAvailability = .ready,
+        connection: RailConnection? = nil
     ) -> ListeningPrivacyRailState {
-        RailFixtures.resolve(mic: mic, listening: listening, privacy: privacy, handoff: handoff,
+        RailFixtures.resolve(mic: mic, listening: listening, talk: talk, privacy: privacy, handoff: handoff,
                              availability: availability, connection: connection)
     }
 
     @Test func unknownInputsFailSafeToRecordingMayBeOn() {
         let state = ListeningPrivacyRailState.resolve(
-            mic: nil, listening: nil, host: RailHost(privacy: nil, handoff: nil, availability: .ready, connection: nil))
+            mic: nil, listening: nil, talk: nil,
+            host: RailHost(privacy: nil, handoff: nil, availability: .ready, connection: nil))
         #expect(state.kind == .mayBeRecording)
         #expect(state.summary == "Recording may be on")
         #expect(state.mic == .uncertain)
@@ -37,6 +39,23 @@ struct ListeningPrivacyRailStateTests {
         #expect(state.summary == "Private · mic on for its name")
         #expect(state.detail.hasPrefix("The microphone is on."))
         #expect(resolve(mic: .uncertain, privacy: Fixture.confirmedPrivate).summary == "Private · mic may be on")
+    }
+
+    // Codex review of #1153: privacy covers ambient listening only. Tap-to-talk sends what it captures.
+    @Test func talkWhilePrivateIsNeverPrivate() {
+        let talkAlone = resolve(mic: .live, listening: .off, talk: .recording, privacy: Fixture.confirmedPrivate)
+        #expect(talkAlone.kind == .recording)
+        #expect(talkAlone.summary == "Recording")
+        #expect(talkAlone.detail.contains("Privacy covers ambient listening only"))
+        for talk: TalkCapturePhase in [.starting, .recording, .finishing] {
+            let state = resolve(mic: .live, talk: talk, privacy: Fixture.confirmedPrivate)
+            #expect(state.kind == .recording, "\(talk)")
+            #expect(state.tone == .alert, "\(talk)")
+        }
+        #expect(resolve(mic: .live, talk: nil, privacy: Fixture.confirmedPrivate).kind == .mayBeRecording)
+        #expect(resolve(mic: .live, listening: .off, privacy: Fixture.confirmedPrivate).kind == .mayBeRecording)
+        // A microphone reported off while talk is capturing is a contradiction.
+        #expect(resolve(mic: .off, listening: .off, talk: .recording, privacy: Fixture.notPrivate).mic == .uncertain)
     }
 
     @Test func privateOnAStationThatIsNotReadyMayBeRecording() {

@@ -42,17 +42,21 @@ public struct RailHost: Equatable, Sendable {
 /// | 2 | not off    | privacy unknown, pending or unconfirmed; station not ready;    | `mayBeRecording`     | alert   |
 /// |   |            | host claims not capturing (moved away, elsewhere, stopped,     |                      |         |
 /// |   |            | private listening unavailable); or the run is reconnecting     |                      |         |
-/// | 3 | not off    | confirmed private on a ready station                           | `privateConfirmed`   | private |
-/// | 4 | live       | confirmed not private or unsupported on a ready station        | `recording`          | alert   |
-/// | 5 | uncertain  | confirmed not private or unsupported on a ready station        | `mayBeRecording`     | alert   |
+/// | 3 | not off    | confirmed private on a ready station, ambient listening on and | `privateConfirmed`   | private |
+/// |   |            | talk known idle                                                |                      |         |
+/// | 4 | live       | confirmed not private or unsupported; or confirmed private     | `recording`          | alert   |
+/// |   |            | while talk is capturing: privacy covers ambient listening only |                      |         |
+/// | 5 | not off    | any other: an uncertain microphone, or confirmed private with  | `mayBeRecording`     | alert   |
+/// |   |            | talk unknown or ambient listening not on                       |                      |         |
 /// | 6 | off        | confirmed private, then the host stopped listening             | `privateUnavailable` | private |
 /// | 7 | off        | listening moved to another device                              | `elsewhere`          | neutral |
 /// | 8 | off        | the run is reconnecting or stopped                             | `interrupted`        | neutral |
 /// | 9 | off        | anything else                                                  | `off`                | neutral |
 ///
-/// "Not off" is `.live`, `.uncertain` or unknown. A microphone reported off while the listening switch is on is a
-/// contradiction and reads as uncertain. "Off" is about this device only: it never says the Mac or another device
-/// stopped capturing.
+/// "Not off" is `.live`, `.uncertain` or unknown. A microphone reported off while the listening switch is on or talk
+/// is capturing is a contradiction and reads as uncertain. Privacy covers ambient listening only: tap-to-talk sends
+/// what it captures whatever the privacy switch says (Codex review of #1153). "Off" is about this device only: it
+/// never says the Mac or another device stopped capturing.
 public struct ListeningPrivacyRailState: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case paused, mayBeRecording, privateConfirmed, recording, privateUnavailable, elsewhere, interrupted, off
@@ -85,12 +89,13 @@ public struct ListeningPrivacyRailState: Equatable, Sendable {
     static let offDetail = "This device isn't capturing audio. That doesn't show whether the Mac or another "
         + "device is."
     static let unsupportedDetail = "This Mac has no privacy mode, so everything heard is sent."
+    static let talkDetail = "Privacy covers ambient listening only, so what talk captures is sent."
 
-    /// `mic` and `listening` are this device's own truth; `host` holds what the host and station report.
+    /// `mic`, `listening` and `talk` are this device's own truth; `host` holds what the host and station report.
     public static func resolve(
-        mic: MicLiveState?, listening: StationMenuStatus.Listening?, host: RailHost
+        mic: MicLiveState?, listening: StationMenuStatus.Listening?, talk: TalkCapturePhase?, host: RailHost
     ) -> Self {
-        let facts = Facts(mic: mic, listening: listening, host: host)
+        let facts = Facts(mic: mic, listening: listening, talk: talk, host: host)
         return facts.mic == .off ? micOff(facts) : micNotOff(facts)
     }
 
@@ -98,6 +103,7 @@ public struct ListeningPrivacyRailState: Equatable, Sendable {
     private struct Facts {
         let mic: MicLiveState
         let listening: StationMenuStatus.Listening?
+        let talk: TalkCapturePhase?
         let privacy: RailPrivacy?
         let status: PrivacySwitchStatus?
         let ready: Bool
@@ -105,13 +111,16 @@ public struct ListeningPrivacyRailState: Equatable, Sendable {
         /// Set when listening moved to another device; its value is that device's class, if known.
         let movedTo: String??
 
-        init(mic reported: MicLiveState?, listening: StationMenuStatus.Listening?, host: RailHost) {
+        init(mic reported: MicLiveState?, listening: StationMenuStatus.Listening?, talk: TalkCapturePhase?,
+             host: RailHost) {
+            let talkCapturing = talk.map { $0 != .idle } ?? false
             mic = switch reported {
-            case .off?: listening?.isOn == true ? .uncertain : .off
+            case .off?: listening?.isOn == true || talkCapturing ? .uncertain : .off
             case let state?: state
             case nil: .uncertain
             }
             self.listening = listening
+            self.talk = talk
             privacy = host.privacy
             status = if case .status(let value)? = host.privacy { value } else { nil }
             ready = host.availability == .ready
@@ -131,10 +140,13 @@ public struct ListeningPrivacyRailState: Equatable, Sendable {
             guard let status, !status.pending else { return false }
             return status.shown == .confirmedPrivate || status.shown == .confirmedNotPrivate
         }
+        var confirmedPrivate: Bool { status?.shown == .confirmedPrivate }
+        /// Talk is starting, recording or finishing. Unknown is not capturing here, and not idle either.
+        var talkCapturing: Bool { talk.map { $0 != .idle } ?? false }
         var micWording: String { mic == .live ? "The microphone is on" : "The microphone may be on" }
     }
 
-    /// Rows 1 to 5.
+    /// Rows 1 to 3, then rows 4 and 5.
     private static func micNotOff(_ facts: Facts) -> Self {
         let mic = facts.mic
         if facts.listening == .paused {
@@ -145,20 +157,31 @@ public struct ListeningPrivacyRailState: Equatable, Sendable {
             return Self(kind: .mayBeRecording, mic: mic, summary: "Recording may be on",
                         detail: "\(facts.micWording), and privacy isn't confirmed on a ready connection.")
         }
-        if facts.status?.shown == .confirmedPrivate {
+        if facts.confirmedPrivate, facts.talk == .idle, facts.listening == .listening {
             return Self(kind: .privateConfirmed, mic: mic,
                         summary: mic == .live ? "Private · mic on for its name" : "Private · mic may be on",
                         detail: "\(facts.micWording). The Mac confirmed privacy and is only listening for its name.")
         }
-        let extra = facts.privacy == .unsupported ? " " + unsupportedDetail : ""
-        if mic == .live {
-            // Recording is certain here, from ambient listening or from talk alone (Jarvis, PR 4 table review).
-            return Self(kind: .recording, mic: mic,
-                        summary: facts.listening == .listening ? "Listening · recording" : "Recording",
-                        detail: "The microphone is on and privacy is off, so what it hears is sent." + extra)
+        return notCoveredByPrivacy(facts)
+    }
+
+    /// Rows 4 and 5: a known privacy state that doesn't cover this capture.
+    private static func notCoveredByPrivacy(_ facts: Facts) -> Self {
+        let mic = facts.mic
+        let extra = switch (facts.privacy, facts.confirmedPrivate) {
+        case (.unsupported?, _): " " + unsupportedDetail
+        case (_, true): " " + talkDetail
+        default: ""
+        }
+        if mic == .live, !facts.confirmedPrivate || facts.talkCapturing {
+            // Recording is certain here, from ambient listening or from talk (Jarvis, PR 4 table review).
+            let listeningRecords = !facts.confirmedPrivate && facts.listening == .listening
+            return Self(kind: .recording, mic: mic, summary: listeningRecords ? "Listening · recording" : "Recording",
+                        detail: (facts.confirmedPrivate ? "The microphone is on for talk." :
+                            "The microphone is on and privacy is off, so what it hears is sent.") + extra)
         }
         return Self(kind: .mayBeRecording, mic: mic, summary: "Recording may be on",
-                    detail: "\(facts.micWording), and privacy is off." + extra)
+                    detail: "\(facts.micWording)" + (facts.confirmedPrivate ? "." : ", and privacy is off.") + extra)
     }
 
     /// Rows 6 to 9.
