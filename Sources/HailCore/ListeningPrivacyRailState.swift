@@ -13,6 +13,22 @@ public enum RailConnection: Equatable, Sendable {
     case stopped(reason: String)
 }
 
+/// What the host and station report for the rail (#1115). These are claims, kept apart from the device's own
+/// microphone and listening switch: a claim can raise the rail to an alert, never clear a microphone that isn't off.
+public struct RailHost: Equatable, Sendable {
+    public var privacy: RailPrivacy?
+    public var handoff: AmbientHandoff?
+    public var availability: StationAvailability
+    public var connection: RailConnection?
+
+    public init(
+        privacy: RailPrivacy?, handoff: AmbientHandoff?, availability: StationAvailability,
+        connection: RailConnection?
+    ) {
+        (self.privacy, self.handoff, self.availability, self.connection) = (privacy, handoff, availability, connection)
+    }
+}
+
 /// What the listening/privacy rail shows (#1115). It is a reading of the owners' state: it never starts, stops or
 /// changes listening, privacy, a target or a route.
 ///
@@ -70,12 +86,11 @@ public struct ListeningPrivacyRailState: Equatable, Sendable {
         + "device is."
     static let unsupportedDetail = "This Mac has no privacy mode, so everything heard is sent."
 
+    /// `mic` and `listening` are this device's own truth; `host` holds what the host and station report.
     public static func resolve(
-        mic reported: MicLiveState?, listening: StationMenuStatus.Listening?, privacy: RailPrivacy?,
-        handoff: AmbientHandoff?, availability: StationAvailability, connection: RailConnection?
+        mic: MicLiveState?, listening: StationMenuStatus.Listening?, host: RailHost
     ) -> Self {
-        let facts = Facts(mic: reported, listening: listening, privacy: privacy, handoff: handoff,
-                          ready: availability == .ready, connection: connection)
+        let facts = Facts(mic: mic, listening: listening, host: host)
         return facts.mic == .off ? micOff(facts) : micNotOff(facts)
     }
 
@@ -90,19 +105,18 @@ public struct ListeningPrivacyRailState: Equatable, Sendable {
         /// Set when listening moved to another device; its value is that device's class, if known.
         let movedTo: String??
 
-        init(mic reported: MicLiveState?, listening: StationMenuStatus.Listening?, privacy: RailPrivacy?,
-             handoff: AmbientHandoff?, ready: Bool, connection: RailConnection?) {
+        init(mic reported: MicLiveState?, listening: StationMenuStatus.Listening?, host: RailHost) {
             mic = switch reported {
             case .off?: listening?.isOn == true ? .uncertain : .off
             case let state?: state
             case nil: .uncertain
             }
             self.listening = listening
-            self.privacy = privacy
-            status = if case .status(let value)? = privacy { value } else { nil }
-            self.ready = ready
-            self.connection = connection
-            movedTo = switch (handoff, listening) {
+            privacy = host.privacy
+            status = if case .status(let value)? = host.privacy { value } else { nil }
+            ready = host.availability == .ready
+            connection = host.connection
+            movedTo = switch (host.handoff, listening) {
             case (.movedAway(let kind)?, _): .some(kind)
             case (_, .elsewhere?): .some(nil)
             default: nil

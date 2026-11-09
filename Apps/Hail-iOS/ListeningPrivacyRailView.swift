@@ -84,21 +84,22 @@ struct ListeningPrivacyRailView: View {
     let unavailable = RailPrivacy.status(PrivacySwitchStatus(
         ready: true, duck: DuckModeStatus(on: true), requested: nil, listeningStopped: true, now: now))
     let states: [ListeningPrivacyRailState] = [
-        .resolve(mic: nil, listening: nil, privacy: nil, handoff: nil, availability: .ready, connection: nil),
-        .resolve(mic: .uncertain, listening: .paused, privacy: notPrivate, handoff: nil, availability: .ready,
-                 connection: nil),
-        .resolve(mic: .live, listening: .listening, privacy: confirmed, handoff: nil, availability: .ready,
-                 connection: nil),
-        .resolve(mic: .live, listening: .listening, privacy: .unsupported, handoff: nil, availability: .ready,
-                 connection: nil),
-        .resolve(mic: .off, listening: .off, privacy: unavailable, handoff: nil, availability: .ready,
-                 connection: nil),
-        .resolve(mic: .off, listening: .elsewhere, privacy: nil, handoff: .movedAway(to: "pad"),
-                 availability: .ready, connection: nil),
-        .resolve(mic: .off, listening: .off, privacy: nil, handoff: nil, availability: .reconnecting,
-                 connection: .reconnecting),
-        .resolve(mic: .off, listening: .off, privacy: notPrivate, handoff: nil, availability: .ready,
-                 connection: nil)
+        .resolve(mic: nil, listening: nil, host: RailHost(
+            privacy: nil, handoff: nil, availability: .ready, connection: nil)),
+        .resolve(mic: .uncertain, listening: .paused, host: RailHost(
+            privacy: notPrivate, handoff: nil, availability: .ready, connection: nil)),
+        .resolve(mic: .live, listening: .listening, host: RailHost(
+            privacy: confirmed, handoff: nil, availability: .ready, connection: nil)),
+        .resolve(mic: .live, listening: .listening, host: RailHost(
+            privacy: .unsupported, handoff: nil, availability: .ready, connection: nil)),
+        .resolve(mic: .off, listening: .off, host: RailHost(
+            privacy: unavailable, handoff: nil, availability: .ready, connection: nil)),
+        .resolve(mic: .off, listening: .elsewhere, host: RailHost(
+            privacy: nil, handoff: .movedAway(to: "pad"), availability: .ready, connection: nil)),
+        .resolve(mic: .off, listening: .off, host: RailHost(
+            privacy: nil, handoff: nil, availability: .reconnecting, connection: .reconnecting)),
+        .resolve(mic: .off, listening: .off, host: RailHost(
+            privacy: notPrivate, handoff: nil, availability: .ready, connection: nil))
     ]
     ScrollView {
         VStack(spacing: 12) {
