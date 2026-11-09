@@ -70,11 +70,12 @@ permit instead refuses. The original attempt remains separate from the successfu
 | `TaskProgressHandoffTests` | KEPT | Unchanged. |
 | `TaskProgressDispatchCancellationTests` | KEPT | Unchanged. |
 | `TaskProgressAdmissionExpiryTests` | KEPT | Unchanged. |
-| `TaskProgressPeerAdmissionTests` selected-peer coverage | TIGHTENED | Same-audience successor coverage distinguishes retained permits from admission-time lookup. |
-| `TaskProgressPeerAdmissionTests` retirement coverage | TIGHTENED | Listener stop asserts a finished enrollment; other retirement cases retain refusal accounting assertions. |
 | All other pre-existing tests and fixtures | KEPT | Unchanged. |
 
-The peer-admission suite and its support remain separate files. Earlier suites and fixtures are unchanged.
+`TaskProgressPeerAdmissionTests` and its support file are new in this change, so they are not classified above.
+Within this change, the review follow-up tightened them: same-audience successor coverage now distinguishes
+retained permits from admission-time lookup, and the listener-stop case asserts a finished enrollment while
+the other retirement cases keep their refusal accounting assertions.
 
 ## Execution record
 
@@ -108,7 +109,6 @@ The follow-up verifies the final Swift sources; only this execution record chang
 The production-file count uses the PR-shape checker's exclusions and rename handling: two production files,
 `Sources/HailDaemonKit/Progress/TaskProgressAuthority.swift` and
 `Sources/HailDaemonKit/Listener/WebSocketListener.swift`, below the four-file limit. The remaining additions
-are the peer-admission suite, its support file and this record. The suite is tightened as recorded above;
-all earlier suites and fixtures remain unchanged.
+are the new peer-admission suite, its support file and this record; all earlier suites and fixtures remain unchanged.
 
 No host build/test, simulator run, installed-build change or physical-device validation is part of this record.
