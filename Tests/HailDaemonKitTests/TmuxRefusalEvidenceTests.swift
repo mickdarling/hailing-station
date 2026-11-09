@@ -19,7 +19,7 @@ import Testing
         try await harness.adapter.deliver(Self.synthetic, to: "codex", binding: nil)
         let agedAt = ContinuousClock.now.advanced(by: .seconds(1))
         try await selectionPreflightStep("own insert reaches a whole second") {
-            while ContinuousClock.now < agedAt { try Task.checkCancellation(); await Task.yield() }
+            try await ContinuousClock().sleep(until: agedAt)
         }
         pane.reset(baseline: ScriptedPane.absorbedScreen)
 

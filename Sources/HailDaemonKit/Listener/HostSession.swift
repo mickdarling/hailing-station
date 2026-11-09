@@ -266,11 +266,13 @@ public actor HostSession {
     /// Applies the whole-frame bound before JSON decoding. Listener options enforce the same bound at the
     /// network layer; keeping it here makes non-network callers and tests follow the identical rule.
     public func receive(_ data: Data) async -> HostSessionResult {
-        do {
-            return await receive(try FrameCoding.decode(data))
-        } catch {
-            return failure(.malformed, "malformed or oversized frame", close: true)
-        }
+        await receiveDecoded(try? FrameCoding.decode(data))
+    }
+
+    /// Ingress supplies the worker-decoded value; nil retains the data entry point's exact failure mapping.
+    func receiveDecoded(_ frame: Frame?) async -> HostSessionResult {
+        guard let frame else { return failure(.malformed, "malformed or oversized frame", close: true) }
+        return await receive(frame)
     }
 
     public func receive(_ frame: Frame) async -> HostSessionResult {
@@ -390,7 +392,7 @@ extension HostSession {
                 + (sessionUpdatesEnabled ? [SessionUpdateCard.capability, SessionUpdateCard.audioCapability] : []),
             deviceName: hostName
         )
-        // WebSocketPeer sends this whole batch before receiving the next frame. Reading the snapshot is
+        // WebSocketPeer sends this whole batch before processing the next frame. Reading the snapshot is
         // synchronous and does not arm privacy, hold replies, consume parks or start a child.
         let modes = peerCapabilities.contains(ModeSnapshot.capability) ? snapshot(connectionID) : []
         return HostSessionResult(frames: [response(.hello(info), version: version)]

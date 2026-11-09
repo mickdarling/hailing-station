@@ -101,6 +101,8 @@ extension AmbientAudioSink {
 public actor AmbientAudioGate {
     public static let sampleRate = 16_000
     public static let maxSegmentBytes = 8 * 1024
+    static let ambientSegmentWireBytes = (maxSegmentBytes + 2) / 3 * 4 + 4 * 1024
+
     public static let bytesPerSecond = 40 * 1024
     public static let burstBytes = 10 * bytesPerSecond
     /// How long a stream may keep dropping over-rate segments before it ends (#330). Real audio averages 32 KB/s,
@@ -417,8 +419,7 @@ extension AmbientAudioGate {
         guard frameTarget == target, selection.target == target else {
             return refuse(.notAllowed, "ambient target is not selected", connection: connection)
         }
-        guard audio.codec == .pcm16, audio.sampleRate == Self.sampleRate, audio.channels == 1,
-              audio.reply == nil, Self.wholeSamples(audio.bytes.count), let stream = audio.streamID else {
+        guard Self.hasAmbientShape(audio), let stream = audio.streamID else {
             return refuse(.malformed, "ambient segment shape", connection: connection)
         }
         if active?.id != stream {
@@ -484,5 +485,20 @@ extension AmbientAudioGate {
         endedConnections.remove(endedConnectionOrder[evictConnectionNext])
         endedConnectionOrder[evictConnectionNext] = connection
         evictConnectionNext = (evictConnectionNext + 1) % endedStreamCapacity
+    }
+}
+
+extension AmbientAudioGate {
+    /// Positive queue eligibility; gate admission still applies stream, selection, policy and rate checks.
+    nonisolated static func isWindowEligible(_ frame: Frame, wireBytes: Int) -> Bool {
+        guard frame.version == ProtocolVersion.current, wireBytes <= ambientSegmentWireBytes,
+              case .audio(let audio) = frame.payload else { return false }
+        return hasAmbientShape(audio) && !audio.isSegmentEnd && audio.sequence > 0 && !audio.isFinal
+    }
+
+    // Shared with admission without adding window-only restrictions to starts or final segments.
+    private nonisolated static func hasAmbientShape(_ audio: AudioPayload) -> Bool {
+        audio.codec == .pcm16 && audio.sampleRate == sampleRate && audio.channels == 1
+            && audio.reply == nil && audio.streamID != nil && wholeSamples(audio.bytes.count)
     }
 }

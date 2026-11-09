@@ -105,8 +105,9 @@ import Testing
         #expect(try onlyControl(next) == .error(code: .notAllowed, message: "target action was refused"))
         #expect(rig.runner.pasted == ["synthetic input"])
         let laterWrites = rig.runner.calls.dropFirst(calls).contains {
-            $0.contains("capture-pane") || $0.contains("set-buffer")
-                || $0.contains("paste-buffer") || $0.contains("send-keys")
+            $0.contains { argument in
+                ["capture-pane", "set-buffer", "paste-buffer", "send-keys"].contains { argument.contains($0) }
+            }
         }
         #expect(!laterWrites)
         #expect(rig.runner.enters == 1)
