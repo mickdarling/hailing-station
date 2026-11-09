@@ -46,6 +46,7 @@ public actor TmuxAdapter: Adapter {
     var lastTails: [String: PayloadTail] = [:]
     /// haild's own last insert per pane, and who hears each submit outcome and pending-input refusal (#894).
     var evidence: TmuxEvidenceLedger
+    private let submitObserver: (@Sendable (TmuxSubmitOutcome) -> Void)?
     private let evidenceObserver: (@Sendable (TmuxDeliveryEvidence) -> Void)?
 
     /// - Parameters:
@@ -82,6 +83,7 @@ public actor TmuxAdapter: Adapter {
         self.chunkSize = max(1, chunkSize)
         self.pollInterval = pollInterval
         self.submitTiming = submitTiming
+        self.submitObserver = submitObserver
         self.evidenceObserver = evidenceObserver
         self.evidence = TmuxEvidenceLedger(submitObserver: submitObserver, observer: evidenceObserver)
     }
@@ -246,7 +248,12 @@ extension TmuxAdapter {
             let outcome = try await attemptSubmit(session, control: control, tail: tail, acceptance: acceptance)
             evidence.submitted(outcome, in: session.paneID, target: control.target)
         } catch {
-            evidence.submitted(.failed, in: session.paneID, target: control.target)
+            if control.didEnter {
+                evidence.submitted(.failed, in: session.paneID, target: control.target)
+            } else {
+                // A safety veto before Enter leaves the ledger's own insert unsubmitted.
+                TmuxSubmitOutcome.failed.record(target: control.target, observer: submitObserver)
+            }
             throw error
         }
     }

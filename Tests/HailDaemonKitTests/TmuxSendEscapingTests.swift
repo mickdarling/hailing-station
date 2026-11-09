@@ -23,15 +23,18 @@ import Testing
             ["tmux", "set-buffer", "-b", buffer, "--", text],
             ["tmux", "list-sessions", "-F", TmuxAdapter.listFormat],
             observe,
+            ["tmux", "capture-pane", "-p", "-t", "%1"],
             ["tmux", "paste-buffer", "-p", "-d", "-b", buffer, "-t", "%1"],
             observe,
             ["tmux", "list-sessions", "-F", TmuxAdapter.listFormat],
+            ["tmux", "capture-pane", "-p", "-t", "%1"],
             ["tmux", "send-keys", "-t", "%1", "Enter"]
         ])
     }
 
     @Test func aFailedPasteDeletesItsBufferAndSendsNoEnter() async throws {
         let runner = FakeCommandRunner { arguments in
+            if let capture = clearDialogCapture(arguments) { return capture }
             if arguments.contains("list-sessions") { return CommandResult(exitCode: 0, stdout: twoSessions) }
             if arguments.contains("paste-buffer") { return CommandResult(exitCode: 1, stdout: "", stderr: "no pane") }
             return CommandResult(exitCode: 0, stdout: "")
@@ -123,6 +126,7 @@ import Testing
         let listings = SessionListing("")
         let calls = SessionListing("0")
         let runner = FakeCommandRunner { arguments in
+            if let capture = clearDialogCapture(arguments) { return capture }
             guard arguments.contains("list-sessions") else { return CommandResult(exitCode: 0, stdout: "") }
             let count = Int(calls.get()) ?? 0
             calls.set(String(count + 1))

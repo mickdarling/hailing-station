@@ -135,7 +135,7 @@ extension TmuxAdapter {
         _ session: Session, control: TmuxDeliveryControl, tail: PayloadTail, acceptance: TmuxSubmitProbe.Acceptance
     ) async throws -> TmuxSubmitOutcome {
         // After a framed paste (#608) the Enter goes only to a pane still running an agent.
-        try await pressEnter(session.paneID, control: control)
+        try await pressEnter(session, control: control)
         let observe: TmuxSubmitProbe.Observe = { await self.observePane(session.paneID) }
         let before: PaneObservation?
         switch acceptance {
@@ -171,7 +171,7 @@ extension TmuxAdapter {
         case .holding(let seen): steady = seen
         }
         _ = try await verified(control.target, binding: session.binding)
-        try await pressEnter(session.paneID, control: control)
+        try await pressEnter(session, control: control)
         let reaction = await TmuxSubmitProbe.reaction(
             submitTiming, tail: tail, before: steady, wasHolding: true, clock: submitClock, observe: observe
         )
