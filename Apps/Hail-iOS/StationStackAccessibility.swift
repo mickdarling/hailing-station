@@ -18,7 +18,15 @@ final class StationStackAccessibility {
 
     /// Set by the shell from the station slot itself: hidden exactly while no slot shows the station.
     var hidden = false {
-        didSet { apply() }
+        didSet {
+            guard hidden != oldValue else { return }
+            apply()
+            #if os(iOS)
+            // Tells assistive technologies the tree changed, so a station shown again is read afresh. In #1183's iPad
+            // test the root, hidden by SwiftUI, stayed out of the tree after it was shown again.
+            UIAccessibility.post(notification: .layoutChanged, argument: nil)
+            #endif
+        }
     }
 
     #if os(iOS)
@@ -30,22 +38,18 @@ final class StationStackAccessibility {
 
     private func apply() {
         #if os(iOS)
-        guard let stackView, stackView.accessibilityElementsHidden != hidden else { return }
-        stackView.accessibilityElementsHidden = hidden
-        // Tells assistive technologies the tree changed, so a station shown again is read afresh rather than from the
-        // tree they last had (a station shown again stayed out of the tree in #1183's iPad test before this).
-        UIAccessibility.post(notification: .layoutChanged, argument: nil)
+        stackView?.accessibilityElementsHidden = hidden
         #endif
     }
 }
 
 extension View {
-    /// Placed on the stack's root. On iOS it finds the stack for `accessibility`, whose flag covers the root and any
-    /// pushed view, so nothing else hides the root there. Elsewhere the root is hidden directly.
+    /// Placed on the stack's root: hides the root itself, and on iOS finds the stack for `accessibility`, whose flag
+    /// is meant to cover a pushed view too.
     @ViewBuilder
     func stationStackAccessibility(_ accessibility: StationStackAccessibility, hidden: Bool) -> some View {
         #if os(iOS)
-        background(StationStackProbe(accessibility: accessibility))
+        background(StationStackProbe(accessibility: accessibility)).accessibilityHidden(hidden)
         #else
         accessibilityHidden(hidden)
         #endif
