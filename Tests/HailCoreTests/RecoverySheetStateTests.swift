@@ -71,6 +71,25 @@ struct RecoverySheetStateTests {
         #expect(!state.intents.contains(.openListening))
     }
 
+    // Codex review of #1162: identical target names on two Macs must never read the same.
+    @Test func theDestinationRowNamesItsMac() {
+        let other = DestinationLabel(hostName: "Laptop", targetName: "build", targetKind: "tmux", targetID: "%1")
+        let studio = Fixture.resolve(destination: .confirmed(Fixture.build)).steps[1].text
+        let laptop = Fixture.resolve(destination: .confirmed(other)).steps[1].text
+        #expect(studio == "Terminal · build · Mac Studio")
+        #expect(studio != laptop)
+        let saved = Fixture.resolve(destination: .confirming(saved: other)).steps[1]
+        #expect(saved.text == "Confirming… Saved · not confirmed: Mac Laptop, Terminal build")
+    }
+
+    // Jarvis, PR 7 review: ready but not yet re-confirmed waits, rather than flashing "Needs attention".
+    @Test func anUnconfirmedDestinationAfterAReconnectWaits() {
+        let state = Fixture.resolve(destination: .unavailable(.unconfirmed, saved: Fixture.build))
+        #expect(state.steps[1].state == .waiting)
+        #expect(state.header == "Restoring…")
+        #expect(state.intents.contains(.chooseDestination))
+    }
+
     @Test func aStepStillWaitingReadsRestoring() {
         let state = Fixture.resolve(.reconnecting, destination: .confirming(saved: Fixture.build))
         #expect(state.header == "Restoring…")

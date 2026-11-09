@@ -71,12 +71,19 @@ public struct RecoverySheetState: Equatable, Sendable {
     }
 
     private static func destinationStep(_ destination: DestinationControlState) -> RecoveryStep {
+        // Ready but not yet re-confirmed is the normal moment after a reconnect, so it waits (Jarvis, PR 7 review).
         let state: RecoveryStep.State = switch destination {
         case .confirmed: .confirmed
-        case .confirming, .unavailable(.waitingForTargets, _): .waiting
+        case .confirming, .unavailable(.waitingForTargets, _), .unavailable(.unconfirmed, _): .waiting
         case .unavailable, .none: .failed
         }
-        return RecoveryStep(id: .destination, state: state, text: destination.primaryText)
+        // The Mac is always named, so identical target names on two Macs never look the same (Codex review of
+        // #1162): the confirmed line carries it, and any saved destination names its Mac too.
+        var text = destination.singleLineText
+        if state != .confirmed, let saved = destination.secondaryText {
+            text += (text.hasSuffix("…") ? " " : ". ") + saved
+        }
+        return RecoveryStep(id: .destination, state: state, text: text)
     }
 
     private static func modeStep(_ privacy: RailPrivacy?) -> RecoveryStep {
