@@ -266,3 +266,54 @@ an overload, preserving equality assertions and CLI interpolation without changi
 `HostDialogPartialTests` pins block messages, adapter error text, reason descriptions and partial
 interpolation byte for byte. Submission tests assert causes and effects while retaining their
 buffer deletion, key, taint and ledger checks. Routing and device wording remain follow-up work.
+
+### Structured-evidence verification
+
+The source and Swift-test snapshot is `cee96a649781a7fc68ebb60232a8d54c46a41a3a`.
+Verification used Swift 6.3.3 on the Dev Work VM in a fresh checkout synchronized by local bundles.
+Each run waited for the shared lane, used background task policy and at most four workers, and had
+a 600-second cap with signal handling and process-group cleanup. SSH stdin was closed and each
+connection remained attached until completion.
+
+The focused filter ran three times after the corrected package/test build:
+
+```text
+HailDaemonKitTests\.(TmuxDialogDetectionTests|TmuxDialogSubmissionTests|HostDialogPartialTests)
+```
+
+Each run passed: 21 tests in three suites, no skips. Durations were 0.030, 0.029 and 0.028 seconds.
+Preliminary verification caught a parameterized-test declaration error and a nested non-dialog
+refusal description mismatch; both were corrected before these final passes.
+
+The requested neighboring filter ran once, unsplit:
+
+```text
+HailDaemonKitTests\.(Tmux|CommandLaunch|HailHost|Host|DeliveryMappingCleanup|LocalDispatch|DeliveryAdmission|Reply)
+```
+
+It passed: 400 reported tests in 76 suites, 167.140 seconds, with ten expected known-issue records.
+Five came from `LocalDispatchPreflightWaitTests` and five from `ReplyRecipientHandoffWaitTests`;
+these deliberately exercise deadline and cancellation failure paths. The same ten tmux-dependent
+functions in the five suites listed above were skipped because tmux was unavailable. All new tests ran.
+
+`python3 -m unittest discover -s Tests/ReplyCLITests` ran 124 tests in 231.936 seconds and exited 1
+with one setup error. The unchanged `DeliveryMappingCleanupCLITests` fixture extracts only the
+`case partial(...)` line into an isolated Swift enum. That probe has neither `HostPartialReason` nor
+the String convenience overload, so it fails to compile. The actual package and CLI compile, and
+unchanged Swift partial-equality tests and the new CLI-text pins pass. Updating this extraction fixture
+requires an exception to the requirement that existing tests remain unchanged; no fixture or assertion
+has been changed for this result.
+
+The repository's policy CLI checks passed with exit 0 and no output after a successful
+`swift build --product haild -j 4` with the lane's CLT Testing flags.
+
+The warnings-as-errors package/test build completed in 135.06 seconds. Both the build and its enclosing
+verification exited 0. The linker emitted the lane's known missing module-cache debug-file warnings;
+this is a successful warnings-as-errors build, not a warning-free linker run.
+
+Host strict SwiftLint with the Xcode developer directory and the non-comment 120-column awk check
+both exited 0 and printed nothing for all six changed Swift files. The checker exclusions and rename
+handling yield exactly four production files, with no renames. The CLI source is unchanged.
+Both VM build directories were deleted and no verification jobs remained running.
+This is synthetic package and CLI evidence, with no live dialog, simulator, installed-build,
+physical-device or captured-output round-trip validation.
