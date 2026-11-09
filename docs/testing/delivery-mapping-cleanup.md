@@ -4,7 +4,7 @@ Part of #1120.
 
 This dead-mapping cleanup removes mappings that can no longer run. It was first verified against main
 `d13765e79ffc52dcbff55af091b7c2552c28a7d5` and then rebased unchanged onto later main, as described under
-Verification. Delivery errors, reasons, exit codes and partial accounting are unchanged.
+Rebased verification. Delivery errors, reasons, exit codes and partial accounting are unchanged.
 
 ## Removed mappings and comments
 
@@ -81,7 +81,7 @@ checks. The warnings-as-errors command passed again afterward.
 
 Host strict SwiftLint passed with zero violations on all four production files and
 `Tests/HailDaemonKitTests/DeliveryMappingCleanupTests.swift`, using
-`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict <file>`
+strict SwiftLint with the Xcode developer directory, under background priority,
 once per file. The non-comment over-120-character check printed nothing for every changed Swift
 file. `git diff --check` passed.
 
