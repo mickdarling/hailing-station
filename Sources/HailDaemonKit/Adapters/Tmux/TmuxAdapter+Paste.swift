@@ -283,6 +283,7 @@ extension TmuxAdapter {
         }
         let result: CommandResult
         do {
+            try await requireClearDialog(session)
             result = try await launchCommand(ticket.base + ticket.paste, control: control, launch: launch)
         } catch {
             if launch.evidence == .possiblyExecuted { pasting() }
@@ -296,14 +297,15 @@ extension TmuxAdapter {
     }
 
     /// Completion consumes the admitted ticket; it never reacquires retired authority.
-    func pressEnter(_ pane: String, control: TmuxDeliveryControl) async throws {
+    func pressEnter(_ session: Session, control: TmuxDeliveryControl) async throws {
         let ticket = try control.submission()
         let launch = CommandLaunch { operation in
             try ticket.complete(executable: self.tmuxPath, base: Self.baseArguments(socket: self.socket),
-                                pane: pane, operation: operation)
+                                pane: session.paneID, operation: operation)
         }
         let result: CommandResult
         do {
+            try await requireClearDialog(session)
             result = try await launchCommand(ticket.base + ticket.enter, control: control, launch: launch)
         } catch {
             if launch.evidence == .possiblyExecuted { control.enterAttempted() }
