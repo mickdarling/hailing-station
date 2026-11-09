@@ -9,6 +9,7 @@ import SwiftUI
 struct ConversationTextSizeControl: View {
     let state: ConversationTextSize
     let onIntent: (ConversationTextSize.Intent) -> Void
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var isPresented = false
 
     var body: some View {
@@ -33,30 +34,51 @@ struct ConversationTextSizeControl: View {
         .accessibilityIdentifier("station.text-size")
         .popover(isPresented: $isPresented) {
             ConversationTextSizePanel(state: state, onIntent: onIntent)
-                .stationCompactPopover()
+                .stationCompactPresentation(sheet: typeSize.isAccessibilitySize)
         }
     }
 }
 
-/// The popover's content: the value, a preview at the resulting size, and the three actions.
+/// The panel: the value, the three actions, then a preview at the resulting size. The actions come before the
+/// uncapped preview, and the panel scrolls, so at accessibility sizes no action is ever pushed out of reach (Codex
+/// review of #1166).
 private struct ConversationTextSizePanel: View {
     let state: ConversationTextSize
     let onIntent: (ConversationTextSize.Intent) -> Void
+    @Environment(\.dynamicTypeSize) private var typeSize
     @ScaledMetric(relativeTo: .body) private var bodyScale: CGFloat = 1
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Conversation text").font(.headline)
-                Spacer()
-                Text(state.label).foregroundStyle(.secondary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        Text("Conversation text").font(.headline)
+                        Spacer()
+                        Text(state.label).foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Conversation text").font(.headline)
+                        Text(state.label).foregroundStyle(.secondary)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+                actions
+                Text("What you say and Haili's replies appear at this size.")
+                    .font(.system(size: state.pointSize(bodyScale: bodyScale)))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("station.text-size.preview")
             }
-            .accessibilityElement(children: .combine)
-            Text("What you say and Haili's replies appear at this size.")
-                .font(.system(size: state.pointSize(bodyScale: bodyScale)))
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("station.text-size.preview")
-            HStack(spacing: 8) {
+            .padding()
+        }
+        .frame(minWidth: 280)
+    }
+
+    private var actions: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            let row = typeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 8))
+            row {
                 Button("Smaller", systemImage: "textformat.size.smaller") { onIntent(.smaller) }
                     .disabled(!state.canShrink)
                 Button("Larger", systemImage: "textformat.size.larger") { onIntent(.larger) }
@@ -69,17 +91,16 @@ private struct ConversationTextSizePanel: View {
             Button("Reset to app default") { onIntent(.reset) }
                 .disabled(state.isDefault)
         }
-        .padding()
-        .frame(minWidth: 280)
     }
 }
 
 private extension View {
-    /// A popover on iPhone too, not a full sheet, so the conversation stays in view while the size changes.
+    /// On iPhone, a popover so the conversation stays in view while the size changes; at accessibility sizes, a
+    /// sheet, which has the height the larger text needs.
     @ViewBuilder
-    func stationCompactPopover() -> some View {
+    func stationCompactPresentation(sheet: Bool) -> some View {
         #if os(iOS)
-        presentationCompactAdaptation(.popover)
+        presentationCompactAdaptation(sheet ? .sheet : .popover)
         #else
         self
         #endif
