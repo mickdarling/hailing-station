@@ -15,21 +15,23 @@ final class SlowTmuxCommandFixture: Sendable {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("hail-submission-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         executable = directory.appendingPathComponent("tmux-fixture").path
-        let fifo = directory.appendingPathComponent("release").path
-        guard mkfifo(fifo, 0o600) == 0 else { throw CocoaError(.fileWriteUnknown) }
-        releaseFD = open(fifo, O_RDWR | O_NONBLOCK)
-        guard releaseFD >= 0 else { throw CocoaError(.fileReadUnknown) }
         try Self.script.write(toFile: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable)
-        // Pay cold executable startup before any acknowledgement or admission barrier is timed.
+        // Pay the cold first exec of the new executable (including any system policy scan) before any
+        // acknowledgement or admission barrier is timed, and before the release descriptor exists to leak.
         let warmup = Process()
         warmup.executableURL = URL(fileURLWithPath: executable)
         warmup.arguments = ["warm-up"]
         try warmup.run()
+        // A short synchronous wait in fixture setup; it blocks this thread only until the no-op exits.
         warmup.waitUntilExit()
         try #require(warmup.terminationReason == .exit)
         try #require(warmup.terminationStatus == 0)
         try FileManager.default.removeItem(at: directory.appendingPathComponent("launches"))
+        let fifo = directory.appendingPathComponent("release").path
+        guard mkfifo(fifo, 0o600) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        releaseFD = open(fifo, O_RDWR | O_NONBLOCK)
+        guard releaseFD >= 0 else { throw CocoaError(.fileReadUnknown) }
     }
 
     deinit {
