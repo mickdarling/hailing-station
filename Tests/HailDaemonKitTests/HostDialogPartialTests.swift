@@ -49,7 +49,8 @@ import Testing
          "target is blocked by Computer Use needs macOS permissions"),
         (.uninspectable, "target dialog state could not be inspected")
     ], [DialogBlock.Effects.none, .pasteMayHaveExecuted, .enterMayHaveExecuted])
-    func cliTextIsPinnedToPR1(cause: DialogBlock.Cause, message: String, effects: DialogBlock.Effects) {
+    func cliTextIsPinnedToPR1(_ sample: (DialogBlock.Cause, String), effects: DialogBlock.Effects) {
+        let (cause, message) = sample
         let block = DialogBlock(cause: cause, effects: effects)
         let reason = HostPartialReason.dialog(block)
         let legacyReason = "deliveryFailed(\"\(message)\")"
@@ -63,6 +64,24 @@ import Testing
         // This is the CLI's existing interpolation, including its singular-line wording.
         let cli = "delivered 1 line, then: \(reason)"
         #expect(cli == "delivered 1 line, then: \(legacyReason)")
+    }
+
+    @Test func existingDiagnosticDescriptionsRemainUnchanged() {
+        let adapters: [(AdapterError, LegacyAdapterError)] = [
+            (.unknownTarget("a"), .unknownTarget("a")), (.rebound("a"), .rebound("a")),
+            (.deliveryFailed("a\n\"b"), .deliveryFailed("a\n\"b")), (.captureFailed("a"), .captureFailed("a")),
+            (.inputPending(reason: .staleInput), .inputPending(reason: .staleInput))
+        ]
+        for (current, legacy) in adapters { #expect("\(current)" == "\(legacy)") }
+        let hosts: [(HostError, LegacyHostError)] = [
+            (.unknownTarget("a"), .unknownTarget("a")),
+            (.adapterUnavailable(kind: "tmux", reason: "a"), .adapterUnavailable(kind: "tmux", reason: "a")),
+            (.refused(.containsLineBreak), .refused(.containsLineBreak)),
+            (.denied(.notAllowed("a")), .denied(.notAllowed("a"))),
+            (.partial(delivered: ["one"], reason: "x"), .partial(delivered: ["one"], reason: "x")),
+            (.policyUnavailable("a"), .policyUnavailable("a"))
+        ]
+        for (current, legacy) in hosts { #expect("\(current)" == "\(legacy)") }
     }
 
     private func host(_ adapter: DialogPartialAdapter) async throws -> HailHost {
@@ -104,4 +123,19 @@ private actor DialogPartialAdapter: Adapter {
         try authority.requireCurrent()
         try await deliver(text, to: target, binding: binding)
     }
+}
+
+/// PR 1's synthesized representations, retained only to verify diagnostic compatibility.
+private enum LegacyAdapterError {
+    case unknownTarget(String), rebound(String), deliveryFailed(String), captureFailed(String)
+    case inputPending(reason: PendingInputReason)
+}
+
+private enum LegacyHostError {
+    case unknownTarget(String)
+    case adapterUnavailable(kind: String, reason: String)
+    case refused(SanitizeError)
+    case denied(Denial)
+    case partial(delivered: [String], reason: String)
+    case policyUnavailable(String)
 }
