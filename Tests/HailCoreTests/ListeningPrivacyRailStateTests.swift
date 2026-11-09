@@ -158,6 +158,14 @@ struct ListeningPrivacyRailStateTests {
         #expect(resolve(mic: .uncertain, listening: .starting, privacy: Self.notPrivate).kind == .mayBeRecording)
     }
 
+    // Jarvis, PR 4 table review: talk alone with a live mic and privacy off is certain recording.
+    @Test func talkAloneWithPrivacyOffIsRecording() {
+        let state = resolve(mic: .live, listening: .off, privacy: Self.notPrivate)
+        #expect(state.kind == .recording)
+        #expect(state.summary == "Recording")
+        #expect(state.tone == .alert)
+    }
+
     @Test func aHostWithoutPrivacySaysEverythingIsSent() {
         let state = resolve(mic: .live, privacy: .unsupported)
         #expect(state.kind == .recording)

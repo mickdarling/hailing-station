@@ -27,8 +27,8 @@ public enum RailConnection: Equatable, Sendable {
 /// |   |            | host claims not capturing (moved away, elsewhere, stopped,     |                      |         |
 /// |   |            | private listening unavailable); or the run is reconnecting     |                      |         |
 /// | 3 | not off    | confirmed private on a ready station                           | `privateConfirmed`   | private |
-/// | 4 | live       | confirmed not private or unsupported, ready, and listening     | `recording`          | alert   |
-/// | 5 | not off    | any other confirmed not private or unsupported                 | `mayBeRecording`     | alert   |
+/// | 4 | live       | confirmed not private or unsupported on a ready station        | `recording`          | alert   |
+/// | 5 | uncertain  | confirmed not private or unsupported on a ready station        | `mayBeRecording`     | alert   |
 /// | 6 | off        | confirmed private, then the host stopped listening             | `privateUnavailable` | private |
 /// | 7 | off        | listening moved to another device                              | `elsewhere`          | neutral |
 /// | 8 | off        | the run is reconnecting or stopped                             | `interrupted`        | neutral |
@@ -137,9 +137,11 @@ public struct ListeningPrivacyRailState: Equatable, Sendable {
                         detail: "\(facts.micWording). The Mac confirmed privacy and is only listening for its name.")
         }
         let extra = facts.privacy == .unsupported ? " " + unsupportedDetail : ""
-        if mic == .live, facts.listening == .listening {
-            return Self(kind: .recording, mic: mic, summary: "Listening · recording",
-                        detail: "The microphone is on and the Mac is recording and sending requests." + extra)
+        if mic == .live {
+            // Recording is certain here, from ambient listening or from talk alone (Jarvis, PR 4 table review).
+            return Self(kind: .recording, mic: mic,
+                        summary: facts.listening == .listening ? "Listening · recording" : "Recording",
+                        detail: "The microphone is on and privacy is off, so what it hears is sent." + extra)
         }
         return Self(kind: .mayBeRecording, mic: mic, summary: "Recording may be on",
                     detail: "\(facts.micWording), and privacy is off." + extra)
