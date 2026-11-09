@@ -14,14 +14,16 @@ Other terminal events cancel the connection. Neither path waits for the applicat
 Application callbacks enforce the 91,477-byte whole-frame limit before decoding. A pump-side frame
 above that limit retires the peer and cancels the connection; it is unreachable in production because
 the listener's `maximumMessageSize` rejects it first. Classification decodes transiently on the
-listener's shared serial Network callback queue, **outside the pump lock**, once per arriving frame.
+listener's shared serial Network callback queue, **outside the pump lock**, only for frames at or below
+the 15,020-byte eligibility bound. Larger frames retain raw bytes without a classification decode.
 
 Only positively eligible audio retains its decoded `Frame`. Every other message retains its original
-raw `Data`, and the worker decodes it exactly once more before `session.receiveDecoded`. Thus non-audio
-frames (and protected audio or malformed messages) are decoded twice: once to classify and once to
-process. Eligible audio is decoded once. Raw retention bounds queued protected storage by original
+raw `Data`, and the worker decodes it once before `session.receiveDecoded`. Thus non-audio
+frames (and protected audio or malformed messages) at or below the eligibility bound are decoded twice:
+once to classify and once to process. Larger protected frames decode only in the worker. Eligible audio
+is decoded once. Raw retention bounds queued protected storage by original
 wire bytes rather than the decoded object graph; eligible PCM retention stays roughly at wire size.
-The second decode uses the identical `FrameCoding.decode` and original bytes, preserving the identical
+The worker decode uses the identical `FrameCoding.decode` and original bytes, preserving the identical
 Frame or nil failure mapping and exact `malformed or oversized frame` response and close disposition.
 The one transient classification result, active worker value and listener-bounded receive are outside
 the queued-storage accounting.
@@ -64,13 +66,14 @@ coalesce while logging blocks. On return the same task reports the remaining acc
 the final summary after draining or stopping. There is no task per drop and no queued log payload per
 frame. Transport rearming, close observation and retirement never wait for this logger. The retained
 `droppedAudioCount` remains the lifetime total after retirement. Range tokens carry no stream identity,
-text or audio. The window drops less than main's approximately one-second phone backlog in the common case.
+text or audio. In the common case, this roughly three-second host window drops fewer audio segments than the
+approximately one-second phone backlog on main would drop under the same processing stall.
 
 ### Existing gap limitation
 
 Host drops deliberately have the same gap behavior as phone drops on main. The gate accepts a
 strictly increasing sequence with holes and emits the surviving sequence and PCM
-(`AmbientAudioGate.swift:430–444`); the listener discards the sequence when forwarding the bytes
+(`AmbientAudioGate.swift:429–447`); the listener discards the sequence when forwarding the bytes
 (`WebSocketListener.swift:1107–1111`); `RightyoAmbientPipeline.swift:374–376` writes only raw PCM.
 Consequently the ambient consumer receives no explicit gap signal for either drop location. This is
 a pre-existing limitation. Explicit gap handling for both locations is deferred to
@@ -171,7 +174,7 @@ Every phase waited for the shared runner to be idle; SSH stdin was `/dev/null`, 
 The shared helpers and production files were unchanged. The targeted command used the filter
 `HailDaemonKitTests\.WebSocketReceivePumpTests/malformedBehindParkedTextCompletesThenCloses`;
 the suite filter was `HailDaemonKitTests\.WebSocketReceivePumpTests`, and the final prefix filter was
-`HailDaemonKitTests\.WebSocketReceivePump`. All used the VM's filtered Swift Testing runner.
+`HailDaemonKitTests\.WebSocketReceivePump`. All used the VM's filtered test runner.
 
 | Follow-up phase | Result |
 | --- | --- |
@@ -285,20 +288,14 @@ helpers are unchanged. A 600-second process-group watchdog reaps each phase on t
 Build/test workers are capped at four; the warnings-as-errors command wrapper adds `-j 4` without
 modifying the shared helper.
 
-Commands below use `WS` for the selected VM workspace and runner helpers on `PATH`; operational paths
-are deliberately omitted. The targeted changed-suite group runs once and then three repeats, followed
-by the same broad groups as the preceding batch, CLI tests and warnings as errors.
+The VM's filtered test runner executes the targeted changed-suite group once and then three repeats,
+followed by the broad core group, the two ambient groups and CLI tests. The VM warnings-as-errors build
+runs last. The filters are:
 
-```sh
-while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
-WS="$WORKSPACE" vw327-run.sh 'HailDaemonKitTests\.(WebSocketReceivePump|TaskProgressTmuxAdmission|TmuxRefusalEvidence|TmuxAuthorityBoundary)'
-# Repeat the preceding changed-suite group three times.
-WS="$WORKSPACE" vw327-run.sh 'HailDaemonKitTests\.(WebSocket|Listener|HostSession|FinalDelivery|DeliveryAdmission|TaskProgress|Held|LocalDispatch|HailHost|Host|Tmux|Reply|CommandLaunch)'
-WS="$WORKSPACE" vw327-run.sh 'HailDaemonKitTests\.Ambient[A-M]'
-WS="$WORKSPACE" vw327-run.sh 'HailDaemonKitTests\.Ambient([^A-M]|$)'
-python3 -m unittest discover -s Tests/ReplyCLITests
-vw-werr.sh "$WORKSPACE"
-```
+- Changed suites: `HailDaemonKitTests\.(WebSocketReceivePump|TaskProgressTmuxAdmission|TmuxRefusalEvidence|TmuxAuthorityBoundary)`.
+- Core: `HailDaemonKitTests\.(WebSocket|Listener|HostSession|FinalDelivery|DeliveryAdmission|TaskProgress|Held|LocalDispatch|HailHost|Host|Tmux|Reply|CommandLaunch)`.
+- Ambient groups: `HailDaemonKitTests\.Ambient[A-M]` and `HailDaemonKitTests\.Ambient([^A-M]|$)`.
+- CLI: `python3 -m unittest discover -s Tests/ReplyCLITests`.
 
 The source/test snapshot is `b176450e18c5130e64ee00f917e64f180269c020`. The final documentation
 commit preserves that exact source/test tree; identity is checked on both host and VM after final
@@ -335,3 +332,33 @@ The ten known issues are the unchanged deadline/cancellation self-tests in
 `LocalDispatchPreflightWaitTests` and `ReplyRecipientHandoffWaitTests`. Existing real-tmux suites remain
 skipped when tmux is unavailable; all pump, session and loopback cases run. Independent round-2 reviews
 requested changes; this local batch does not claim approval of its new head.
+
+## Follow-up boundary and wire-read verification
+
+The raw TCP transport test now accumulates the complete HTTP upgrade header through `\r\n\r\n`,
+retains surplus bytes and consumes them before reading more close-frame bytes. The close read also
+accumulates fragmented TCP chunks. No other receive-pump test uses the single-chunk raw TCP pattern.
+
+Classification now checks the 15,020-byte eligibility bound before decoding. Over-bound messages retain
+raw bytes directly; eligibility and worker decoding remain unchanged.
+`overBoundFrameRetainsRawBytesForWorkerDecode` checks the first over-bound wire size, raw retention,
+ineligibility and exact worker-decoded frame equality. It does not add a decode-counting seam.
+
+The VM workspace was re-synchronized after the shared runner became idle. The VM's filtered test
+runner used `HailDaemonKitTests\.WebSocketReceivePump` three times, followed by the core filter above
+once. The VM warnings-as-errors build ran last. Every SSH invocation had closed stdin, every phase
+was joined, and shared-helper checksums remained unchanged.
+
+| Phase | Result |
+| --- | --- |
+| Receive-pump run 1 | 31 tests, one suite; 8.455 seconds; build/test exit 0. |
+| Receive-pump run 2 | 31 tests, one suite; 8.463 seconds; build/test exit 0. |
+| Receive-pump run 3 | 31 tests, one suite; 8.582 seconds; build/test exit 0. |
+| Broad core group | 522 tests, 105 suites; 171.420 seconds; ten known issues; build/test exit 0. |
+| VM warnings-as-errors build | `werr build=0`; wrapper exit 0; existing module-cache warnings. |
+| Host strict SwiftLint | All 18 branch-changed Swift files: zero violations, exit 0. |
+| Host width check | Required awk check printed nothing for those 18 Swift files. |
+
+This batch changes only `WebSocketIngressPump.swift` in production; the cumulative production count
+remains four under the PR-shape exclusions. Evidence is synthetic package testing, without physical
+device or live captured-output validation. No GitHub calls or push were performed.

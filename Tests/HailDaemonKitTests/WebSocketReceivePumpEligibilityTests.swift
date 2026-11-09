@@ -89,6 +89,19 @@ extension WebSocketReceivePumpTests {
         #expect(message.droppableSequence == 1)
     }
 
+    @Test func overBoundFrameRetainsRawBytesForWorkerDecode() throws {
+        let data = try pumpIneligibleData("wire", stream: UUID())
+        #expect(data.count == WebSocketIngressPump.ambientSegmentWireBytes + 1)
+        let frame = try FrameCoding.decode(data)
+        #expect(!AmbientAudioGate.isWindowEligible(frame, wireBytes: data.count))
+        let message = try #require(WebSocketIngressPump.Message.classify(.application(data)))
+        guard case .raw(let retained) = message.retained else { Issue.record("expected raw data"); return }
+        #expect(retained == data)
+        #expect(!message.audioWindow)
+        #expect(message.droppableSequence == nil)
+        #expect(message.frame == frame)
+    }
+
     @Test(arguments: pumpIneligibleFields + ["eligible"])
     func eligibilityMirrorsGateShapeWithoutChangingAdmission(field: String) async throws {
         let stream = UUID()

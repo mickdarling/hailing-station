@@ -68,12 +68,13 @@ extension WebSocketReceivePumpTests {
             + "Sec-WebSocket-Key: AAECAwQFBgcICQoLDA0ODw==\r\nSec-WebSocket-Version: 13\r\n"
             + "Sec-WebSocket-Protocol: \(WebSocketListener.subprotocolName)\r\n\r\n"
         try await pumpWireSend(Data(request.utf8), on: client)
-        let response = try await pumpWireReceive(on: client)
+        var buffered = Data()
+        let response = try await pumpWireUpgrade(on: client, buffered: &buffered)
         #expect(String(data: response, encoding: .utf8)?.contains("101") == true)
         let peers = await listener.peers
         let peer = try #require(peers.values.first)
         try await pumpWireSend(Data([opcode, 0x80, 1, 2, 3, 4]), on: client)
-        let close = try await pumpWireReceive(on: client, minimum: 4)
+        let close = try await pumpWireRead(on: client, count: 4, buffered: &buffered)
         #expect(Array(close) == [0x88, 2, 3, 0xea])
         let reason = try await ended.wait("wire protocol disconnect")
         // Network reports a protocol error before exposing these opcodes as application metadata.
@@ -91,10 +92,30 @@ private func pumpWireSend(_ data: Data, on connection: NWConnection) async throw
     try await sent.wait("raw wire send")
 }
 
-private func pumpWireReceive(on connection: NWConnection, minimum: Int = 1) async throws -> Data {
+private func pumpWireUpgrade(on connection: NWConnection, buffered: inout Data) async throws -> Data {
+    let delimiter = Data("\r\n\r\n".utf8)
+    while buffered.range(of: delimiter) == nil {
+        buffered.append(try await pumpWireReceive(on: connection))
+    }
+    let end = try #require(buffered.range(of: delimiter)).upperBound
+    let header = Data(buffered[..<end])
+    buffered.removeSubrange(..<end)
+    return header
+}
+
+private func pumpWireRead(on connection: NWConnection, count: Int, buffered: inout Data) async throws -> Data {
+    while buffered.count < count {
+        buffered.append(try await pumpWireReceive(on: connection))
+    }
+    let bytes = Data(buffered.prefix(count))
+    buffered.removeFirst(count)
+    return bytes
+}
+
+private func pumpWireReceive(on connection: NWConnection) async throws -> Data {
     let received = SelectionPreflightSignal<Data>()
-    connection.receive(minimumIncompleteLength: minimum, maximumLength: 4_096) { data, _, _, error in
-        if let data { received.finish(.success(data)) } else {
+    connection.receive(minimumIncompleteLength: 1, maximumLength: 4_096) { data, _, _, error in
+        if let data, !data.isEmpty { received.finish(.success(data)) } else {
             received.finish(.failure(error ?? NWError.posix(.EPROTO)))
         }
     }

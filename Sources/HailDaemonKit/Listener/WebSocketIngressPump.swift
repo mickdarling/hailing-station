@@ -208,8 +208,8 @@ extension WebSocketIngressPump {
         }
         init(_ data: Data) {
             bytes = data.count
-            let decoded = try? FrameCoding.decode(data)
-            if let decoded, AmbientAudioGate.isWindowEligible(decoded, wireBytes: data.count),
+            if data.count <= ambientSegmentWireBytes, let decoded = try? FrameCoding.decode(data),
+               AmbientAudioGate.isWindowEligible(decoded, wireBytes: data.count),
                case .audio(let audio) = decoded.payload {
                 retained = .audio(decoded)
                 droppableSequence = audio.sequence
