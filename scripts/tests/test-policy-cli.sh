@@ -14,6 +14,8 @@ printf '%s\n' \
   'set -euo pipefail' \
   'if [[ "${1:-}" == "list-sessions" ]]; then' \
   '  printf '\''$1|1700000000|%%1|4242|cli\n'\''' \
+  'elif [[ "$#" -eq 4 && "${1:-}" == "capture-pane" && "${2:-}" == "-p" && "${3:-}" == "-t" ]]; then' \
+  '  printf '\''> \n'\''' \
   'elif [[ "${1:-}" =~ ^(set-buffer|paste-buffer|delete-buffer|send-keys)$ ]]; then' \
   '  printf '\''%s\n'\'' "$*" >> "$HAIL_FAKE_TMUX_LOG"' \
   'else' \
