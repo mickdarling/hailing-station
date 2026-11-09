@@ -66,8 +66,12 @@ struct VoiceDockView: View {
         .accessibilityIdentifier("station.voice-dock.talk")
     }
 
+    /// Side by side as icons, or, at accessibility sizes, stacked full width with their titles (Codex review of
+    /// #1155): three scaled icon targets in a row would push controls off a narrow iPhone.
     private var accessories: some View {
-        HStack(spacing: 6) {
+        let stacked = typeSize.isAccessibilitySize
+        let layout = stacked ? AnyLayout(VStackLayout(spacing: 6)) : AnyLayout(HStackLayout(spacing: 6))
+        return layout {
             if state.paste != .hidden {
                 iconButton("Paste text", symbol: "doc.on.clipboard", intent: .paste, item: state.paste,
                            hint: "Opens pasted text for the next request.")
@@ -86,9 +90,7 @@ struct VoiceDockView: View {
         Button {
             onIntent(intent)
         } label: {
-            Label(title, systemImage: symbol)
-                .labelStyle(.iconOnly)
-                .frame(minWidth: target, minHeight: target)
+            accessoryLabel(title, symbol: symbol)
         }
         .buttonStyle(.bordered)
         .disabled(item != .enabled)
@@ -107,12 +109,22 @@ struct VoiceDockView: View {
                     .accessibilityHint("Discards any active recording and sends Escape immediately to the target.")
             }
         } label: {
-            Label("More controls", systemImage: "ellipsis")
-                .labelStyle(.iconOnly)
-                .frame(minWidth: target, minHeight: target)
+            accessoryLabel("More controls", symbol: "ellipsis")
         }
         .buttonStyle(.bordered)
         .accessibilityIdentifier("station.voice-dock.more")
+    }
+
+    @ViewBuilder
+    private func accessoryLabel(_ title: String, symbol: String) -> some View {
+        if typeSize.isAccessibilitySize {
+            Label(title, systemImage: symbol)
+                .frame(maxWidth: .infinity, minHeight: target, alignment: .leading)
+        } else {
+            Label(title, systemImage: symbol)
+                .labelStyle(.iconOnly)
+                .frame(minWidth: target, minHeight: target)
+        }
     }
 }
 
