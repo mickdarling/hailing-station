@@ -1,10 +1,14 @@
 # PR contract (#25, #48): size limit, spec link, review records. Re-runs when the body or labels change.
 name: pr-shape
 
-# pull_request_target: the check runs the BASE branch's copy of this workflow and script, so a PR cannot
-# weaken its own gate. Nothing from the PR head is checked out or executed.
+# Runs on pull_request with checkers from the base branch checkout. The workflow file comes
+# from the PR, so a PR could edit its own check. This is review-enforced, like the required
+# gate check in ci.yml: changes under .github/ or scripts/ are security-critical under
+# pr-shape's SECURITY_PATHS, need an independent second key, and the maintainer diffs those
+# changes at the exact head before merging. #1177 tracks an optional default-branch verifier.
+# Nothing else from the PR head is checked out or executed.
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, edited, synchronize, labeled, unlabeled, reopened]
 
 permissions:

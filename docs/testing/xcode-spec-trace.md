@@ -78,11 +78,11 @@ The requirements pin PyYAML 6.0.3; the checker rejects missing or different vers
 The local `scripts`/`all` verification lane runs the checker unit tests with `SPEC_TRACE_PYTHON` when set.
 Otherwise it provisions the pinned dependency in a fresh temporary virtual environment and removes that
 environment after the lane, including on failure. This makes fresh verification/CI environments work
-without a managed/system install. The `pull_request_target` workflow provisions its own virtual
+without a managed/system install. The traceability workflow provisions its own virtual
 environment under `RUNNER_TEMP`, installs the pinned dependency from the trusted base checkout, and
 uses that same executable for checker tests and final trace before/after reading the separate PR tree.
 No dependency manifest, checker, XcodeGen command, or test code from that PR tree is executed by the
-privileged traceability lane.
+traceability lane.
 
 Regression fixtures cover declared UI/unit test targets, mixed SwiftPM/Xcode roots, explicit Swift files,
 undeclared/removed/non-test targets, commented/string declarations, empty/stub/disabled suites, absolute

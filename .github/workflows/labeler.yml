@@ -1,8 +1,10 @@
-# Applies security:critical from .github/labeler.yml paths (#48).
+# Applies security:critical from .github/labeler.yml paths (#48). On pull_request the label configuration is
+# read from the PR's own commit, so a PR could change which labels it receives; pr-shape (run from the base
+# branch) independently requires security:critical and a second-key record for .github/ and scripts/ paths.
 name: labeler
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened]
 
 permissions:
@@ -11,6 +13,8 @@ permissions:
 
 jobs:
   label:
+    # Fork PRs get a read-only token on pull_request and receive no automatic labels.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

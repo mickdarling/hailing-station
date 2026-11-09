@@ -19,6 +19,8 @@ When opening an issue:
 
 ## Maintainer workflow
 
+For any PR touching `.github/` or `scripts/`, the maintainer diffs those changes themselves at the exact head before merging: the PR contract workflows run from the PR's own workflow files, and the checker scripts take effect once merged.
+
 Changes are developed from issue specifications and kept small enough to review. Pull requests should identify the issue they close or advance, name the tests that cover their acceptance criteria, and pass the repository verification scripts.
 
 Before opening a PR, read [AGENTS.md](AGENTS.md), `scripts/pr-shape.py`, and the PR template. Check the first spec reference, open issue/spec label, four-production-file limit, security label, and test traceability before submitting. Finish intended commits before requesting independent review and retain the full current head SHA.
