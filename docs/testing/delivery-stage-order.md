@@ -61,17 +61,20 @@ attempt/cancellation record and never retry on error. This delivery does not cha
 
 ## Verification
 
-The Dev Work VM workspace is a fresh clone at `~/codex-workspaces/vwf3a`, checked out at
+The Dev Work VM workspace is a fresh clone, checked out at
 `1f2a4dc1b6c8f14699a9df971957d88f5c90995e` and synchronized by a local `origin/main..HEAD` bundle.
 Each run waits for the shared lane from a remote script whose process arguments contain only its
 filename, avoiding a match against the waiting shell itself:
 
+Each run waited for the shared VM lane to be idle.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Ambient|Tmux|Reply)'`.
+
 ```sh
-while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
-WS=vwf3a ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Ambient|Tmux|Reply)'
 python3 -m unittest discover -s Tests/ReplyCLITests
-~/codex-workspaces/vw-werr.sh vwf3a
 ```
+
+The VM warnings-as-errors build of the package and tests.
 
 SSH stdin is closed with `< /dev/null`; each command finishes before the next begins. The package
 runner uses four workers. The warnings-as-errors helper runs with a workspace-specific `swift` wrapper
@@ -89,9 +92,8 @@ refusal assertion. Reply CLI verification passed **124 tests in 216.158 seconds*
 The warnings-as-errors helper finished with **`werr build=0`, exit 0**. Existing missing
 module-cache debug-info warnings were emitted by the Command Line Tools iteration build.
 
-Final VM logs are `~/codex-workspaces/vwf3a-build.log`, `~/codex-workspaces/vwf3a-test.log`,
-`~/codex-workspaces/vwf3a-cli.log`, `~/codex-workspaces/vwf3a-werr.log` and
-`~/codex-workspaces/vwf3a-werr-result.log`. The final follow-up changes this document only;
+Final build, test, reply CLI, and warnings-as-errors build/result logs were retained on the VM.
+The final follow-up changes this document only;
 executable source and tests match the verified snapshot.
 
 Strict host lint passed with zero violations on the four production files and three new test files:

@@ -97,22 +97,22 @@ read-back cancellation, direct host-local dispatch and non-ambient confirmation 
 
 No host builds or tests. Host work is limited to source edits, Git, SSH and strict SwiftLint.
 
-The Dev Work VM workspace was freshly cloned from GitHub at `~/codex-workspaces/vw1120c`. Each validation snapshot
-was committed locally and synchronized with:
+The Dev Work VM workspace was freshly cloned from GitHub. Each validation snapshot
+was committed locally and synchronized by git bundle of `origin/main..HEAD`
+(`SYNC_BUNDLE` below is a generic location for the transferred bundle):
 
 ```sh
-git bundle create /tmp/vw1120c.bundle origin/main..HEAD
+git bundle create "$SYNC_BUNDLE" origin/main..HEAD
 # Copy the bundle to the VM, then in its fresh clone:
-git fetch /tmp/vw1120c.bundle HEAD
+git fetch "$SYNC_BUNDLE" HEAD
 git checkout --detach FETCH_HEAD
 ```
 
-Before each run, a VM script waits with the requested loop, with no runner name in its own command line:
+Before each run, a VM script waits for the shared lane, with no runner name in its own command line:
 
-```sh
-while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
-WS=vw1120c ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit)'
-```
+Each run waited for the shared VM lane to be idle.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit)'`.
 
 SSH stdin is closed (`< /dev/null`) and the command runs synchronously. A different session's waiting command
 initially matched the literal pattern; it was left alone and the requested wait eventually cleared. No competing
@@ -136,14 +136,13 @@ Earlier validation history is retained rather than described as passing:
 - Snapshot `dee7a456` built successfully and ran **973 tests in 172 suites**, with **two unexpected failures**
   plus **five known issues**, in 504.785 seconds. The failures exposed lockdown classification and premature
   confirmation consumption on a rate denial; both were fixed. Logs are retained on the VM as
-  `~/codex-workspaces/vw1120c-dee7a456-build.log` and `vw1120c-dee7a456-test.log`.
+  build logs for snapshot `dee7a456` and test logs for snapshot `dee7a456`.
 - Snapshot `ae10bead` built, then its own test process tree was stopped to include the additional adapter-boundary
   lockdown/privacy/expiry checks in the final run. Its partial test log is not a completed verification result.
 - The five known issues are deliberately expected assertions in `LocalDispatchPreflightWaitTests` for missing
   listing arrival, early dispatch exit and a suspended synthetic step. They are distinct from unexpected failures.
 
-The final full command's workspace-specific logs are `~/codex-workspaces/vw1120c-build.log` and
-`~/codex-workspaces/vw1120c-test.log`.
+The final full command's build and test logs were retained on the VM.
 
 All new time-sensitive tests use injected clocks or explicit continuation/stream barriers, without sleeps.
 Existing regression suites retain their own timing mechanisms. No simulator or physical device validation is claimed.
@@ -176,25 +175,19 @@ selection cleanup, and preservation of unresolved holds. A wire-control regressi
 nor Discard can resolve a hold through the device's frame ingress. Static call-site/route inspection confirms
 held Send remains unreachable from any wire, local socket or device path.
 
-The VM workspace `~/codex-workspaces/vw1120c` fetched `origin main` (`76010ade`) and applied the new git bundle,
+The VM verification clone fetched `origin main` (`76010ade`) and applied the new git bundle,
 checking out source snapshot `fb06a242352897e571c209e13f0559651eff020a`. Before synchronizing/running, the blocking
-SSH wrapper (stdin `< /dev/null`) waited for the prior job with:
+SSH wrapper (stdin `< /dev/null`) waited for the shared VM lane to be idle.
 
-```sh
-while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
-```
+It then fetched `origin main`, fetched the bundle's `HEAD`, checked out `FETCH_HEAD`, and ran the following verification:
 
-It then fetched `origin main`, fetched the bundle's `HEAD`, checked out `FETCH_HEAD`, and ran exactly:
-
-```sh
-WS=vw1120c ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit)'
-```
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit)'`.
 
 Result: **`build=0`, `test=0`; 987 tests in 175 suites passed in 540.800 seconds**, with **zero unexpected
 failures** and the same **five intentional known issues** in `LocalDispatchPreflightWaitTests`. All new regressions
 passed. Build time was 41.44 seconds; the existing missing-module-cache debug-info warnings remain. Snapshot logs
-are retained on the VM as `~/codex-workspaces/vw1120c-fb06a242-build.log` and
-`~/codex-workspaces/vw1120c-fb06a242-test.log` (also copied to the workspace-specific generic log names above).
+are retained on the VM for snapshot `fb06a242` (build) and `fb06a242` (test),
+also copied to the generic build and test logs above.
 
 Strict host SwiftLint passed with **zero violations in all 13 changed Swift files** against rebased main, using
 `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict <file>` per file.
@@ -210,30 +203,28 @@ Only `HostSession+Routing.swift` and `HailHost.swift` change in production; the 
 production files under the checker's exclusions and rename handling. No optional one-line #1134 fixes are included.
 The neutral adapter-boundary hardening deferral above is unchanged.
 
-The VM workspace `~/codex-workspaces/vw1120c` fetched `origin feat/1120-host-hold`, verified its full head as
+The VM verification clone fetched `origin feat/1120-host-hold`, verified its full head as
 `2556bcfbca3ab4214b061a3f69f8d9102698bea1`, then fetched the bundle of new local commits. The final tested source
-snapshot is `97edc6b5a1e8145bdf29fb4baa537d14ba3af681`. Each run waited for VM idleness with the exact loop below,
+snapshot is `97edc6b5a1e8145bdf29fb4baa537d14ba3af681`. Each run waited for VM idleness with the lane wait described below,
 inside a VM script whose command line does not itself contain the runner name. SSH stdin was `< /dev/null`, and
 both runs were blocking:
 
-```sh
-while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
-WS=vw1120c ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit|Reply)'
-```
+Each run waited for the shared VM lane to be idle.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(Held|Ambient|Guard|Policy|HailHost|Host|LocalDispatch|RightyoInputConsumer|Audit|Reply)'`.
 
 The requested filter does not include the original #874 session suite, so that suite also ran, unchanged:
 
-```sh
-while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
-WS=vw1120c ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.RightyoInputRequestRefusalSessionTests'
-```
+Each run waited for the shared VM lane to be idle.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.RightyoInputRequestRefusalSessionTests'`.
 
 The first snapshot, `878045c4bdae6c7b2cfc489b09b79c2eefd4bbf8`, built and ran 1,066 tests in 190 suites in
 582.926 seconds, with one unexpected failure and ten intentional known issues. The new rate-limit test incorrectly
 expected `.capacityExceeded`; inspection of the original #874 error mapping confirmed `.deliveryRefused`. A new
 commit corrected only that assertion before the final rerun. The original #874 session suite passed in that first
-validation as well. Initial logs are retained as `~/codex-workspaces/vw1120c-878045c4-build.log` and
-`~/codex-workspaces/vw1120c-878045c4-test.log`.
+validation as well. Initial build logs for snapshot `878045c4` and
+test logs for snapshot `878045c4` are retained on the VM.
 
 Final main run: **`build=0`, `test=0`; 1,066 tests in 190 suites passed in 576.873 seconds**, with **zero
 unexpected failures** and ten intentional known issues: the five existing `LocalDispatchPreflightWaitTests` issues
@@ -242,10 +233,8 @@ capability/admission tests and both capability variants of stream continuation p
 61.55 seconds; existing missing-module-cache debug-info warnings remain.
 
 The additional unchanged #874 session suite returned **`build=0`, `test=0`; two tests in one suite passed in
-0.006 seconds**, with no issues. Its incremental VM build took 0.52 seconds. Main-run logs are retained as
-`~/codex-workspaces/vw1120c-capability-build.log` and `~/codex-workspaces/vw1120c-capability-test.log`; the additional
-suite's logs are `~/codex-workspaces/vw1120c-capability-874-build.log` and
-`~/codex-workspaces/vw1120c-capability-874-test.log`.
+0.006 seconds**, with no issues. Its incremental VM build took 0.52 seconds. Main-run build and test logs and the additional
+suite's build and test logs were retained on the VM.
 
 Strict host SwiftLint passed with zero violations for all **14 changed or restored Swift files** (the union of the
 full PR's Swift diff and this follow-up's diff); the corrected test file was linted again after its one-line

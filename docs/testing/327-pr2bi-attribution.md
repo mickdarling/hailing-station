@@ -69,17 +69,16 @@ Existing child-callback tests continue to cover target retention across snapshot
 
 ## Verification
 
-The Dev Work VM's `~/codex-workspaces/vw327c` was clean at the requested `09b4c466` baseline, with
+The Dev Work VM verification clone was clean at the requested `09b4c466` baseline, with
 GitHub as origin, before bundle synchronization. Verification snapshots use temporary refs, not implementation
 commits on `feat/327-attribution`. Source and tests must match the final verified snapshot before committing.
 
 Each VM invocation waits for the shared lane to become idle, then runs, over blocking SSH with stdin
 `< /dev/null`:
 
-```sh
-while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
-WS=vw327c ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(Ambient|TaskProgress|GuardBudget)'
-```
+Each run waited for the shared VM lane to be idle.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(Ambient|TaskProgress|GuardBudget)'`.
 
 The runner builds all Swift package tests with `swift build --build-tests -j 4` and its Command Line Tools
 Testing framework/plugin/linker flags, then uses `swift test --skip-build --no-parallel -j 4` with the filter

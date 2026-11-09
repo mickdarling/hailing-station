@@ -24,14 +24,12 @@ reasons. The generated schema changed; existing generated frame fixtures did not
 
 ## Dev Work VM verification
 
-A fresh GitHub clone in `~/codex-workspaces/vw1120a` received the unpushed commit by git bundle. Runs were sequential;
+A fresh GitHub clone on the Dev Work VM received the unpushed commit by git bundle. Runs were sequential;
 each SSH command closed stdin with `< /dev/null`. No Swift build or test ran on the live voice host.
 
-VM-side command:
+VM-side verification (with the CLT flags described below):
 
-```sh
-WS=vw1120a ~/codex-workspaces/vw327-run.sh HailProtocolTests
-```
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailProtocolTests'`.
 
 The supplied run script built tests with `taskpolicy -b swift build --build-tests -j 4`, then ran
 `taskpolicy -b swift test --skip-build --no-parallel -j 4 --filter HailProtocolTests`, with its configured CLT
@@ -83,13 +81,14 @@ at-most-once decisions, unchanged resolution replay for duplicate/conflicting de
 unknown-ID `stale`, ambient-stream survival, and content retention separately from expired Send authority.
 These lifecycle and retention rules are documentation only; no runtime implementation or device proof is claimed.
 
-The final Swift sources were synced by a temporary git-bundle snapshot to `~/codex-workspaces/vw1120a`.
+The final Swift sources were synced by a temporary git-bundle snapshot to the VM verification clone.
 Each SSH invocation used `< /dev/null`, stayed blocking, and completed before the next VM job. VM commands:
 
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailProtocolTests'`.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests.HeldRequestRuleVocabularyTests'`.
+
 ```sh
-WS=vw1120a ~/codex-workspaces/vw327-run.sh 'HailProtocolTests'
-WS=vw1120a ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests.HeldRequestRuleVocabularyTests'
-cd ~/codex-workspaces/vw1120a
 taskpolicy -b .build/debug/hail-protocol-gen
 git diff --exit-code -- fixtures/frames
 ```
@@ -170,26 +169,26 @@ all schema tests passed. No CI/workflow/script enforcement file changed.
 
 ### Final verification
 
-Sources and fixtures were copied to the existing `~/codex-workspaces/vw1120a` iteration workspace. Every SSH
+Sources and fixtures were copied to the existing VM iteration workspace. Every SSH
 invocation was blocking with stdin `< /dev/null`; each VM job completed before the next started. No Swift build
-or test ran on the voice host. Exact VM-side test commands:
+or test ran on the voice host. VM-side verification:
 
-```sh
-WS=vw1120a ~/codex-workspaces/vw327-run.sh 'HailProtocolTests'
-WS=vw1120a ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests.HeldRequestRuleVocabularyTests'
-```
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailProtocolTests'`.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests.HeldRequestRuleVocabularyTests'`.
 
 Both reported `build=0`, `test=0`. Final results: **161 tests in 30 suites passed** (0.147 seconds) and
 **1 test in 1 suite passed** (0.001 seconds), respectively. The protocol run was repeated after a formatting-only
 lint repair so this evidence covers the final Swift files; the initial run also passed 161 tests. The supplied
 script uses the bounded background-policy CLT build and serial filtered test commands documented above.
 
-Generator verification on the VM, in `~/codex-workspaces/vw1120a`:
+Generator verification in the VM verification clone (`GENERATED_OUTPUT` is a scratch directory
+outside the repository):
 
 ```sh
-taskpolicy -b .build/debug/hail-protocol-gen /tmp/hs1120-round2-generated/frames
-diff -qr fixtures/frames /tmp/hs1120-round2-generated/frames
-cmp fixtures/schema/frame-v1.schema.json /tmp/hs1120-round2-generated/schema/frame-v1.schema.json
+taskpolicy -b .build/debug/hail-protocol-gen "$GENERATED_OUTPUT"/frames
+diff -qr fixtures/frames "$GENERATED_OUTPUT"/frames
+cmp fixtures/schema/frame-v1.schema.json "$GENERATED_OUTPUT"/schema/frame-v1.schema.json
 ```
 
 Result: generated **57 fixtures** plus schema; both byte-comparison commands exited **0**. The schema's outcome

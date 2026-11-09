@@ -61,16 +61,19 @@ is unchanged. The earlier verification record explicitly identifies its pre-reba
 
 ## Verification
 
-The Dev Work VM workspace is a fresh clone at `~/codex-workspaces/vwf2`, synchronized with a local
+The Dev Work VM workspace is a fresh clone, synchronized with a local
 bundle of `origin/main..HEAD`, including the prerequisite delivery. Verification uses Apple Swift
 6.3.3 on arm64 macOS. Each run waits for the shared lane in a remote script:
 
+Each run waited for the shared VM lane to be idle.
+
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Ambient|Tmux|Reply)'`.
+
 ```sh
-while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
-WS=vwf2 ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Ambient|Tmux|Reply)'
 python3 -m unittest discover -s Tests/ReplyCLITests
-~/codex-workspaces/vw-werr.sh vwf2
 ```
+
+The VM warnings-as-errors build of the package and tests.
 
 SSH stdin is closed with `< /dev/null`; each command completes before the next begins.
 
@@ -78,9 +81,7 @@ The verified source/test snapshot is `bf95a5c13efa0263cddae665f2051c632852964e`,
 `b5923e5bb69550a6c35ad107e26e12ca73dc2412`; this evidence precedes the later integration rebase.
 A focused follow-up passed **26 tests in 5 suites** in **0.299 seconds** with `build=0`, `test=0`:
 
-```sh
-WS=vwf2 ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(DeliveryAdmissionComposition|FinalDelivery|LocalDispatchLifecycle|TaskProgressHandoff)'
-```
+The VM verification wrapper built the package and tests, then ran the filtered tests: `'HailDaemonKitTests\.(DeliveryAdmissionComposition|FinalDelivery|LocalDispatchLifecycle|TaskProgressHandoff)'`.
 
 The full requested Swift filter then passed with `build=0`, `test=0`: **1,089 tests in 225 suites**
 in **658.766 seconds**. Its ten expected known issues are the five each in
@@ -92,11 +93,8 @@ Reply CLI verification passed: **124 tests in 215.572 seconds**, exit 0. The war
 command finished with **`werr build=0`, exit 0**. Existing missing module-cache debug-info warnings
 were emitted; this is Command Line Tools VM iteration evidence.
 
-Saved VM logs are `~/codex-workspaces/vwf2-focused-build.log`,
-`~/codex-workspaces/vwf2-focused-test.log`, `~/codex-workspaces/vwf2-build.log` and
-`~/codex-workspaces/vwf2-test.log`. Reply CLI output is retained in
-`~/codex-workspaces/vwf2-cli.log`; warnings-as-errors output is retained in
-`~/codex-workspaces/vwf2-werr.log` and `~/codex-workspaces/vwf2-werr-result.log`.
+Focused and full build/test logs, reply CLI output, and warnings-as-errors build/result
+logs were retained on the VM.
 The final follow-up updates this record only; executable source and tests match the verified snapshot.
 
 Strict host lint passed with zero violations on all ten changed Swift files: the four production
