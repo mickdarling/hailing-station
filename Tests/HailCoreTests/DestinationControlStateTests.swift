@@ -97,4 +97,15 @@ struct DestinationControlStateTests {
         #expect(DestinationControlState.unavailable(.offline, saved: nil).accessibilityValue
             == "Destination unavailable: offline.")
     }
+
+    // Codex review of #1150: the one-line toolbar names the Mac, so the same target name on two Macs differs.
+    @Test func theToolbarLineNamesTheMacOfAConfirmedDestination() {
+        let other = DestinationLabel(hostName: "Laptop", targetName: "build", targetKind: "tmux", targetID: "%7")
+        let studio = DestinationControlState.confirmed(build).singleLineText
+        #expect(studio == "Terminal · build · Mac Studio")
+        #expect(studio != DestinationControlState.confirmed(other).singleLineText)
+        // Unconfirmed states keep their own line and never carry a saved name.
+        #expect(DestinationControlState.confirming(saved: build).singleLineText == "Confirming…")
+        #expect(DestinationControlState.unavailable(.offline, saved: build).singleLineText == "Unavailable: offline")
+    }
 }

@@ -45,7 +45,7 @@ struct DestinationControlView<Browser: View>: View {
     private var label: some View {
         switch style {
         case .toolbar:
-            Label { Text(state.primaryText).lineLimit(1) } icon: { glyph }
+            Label { Text(state.singleLineText).lineLimit(1) } icon: { glyph }
                 .foregroundStyle(state.talkReady ? Color.primary : Color.secondary)
         case .compact:
             HStack(spacing: 12) {

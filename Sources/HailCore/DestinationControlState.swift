@@ -88,6 +88,13 @@ public enum DestinationControlState: Equatable, Sendable {
         }
     }
 
+    /// One line for the toolbar: a confirmed destination names its Mac too, so identically named targets on two
+    /// Macs never look the same (Codex review of #1150). Other states read as their primary text.
+    public var singleLineText: String {
+        if case .confirmed(let label) = self { return "\(label.role) · \(label.targetName) · Mac \(label.hostName)" }
+        return primaryText
+    }
+
     /// Secondary: the confirmed Mac, or a saved destination marked as not confirmed.
     public var secondaryText: String? {
         switch self {
