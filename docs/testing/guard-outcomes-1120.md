@@ -66,24 +66,19 @@ The baseline `df8db23095a4ae8d14cced167a6e825042d5b7b2` records 274 passing test
 The security-review follow-up was bundle-synced using validation snapshot
 `efd4d8c92fec54049c12bb89bf505f823590beb2`. The wrapper reported `build=0`, `test=0`:
 **278 tests in 27 suites passed** (4.177 s test execution). Build time was 63.77 s, with
-missing module-cache debug-info warnings. Job-specific logs were preserved as
-`~/codex-workspaces/vw1120b-review-build.log` and `~/codex-workspaces/vw1120b-review-test.log`;
+missing module-cache debug-info warnings. Job-specific build and test logs were retained on the VM;
 the test log confirms all five new test functions and their eleven cases passed. The final Swift
 sources and tests exactly match this snapshot; only this documentation changed after the run.
 
-The VM workspace is `~/codex-workspaces/vw1120b`. Before each run, SSH waits for the shared VM lane.
-The literal requested pattern was tried first,
-but `pgrep -f vw327-run.sh` also matched its own waiting `zsh -c` process on this VM. The equivalent
-self-excluding pattern used for the completed wait was:
-
-```sh
-while pgrep -f "[v]w327-run.sh" >/dev/null; do sleep 20; done
-```
+Before each run, SSH waits for the shared VM lane. The initial process-name wait
+also matched its own waiting `zsh -c` process on this VM. A self-excluding process-name
+pattern completed the wait.
 
 Then, with SSH stdin closed (`< /dev/null`), run synchronously:
 
 ```sh
-WS=vw1120b ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(Guard|DangerousPattern|Policy|Confirmation|HailHost|Host|RightyoInputConsumer)'
+swift build --build-tests -j 4
+swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(Guard|DangerousPattern|Policy|Confirmation|HailHost|Host|RightyoInputConsumer)'
 ```
 
 Host strict lint passed with **zero violations for all eight Swift files** changed cumulatively

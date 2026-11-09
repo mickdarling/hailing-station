@@ -220,7 +220,7 @@ Table counts: **29 KEPT, 31 TIGHTENED, 34 WEAKENED; 94 rows total**.
 
 Final executable source and tests were verified at
 `6b0bdca092fa2374e3e31946788545b8acab651d`. The follow-up documentation commit changes this
-record only. The VM workspace `~/codex-workspaces/vwf3b` was re-synchronized from a local full-HEAD
+record only. The VM verification clone was re-synchronized from a local full-HEAD
 bundle and its `git rev-parse HEAD` matched before execution. No GitHub calls were made.
 
 | Run/group | Tests | Suites | Result |
@@ -247,41 +247,46 @@ termination/kill cleanup is available on timeout. Builds use `-j 4`, tests use `
 No host build or test was run. Strict host lint passed all **22 Swift files changed from main**, with
 zero violations. `git diff --check` passes. No physical-device, simulator or live tmux result is claimed.
 
-Exact remote commands, launched through `/bin/zsh /tmp/f3b-review-repeats.sh` over SSH with
+`VM_TOOLS` below is a generic location for verification wrappers outside the repository;
+`SYNC_BUNDLE` is the transferred git bundle.
+
+Equivalent remote commands, run serially under the watchdog over SSH with
 `< /dev/null`. Targeted round 1 passed before a log filter mistook a successful `outcome="failed"`
 parameter for a failure; correcting that filter required no source change. The continuation ran rounds
-2 and 3. The loop below shows the identical test command used for all three rounds:
+2 and 3. The loop below represents the same build and test filter used for all three rounds:
 
 ```sh
-while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
-cd ~/codex-workspaces/vwf3b
-git fetch /tmp/f3b-review.bundle HEAD
+# Wait for the shared VM verification lane to become idle.
+git fetch "$SYNC_BUNDLE" HEAD
 git checkout -B submission-verification FETCH_HEAD
 git rev-parse HEAD
-export PATH="$HOME/codex-workspaces/vwf3b-tools:$PATH"
+export PATH="$VM_TOOLS:$PATH"
 
 for round in 1 2 3; do
-  WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(Tmux|CommandLaunch|DeliveryAdmission|TaskProgress|Held|AmbientWiringPolicyRetirement)'
+  swift build --build-tests -j 4
+  swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(Tmux|CommandLaunch|DeliveryAdmission|TaskProgress|Held|AmbientWiringPolicyRetirement)'
 done
 
 # The same idle check precedes each bounded broad group:
-WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Tmux|Reply|CommandLaunch)'
-WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.Ambient[A-M]'
-WS=vwf3b python3 /tmp/f3b-phase.py /bin/zsh ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.Ambient([^A-M]|$)'
+swift build --build-tests -j 4
+swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|TaskProgress|Held|LocalDispatch|HailHost|Host|Tmux|Reply|CommandLaunch)'
+swift build --build-tests -j 4
+swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.Ambient[A-M]'
+swift build --build-tests -j 4
+swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.Ambient([^A-M]|$)'
 
-python3 /tmp/f3b-phase.py python3 -m unittest discover -s Tests/ReplyCLITests
-python3 /tmp/f3b-werr.py
+python3 "$VM_TOOLS/phase.py" python3 -m unittest discover -s Tests/ReplyCLITests
+python3 "$VM_TOOLS/phase.py" swift build --build-tests -Xswiftc -warnings-as-errors -j 4
 ```
 
-The warnings-as-errors wrapper invokes `~/codex-workspaces/vw-werr.sh vwf3b` under the same watchdog,
-temporarily adds `-j 4` to its build command, and restores that helper afterward. Its required result
+The warnings-as-errors build (`swift build --build-tests -Xswiftc -warnings-as-errors`) uses the same watchdog.
+Its helper temporarily adds `-j 4` to the build command and is restored afterward. Its required result
 was `werr build=0` and wrapper exit 0. The helper's SHA-256 matched its pre-run value after restoration.
 The build emitted the existing Command Line Tools missing module-cache debug-information warnings
 and completed successfully.
 
-Logs on the VM are `/tmp/f3b-review-repeat-{1,2,3}-{build,test}.log`,
-`/tmp/f3b-review-{core,ambient-am,ambient-rest}-{build,test}.log`, `/tmp/f3b-review-cli.log`,
-`/tmp/f3b-review-werr-result.log`, and `~/codex-workspaces/vwf3b-werr.log`.
+Targeted-repeat and broad-group build/test logs, reply CLI output, and warnings-as-errors
+build/result logs were retained on the VM.
 Final inspection found no running phase, Swift build, Swift test or package-test process from this session.
 The VM's tracked worktree was clean, and its executable verification head still matched the full hash above.
 

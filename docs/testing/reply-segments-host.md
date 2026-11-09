@@ -59,12 +59,16 @@ vbsay synthesis or device latency benchmark.
 
 ## Offline commands and load controls
 
-Working directory: `~/codex-workspaces/hs-932`. Logs/wrappers and the baseline executable stay outside the repo.
+The paths below are generic placeholders: `VM_TOOLS` holds verification wrappers outside the repository;
+`BASELINE_TREE` is a temporary baseline checkout; `BASELINE_HAILD` and `P1_BASELINE_HAILD`
+are saved baseline executables. Logs were retained on the VM.
+
+Commands ran in the VM verification clone. Logs/wrappers and the baseline executable stay outside the repo.
 Each phase runs through the following local deadline/kill-trap wrapper (590 seconds, below ten minutes).
 It stops descendants, including separate sessions, on timeout or SIGINT/SIGTERM.
 
 ```python
-# /tmp/hs932-tools/phase.py
+# "$VM_TOOLS/phase.py"
 import os, signal, subprocess, sys, time
 child = subprocess.Popen(sys.argv[1:], start_new_session=True)
 def stop(signum=None, frame=None):
@@ -91,7 +95,7 @@ except subprocess.TimeoutExpired:
     stop()
 ```
 
-`/tmp/hs932-tools/swift` wraps every build/test in `taskpolicy -b`, four SwiftPM jobs and one compiler worker
+`"$VM_TOOLS/swift"` wraps every build/test in `taskpolicy -b`, four SwiftPM jobs and one compiler worker
 per target, disables automatic resolution, and supplies the required local Testing framework/plugin paths:
 
 ```bash
@@ -113,30 +117,30 @@ esac
 Initial implementation verification commands (PATH points at that wrapper):
 
 ```bash
-export PATH=/tmp/hs932-tools:$PATH
-python3 /tmp/hs932-tools/phase.py swift build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-tools/phase.py swift build --build-tests -Xswiftc -warnings-as-errors
+export PATH="$VM_TOOLS:$PATH"
+python3 "$VM_TOOLS/phase.py" swift build -Xswiftc -warnings-as-errors
+python3 "$VM_TOOLS/phase.py" swift build --build-tests -Xswiftc -warnings-as-errors
 # Baseline was built at the P1 head before edits, then copied outside the repository:
-# cp .build/debug/haild /tmp/hs932-results/haild-p1
+# cp .build/debug/haild "$P1_BASELINE_HAILD"
 for round in 1 2 3 4 5; do
-  python3 /tmp/hs932-tools/phase.py swift test --skip-build --no-parallel --filter ReplySegmenterTests
-  REPLY_SEGMENTS_BASELINE_HAILD=/tmp/hs932-results/haild-p1 \
-    python3 /tmp/hs932-tools/phase.py python3 -m unittest discover -s Tests/ReplyCLITests -p test_reply_segments.py
+  python3 "$VM_TOOLS/phase.py" swift test --skip-build --no-parallel --filter ReplySegmenterTests
+  REPLY_SEGMENTS_BASELINE_HAILD="$P1_BASELINE_HAILD" \
+    python3 "$VM_TOOLS/phase.py" python3 -m unittest discover -s Tests/ReplyCLITests -p test_reply_segments.py
 done
-REPLY_SEGMENTS_BASELINE_HAILD=/tmp/hs932-results/haild-p1 \
-  python3 /tmp/hs932-tools/phase.py python3 -m unittest discover -s Tests/ReplyCLITests
-python3 /tmp/hs932-tools/phase.py bash /tmp/hs932-tools/verify-lane.sh core
-python3 /tmp/hs932-tools/phase.py bash /tmp/hs932-tools/verify-lane.sh other
-python3 /tmp/hs932-tools/phase.py bash /tmp/hs932-tools/verify-lane.sh timing
-python3 /tmp/hs932-tools/phase.py bash /tmp/hs932-tools/verify-lane.sh audit
-python3 /tmp/hs932-tools/phase.py bash /tmp/hs932-tools/verify-lane.sh offline-scripts
+REPLY_SEGMENTS_BASELINE_HAILD="$P1_BASELINE_HAILD" \
+  python3 "$VM_TOOLS/phase.py" python3 -m unittest discover -s Tests/ReplyCLITests
+python3 "$VM_TOOLS/phase.py" bash "$VM_TOOLS/verify-lane.sh" core
+python3 "$VM_TOOLS/phase.py" bash "$VM_TOOLS/verify-lane.sh" other
+python3 "$VM_TOOLS/phase.py" bash "$VM_TOOLS/verify-lane.sh" timing
+python3 "$VM_TOOLS/phase.py" bash "$VM_TOOLS/verify-lane.sh" audit
+python3 "$VM_TOOLS/phase.py" bash "$VM_TOOLS/verify-lane.sh" offline-scripts
 # Shell checks were rerun with verify.sh's optional-bin handling after an initial harmless missing-bin diagnostic:
-python3 /tmp/hs932-tools/phase.py bash /tmp/hs932-tools/verify-lane.sh shellchecks
+python3 "$VM_TOOLS/phase.py" bash "$VM_TOOLS/verify-lane.sh" shellchecks
 # Diagnose the earlier unchanged-core failure against an export of the exact P1 tree:
-mkdir -p /tmp/hs932-p1-baseline
-git archive e1be1fbb683516040c6159719a9f27862ebecb7a | tar -x -C /tmp/hs932-p1-baseline
-python3 /tmp/hs932-tools/phase.py swift build --package-path /tmp/hs932-p1-baseline --build-tests -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-tools/phase.py bash /tmp/hs932-tools/verify-lane.sh baseline-core
+mkdir -p "$BASELINE_TREE"
+git archive e1be1fbb683516040c6159719a9f27862ebecb7a | tar -x -C "$BASELINE_TREE"
+python3 "$VM_TOOLS/phase.py" swift build --package-path "$BASELINE_TREE" --build-tests -Xswiftc -warnings-as-errors
+python3 "$VM_TOOLS/phase.py" bash "$VM_TOOLS/verify-lane.sh" baseline-core
 git diff --check
 ```
 
@@ -148,7 +152,7 @@ case "$1" in
  core) run_captured swift test --skip-build --no-parallel --filter "$CORE_PATTERN" --skip "$TIMING_PATTERN" ;;
  other) run_captured swift test --skip-build --no-parallel --skip "$CORE_PATTERN" --skip "$TIMING_PATTERN" ;;
  timing) run_captured swift test --skip-build --no-parallel --filter "$TIMING_PATTERN" ;;
- baseline-core) run_captured swift test --package-path /tmp/hs932-p1-baseline --skip-build --no-parallel --filter "$CORE_PATTERN" --skip "$TIMING_PATTERN" ;;
+ baseline-core) run_captured swift test --package-path "$BASELINE_TREE" --skip-build --no-parallel --filter "$CORE_PATTERN" --skip "$TIMING_PATTERN" ;;
  audit) audit_cli ;;
  shellchecks)
    dirs=(scripts)
@@ -245,42 +249,42 @@ last file, exactly-once publication and the marker on the last stable file sent 
 again enumerates the directory in `for _ in 0..<2`, retains observed sizes and a sent set, and requires a
 positive current size equal to an earlier pass, as on main.
 
-Exact fix-round commands (PATH points at the wrapper):
+Fix-round commands with generic paths (PATH points at the wrapper):
 
 ```bash
-export PATH=/tmp/hs932-tools:$PATH
-python3 /tmp/hs932-tools/phase.py swift build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-tools/phase.py swift build --build-tests -Xswiftc -warnings-as-errors
+export PATH="$VM_TOOLS:$PATH"
+python3 "$VM_TOOLS/phase.py" swift build -Xswiftc -warnings-as-errors
+python3 "$VM_TOOLS/phase.py" swift build --build-tests -Xswiftc -warnings-as-errors
 for round in 1 2 3; do
-  python3 /tmp/hs932-tools/phase.py swift test --skip-build --no-parallel \
+  python3 "$VM_TOOLS/phase.py" swift test --skip-build --no-parallel \
     --filter 'ReplySegmenterTests|ReplyFileStabilityTests'
-  python3 /tmp/hs932-tools/phase.py python3 -m unittest discover -s Tests/ReplyCLITests -p test_reply_segments.py
+  python3 "$VM_TOOLS/phase.py" python3 -m unittest discover -s Tests/ReplyCLITests -p test_reply_segments.py
 done
-mkdir -p /tmp/hs932-r2-main
-git archive origin/main | tar -x -C /tmp/hs932-r2-main
-python3 /tmp/hs932-tools/phase.py swift build --package-path /tmp/hs932-r2-main \
+mkdir -p "$BASELINE_TREE"
+git archive origin/main | tar -x -C "$BASELINE_TREE"
+python3 "$VM_TOOLS/phase.py" swift build --package-path "$BASELINE_TREE" \
   --product haild -Xswiftc -warnings-as-errors
-cp /tmp/hs932-r2-main/.build/debug/haild /tmp/hs932-r2-results/haild-main
-REPLY_SEGMENTS_BASELINE_HAILD=/tmp/hs932-r2-results/haild-main \
-  python3 /tmp/hs932-tools/phase.py python3 -m unittest discover -s Tests/ReplyCLITests
+cp "$BASELINE_TREE"/.build/debug/haild "$BASELINE_HAILD"
+REPLY_SEGMENTS_BASELINE_HAILD="$BASELINE_HAILD" \
+  python3 "$VM_TOOLS/phase.py" python3 -m unittest discover -s Tests/ReplyCLITests
 for lane in core other timing audit offline-scripts shellchecks; do
-  python3 /tmp/hs932-tools/phase.py bash /tmp/hs932-tools/verify-lane.sh "$lane"
+  python3 "$VM_TOOLS/phase.py" bash "$VM_TOOLS/verify-lane.sh" "$lane"
 done
 # Also compare the supplied P1 squash, since the offline origin/main ref predates it.
-git archive b86b2fbf | tar -x -C /tmp/hs932-r2-main
-python3 /tmp/hs932-tools/phase.py swift build --package-path /tmp/hs932-r2-main \
+git archive b86b2fbf | tar -x -C "$BASELINE_TREE"
+python3 "$VM_TOOLS/phase.py" swift build --package-path "$BASELINE_TREE" \
   --product haild -Xswiftc -warnings-as-errors
-cp /tmp/hs932-r2-main/.build/debug/haild /tmp/hs932-r2-results/haild-main-p1
-PYTHONPATH=Tests/ReplyCLITests REPLY_SEGMENTS_BASELINE_HAILD=/tmp/hs932-r2-results/haild-main-p1 \
-  python3 /tmp/hs932-tools/phase.py python3 -m unittest \
+cp "$BASELINE_TREE"/.build/debug/haild "$P1_BASELINE_HAILD"
+PYTHONPATH=Tests/ReplyCLITests REPLY_SEGMENTS_BASELINE_HAILD="$P1_BASELINE_HAILD" \
+  python3 "$VM_TOOLS/phase.py" python3 -m unittest \
   test_reply_segments.ReplySegmentCLITests.test_single_segment_matches_legacy_frames_byte_for_byte
 git diff --check
 git diff origin/main HEAD -- Sources/haild/ReplyCommand.swift | grep '^-.*//'
 ```
 
 The lane wrapper is regenerated from this checkout’s `scripts/verify.sh` definitions before execution;
-its dispatch is the same as above. Results and the final comment/SwiftLint audit follow. Logs are outside the repository at
-`/tmp/hs932-r2-results/`.
+its dispatch is the same as above. Results and the final comment/SwiftLint audit follow.
+Logs were retained on the VM, outside the repository.
 
 - Both final warnings-as-errors builds passed: 2.06 seconds (build), 2.93 seconds (build-tests).
 - Final focused Swift: 3/3 runs passed, 10 segmenter functions plus one file-stability function per run
@@ -335,41 +339,41 @@ unspaced sentences, non-ASCII sentence starts and mixed CJK/URL tokens. Every ca
 pieces and joins with every non-whitespace character preserved. The existing exact unspaced join cases,
 16,000-closer cases and 324 generated sentence/word-bound combinations also run unchanged.
 
-All Swift commands use the existing `/tmp/hs932-tools/swift` wrapper above: `taskpolicy -b`, `-j 4`
+All Swift commands use the existing `"$VM_TOOLS/swift"` wrapper above: `taskpolicy -b`, `-j 4`
 (`--jobs 4`), one compiler worker per target, no automatic resolution and the supplied Testing framework,
-plugin and rpath flags. Every phase uses `/tmp/hs932-tools/phase.py` with its 590-second deadline and
-SIGINT/SIGTERM descendant-kill trap. Phases run serially. Logs and the temporary detached worktree are under
-`/tmp/hs932-r3-results/`; the worktree is removed after verification. No network or other clone is used.
+plugin and rpath flags. Every phase uses `"$VM_TOOLS/phase.py"` with its 590-second deadline and
+SIGINT/SIGTERM descendant-kill trap. Phases run serially. Logs were retained on the VM;
+the temporary detached worktree is removed after verification. No network or other clone is used.
 Main means the supplied exact commit `b86b2fbf8abc1f9c7cffa6599e619599d5c644d0`, since the offline
 `origin/main` tracking ref is older.
 
-Exact commands (each loop iteration is its own bounded phase):
+Commands with generic paths (each loop iteration is its own bounded phase):
 
 ```bash
-python3 /tmp/hs932-tools/phase.py /tmp/hs932-tools/swift build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-tools/phase.py /tmp/hs932-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+python3 "$VM_TOOLS/phase.py" "$VM_TOOLS/swift" build -Xswiftc -warnings-as-errors
+python3 "$VM_TOOLS/phase.py" "$VM_TOOLS/swift" build --build-tests -Xswiftc -warnings-as-errors
 for iteration in 1 2 3; do
-  python3 /tmp/hs932-tools/phase.py /tmp/hs932-tools/swift test --skip-build --no-parallel \
+  python3 "$VM_TOOLS/phase.py" "$VM_TOOLS/swift" test --skip-build --no-parallel \
     --filter ReplySegmenterTests
 done
-python3 /tmp/hs932-tools/phase.py /tmp/hs932-tools/swift test --skip-build --no-parallel \
+python3 "$VM_TOOLS/phase.py" "$VM_TOOLS/swift" test --skip-build --no-parallel \
   --filter AudioInputSelectionConcurrencyTests.supersededSaveCannotOverwriteTheLatestPreference
-git worktree add --detach /tmp/hs932-r3-results/main b86b2fbf
-python3 /tmp/hs932-tools/phase.py /tmp/hs932-tools/swift build \
-  --package-path /tmp/hs932-r3-results/main --build-tests -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-tools/phase.py /tmp/hs932-tools/swift test \
-  --package-path /tmp/hs932-r3-results/main --skip-build --no-parallel \
+git worktree add --detach "$BASELINE_TREE" b86b2fbf
+python3 "$VM_TOOLS/phase.py" "$VM_TOOLS/swift" build \
+  --package-path "$BASELINE_TREE" --build-tests -Xswiftc -warnings-as-errors
+python3 "$VM_TOOLS/phase.py" "$VM_TOOLS/swift" test \
+  --package-path "$BASELINE_TREE" --skip-build --no-parallel \
   --filter AudioInputSelectionConcurrencyTests.supersededSaveCannotOverwriteTheLatestPreference
-cp /tmp/hs932-r3-results/main/.build/debug/haild /tmp/hs932-r3-results/haild-main
-export REPLY_SEGMENTS_BASELINE_HAILD=/tmp/hs932-r3-results/haild-main
+cp "$BASELINE_TREE"/.build/debug/haild "$BASELINE_HAILD"
+export REPLY_SEGMENTS_BASELINE_HAILD="$BASELINE_HAILD"
 for iteration in 1 2; do
-  python3 /tmp/hs932-tools/phase.py python3 -B -m unittest discover \
+  python3 "$VM_TOOLS/phase.py" python3 -B -m unittest discover \
     -s Tests/ReplyCLITests -p test_reply_segments.py
 done
-python3 /tmp/hs932-tools/phase.py python3 -B -m unittest discover -s Tests/ReplyCLITests
-PYTHONPATH=Tests/ReplyCLITests python3 /tmp/hs932-tools/phase.py python3 -B -m unittest \
+python3 "$VM_TOOLS/phase.py" python3 -B -m unittest discover -s Tests/ReplyCLITests
+PYTHONPATH=Tests/ReplyCLITests python3 "$VM_TOOLS/phase.py" python3 -B -m unittest \
   test_reply_segments.ReplySegmentCLITests.test_single_segment_matches_legacy_frames_byte_for_byte
-git worktree remove --force /tmp/hs932-r3-results/main
+git worktree remove --force "$BASELINE_TREE"
 git diff --check
 ```
 

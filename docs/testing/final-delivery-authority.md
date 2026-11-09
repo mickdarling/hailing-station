@@ -58,16 +58,17 @@ with 10 expected known issues, plus 124 reply CLI tests. Rebased-source verifica
 these earlier counts are historical evidence only.
 
 The rebased source/test snapshot is `d86a833a31c37118450bdd9f475d84ab283e1ad8`, synced with
-`git bundle create /tmp/vwauth2.bundle origin/main..HEAD` into a fresh GitHub clone at
-`~/codex-workspaces/vwauth2`. The clone fetched the bundle's `HEAD`; subsequent source corrections
+a git bundle of `origin/main..HEAD` into a fresh GitHub clone on the Dev Work VM.
+The clone fetched the bundle's `HEAD`; subsequent source corrections
 were fast-forwarded from a new bundle with the same range. No source was pushed.
 
-Each VM job waits for the shared lane with the literal loop below, stored in a remote script so the
+Each VM job waits for the shared lane using a remote script whose
 process arguments do not match the wait pattern. SSH invocations are blocking with stdin `< /dev/null`.
 
 ```sh
-while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
-WS=vwauth2 ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(FinalDelivery|Held|LocalDispatch|Ambient|HailHost|Host|Reply|RightyoInputConsumer|WebSocket|Listener|Guard|Policy)'
+# Wait for the shared VM verification lane to become idle.
+swift build --build-tests -j 4
+swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(FinalDelivery|Held|LocalDispatch|Ambient|HailHost|Host|Reply|RightyoInputConsumer|WebSocket|Listener|Guard|Policy)'
 ```
 
 The first rebased run identified a same-target selection fixture that did not change selection, and
@@ -79,7 +80,8 @@ On the corrected snapshot, the focused diagnostic command passed with `build=0`,
 **48 tests in 10 suites**, 0.141 s, including the existing held concurrency checks.
 
 ```sh
-WS=vwauth2 ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(FinalDelivery|Held)'
+swift build --build-tests -j 4
+swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(FinalDelivery|Held)'
 ```
 
 The full requested filter then passed with `build=0`, `test=0`: **1,032 tests in 186 suites**,
@@ -92,7 +94,6 @@ The reply CLI suite then passed: **124 tests in 215.892 s**, `OK`, exit **0**, u
 executable in the same workspace:
 
 ```sh
-cd ~/codex-workspaces/vwauth2
 python3 -m unittest discover -s Tests/ReplyCLITests
 ```
 
@@ -111,14 +112,12 @@ not claimed. Full repository verification remains outside this focused record.
 Finally, the requested warnings-as-errors build passed with **build exit 0** and **script exit 0**:
 
 ```sh
-~/codex-workspaces/vw-werr.sh vwauth2
+swift build --build-tests -Xswiftc -warnings-as-errors
 ```
 
 The CLT linker emitted missing module-cache debug-info warnings; the warnings-as-errors Swift build
 completed successfully. This is VM iteration evidence, not a shipping-Xcode build.
 
-Logs are retained in `~/codex-workspaces/vwauth2-{build,test,cli}.log`,
-`~/codex-workspaces/vwauth2-focused-{build,test}.log`, `~/codex-workspaces/vwauth2-werr.log` and
-`~/codex-workspaces/vwauth2-werr-result.log`. The initial nonpassing test log is retained separately as
-`~/codex-workspaces/vwauth2-initial-test.log`. Source and tests match the verified snapshot; the final
-follow-up updates this document only. `git diff --check` and its staged equivalent passed.
+Full and focused build/test logs, reply CLI output, and warnings-as-errors build/result
+logs were retained on the VM. The initial nonpassing test log was retained separately.
+Source and tests match the verified snapshot; the final follow-up updates this document only. `git diff --check` and its staged equivalent passed.

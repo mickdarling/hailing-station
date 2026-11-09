@@ -5,14 +5,16 @@ not simulator or physical-device proof. P2–P5 remain deferred: sentence splitt
 device pause/yield and integrated captured-output validation. Neither side advertises `reply_segments` in P1.
 No network, installs, pushes, uploads, installed-build changes or other clones were used.
 
+`VM_TOOLS` below is a generic location for verification wrappers outside the repository.
+
 The fix-round verification checks the `segmentEnd` audio key; control commands retain `reply_yield`.
-The final verification commands below ran from `~/codex-workspaces/hs-932`. Each Swift invocation used
+The final verification commands below ran in the VM verification clone. Each Swift invocation used
 `taskpolicy -b`, two SwiftPM jobs and one compiler job per target. Each phase had a 595-second deadline,
 SIGINT/SIGTERM cleanup of its entire process group, and forced termination after five seconds if needed.
 The local wrappers (outside the repository) were:
 
 ```python
-# /tmp/hs932-phase.py
+# "$VM_TOOLS/phase.py"
 import os, signal, subprocess, sys
 process = subprocess.Popen(sys.argv[1:], start_new_session=True)
 def stop(*_):
@@ -32,27 +34,27 @@ except subprocess.TimeoutExpired:
 ```
 
 ```bash
-# /tmp/hs932-swift.sh
+# "$VM_TOOLS/swift.sh"
 #!/bin/bash
 set -euo pipefail
 flags=(-Xswiftc -F/Library/Developer/CommandLineTools/Library/Developer/Frameworks -Xswiftc -plugin-path -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing -Xlinker -rpath -Xlinker /Library/Developer/CommandLineTools/Library/Developer/Frameworks -Xlinker -rpath -Xlinker /Library/Developer/CommandLineTools/Library/Developer/usr/lib)
 exec taskpolicy -b swift "$@" --jobs 2 -Xswiftc -j1 --disable-automatic-resolution --skip-update "${flags[@]}"
 ```
 
-Exact commands (each loop iteration is a separate bounded phase):
+Commands with generic paths (each loop iteration is a separate bounded phase):
 
 ```bash
-python3 /tmp/hs932-phase.py bash /tmp/hs932-swift.sh build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-phase.py bash /tmp/hs932-swift.sh build --build-tests -Xswiftc -warnings-as-errors
+python3 "$VM_TOOLS/phase.py" bash "$VM_TOOLS/swift.sh" build -Xswiftc -warnings-as-errors
+python3 "$VM_TOOLS/phase.py" bash "$VM_TOOLS/swift.sh" build --build-tests -Xswiftc -warnings-as-errors
 for iteration in 1 2 3; do
-  python3 /tmp/hs932-phase.py bash /tmp/hs932-swift.sh test --skip-build --no-parallel --filter ReplySegments
+  python3 "$VM_TOOLS/phase.py" bash "$VM_TOOLS/swift.sh" test --skip-build --no-parallel --filter ReplySegments
 done
-python3 /tmp/hs932-phase.py bash /tmp/hs932-swift.sh test --skip-build --no-parallel \
+python3 "$VM_TOOLS/phase.py" bash "$VM_TOOLS/swift.sh" test --skip-build --no-parallel \
   --filter 'Protocol|Schema|Control|Payload|ReplySegments'
-python3 /tmp/hs932-phase.py taskpolicy -b .build/debug/hail-protocol-gen
-python3 /tmp/hs932-phase.py python3 -m unittest discover -s Tests/ProtocolSchemaTests
-python3 /tmp/hs932-phase.py python3 -m unittest scripts/tests/test_check_schema.py
-python3 /tmp/hs932-phase.py python3 scripts/check_schema.py
+python3 "$VM_TOOLS/phase.py" taskpolicy -b .build/debug/hail-protocol-gen
+python3 "$VM_TOOLS/phase.py" python3 -m unittest discover -s Tests/ProtocolSchemaTests
+python3 "$VM_TOOLS/phase.py" python3 -m unittest scripts/tests/test_check_schema.py
+python3 "$VM_TOOLS/phase.py" python3 scripts/check_schema.py
 git diff --check
 ```
 

@@ -42,13 +42,14 @@ Blocking test operations use dedicated executors; no test uses sleeps.
 
 ## Verification
 
-A fresh GitHub clone at `~/codex-workspaces/vwf1` receives the local stack using a git bundle created
-with `origin/main..HEAD`. Each run waits for the shared VM lane using this literal loop in a remote
-script, whose process arguments contain only its filename:
+A fresh GitHub clone on the Dev Work VM receives the local stack using a git bundle created
+with `origin/main..HEAD`. Each run waits for the shared VM lane in a remote script
+whose process arguments contain only its filename, then builds and runs the targeted filter:
 
 ```sh
-while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
-WS=vwf1 ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|Tmux|LocalDispatch|HailHost)'
+# Wait for the shared VM verification lane to become idle.
+swift build --build-tests -j 4
+swift test --skip-build --no-parallel -j 4 --filter 'HailDaemonKitTests\.(DeliveryAdmission|DeliveryAuthority|FinalDelivery|Tmux|LocalDispatch|HailHost)'
 ```
 
 SSH stdin is closed with `< /dev/null`; execution remains blocking.
@@ -60,7 +61,7 @@ belong to the existing `LocalDispatchPreflightWaitTests`; there were no unexpect
 tests. `DeliveryAuthorityAdapterTests` also passed. The final follow-up changes this record and a
 documentation comment only; executable source and tests match the verified snapshot.
 
-Saved VM logs are `~/codex-workspaces/vwf1-build.log` and `~/codex-workspaces/vwf1-test.log`.
+Build and test logs were retained on the VM.
 The build emitted existing missing module-cache debug-info warnings; this is Command Line Tools VM
 iteration evidence.
 
