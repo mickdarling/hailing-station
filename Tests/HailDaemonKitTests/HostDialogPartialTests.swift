@@ -1,3 +1,4 @@
+import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
@@ -82,6 +83,21 @@ import Testing
             (.policyUnavailable("a"), .policyUnavailable("a"))
         ]
         for (current, legacy) in hosts { #expect("\(current)" == "\(legacy)") }
+    }
+
+    @Test(arguments: [0, 1, 2])
+    func routingPreservesRealSplitDeliveryCounts(_ earlier: Int) async throws {
+        let block = DialogBlock(cause: .uninspectable, effects: .pasteMayHaveExecuted)
+        let adapter = DialogPartialAdapter(block: block, failAfter: earlier)
+        let host = try await host(adapter)
+        let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer())
+        _ = await session.receive(helloFrame())
+        await session.forceSelection("tmux:a")
+        let frame = sessionFrame(target: "tmux:a", payload: .text(TextPayload(text: "one\ntwo\nthree")))
+        let input = try await authorizedInput(session, frame, device: "synthetic")
+        #expect(await session.deliver(input) == .blockedByDialog(block, earlierDelivered: earlier))
+        #expect(await adapter.delivered.count == earlier)
+        #expect(await session.replyRequests.isEmpty)
     }
 
     private func host(_ adapter: DialogPartialAdapter) async throws -> HailHost {

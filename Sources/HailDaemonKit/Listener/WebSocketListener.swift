@@ -14,6 +14,44 @@ public enum WebSocketListenerError: Error, Sendable, Equatable {
     case failed(String)
 }
 
+/// Device wording depends only on typed delivery evidence and a configured spoken target name.
+struct DialogDeliveryNotice {
+    let block: DialogBlock
+    let earlierDelivered: Int
+
+    var untouched: Bool { block.effects == .none && earlierDelivered == 0 }
+
+    func message(target: String) -> String {
+        let first: String
+        switch block.cause {
+        case .known(let title): first = "A \(title) dialog is open on \(target)."
+        case .uninspectable: first = "Couldn't check \(target) for a dialog."
+        }
+        return first + " " + remainder
+    }
+
+    private var remainder: String {
+        guard earlierDelivered > 0 else {
+            switch block.effects {
+            case .none:
+                return block.cause == .uninspectable ? "Nothing was submitted." : "Nothing was sent."
+            case .pasteMayHaveExecuted:
+                return "Your words may be in the input box, but nothing was submitted."
+            case .enterMayHaveExecuted:
+                return "Your words may have gone through; check the Mac before resending."
+            }
+        }
+        let lines = earlierDelivered == 1 ? "1 earlier line" : "\(earlierDelivered) earlier lines"
+        switch block.effects {
+        case .none: return "\(lines) went through; the rest were not sent."
+        case .pasteMayHaveExecuted:
+            return "\(lines) went through. The next may be in the input box, but the rest were not submitted."
+        case .enterMayHaveExecuted:
+            return "\(lines) went through, and the next may have too; check the Mac before resending."
+        }
+    }
+}
+
 enum PeerAmbientTeardownScope {
     /// Deterministic cleanup barrier for lifecycle tests; absent in production.
     @TaskLocal static var beforeEnd: (@Sendable () async -> Void)?
@@ -1364,7 +1402,8 @@ extension AmbientRightyoRouter {
         let pipeline = try RightyoAmbientPipeline(configuration: settings,
                                                   dispatcher: AmbientListenerDispatcher(
                                                       listener: listener, audit: configuration.audit,
-                                                      selection: selection, streamTarget: target
+                                                      selection: selection, streamTarget: target,
+                                                      refusalNotices: notices
                                                   ))
         mark.set(pipeline.privacyControl)
         return pipeline
@@ -1777,6 +1816,7 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     /// The stream's own target (#636). A request its consumer routed to another target is dispatched bound to that
     /// route from this target; nil binds none.
     var streamTarget: String?
+    var refusalNotices: AmbientRefusalNotices?
 
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
         try await dispatch(request, routed: false)
@@ -1795,8 +1835,21 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
                                                    target: prepared.target, bytes: prepared.text.utf8.count))
             } catch { throw LocalReplyRefusal.auditFailure }
         }
-        return try await listener.dispatchAmbient(prepared, reference: reference, selection: selection,
-                                                  routedFrom: from)
+        do {
+            return try await listener.dispatchAmbient(prepared, reference: reference, selection: selection,
+                                                      routedFrom: from)
+        } catch let refusal as LocalDispatchRefusal {
+            if case .blockedByDialog = refusal {
+                let name: String
+                if let routedName = listener.authorizer.voiceRoutes?.route(for: prepared.target)?.name {
+                    name = routedName
+                } else {
+                    name = (try? await listener.host.targets().first { $0.id == prepared.target }?.name) ?? "the target"
+                }
+                refusalNotices?.dialogTarget(name)
+            }
+            throw refusal
+        }
     }
 }
 extension AmbientRightyoRouter {
@@ -1935,7 +1988,7 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// Own-target refusals (#894, #847), through the existing heard-turn and ordered, privacy-held notice path.
+    /// Per-request delivery refusals, through the existing heard-turn and ordered, privacy-held notice path.
     /// Capture sanitized rule tokens before the next request resets the per-run evidence. Never log text or turn ids.
     fileprivate func deliveryRefused(
         on connection: UUID, target: String, listener: WebSocketListener, notices: AmbientRefusalNotices
@@ -1943,41 +1996,52 @@ extension AmbientRightyoRouter {
         return { [weak self, weak listener] request, refusal in
             let acknowledged = notices.acknowledgement
             let line: String, persona: String, event: String, token: String
-            switch refusal {
-            case .confirmationRequired:
-                line = "request requires confirmation at the Mac; nothing was sent"
-                persona = AmbientStopConfirmation.needsConfirmation
-                event = "ambient_request_refused"
-                token = "reason=confirmation_required rules=\(RightyoGuardRefusal.current?.ruleTokens ?? "none")"
-            case .capacityExceeded:
-                line = "request capacity reached; nothing was sent"
-                persona = AmbientStopConfirmation.notSent
-                event = "ambient_request_refused"
-                token = "reason=capacity_exceeded rules=none"
-            default:
-                line = HostDeliveryOutcome.inputPendingReason
+            let playNotSent: Bool
+            if case .blockedByDialog(let block, let earlier) = refusal {
+                let notice = DialogDeliveryNotice(block: block, earlierDelivered: earlier)
+                line = notice.message(target: notices.takeDialogTarget() ?? "the target")
+                playNotSent = notice.untouched
                 persona = AmbientStopConfirmation.notSent
                 event = "ambient_delivery_refused"
                 token = "reason=\(refusal.rawValue)"
+            } else {
+                playNotSent = true
+                switch refusal {
+                case .confirmationRequired:
+                    line = "request requires confirmation at the Mac; nothing was sent"
+                    persona = AmbientStopConfirmation.needsConfirmation
+                    event = "ambient_request_refused"
+                    token = "reason=confirmation_required rules=\(RightyoGuardRefusal.current?.ruleTokens ?? "none")"
+                case .capacityExceeded:
+                    line = "request capacity reached; nothing was sent"
+                    persona = AmbientStopConfirmation.notSent
+                    event = "ambient_request_refused"
+                    token = "reason=capacity_exceeded rules=none"
+                default:
+                    line = HostDeliveryOutcome.inputPendingReason
+                    persona = AmbientStopConfirmation.notSent
+                    event = "ambient_delivery_refused"
+                    token = "reason=\(refusal.rawValue)"
+                }
             }
             notices.chain.enqueue { [weak self, weak listener] in
                 guard let self else { return }
                 let (shown, confirm) = await tellNotSent((line, target), after: acknowledged, on: connection,
                                                        listener: listener,
-                                                       request: request, persona: persona)
+                                                       request: request, persona: persona, playNotSent: playNotSent)
                 emit(event, connection: connection, detail: "\(token) shown=\(shown) confirm=\(confirm)")
             }
         }
     }
 
-    /// Tells the device that said a request that sent nothing (#636 slice 5c, #894), on its child's one notice chain:
+    /// Tells the device about a refused request on its child's one notice chain:
     /// after `acknowledgement`, the latest acknowledgement when the refusal came (an un-routed request is acknowledged
-    /// before it is typed, so the speaker hears the acknowledgement first), the refusal line, then "Nothing was sent.".
+    /// before it is typed, so the speaker hears the acknowledgement first), the refusal line, then an eligible clip.
     /// Returns the line's and the clip's outcome tokens. A connection already gone (`no_connection`) gets no clip either.
     private func tellNotSent(
         _ notice: (line: String, target: String), after acknowledgement: Task<Void, Never>?, on connection: UUID,
         listener: WebSocketListener?,
-        request: UUID? = nil, persona: String = AmbientStopConfirmation.notSent
+        request: UUID? = nil, persona: String = AmbientStopConfirmation.notSent, playNotSent: Bool = true
     ) async -> (shown: String, confirm: String) {
         let (line, target) = notice
         await acknowledgement?.value
@@ -1985,6 +2049,7 @@ extension AmbientRightyoRouter {
                                                       request: request)
             ?? "no_connection"
         guard shown != "no_connection" else { return (shown, shown) }
+        guard playNotSent else { return (shown, "suppressed_effects") }
         return (shown, await confirmNotSent(on: connection, target: target, listener: listener, persona: persona))
     }
 
@@ -2591,12 +2656,21 @@ final class AmbientRunMark: Sendable {
     var duck: AmbientDuckControl? { held.withLock { $0 } }
 }
 
-/// One child's notices of requests that sent nothing (#894 review): route refusals (#636) and pending input share one
-/// chain, so they are told in the order said, and each waits for the latest acknowledgement's task as it stood when
-/// the refusal came, so "Nothing was sent." never comes before its own request's acknowledgement.
+/// One child's request refusals share one chain, so they are told in the order said. Each waits for the latest
+/// acknowledgement's task as it stood when the refusal came; an eligible not-sent clip follows its acknowledgement.
 final class AmbientRefusalNotices: Sendable {
     let chain = SerialTaskChain()
     private let latest = Mutex<Task<Void, Never>?>(nil)
+    // The serial consumer finishes each refused request before attempting another dispatch. Capture its spoken
+    // destination at the dispatcher, then consume it synchronously with the typed refusal and acknowledgement.
+    private let destination = Mutex<String?>(nil)
+    func dialogTarget(_ name: String) { destination.withLock { $0 = name } }
+    func takeDialogTarget() -> String? {
+        destination.withLock { name in
+            defer { name = nil }
+            return name
+        }
+    }
 
     func acknowledging(_ task: Task<Void, Never>) { latest.withLock { $0 = task } }
     var acknowledgement: Task<Void, Never>? { latest.withLock { $0 } }
