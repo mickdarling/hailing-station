@@ -28,6 +28,7 @@ SECURITY_PATHS = (
 )
 VERDICT = r"\b(APPROVE WITH FIXES|APPROVE|REQUEST CHANGES)\b"
 SECOND_KEY_HEADING = "## Review record (independent second key"
+MAX_REASON = 200
 
 
 def gh(*args: str) -> str:
@@ -48,6 +49,9 @@ def spec_problems(repo: str, body: str, fetch=gh) -> list[str]:
         if "HTTP 404" in stderr:
             return [f"Spec reference #{number_ref} doesn't exist in this repo."]
         reason = stderr.splitlines()[0] if stderr else f"gh exited with status {error.returncode}"
+        # Capped, so an odd error can't flood the CI log.
+        if len(reason) > MAX_REASON:
+            reason = reason[:MAX_REASON] + "…"
         return [f"Could not read spec issue #{number_ref}: {reason}"]
     if issue.get("pull_request") is not None:
         return [f"Spec reference #{number_ref} is a pull request; point 'Part of' or 'Closes' at the spec issue."]

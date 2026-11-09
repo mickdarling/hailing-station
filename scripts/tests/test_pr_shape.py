@@ -69,6 +69,10 @@ class SpecProblemsTests(unittest.TestCase):
         silent = pr_shape.spec_problems(REPO, BODY, failing("", returncode=4))
         self.assertEqual(silent, ["Could not read spec issue #42: gh exited with status 4"])
 
+    def test_a_long_error_line_is_capped(self):
+        problems = pr_shape.spec_problems(REPO, BODY, failing("x" * 5000 + "\n"))
+        self.assertEqual(problems, ["Could not read spec issue #42: " + "x" * pr_shape.MAX_REASON + "…"])
+
     def test_a_body_without_a_reference_keeps_its_message(self):
         fetch = returning({})
         self.assertEqual(
