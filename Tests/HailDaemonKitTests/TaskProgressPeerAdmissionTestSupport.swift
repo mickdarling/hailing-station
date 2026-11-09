@@ -80,7 +80,7 @@ struct TaskProgressPeerRig {
     func replacePeer(sameAudience: Bool) async throws -> WebSocketPeer {
         let session: HostSession
         if sameAudience {
-            session = peer.session
+            session = await peer.session
         } else {
             session = HostSession(host: wake.host, authorizer: PersonalTerminalAuthorizer(), hostName: "synthetic-host")
             _ = await session.receive(helloFrame(capabilities: [SessionUpdateCard.capability]))
@@ -90,7 +90,7 @@ struct TaskProgressPeerRig {
             connection: NWConnection(host: "127.0.0.1", port: 9, using: .tcp), session: session,
             queue: DispatchQueue(label: "synthetic.task-progress.successor"), helloTimeout: .seconds(5),
             log: { _ in }, onEnd: { _ in }, submitReply: { $0(nil) })
-        let connection = session.connectionID, generation = await session.selectionGeneration
+        let connection = await session.connectionID, generation = await session.selectionGeneration
         await wake.listener.installGuardedWakePeer(successor, target: wake.target,
                                                    connection: connection, generation: generation)
         if !sameAudience { wake.wiring.select(connection: connection) }
