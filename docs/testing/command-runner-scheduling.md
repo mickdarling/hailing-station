@@ -64,10 +64,11 @@ Test run with 1 test in 2 suites failed after 9.060 seconds with 1 issue.
 The same regression passed with the fix: one test in 1.291 s, including saturation setup. The fixed
 four-second command-completion assertion passed; successful assertions do not print their operands.
 
-The first full GlobalQueueStarvation timing family attempt lacked the build-directory symlink used by the publisher CLI fixture;
-that case reached its 60-second test limit (eight tests, one issue, 73.286 s overall). Correcting only
-that verification setup made the complete serial family pass: eight tests in 13.520 s. The regression
-and focused tests use the same fixed production source throughout subsequent verification.
+The first full GlobalQueueStarvation timing family attempt lacked the build-directory symlink used by the
+publisher CLI fixture; that case reached its 60-second test limit (eight tests, one issue, 73.286 s
+overall). Correcting only that verification setup made the complete serial family pass: eight tests in
+13.520 s. The regression and focused tests use the same fixed production source throughout subsequent
+verification.
 
 The focused serial selection was `HailDaemonKitTests\.(CommandLaunch|Tmux|ProcessCommand)`:
 
@@ -131,10 +132,16 @@ The review delta sets both per-run queues to `.userInitiated`, restoring the pre
 serial, per run and untargeted, using the overcommit root. The timing-lane comment and documentation
 corrections are the only other changes.
 
+The runs below used the delta on the pre-rebase base `fe177cd5`. The same four commits were then
+rebased without change onto `7dc953c4` (identical stable patch-id, no shared files). Coverage of the
+rebased head, including the task-progress suites that main added on the new base, comes from the host
+gate and CI recorded on the pull request.
+
 Verification used a fresh local-seeded Dev Work VM clone, synchronized by a bundle of
-`origin/main..HEAD`, with Swift 6.3.3. Before every run, the driver waited for the shared VM lane to be idle. SSH used stdin from
-`/dev/null` and waited for completion. A process-group watchdog capped each run at ten minutes and trapped
-termination signals to kill remaining children. Each run used `taskpolicy -b` and at most four workers.
+`origin/main..HEAD`, with Swift 6.3.3. Before every run, the driver waited for the shared VM lane to be
+idle. SSH used stdin from `/dev/null` and waited for completion. A process-group watchdog capped each run
+at ten minutes and trapped termination signals to kill remaining children. Each run used `taskpolicy -b`
+and at most four workers.
 
 The VM verification wrapper built the package and tests, then ran the filtered tests without
 parallelism. Its exact filters were:
@@ -159,10 +166,10 @@ Concurrency 1 included the fresh build (102.54 s). Before concurrency 2, the add
 was moved above the existing doc comment to satisfy SwiftLint; no executable code changed. The clone
 was resynchronized by bundle, and concurrency 2 rebuilt that test file. Later test runs used `--skip-build`.
 
-The VM warnings-as-errors build of the package and tests ran under the outer ten-minute watchdog. It has no test filter and runs no tests.
-It reported `werr build=0` and exited 0: build duration 142.97 s, phase wall time 143.921 s. The toolchain
-again emitted missing `.pcm` module-cache-reference warnings; this records build success rather than
-warning-free output.
+The VM warnings-as-errors build of the package and tests ran under the outer ten-minute watchdog. It has
+no test filter and runs no tests. It reported `werr build=0` and exited 0: build duration 142.97 s, phase
+wall time 143.921 s. The toolchain again emitted missing `.pcm` module-cache-reference warnings; this
+records build success rather than warning-free output.
 
 Host verification ran strict SwiftLint with the Xcode developer directory
 and `awk 'length($0)>120 && $0 !~ /^[[:space:]]*\/\//'` on all four Swift files changed from
