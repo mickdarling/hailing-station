@@ -11,40 +11,60 @@ before scheduling actor cleanup. Missing metadata, nil application content and u
 then submit a protocol-error close frame (1002) before finishing, matching the prior close path.
 Other terminal events cancel the connection. Neither path waits for the application worker.
 
-Application callbacks decode once with `FrameCoding.decode`, enqueue the decoded result and
-immediately arm the next receive. The same 91,477-byte whole-frame limit precedes decoding. A failed
-decode is non-droppable; its ordered worker turn retains `HostSession`'s exact `malformed or oversized
-frame` error and close disposition without decoding again. Successfully decoded frames reach
-`session.receive(frame)`. Unknown types and anything not positively classified as eligible audio
-are non-droppable. Classification uses no speculative JSON searches or second payload copies.
+Application callbacks enforce the 91,477-byte whole-frame limit before decoding. A pump-side frame
+above that limit retires the peer and cancels the connection; it is unreachable in production because
+the listener's `maximumMessageSize` rejects it first. Classification decodes transiently on the
+listener's shared serial Network callback queue, **outside the pump lock**, once per arriving frame.
 
-One ordered queue preserves the relative wire order of every retained message, including privacy,
-input-route and other controls. Only queued, non-final `.audio` with `sequence > 0` can be evicted;
-the active frame, sequence zero, final segments and all non-audio frames are protected.
+Only positively eligible audio retains its decoded `Frame`. Every other message retains its original
+raw `Data`, and the worker decodes it exactly once more before `session.receiveDecoded`. Thus non-audio
+frames (and protected audio or malformed messages) are decoded twice: once to classify and once to
+process. Eligible audio is decoded once. Raw retention bounds queued protected storage by original
+wire bytes rather than the decoded object graph; eligible PCM retention stays roughly at wire size.
+The second decode uses the identical `FrameCoding.decode` and original bytes, preserving the identical
+Frame or nil failure mapping and exact `malformed or oversized frame` response and close disposition.
+The one transient classification result, active worker value and listener-bounded receive are outside
+the queued-storage accounting.
+
+`AmbientAudioGate.isWindowEligible` is the single ingress eligibility predicate. It requires decoded
+`.audio`, pcm16, 16 kHz, mono, no reply descriptor, a stream ID, no segment end, positive sequence,
+non-final, 1...8,192 decoded bytes in whole Int16 samples, current protocol version and at most
+15,020 original wire bytes. Everything else is protected. The predicate and gate admission share the
+same shape helper. The full predicate deliberately mirrors window-only restrictions rather than
+applying them to gate admission: the gate still accepts valid starts and finals, and envelope/version
+and wire checks remain outside the gate. Admission's stream, selection, policy, rate and refusal
+behavior is unchanged. A field-by-field parity test records those distinctions explicitly.
+
+One ordered queue preserves every retained message's relative wire order, including privacy and
+input-route controls. Only queued eligible audio can be evicted. The active frame, sequence zero,
+final segments, over-bound or ineligible audio, unknown types and every non-audio frame are protected.
 
 | Bound (queued work only) | Value | Action at overflow |
 | --- | --- | --- |
-| Non-droppable messages, including sequence zero and final audio | 8 | Retire and terminate. |
-| Audio window (`sequence > 0`, including protected finals) | 30 segments | Remove the oldest queued eligible non-final segment, then append in wire order; terminate if none exists. |
-| Audio-window byte budget | `30 * 91,477` = 2,744,310 bytes | Bounded by the window count and per-frame limit. |
-| Outside-window byte budget, including protected sequence zero | `2 * 91,477` = 182,954 bytes | Retire and terminate. |
-| Hard aggregate bytes | `32 * 91,477` = 2,927,264 bytes | Retire and terminate before considering eviction. |
-| Single message | 91,477 bytes | Retire and terminate. |
+| Protected messages | 8 | Retire and terminate; never evict audio to admit them. |
+| Eligible audio window | 30 slots | Evict the oldest queued eligible segment, then append in wire order. |
+| Eligible per-frame wire bytes | `(8,192 + 2) / 3 * 4 + 4 * 1,024` = 15,020 | Larger messages are protected. |
+| Audio-window bytes | `30 * 15,020` = 450,600 | Count and per-frame eligibility enforce the budget. |
+| Protected bytes | `2 * 91,477` = 182,954 | Retire and terminate. |
+| Hard aggregate bytes, including incoming frame before eviction | `182,954 + 31 * 15,020` = 648,574 | Retire and terminate. |
+| Single message | 91,477 | Retire and cancel. |
 
-A final with positive sequence occupies an audio-window slot and the non-droppable count; a full
-window makes room by evicting its oldest eligible non-final segment. Protected sequence zero stays
-outside the audio window and consumes the protected count and outside-window bytes. Thus the queue
-has at most 38 entries, and protected messages cannot borrow unbounded capacity. All byte accounting
-uses original encoded sizes, including JSON whitespace. These bounds exclude the one active frame
-and one listener-bounded receive. A 100 ms ambient segment normally contains 3,200 PCM bytes; the
-ambient gate's 8 KB segment cap is narrower than the protocol's 64 KB audio cap. The window budget
-conservatively accommodates 30 maximum protocol-sized wire frames.
+The hard cap allows a full protected budget plus 30 maximum-size eligible frames and one incoming
+maximum-size eligible frame before eviction. Consequently an eligible frame can never terminate
+where eviction would have made room. After eviction the queued maximum is 633,554 bytes and at most
+38 entries. All bytes use original encoded sizes, including whitespace. Protected finals consume no
+audio slot and cannot cause an eviction. A normal 100 ms segment contains 3,200 PCM bytes; the gate's
+8 KiB segment cap, rather than the protocol's 64 KiB audio cap, sizes this roughly three-second window.
 
-Each eviction increments `droppedAudioCount`, retained after retirement for tests, and emits
-`ambient_audio_dropped` with only `count=N stream_seq_range=a-b`. Each current event covers one
-sequence; it carries no stream identity, text or audio bytes. Logging runs outside the pump lock.
-The window retains about three seconds of 10 Hz audio, so it drops less than main's phone-side
-approximately one-second, ten-segment backlog in the common case.
+Eviction only increments counters and records a sequence range under the leaf lock. A dedicated
+per-peer utility queue emits `ambient_audio_dropped` with only `count=N stream_seq_range=a-b` outside
+the pump lock and off the Network callback queue. At most one reporting task is scheduled or running
+per peer. Each report snapshots the accumulated count and minimum/maximum sequence; further drops
+coalesce while logging blocks. On return the same task reports the remaining accumulation, including
+the final summary after draining or stopping. There is no task per drop and no queued log payload per
+frame. Transport rearming, close observation and retirement never wait for this logger. The retained
+`droppedAudioCount` remains the lifetime total after retirement. Range tokens carry no stream identity,
+text or audio. The window drops less than main's approximately one-second phone backlog in the common case.
 
 ### Existing gap limitation
 
@@ -58,7 +78,7 @@ a pre-existing limitation. Explicit gap handling for both locations is deferred 
 
 `hostDropsMatchPhoneDropsAtGateAndAmbientSink` sends one stream through host eviction and another
 with the identical segments already missing at phone arrival. It compares all emitted gate events,
-the exact surviving sequence `[0, 7...36]`, concatenated sink bytes (99,200 bytes) and final ending.
+the exact surviving sequence `[0, 6...36]`, concatenated sink bytes (102,400 bytes) and final ending.
 It adds no gap semantics.
 
 Protocol closure, hello timeout, listener shutdown, connection failure and send cancellation retire
@@ -75,9 +95,10 @@ transport ping/pong.
 ## Lock order
 
 The new pump state mutex protects only start/stop flags, receive reservation, worker ownership,
-queued decoded frames, classification, eviction and byte accounting. This mutex is a leaf: no synchronous
-callback, lifecycle operation, session operation, Network call or asynchronous wait runs while it is held. Worker task creation only records the task;
-the task must acquire the state mutex separately before removing any data.
+queued representations, eviction, coalesced drop counters and byte accounting. Classification and
+worker decoding both run outside this mutex. This mutex is a leaf: no synchronous callback, lifecycle
+operation, session operation, Network call or asynchronous wait runs while it is held. Worker task
+creation only records the task; it must acquire the state mutex separately before removing data.
 
 Pump stop first retires the lifecycle, releases its gates, and then acquires pump state to clear the
 queue. Lifecycle retirement invokes its observer only after releasing the retirement mutex and the
@@ -102,9 +123,10 @@ The companion argument parks before Enter after paste admission: that submission
 once after close, and the queued second message never starts delivery. Disconnect may be reported as
 the classified close or Network cancellation; retirement precedes either cleanup notification.
 
-New audio tests park dispatch with an acknowledged barrier while virtual 100 ms sender ticks enqueue
-more than 30 segments. They separately prove survival and ordered newest delivery, close retirement
-before release, final and sequence-zero preservation under later pressure, real-session privacy and
+Audio tests park dispatch with an acknowledged barrier. Burst pressure is equivalent to more than
+3 s at 10 Hz; a separate parameter variant paces 36 arrivals at actual 100 ms deadlines for about
+3.5 s. Wall-clock pacing shapes arrival only, while barriers establish ordering. These tests prove
+survival and ordered newest delivery, close retirement before release, final and sequence-zero preservation under later pressure, real-session privacy and
 input-route ordering, hard aggregate termination, fail-closed count overflow and gap parity. A wire
 malformed-frame test checks the exact error followed by close code 1002.
 
@@ -122,9 +144,8 @@ process. These tests do not establish device capture, playback or a live capture
 
 ## Existing test assertion accounting
 
-The original three test-only carries remain below. This batch also adapts the pump worker seam from
-raw data to decoded frames and moves transport classification tests to a separate file. No existing
-assertion is weakened or removed; the original two-frame non-audio byte bound remains enforced.
+The original three test-only carries and first-batch accounting remain below. The worker seam supplies
+decoded values after removing queued work. No existing assertion is weakened or removed; the original two-frame non-audio byte bound remains enforced.
 
 | Existing test / assertion | Status | Accounting |
 | --- | --- | --- |
@@ -171,35 +192,59 @@ assertion is weakened or removed; the original two-frame non-audio byte bound re
 There are no WEAKENED assertions. Existing loopback overflow tests, including the two-frame byte
 threshold, are unchanged. New tests assert the audio-specific bound policy separately.
 
-All other tests in those files remain unchanged. The elapsed-age clock wait is intentionally a time
+Round-2 changes are accounted for separately below. The elapsed-age clock wait is a time
 measurement, not a replacement for an ordering barrier. For paste and Enter, the responder executes
 inside `launch.perform` on the guarded runner overload; the paste-launch park precedes that call.
+
+## Round-2 assertion accounting
+
+Every changed assertion is listed below. Unlisted assertions remain byte-for-byte unchanged. No
+assertion is WEAKENED. Eligibility now protects finals outside the window, so exact survivor/count
+expectations retain one additional legitimate segment; all ordering, retirement and overflow checks
+remain enforced.
+
+| Existing assertion | Verdict | Accounting |
+| --- | --- | --- |
+| `audioWindowSurvivesParkedDispatchAndObservesClose`: drop total before/after release | TIGHTENED | Exact 5 replaces 6 because the protected final cannot evict a segment. |
+| Same: per-event counts and sequences | TIGHTENED | Coalesced report counts sum to exactly 5 and flattened ranges equal exactly `1...5`; explicit logging join replaces synchronous-callback timing. |
+| Same: exact retained order | TIGHTENED | `[0, 6...36]` replaces `[0, 7...36]`; close still yields no queued processing. |
+| Same: receiving armed, alive during pressure, no early processing, close reason/retirement, maximum one receive | KEPT | Same assertions, now also applied to the two real-time paced cases. |
+| `hostDropsMatchPhoneDropsAtGateAndAmbientSink`: drop total and exact sequence | TIGHTENED | Exactly 5 drops and `[0, 6...36]`; both phone and host carry the same additional surviving segment. |
+| Same: gate events, exact bytes, final ending | TIGHTENED | Exact event/byte equality remains; expected bytes increase to `32 * 3,200 = 102,400`. |
+| `aggregateByteCapTerminatesBeforeAnyEviction` → `aggregateCapAllowsEvictionAtMaximumEligibleWireSize`: at-bound alive/zero drops | KEPT | Two full protected wire frames plus 30 eligible frames fit. |
+| Same: incoming-frame termination/zero drops | TIGHTENED | Maximum eligible incoming frame must survive with exactly one eviction and receive still armed; the next protected byte still retires with the exact queue-limit reason before release. |
+| `protectedAudioKeepsItsPositionDuringLaterPressure`: exact drop count/order | TIGHTENED | Exactly 35 drops and second-stream `6...35` replace 36 and `7...35`; protected starts/final retain identical positions. |
+| `privacyControlRemainsAheadOfLaterAudio`: drop count and exact sink calls | TIGHTENED | Exactly 14 drops and `15...45` replace 15 and `16...45`; all audio remains after the preceding privacy/input controls. |
+| `PumpAudioPark` release watchdog | KEPT | Entry/release ordering barriers are unchanged; the watchdog grows from 5 to 15 seconds to accommodate paced arrivals, without asserting elapsed processing time. |
+| `PumpRig` drop recorder seam | TIGHTENED | Records coalesced counts/ranges on the reporting queue; blocked-logger test checks exact two-report accumulation and retirement before logger release. |
 
 ## Review-fix traceability
 
 | Condition | Implementation and synthetic proof |
 | --- | --- |
-| 1: ordered, protected queue | `WebSocketIngressPump.swift:112` evicts only eligible queued entries; `:133` removes the active entry before dispatch; `:168` protects sequence zero and final. `protectedAudioKeepsItsPositionDuringLaterPressure` preserves two starts and a final across subsequent pressure. |
-| 2: gap parity | `WebSocketReceivePumpAudioTests.swift:51` compares host/phone gate events and exact sink bytes; the pre-existing limitation and #1147 are documented above. |
-| 3: bounded, fail-closed, single decode | `WebSocketIngressPump.swift:101` bounds input before `:168` decodes once. `HostSession.swift:273` maps nil to the original malformed response, otherwise calls `receive(frame)`. Malformed/unknown bound tests and exact response/close tests cover both paths. |
-| 4: bounds and drop count | `WebSocketIngressPump.swift:16`, `:97` and `:130` define/enforce bounds and retain the counter. `WebSocketPeer.swift:51` emits count/sequence tokens outside the pump lock. |
-| 5: required test cases | Audio tests `:10` cover stalled dispatch, survival, close, full-window final and zero. Privacy tests `:8` use a real session. Limit tests `:8`, `:35`, `:55`, `:63` cover bytes, fail-closed overflow, single oversized input and protected audio. Gap parity is audio tests `:51`. All use acknowledged barriers and watchdog deadlines. |
-| 6: minor parity and documentation | `WebSocketIngressPump.swift:142` classifies terminal opcodes; `WebSocketPeer.swift:103` submits close after synchronous retirement and `:193` supplies code 1002. Classification tests `:32` and `:57` check metadata and a wire error/1002 exchange. The VM lane below has no host-local operational paths. |
+| Real audio sizing and hard cap | `AmbientAudioGate.swift:104`, `WebSocketIngressPump.swift:19` and `:236` define and enforce the budgets. `audioBoundsUseAmbientSegmentSize` checks all five constants; `wholeSampleBoundariesRemainEligible` covers 2 and 8,192 decoded bytes at the exact wire bound; `aggregateCapAllowsEvictionAtMaximumEligibleWireSize` fills both budgets and admits a maximum-size incoming eligible frame before protected-byte or hard-cap termination. |
+| Positive shared eligibility | `AmbientAudioGate.swift:493` and admission's shared shape helper at `:500` preserve gate behavior. `ineligibleAudioUsesProtectedCapacity` checks every field, eight protected messages beside a full legitimate window, no eviction, exact retained order, and ninth-message termination. `eligibilityMirrorsGateShapeWithoutChangingAdmission` checks each field against gate acceptance. |
+| Retained memory and decoding | `WebSocketIngressPump.swift:188` (`Message.retained`) stores only raw protected Data or decoded eligible audio. `retainedRepresentationMatchesEligibilityAndWorkerDecode` checks unknown and large typed payloads, eligible audio, exact worker Frame equality and sequence classification. Existing malformed response/closure equivalence remains. |
+| No decode under lock | `WebSocketIngressPump.swift:106` (`Message.classify`) runs before `state.withLock`; the worker reads `Message.frame` after `next` releases the lock. The callback executes on the listener's shared serial queue. |
+| Nonblocking, bounded drop reports | `WebSocketIngressPump.swift:242` (`recordDrop`) only updates counters/range; `:166` (`emitDrops`) uses one separate reporting task. `blockedDropLoggerCannotDelayCloseAndCoalescesRemainingDrops` acknowledges a blocked logger, creates nine more drops, observes retirement before release, then verifies exactly ten drops in ranges `1...1` and `2...10`. |
+| Real-time stall | `WebSocketReceivePumpAudioTests.swift:10`, four parameter cases: burst/paced and drain/close. Paced arrivals use actual 100 ms deadlines over 3.5 s with acknowledged dispatch entry/release and close barriers. |
+| Transport-terminal protocol error | Raw TCP clients complete a WebSocket upgrade and submit an unsolicited continuation or reserved opcode. Both receive wire close 1002, but Network reports `EPROTO` before delivering opcode metadata, so neither reaches the pump's `protocolError: true` branch. An end-to-end wire proof of that branch is therefore not feasible with these client forms and remains deferred. `networkWireProtocolErrorClosesWithCode1002` records the actual Network error/retirement path. Unit classification/code-1002 coverage remains; `transportProtocolErrorRetiresBeforeSingleCloseSubmission` proves synchronous retirement before close submission and concurrent-close exclusion. |
+| Nits | `WebSocketPeer.swift:105` sends terminal protocol errors through actor `close` at `:163`, which checks/sets `closing`; `HostSession.swift:395` says processing; the pump-side 91,477-byte cancellation boundary and production listener rejection are documented above. |
+| Existing conditions | Protected ordering, active/start/final preservation, fail-closed count/byte overflow, one worker/receive, closure during delivery and privacy/input ordering retain tests. The gap-parity test remains linked to #1147. |
 
 ## Verification
 
-The verification lane is **Dev Work VM, Swift 6.3.3**. Each source/test snapshot is synchronized from
-local HEAD with a Git bundle; no GitHub calls, push, host build or host test is used. The VM waits
-until its shared iteration runner is idle before synchronization and before each phase. Each SSH
-invocation uses stdin from `/dev/null` and is joined. A 600-second process-group watchdog terminates
-and reaps a phase on timeout or interruption. The shared runner helpers are unchanged; their
-SHA-256 checksums are compared before and after. Build and test concurrency is capped at four.
-The warnings-as-errors helper uses a workspace-specific command wrapper to add `-j 4` to builds.
+Dev Work VM verification uses Swift 6.3.3 and is synthetic Swift package evidence, with no host build/test, simulator,
+physical-device proof, installation, upload or live captured-output round trip. No GitHub call or push
+is performed. The VM workspace is re-synchronized after waiting for its shared runner to become idle.
+Every SSH invocation uses stdin from `/dev/null` and is joined; no VM job is left running. Shared
+helpers are unchanged. A 600-second process-group watchdog reaps each phase on timeout or interruption.
+Build/test workers are capped at four; the warnings-as-errors command wrapper adds `-j 4` without
+modifying the shared helper.
 
-The targeted filter is run first and the changed-suite group is repeated three times. The same broad
-groups as the original F4 verification then run, followed by the CLI unittest suite and the
-warnings-as-errors build. Commands are shown with the VM runner helpers on `PATH` and the selected
-verification workspace in `WS`; operational paths are intentionally omitted.
+Commands below use `WS` for the selected VM workspace and runner helpers on `PATH`; operational paths
+are deliberately omitted. The targeted changed-suite group runs once and then three repeats, followed
+by the same broad groups as the preceding batch, CLI tests and warnings as errors.
 
 ```sh
 while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done
@@ -212,67 +257,38 @@ python3 -m unittest discover -s Tests/ReplyCLITests
 vw-werr.sh "$WORKSPACE"
 ```
 
-The full verification sequence at `3092bdd4899bad8e8991cfd0df46c1d8a223ae10` passed:
+The source/test snapshot is `b176450e18c5130e64ee00f917e64f180269c020`. The final documentation
+commit preserves that exact source/test tree; identity is checked on both host and VM after final
+synchronization.
 
 | Phase | Result |
 | --- | --- |
-| Targeted, then three repeats | 38 tests in four suites each; 2.677, 2.710, 2.567 and 2.548 seconds. |
-| Core regression | 512 tests, 105 suites, 135.821 seconds; ten expected known issues. |
-| Ambient A–M | 111 tests, 21 suites, 64.768 seconds. |
-| Remaining ambient | 507 tests, 107 suites, 397.721 seconds. |
-| CLI unittest | 124 tests, 216.749 seconds; exit 0. |
-| Warnings as errors | `werr build=0`, wrapper exit 0. |
+| Targeted changed suites | 46 tests, four suites; 9.838 seconds; build/test exit 0. |
+| Three changed-suite repeats | 46 tests, four suites each; 9.578, 9.797 and 9.873 seconds; all build/test exits 0. |
+| Core regression | 520 tests, 105 suites; 149.484 seconds; ten expected known issues; build/test exit 0. |
+| Ambient A–M | 111 tests, 21 suites; 93.306 seconds; build/test exit 0. |
+| Remaining ambient | 507 tests, 107 suites; 432.575 seconds; build/test exit 0. |
+| CLI unittest | 124 tests; 215.121 seconds; exit 0. |
+| Warnings as errors | `werr build=0`, wrapper exit 0; 49.42-second build. |
+
+The warnings-as-errors lane emitted the existing Command Line Tools module-cache warnings; the Swift
+build and wrapper both exited 0. Shared-runner SHA-256 checksums matched before and after the full lane.
+No verification process remains after final synchronization.
+
+Strict host lint passed for all eleven changed Swift files using
+`DEVELOPER_DIR="$XCODE_DEVELOPER_DIR" taskpolicy -b swiftlint lint --strict <file>`, with the full
+Xcode developer directory selected.
+For each file, `awk 'length($0)>120 && $0 !~ /^[[:space:]]*\/\//' <file>` printed nothing. There was
+no host build or test. The local production count uses `scripts/pr-shape.py`'s exact exclusions and
+both names for renames: **four**, consisting of `AmbientAudioGate.swift`, `HostSession.swift`,
+`WebSocketIngressPump.swift` and `WebSocketPeer.swift`. Its GitHub-dependent checks are not invoked.
+This batch also changes seven test files and this document, twelve files total. The test files are
+`WebSocketReceivePumpAudioTests.swift`, `WebSocketReceivePumpEligibilityTests.swift`,
+`WebSocketReceivePumpLimitTests.swift`, `WebSocketReceivePumpLoggingTests.swift`,
+`WebSocketReceivePumpPrivacyTests.swift`, `WebSocketReceivePumpTests.swift` and
+`WebSocketReceivePumpTransportTests.swift`.
 
 The ten known issues are the unchanged deadline/cancellation self-tests in
-`LocalDispatchPreflightWaitTests` and `ReplyRecipientHandoffWaitTests`. The existing real-tmux suites
-remain skipped when tmux is unavailable: `TmuxDeliveryCommitFakeTUITests`,
-`TmuxDeliveryCommitShellPromptTests`, `TmuxIntegrationTests`, `TmuxPasteAgentTests` and
-`TmuxPasteEnterTests`. All new pump, real-session and loopback tests ran.
-
-The lint-clean snapshot `9bd82725e2a83e0d4c50231f686a59c950be843f` has byte-identical production
-source; its only test difference is removal of one blank line. That identity is checked locally and
-on the VM with an exact production diff and a whitespace/blank-line-ignoring test diff. The changed
-suite group passed three further repeats on that snapshot: **38 tests in four suites each**, in
-2.713, 2.604 and 2.706 seconds. Its warnings-as-errors build again reported **`werr build=0`** and
-wrapper exit **0**. The final commit updates documentation only; its source/test identity with this
-validated snapshot is checked during final synchronization.
-
-The warnings-as-errors lane emitted the existing Command Line Tools module-cache debug-information
-warnings; its Swift build and wrapper both exited 0. Shared-helper SHA-256 checksums matched after
-the full sequence. One superseded verification sequence was terminated through its process-group
-watchdog and joined before this final full sequence; it is not counted as final proof. After the final repeats
-and build, inspection found no remaining phase, runner, Swift build/test or package-test process from
-this work. The tracked VM worktree was clean, and shared-helper checksums still matched.
-
-Host strict lint passed separately on all **13 changed Swift files**, including the original F4
-test-only carries, with zero violations. The explicit line-length command printed nothing for all
-13 files. `git diff --check` passed. No host build or test ran. The commands were:
-
-```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint --strict <file>
-awk 'length($0)>120 && $0 !~ /^[[:space:]]*\/\//' <file>
-```
-
-Production-file counting uses `scripts/pr-shape.py`'s exact prefix/suffix exclusions and both names
-for renames, applied locally to the diff from `36259c17`. It counts **three production files**:
-`WebSocketPeer.swift`, `WebSocketIngressPump.swift` and `HostSession.swift`. The GitHub-dependent
-checker entry point is not invoked. Tests and this document are excluded by that checker.
-The complete F4 diff has 14 files (three production, ten test, one document); this review-fix batch
-has ten files (three production, six test, one document):
-
-| Batch file | Role |
-| --- | --- |
-| `Sources/HailDaemonKit/Listener/WebSocketIngressPump.swift` | Ordered bounds, classification, eviction and counters. |
-| `Sources/HailDaemonKit/Listener/WebSocketPeer.swift` | Decoded dispatch, drop log and close-code parity. |
-| `Sources/HailDaemonKit/Listener/HostSession.swift` | Shared malformed mapping without a second decode. |
-| `Tests/HailDaemonKitTests/WebSocketReceivePumpTests.swift` | Existing ordered-worker and overflow assertions; drop recorder. |
-| `Tests/HailDaemonKitTests/WebSocketReceivePumpSessionTests.swift` | Serialized session receive and exact malformed mapping. |
-| `Tests/HailDaemonKitTests/WebSocketReceivePumpAudioTests.swift` | Audio pressure, close observation and gap parity. |
-| `Tests/HailDaemonKitTests/WebSocketReceivePumpClassificationTests.swift` | Terminal classification and close code 1002. |
-| `Tests/HailDaemonKitTests/WebSocketReceivePumpLimitTests.swift` | Aggregate/count/oversized limits and protected audio. |
-| `Tests/HailDaemonKitTests/WebSocketReceivePumpPrivacyTests.swift` | Real-session privacy and input-route ordering. |
-| `docs/testing/websocket-receive-pump.md` | Invariants, traceability, assertion accounting and evidence. |
-
-No installation, upload, daemon restart, launch-agent change, host configuration change or host tmux
-operation is part of this work. The evidence is synthetic VM and loopback evidence; there is no
-simulator, physical-device or live captured-output round-trip claim.
+`LocalDispatchPreflightWaitTests` and `ReplyRecipientHandoffWaitTests`. Existing real-tmux suites remain
+skipped when tmux is unavailable; all pump, session and loopback cases run. Independent round-2 reviews
+requested changes; this local batch does not claim approval of its new head.
