@@ -28,10 +28,39 @@ SECURITY_PATHS = (
 )
 VERDICT = r"\b(APPROVE WITH FIXES|APPROVE|REQUEST CHANGES)\b"
 SECOND_KEY_HEADING = "## Review record (independent second key"
+MAX_REASON = 200
 
 
 def gh(*args: str) -> str:
     return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
+
+
+def spec_problems(repo: str, body: str, fetch=gh) -> list[str]:
+    """The spec reference's problems (#1161). One REST lookup, which also tells an issue from a pull request:
+    `gh issue view` accepts a PR number. A failed lookup says what failed instead of blaming the reference."""
+    match = re.search(r"(?i)\b(closes|part of)\s+#(\d+)", body)
+    if not match:
+        return ["PR body needs a 'Closes #N' or 'Part of #N' line pointing at the spec issue."]
+    number_ref = match.group(2)
+    try:
+        issue = json.loads(fetch("api", f"repos/{repo}/issues/{number_ref}"))
+    except subprocess.CalledProcessError as error:
+        stderr = (error.stderr or "").strip()
+        if "HTTP 404" in stderr:
+            return [f"Spec reference #{number_ref} doesn't exist in this repo."]
+        reason = stderr.splitlines()[0] if stderr else f"gh exited with status {error.returncode}"
+        # Capped, so an odd error can't flood the CI log.
+        if len(reason) > MAX_REASON:
+            reason = reason[:MAX_REASON] + "…"
+        return [f"Could not read spec issue #{number_ref}: {reason}"]
+    if issue.get("pull_request") is not None:
+        return [f"Spec reference #{number_ref} is a pull request; point 'Part of' or 'Closes' at the spec issue."]
+    problems = []
+    if issue.get("state") != "open":
+        problems.append(f"Spec issue #{number_ref} is not open.")
+    if not {label["name"] for label in issue.get("labels", [])} & SPEC_LABELS:
+        problems.append(f"Spec issue #{number_ref} is not labelled as a spec ({', '.join(sorted(SPEC_LABELS))}).")
+    return problems
 
 
 def main() -> int:
@@ -60,22 +89,7 @@ def main() -> int:
             f"Files: {', '.join(source)}"
         )
 
-    match = re.search(r"(?i)\b(closes|part of)\s+#(\d+)", body)
-    if not match:
-        problems.append("PR body needs a 'Closes #N' or 'Part of #N' line pointing at the spec issue.")
-    else:
-        number_ref = match.group(2)
-        try:
-            issue = json.loads(gh("issue", "view", number_ref, "-R", repo, "--json", "state,labels"))
-        except subprocess.CalledProcessError:
-            issue = None
-            problems.append(f"Spec reference #{number_ref} is not an issue in this repo (a PR number, or deleted).")
-        if issue:
-            issue_labels = {label["name"] for label in issue["labels"]}
-            if issue["state"] != "OPEN":
-                problems.append(f"Spec issue #{number_ref} is not open.")
-            if not issue_labels & SPEC_LABELS:
-                problems.append(f"Spec issue #{number_ref} is not labelled as a spec ({', '.join(sorted(SPEC_LABELS))}).")
+    problems.extend(spec_problems(repo, body))
 
     # A record is a "Round N:" body line carrying a verdict; the LAST verdict must approve.
     rounds = {
