@@ -314,8 +314,8 @@ final class HeldSendFailure: Sendable {
     private static func knownUnsent(_ error: any Error) -> Bool {
         switch error {
         case HostError.denied, HostError.policyUnavailable, HostError.unknownTarget, is RegistryError,
-             is ProviderContractError, is HeldAuthorityError, AdapterError.inputPending, AdapterError.rebound,
-             PolicyRetiredDelivery.pastedUnsent: return true
+             is ProviderContractError, is HeldAuthorityError, AdapterError.inputPending, AdapterError.rebound:
+            return true
         default: return false
         }
     }

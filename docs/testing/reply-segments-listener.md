@@ -23,7 +23,7 @@ is no separate host replay send boundary. Echo observations still use the origin
 `segment` is logged as a count and never consulted for authority. Unknown, finished, already-stopped and
 other-connection ids are silent no-ops.
 
-`noteLastInput` is the backstop hook: `handedOff` invokes it without suspension only after `.delivered` from phone
+The backstop runs in `didNoteLastInput` (after `recordLastInput` commits attribution): `handedOff` invokes it without suspension only after `.delivered` from phone
 final text or an ambient dispatch from this connection (the #370 last-input condition). A pending/held adapter,
 refusal, confirmation requirement, or handoff reported as `.unowned` never reaches it. On segment-capable
 connections it stops every segmented in-flight reply on that connection, without sending `stop_playback`.
