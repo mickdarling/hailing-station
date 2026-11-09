@@ -56,7 +56,8 @@ extension RootView {
         .stationHiddenNavigationBar()
         .background(StationPlatform.background)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            StationBuildFooter()
+            // SwiftUI hosts an inset apart from the station's root, so it hides itself with the station (#1115).
+            StationBuildFooter().stationAccessibilityScope()
         }
         .onAppear {
             // Weak, and never cleared on disappear: a pushed tool screen hides this view while its heals still count,

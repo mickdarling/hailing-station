@@ -2,6 +2,8 @@ import HailCore
 import SwiftUI
 #if os(iOS)
 import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 /// The station's native navigation (#1115): a sidebar split view on Mac and iPad, tabs on iPhone. It renders
@@ -24,19 +26,19 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var sizeClass
     #endif
-    /// Hides the station's whole stack from VoiceOver while no slot shows it (see `StationStackAccessibility`).
-    @State private var stationStack = StationStackAccessibility()
 
     var body: some View {
         arrangement
             .overlayPreferenceValue(StationSlotKey.self) { slot in
                 GeometryReader { proxy in
                     let frame = slot.map { proxy[$0] }
-                    page(.station, hidden: frame == nil)
+                    page(.station)
+                        // Reaches every part of the page, which each hide themselves (`stationAccessibilityScope`).
+                        .environment(\.stationAccessibilityHidden, frame == nil)
                         .frame(width: frame?.width ?? 0, height: frame?.height ?? 0)
                         .position(x: frame?.midX ?? 0, y: frame?.midY ?? 0)
                         .stationCollapsed(frame == nil)
-                        .onChange(of: frame == nil, initial: true) { _, hidden in stationStack.hidden = hidden }
+                        .onChange(of: frame == nil) { _, _ in announceLayoutChange() }
                 }
             }
     }
@@ -109,18 +111,26 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
         }
     }
 
-    private func page(_ section: StationSection, hidden: Bool = false) -> some View {
+    private func page(_ section: StationSection) -> some View {
         NavigationStack {
             // The station's root sits under the slot's bar, so it shows none of its own; a pushed tool keeps its own.
             if section == .station {
-                detail(section)
-                    .stationHiddenNavigationBar()
-                    .stationStackAccessibility(stationStack, hidden: hidden)
+                detail(section).stationHiddenNavigationBar().stationAccessibilityScope()
             } else {
                 detail(section)
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { dock(section) }
+    }
+
+    /// Tells assistive technologies the tree changed, so a station shown again is read afresh. In #1183's iPad test,
+    /// without it, the station shown again stayed out of the tree.
+    private func announceLayoutChange() {
+        #if os(iOS)
+        UIAccessibility.post(notification: .layoutChanged, argument: nil)
+        #else
+        NSAccessibility.post(element: NSApp as Any, notification: .layoutChanged)
+        #endif
     }
 
     private var sectionSelection: Binding<StationSection?> {
