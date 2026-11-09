@@ -305,7 +305,7 @@ extension TmuxAdapter {
         }
         let result: CommandResult
         do {
-            try await requireClearDialog(session)
+            try await requireClearDialog(session, excludingPayload: ticket.payload)
             result = try await launchCommand(ticket.base + ticket.enter, control: control, launch: launch)
         } catch {
             if launch.evidence == .possiblyExecuted { control.enterAttempted() }

@@ -23,11 +23,13 @@ import Testing
             ["tmux", "set-buffer", "-b", buffer, "--", text],
             ["tmux", "list-sessions", "-F", TmuxAdapter.listFormat],
             observe,
-            ["tmux", "capture-pane", "-p", "-t", "%1"],
+            ["tmux", "capture-pane", "-p", "-t", "%1", ";",
+             "display-message", "-p", "-t", "%1", "#{cursor_x},#{cursor_y}"],
             ["tmux", "paste-buffer", "-p", "-d", "-b", buffer, "-t", "%1"],
             observe,
             ["tmux", "list-sessions", "-F", TmuxAdapter.listFormat],
-            ["tmux", "capture-pane", "-p", "-t", "%1"],
+            ["tmux", "capture-pane", "-p", "-t", "%1", ";",
+             "display-message", "-p", "-t", "%1", "#{cursor_x},#{cursor_y}"],
             ["tmux", "send-keys", "-t", "%1", "Enter"]
         ])
     }

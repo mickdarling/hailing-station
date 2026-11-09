@@ -22,7 +22,7 @@ import Testing
     @Test(arguments: [DialogSubmissionFixture.Mode.beforePaste, .captureFailure])
     func blockedPasteDeletesBufferAndSendsNoKeys(_ mode: DialogSubmissionFixture.Mode) async throws {
         let harness = DialogSubmissionFixture(mode).harness()
-        await #expect(throws: AdapterError.self) {
+        await #expect(throws: mode.refusal) {
             try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
         }
         let calls = await harness.runner.calls
@@ -37,7 +37,7 @@ import Testing
     @Test(arguments: [DialogSubmissionFixture.Mode.afterPaste, .captureFailureAfterPaste])
     func timedOutAcceptanceCannotSendEnterAndInsertRemainsUnsubmitted(_ mode: DialogSubmissionFixture.Mode) async {
         let harness = DialogSubmissionFixture(mode).harness()
-        await #expect(throws: AdapterError.self) {
+        await #expect(throws: mode.refusal) {
             try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
         }
         #expect(await harness.keys == ["synthetic input"])
@@ -57,7 +57,8 @@ import Testing
 
     @Test func dialogBeforeRetrySendsNoSecondEnter() async {
         let harness = DialogSubmissionFixture(.beforeRetry).harness()
-        await #expect(throws: AdapterError.self) {
+        let refusal = AdapterError.deliveryFailed("target is blocked by Computer Use needs macOS permissions")
+        await #expect(throws: refusal) {
             try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
         }
         #expect(await harness.keys == ["synthetic input", "Enter"])
@@ -67,27 +68,64 @@ import Testing
         #expect(!calls.contains { $0.last == "Escape" })
         #expect(calls.filter(DialogSubmissionFixture.isInspection).count == 3)
     }
+
+    @Test(arguments: [
+        "please mention esc to cancel", "Do you want to proceed?\n1. Yes"
+    ])
+    func payloadDialogTextAtPromptStillGetsEnter(_ payload: String) async throws {
+        let harness = DialogSubmissionFixture(.payloadAtPrompt, payload: payload).harness()
+        try await harness.adapter.deliver(payload, to: "codex", binding: nil)
+        #expect(await harness.keys == [payload, "Enter"])
+        #expect(harness.outcomes.all == [.confirmed])
+    }
+
+    @Test(arguments: [DialogSubmissionFixture.Mode.sameDialogAbovePrompt, .replacedPrompt, .missingCursorAfterPaste])
+    func realDialogOrMissingCursorStillVetoesEnter(_ mode: DialogSubmissionFixture.Mode) async {
+        let payload = "Do you want to proceed?\n1. Yes"
+        let harness = DialogSubmissionFixture(mode, payload: payload).harness()
+        await #expect(throws: mode.refusal) {
+            try await harness.adapter.deliver(payload, to: "codex", binding: nil)
+        }
+        #expect(await harness.keys == [payload])
+        #expect(harness.outcomes.all == [.failed])
+        #expect(await harness.runner.calls.filter { $0.contains("send-keys") }.isEmpty)
+    }
 }
 
 /// Separate visible-screen captures do not consume cursor-observation frames in the existing scripted pane.
 final class DialogSubmissionFixture: Sendable {
-    enum Mode: Sendable { case clear, beforePaste, captureFailure, afterPaste, captureFailureAfterPaste, beforeRetry }
+    enum Mode: Sendable {
+        case clear, beforePaste, captureFailure, afterPaste, captureFailureAfterPaste, beforeRetry
+        case payloadAtPrompt, sameDialogAbovePrompt, replacedPrompt, missingCursorAfterPaste
+
+        var refusal: AdapterError {
+            switch self {
+            case .captureFailure, .captureFailureAfterPaste, .missingCursorAfterPaste:
+                .deliveryFailed("target dialog state could not be inspected")
+            case .sameDialogAbovePrompt, .replacedPrompt:
+                .deliveryFailed("target is blocked by a tool permission dialog")
+            default: .deliveryFailed("target is blocked by Computer Use needs macOS permissions")
+            }
+        }
+    }
     private let inspections = Mutex(0)
     private let mode: Mode
     private let pane: ScriptedPane
+    private let payload: String
 
-    init(_ mode: Mode) {
+    init(_ mode: Mode, payload: String = "synthetic input") {
         self.mode = mode
+        self.payload = payload
         if mode == .beforeRetry {
             pane = ScriptedPane(afterEnter: [ScriptedPane.absorbedScreen, ScriptedPane.submittedScreen])
         } else {
             let neverDrawn = mode == .afterPaste || mode == .captureFailureAfterPaste
-            pane = ScriptedPane(stale: neverDrawn ? .max : 0)
+            pane = ScriptedPane(stale: neverDrawn ? .max : 0, typed: "> " + payload + "▌")
         }
     }
 
     static func isInspection(_ arguments: [String]) -> Bool {
-        arguments.contains("capture-pane") && !arguments.contains("display-message") && !arguments.contains("-J")
+        arguments.contains("capture-pane") && arguments.last == "#{cursor_x},#{cursor_y}"
     }
 
     func harness() -> EvidenceHarness {
@@ -99,10 +137,25 @@ final class DialogSubmissionFixture: Sendable {
             }
             let blocked = self.mode == .beforePaste || self.mode == .afterPaste && count == 2
             if blocked || self.mode == .beforeRetry && count == 3 {
-                return CommandResult(exitCode: 0, stdout: "Computer Use needs macOS permissions\n")
+                return CommandResult(exitCode: 0, stdout: "Computer Use needs macOS permissions\n0,0\n")
             }
-            return CommandResult(exitCode: 0, stdout: "> ordinary prompt\n")
+            if count == 2, let capture = self.payloadCapture() { return capture }
+            return CommandResult(exitCode: 0, stdout: "> ordinary prompt\n0,0\n")
         }
         return EvidenceHarness(runner, timing: EvidenceHarness.timing(settleLimit: .milliseconds(40)))
+    }
+
+    private func payloadCapture() -> CommandResult? {
+        let input = "> " + payload
+        let row = payload.components(separatedBy: "\n").count - 1
+        let screen: String
+        switch mode {
+        case .payloadAtPrompt: screen = input + "\n0,\(row)\n"
+        case .sameDialogAbovePrompt: screen = payload + "\n" + input + "\n0,\(2 * row + 1)\n"
+        case .replacedPrompt: screen = payload + "\n0,\(row)\n"
+        case .missingCursorAfterPaste: screen = input + "\n"
+        default: return nil
+        }
+        return CommandResult(exitCode: 0, stdout: screen)
     }
 }

@@ -13,8 +13,9 @@ agent gate cannot detect a dialog inside a running agent.
 
 The new inspection runs after the buffer is filled, immediately before the paste launch, and again
 immediately before every Enter launch, including the first Enter after timed-out acceptance and the
-conditional retry. Inspection uses `capture-pane -p -t <paneID>` for the visible screen only, without
-scrollback or cursor metadata. A thrown capture, nonzero exit, or empty output produces `unknown`,
+conditional retry. Inspection uses `capture-pane -p -t <paneID>` for the visible screen plus cursor metadata in the same
+tmux invocation, without scrollback. A thrown capture, nonzero exit, empty output, or missing or invalid
+cursor produces `unknown`,
 which never authorizes input. A successfully captured blank screen is still an inspectable screen.
 
 A pre-paste veto deletes the unused buffer and throws `AdapterError.deliveryFailed`. It sends no paste,
@@ -23,9 +24,19 @@ accounting keeps an executed or possibly executed paste and taints that pane aga
 The admission ticket, whole-submission admission at paste launch, and possible-submission accounting
 are unchanged: the safety veto applies even after admission.
 
+The pre-paste inspection excludes no payload. Before each Enter, the submission ticket supplies the exact
+pasted text, including any framing. The input region runs from the nearest border-stripped row starting
+with `>` at or above the captured cursor through the cursor row. Only rows inside that region whose
+trimmed text (dropping a leading `> `) is a non-empty substring of the whitespace-normalized payload are
+excluded. Rows outside that region always remain eligible, even when identical to payload lines. If a
+dialog replaces the input box and no prompt row remains, nothing is excluded.
+
 The evidence ledger's `submitted` method marks an insert submitted even for a failed outcome. When no
 Enter was executed or possibly executed, the adapter therefore reports the failed submit outcome through
-the outcome observer and log without calling that ledger method. The insert remains `own_submitted=false`
+the outcome observer without calling that ledger method. This pre-Enter branch also covers framed
+agent-gate refusal and pre-launch admission errors. No Enter ran in those cases, so no
+`tmux_submit outcome=failed` line is logged. The planned dialog-specific audit-kind change must cover
+these refusal paths as well. The insert remains `own_submitted=false`
 and `last_submit=none`. A later taint refusal exposes those conservative fields. If an earlier Enter may
 have executed, including a veto before retry, the normal failed-submit evidence remains appropriate.
 
@@ -35,13 +46,14 @@ not add dialog-specific device wording or claim that blocked input was delivered
 
 ## Detector rules
 
-Each visible line loses Unicode box-drawing characters U+2500–U+257F and surrounding whitespace. Blank
+Each visible line loses Unicode box-drawing characters U+2500–U+259F (box drawing and block elements) and surrounding whitespace. Blank
 lines do not count toward the bottom region. Matching priority is known title, tool permission, then footer.
 Only fixed table titles leave the adapter; arbitrary pane text is never included in a refusal.
 
 - Anywhere on screen, an entire normalized line equal to `Computer Use needs macOS permissions` gives
   `computerUsePermissions`; `Computer Use wants to control these apps` gives `computerUseAppApproval`.
-  Adjacent normalized lines joined with one space can equal a title wrapped at a word boundary.
+  Leading and trailing non-alphanumeric decoration (icons or a colon) is trimmed before whole-title
+  comparison. Adjacent normalized lines joined with one space can equal a title wrapped at a word boundary.
 - Within the last 12 nonblank lines, a case-insensitive line beginning `Do you want to ` together with a
   line matching `^(❯\s*)?1\.\s*Yes` gives `toolPermission`, titled `a tool permission dialog`.
 - Within that region, a case-insensitive whole line ending with the words `esc to cancel` gives
@@ -52,7 +64,9 @@ Only fixed table titles leave the adapter; arbitrary pane text is never included
   only part of a longer line does not equal that title.
 
 The two known titles were verified against Claude Code 2.1.319 and may drift. The footer and
-"Do you want" rules are the version-independent catch. The future doctor change should flag when a
+"Do you want" rules cover recognised dialog shapes. Dialogs with other option glyphs, footers with hints
+after "Esc to cancel", "Would you like to …" prompts, or other agents' approval overlays are not guarded
+unless another rule recognises them. A generic numbered-select rule is a possible follow-up. The future doctor change should flag when a
 known title stops matching its fixture; no doctor check ships in this slice.
 
 ## Atomicity limit
