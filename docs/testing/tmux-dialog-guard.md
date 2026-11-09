@@ -13,10 +13,10 @@ agent gate cannot detect a dialog inside a running agent.
 
 The new inspection runs after the buffer is filled, immediately before the paste launch, and again
 immediately before every Enter launch, including the first Enter after timed-out acceptance and the
-conditional retry. Inspection uses `capture-pane -p -t <paneID>` for the visible screen plus cursor metadata in the same
-tmux invocation, without scrollback. A thrown capture, nonzero exit, empty output, or missing or invalid
-cursor produces `unknown`,
-which never authorizes input. A successfully captured blank screen is still an inspectable screen.
+conditional retry. Inspection uses `capture-pane -p -t <paneID>` for the visible screen plus cursor metadata
+in the same tmux invocation, without scrollback. A thrown capture, nonzero exit, empty output, or missing
+or invalid cursor produces `unknown`, which never authorizes input. A successfully captured blank screen
+is still an inspectable screen.
 
 A pre-paste veto deletes the unused buffer and throws `AdapterError.deliveryFailed`. It sends no paste,
 Enter, or Escape. A veto after paste throws without flushing or rolling back text. The existing launch
@@ -46,8 +46,8 @@ not add dialog-specific device wording or claim that blocked input was delivered
 
 ## Detector rules
 
-Each visible line loses Unicode box-drawing characters U+2500–U+259F (box drawing and block elements) and surrounding whitespace. Blank
-lines do not count toward the bottom region. Matching priority is known title, tool permission, then footer.
+Each visible line loses Unicode box drawing and block elements U+2500–U+259F and surrounding whitespace.
+Blank lines do not count toward the bottom region. Matching priority is known title, tool permission, then footer.
 Only fixed table titles leave the adapter; arbitrary pane text is never included in a refusal.
 
 - Anywhere on screen, an entire normalized line equal to `Computer Use needs macOS permissions` gives
@@ -66,8 +66,8 @@ Only fixed table titles leave the adapter; arbitrary pane text is never included
 The two known titles were verified against Claude Code 2.1.319 and may drift. The footer and
 "Do you want" rules cover recognised dialog shapes. Dialogs with other option glyphs, footers with hints
 after "Esc to cancel", "Would you like to …" prompts, or other agents' approval overlays are not guarded
-unless another rule recognises them. A generic numbered-select rule is a possible follow-up. The future doctor change should flag when a
-known title stops matching its fixture; no doctor check ships in this slice.
+unless another rule recognises them. A generic numbered-select rule is a possible follow-up. The future
+doctor change should flag when a known title stops matching its fixture; no doctor check ships in this slice.
 
 ## Atomicity limit
 
@@ -76,7 +76,7 @@ or Enter. #1172 tracks composing the predicate into the same tmux command, using
 and fail-closed capture handling. Even that composition cannot synchronize with the target's renderer
 or input loop. This slice narrows the window and does not claim atomic protection.
 
-## Synthetic coverage and verification
+## Initial synthetic coverage and verification
 
 `TmuxDialogDetectionTests` covers both titles, wrapped/bordered rendering, footer variants, each tool
 question variant with a Yes option, case-insensitivity, the 12-nonblank-line boundary, transcript above
@@ -132,3 +132,56 @@ physical-device validation is claimed.
 Host strict SwiftLint with the Xcode developer directory and the required non-comment 120-column awk
 check both passed for all ten changed Swift files, with no output. `git diff --check` also passed.
 Exactly four production files change, using the PR-shape exclusions; no production path is renamed.
+
+## Review delta verification
+
+The review follow-up adds position-bounded payload exclusion, cursor capture validation, decorated whole-title
+fixtures, and exact refusal-error assertions. The detector checks multiline payloads directly. Submission
+fixtures render a single-line payload across multiple input rows because public delivery rejects literal
+line breaks. Identical dialog text above the input, a dialog replacing the prompt, and missing cursor
+metadata still veto Enter. The pre-paste inspection continues to exclude nothing.
+
+Verification uses Swift 6.3.3 on the Dev Work VM, in a fresh checkout synchronized only by local git bundles.
+The verified source/test snapshot is `23346ca1b1753b0ef0e5d166b5f12261d77ea587`; the subsequent verification
+record changes documentation only. No GitHub calls or pushes were made. Each run first waited with
+`while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done`, then used `taskpolicy -b`, no more than four
+workers, and a 600-second cap with a cleanup trap. SSH used closed stdin and remained attached until exit.
+
+The exact focused filter, run three times after rebuilding the corrected fixtures, was:
+
+```text
+HailDaemonKitTests\.(TmuxDialogDetectionTests|TmuxDialogSubmissionTests)
+```
+
+All three runs exited 0: 16 tests, 40 cases, two suites, no skips. Two preliminary focused runs exposed
+fixture setup errors: literal newlines were rejected before submission, then a replacement-screen cursor
+did not match its rows. Both were corrected before the three final runs.
+
+The exact neighboring filter ran once, unsplit:
+
+```text
+HailDaemonKitTests\.(Tmux|CommandLaunch|LocalDispatch|LocalReply|TaskProgressTmux|TaskProgressPeer|ProviderReply|WebSocketReceivePump)
+```
+
+It exited 0 in 135.116 seconds: 291 reported tests in 49 suites, with the ten tmux-dependent skips listed
+above. Five deliberate `withKnownIssue` records came from `LocalDispatchPreflightWaitTests`: missing
+arrival and late arrival (two), dispatch ending before listing (two), and the suspended-step deadline (one).
+These are expected synthetic failure-path assertions, not unexpected failures. Tests used
+`swift test --skip-build --no-parallel -j 4` with the isolated build directory and CLT Testing flags.
+
+The `vw-werr.sh` wrapper with the fresh workspace argument exited 0 and reported `werr build=0`.
+It built the package and tests with four workers and `-Xswiftc -warnings-as-errors` in 102.95 seconds.
+The linker again emitted missing SDK module-cache debug-file warnings; this was a successful build,
+not a warning-free linker run.
+
+Host `swiftlint lint --strict --quiet` with the Xcode developer directory and the following check both
+produced no output for all ten Swift files changed from the supplied main baseline:
+
+```sh
+awk 'length($0)>120 && $0 !~ /^[[:space:]]*\/\//'
+```
+
+`git diff --check` passed. The checker exclusions and rename handling still yield exactly the same four
+production files. Both VM build directories were deleted, and no verification jobs remained running.
+This is synthetic package-test evidence; no live dialog, simulator, installed build, or physical-device
+validation is claimed for the delta.
