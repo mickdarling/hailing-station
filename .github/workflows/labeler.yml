@@ -1,4 +1,6 @@
-# Applies security:critical from .github/labeler.yml paths (#48).
+# Applies security:critical from .github/labeler.yml paths (#48). On pull_request the label configuration is
+# read from the PR's own commit, so a PR could change which labels it receives; pr-shape (run from the base
+# branch) independently requires security:critical and a second-key record for .github/ and scripts/ paths.
 name: labeler
 
 on:

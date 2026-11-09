@@ -8,7 +8,7 @@ Every session on the host shares one GitHub account budget. Read `docs/github-ap
 
 ## PR-shape: mandatory preflight and error handling
 
-For any PR touching `.github/`, `scripts/pr-shape.py`, or `scripts/spec_trace.py`, the maintainer diffs those changes themselves at the exact head before merging, because those checks run from the PR's own workflow files.
+For any PR touching `.github/` or `scripts/`, the maintainer diffs those changes themselves at the exact head before merging: the PR contract workflows run from the PR's own workflow files, and the checker scripts take effect once merged.
 
 Read `scripts/pr-shape.py` and `.github/pull_request_template.md` **before creating any PR**, not only after CI fails. The checker is authoritative; do not rely on a remembered format. See CONTRIBUTING.md for the maintainer workflow.
 

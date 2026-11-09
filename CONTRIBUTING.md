@@ -19,7 +19,7 @@ When opening an issue:
 
 ## Maintainer workflow
 
-For any PR touching `.github/`, `scripts/pr-shape.py`, or `scripts/spec_trace.py`, the maintainer diffs those changes themselves at the exact head before merging, because those checks run from the PR's own workflow files.
+For any PR touching `.github/` or `scripts/`, the maintainer diffs those changes themselves at the exact head before merging: the PR contract workflows run from the PR's own workflow files, and the checker scripts take effect once merged.
 
 Changes are developed from issue specifications and kept small enough to review. Pull requests should identify the issue they close or advance, name the tests that cover their acceptance criteria, and pass the repository verification scripts.
 

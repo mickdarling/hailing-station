@@ -6,7 +6,7 @@ name: pr-shape
 # gate check in ci.yml: changes under .github/ or scripts/ are security-critical under
 # pr-shape's SECURITY_PATHS, need an independent second key, and the maintainer diffs those
 # changes at the exact head before merging. #1177 tracks an optional default-branch verifier.
-# Nothing from the PR head is checked out or executed.
+# Nothing else from the PR head is checked out or executed.
 on:
   pull_request:
     types: [opened, edited, synchronize, labeled, unlabeled, reopened]
