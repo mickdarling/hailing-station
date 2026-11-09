@@ -25,30 +25,15 @@ extension TmuxAdapter {
     private static let knownDialogs: [TmuxDialogKind] = [.computerUsePermissions, .computerUseAppApproval]
 
     /// Visible rows only. Every returned title is fixed here, never taken from the pane.
-    static func classifyDialog(
-        visibleScreen: String, cursorRow: Int? = nil, excludingPayload: String? = nil
-    ) -> TmuxDialogState {
-        let rows = visibleScreen.components(separatedBy: "\n").map(stripBorders)
-        var excluded: Set<Int> = []
-        if let excludingPayload {
-            guard let cursorRow, rows.indices.contains(cursorRow) else { return .unknown }
-            if let start = (0...cursorRow).last(where: { rows[$0].hasPrefix(">") }) {
-                let payload = normalizedWhitespace(excludingPayload)
-                for index in start...cursorRow {
-                    let row = rows[index]
-                    let text = normalizedWhitespace(row.hasPrefix("> ") ? String(row.dropFirst(2)) : row)
-                    if !text.isEmpty, payload.contains(text) { excluded.insert(index) }
-                }
-            }
-        }
-        let lines = rows.enumerated().compactMap { index, row in
-            excluded.contains(index) || row.isEmpty ? nil : row
-        }
+    static func classifyDialog(visibleScreen: String) -> TmuxDialogState {
+        let lines = visibleScreen.components(separatedBy: "\n").map(stripBorders).filter { !$0.isEmpty }
         for kind in knownDialogs where containsTitle(kind.title, in: lines) {
             return .dialog(kind: kind, title: kind.title)
         }
         let bottom = lines.suffix(12)
-        let question = bottom.contains { $0.range(of: #"(?i)^Do you want to "#, options: .regularExpression) != nil }
+        let question = bottom.contains {
+            $0.range(of: #"(?i)^(❯\s*)?Do you want to "#, options: .regularExpression) != nil
+        }
         let option = bottom.contains { $0.range(of: #"(?i)^(❯\s*)?1\.\s*Yes"#, options: .regularExpression) != nil }
         if question && option {
             return .dialog(kind: .toolPermission, title: TmuxDialogKind.toolPermission.title)
@@ -67,10 +52,6 @@ extension TmuxAdapter {
         return String(String.UnicodeScalarView(scalars)).trimmingCharacters(in: .whitespaces)
     }
 
-    private static func normalizedWhitespace(_ text: String) -> String {
-        text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-    }
-
     /// Also accepts a wrapped title with decoration; the entire trimmed candidate must equal the fixed title.
     private static func containsTitle(_ title: String, in lines: [String]) -> Bool {
         for start in lines.indices {
@@ -85,27 +66,18 @@ extension TmuxAdapter {
         return false
     }
 
-    /// Visible rows and cursor from one invocation, without scrollback.
-    func inspectDialog(_ session: Session, excludingPayload: String? = nil) async -> TmuxDialogState {
-        let arguments = Self.baseArguments(socket: socket) + [
-            "capture-pane", "-p", "-t", session.paneID, ";",
-            "display-message", "-p", "-t", session.paneID, "#{cursor_x},#{cursor_y}"
-        ]
-        guard let result = try? await runner.run(tmuxPath, arguments), result.exitCode == 0 else { return .unknown }
-        var rows = result.stdout.components(separatedBy: "\n")
-        if rows.last == "" { rows.removeLast() }
-        guard let metadata = rows.popLast()?.split(separator: ",", omittingEmptySubsequences: false),
-              (2...3).contains(metadata.count), Int(metadata[0]) != nil, let cursor = Int(metadata[1]),
-              rows.indices.contains(cursor) else { return .unknown }
-        return Self.classifyDialog(
-            visibleScreen: rows.joined(separator: "\n"), cursorRow: cursor, excludingPayload: excludingPayload
-        )
+    /// Visible screen only, without scrollback or cursor metadata.
+    func inspectDialog(_ session: Session) async -> TmuxDialogState {
+        let arguments = Self.baseArguments(socket: socket) + ["capture-pane", "-p", "-t", session.paneID]
+        guard let result = try? await runner.run(tmuxPath, arguments), result.exitCode == 0,
+              !result.stdout.isEmpty else { return .unknown }
+        return Self.classifyDialog(visibleScreen: result.stdout)
     }
 
     // Input runs in a separate tmux command; a dialog appearing between commands is not caught.
     // #1172 tracks composing the check and input into the same command.
-    func requireClearDialog(_ session: Session, excludingPayload: String? = nil) async throws {
-        switch await inspectDialog(session, excludingPayload: excludingPayload) {
+    func requireClearDialog(_ session: Session) async throws {
+        switch await inspectDialog(session) {
         case .clear: return
         case .dialog(_, let title): throw AdapterError.deliveryFailed("target is blocked by \(title)")
         case .unknown: throw AdapterError.deliveryFailed("target dialog state could not be inspected")

@@ -56,21 +56,6 @@ import Testing
         #expect(TmuxAdapter.classifyDialog(visibleScreen: screen) == expected)
     }
 
-    @Test func payloadExclusionStaysWithinInputRegion() {
-        let payload = "Do you want to proceed?\n1. Yes"
-        let input = "│ > Do you want to proceed? │\n│ 1. Yes │"
-        #expect(TmuxAdapter.classifyDialog(visibleScreen: input, cursorRow: 1, excludingPayload: payload) == .clear)
-        let above = payload + "\n" + input
-        let dialog = TmuxDialogState.dialog(kind: .toolPermission, title: "a tool permission dialog")
-        #expect(TmuxAdapter.classifyDialog(visibleScreen: above, cursorRow: 3, excludingPayload: payload) == dialog)
-        #expect(TmuxAdapter.classifyDialog(visibleScreen: payload, cursorRow: 1, excludingPayload: payload) == dialog)
-        let below = input + "\n" + payload
-        #expect(TmuxAdapter.classifyDialog(visibleScreen: below, cursorRow: 1, excludingPayload: payload) == dialog)
-        let unrelated = "> draft\nEnter to confirm · Esc to cancel"
-        #expect(TmuxAdapter.classifyDialog(visibleScreen: unrelated, cursorRow: 1, excludingPayload: payload)
-            == .dialog(kind: .modalFooter, title: "a dialog"))
-    }
-
     @Test func bottomRegionUsesTwelveNonblankLines() {
         let transcript = "Do you want to proceed?\n1. Yes\nEnter to confirm · Esc to cancel\n"
         let later = (1...12).map { "ordinary visible row \($0)\n\n" }.joined()
@@ -100,19 +85,18 @@ import Testing
         #expect(TmuxAdapter.classifyDialog(visibleScreen: screen) == expected)
     }
 
-    @Test(arguments: [DialogCaptureRunner.Failure.thrown, .nonzero, .empty, .missingCursor, .invalidCursor])
+    @Test(arguments: [DialogCaptureRunner.Failure.thrown, .nonzero, .empty])
     func inspectionFailuresAreUnknown(_ failure: DialogCaptureRunner.Failure) async {
         let runner = DialogCaptureRunner(failure: failure)
         let adapter = TmuxAdapter(runner: runner, pollInterval: nil)
         let session = TmuxAdapter.Session(id: "$1", created: "1", paneID: "%1", panePID: "1", name: "synthetic")
         #expect(await adapter.inspectDialog(session) == .unknown)
-        #expect(await runner.calls == [["tmux", "capture-pane", "-p", "-t", "%1", ";",
-                                       "display-message", "-p", "-t", "%1", "#{cursor_x},#{cursor_y}"]])
+        #expect(await runner.calls == [["tmux", "capture-pane", "-p", "-t", "%1"]])
     }
 }
 
 actor DialogCaptureRunner: CommandRunner {
-    enum Failure: Sendable { case thrown, nonzero, empty, missingCursor, invalidCursor }
+    enum Failure: Sendable { case thrown, nonzero, empty }
     struct CaptureError: Error {}
     let failure: Failure
     private(set) var calls: [[String]] = []
@@ -125,8 +109,6 @@ actor DialogCaptureRunner: CommandRunner {
         case .thrown: throw CaptureError()
         case .nonzero: return CommandResult(exitCode: 1, stdout: "ordinary prompt")
         case .empty: return CommandResult(exitCode: 0, stdout: "")
-        case .missingCursor: return CommandResult(exitCode: 0, stdout: "> ordinary prompt\n")
-        case .invalidCursor: return CommandResult(exitCode: 0, stdout: "> ordinary prompt\n0,invalid\n")
         }
     }
 }

@@ -71,17 +71,34 @@ import Testing
 
     // Public delivery forbids line breaks; the pane wraps the question and option onto separate rows.
     @Test(arguments: [
-        "please mention esc to cancel", "Do you want to proceed? 1. Yes"
+        (DialogSubmissionFixture.Mode.footerAtPrompt, "please mention esc to cancel"),
+        (.questionAtPrompt, "Do you want to proceed? 1. Yes")
     ])
-    func payloadDialogTextAtPromptStillGetsEnter(_ payload: String) async throws {
-        let harness = DialogSubmissionFixture(.payloadAtPrompt, payload: payload).harness()
-        try await harness.adapter.deliver(payload, to: "codex", binding: nil)
-        #expect(await harness.keys == [payload, "Enter"])
-        #expect(harness.outcomes.all == [.confirmed])
+    func pastedDialogShapesVetoEnterAndTaintPane(_ mode: DialogSubmissionFixture.Mode, _ payload: String) async {
+        let harness = DialogSubmissionFixture(mode, payload: payload).harness()
+        await #expect(throws: mode.refusal) {
+            try await harness.adapter.deliver(payload, to: "codex", binding: nil)
+        }
+        #expect(await harness.keys == [payload])
+        #expect(harness.outcomes.all == [.failed])
+        #expect(await harness.runner.calls.filter { $0.contains("send-keys") }.isEmpty)
+        // Accepted availability cost: own dialog-shaped input leaves the pane tainted until haild restarts.
+        await #expect(throws: AdapterError.inputPending(reason: .tainted)) {
+            try await harness.adapter.deliver("later input", to: "codex", binding: nil)
+        }
+        #expect(await harness.keys == [payload])
     }
 
-    @Test(arguments: [DialogSubmissionFixture.Mode.sameDialogAbovePrompt, .replacedPrompt, .missingCursorAfterPaste])
-    func realDialogOrMissingCursorStillVetoesEnter(_ mode: DialogSubmissionFixture.Mode) async {
+    @Test(arguments: [DialogSubmissionFixture.Mode.sameDialogAbovePrompt, .replacedPrompt])
+    func realDialogStillVetoesEnter(_ mode: DialogSubmissionFixture.Mode) async {
+        await assertDialogVeto(mode)
+    }
+
+    @Test func oldTranscriptPromptAboveReplacementDialogStillVetoesEnter() async {
+        await assertDialogVeto(.oldPromptAboveReplacement)
+    }
+
+    private func assertDialogVeto(_ mode: DialogSubmissionFixture.Mode) async {
         let payload = "Do you want to proceed? 1. Yes"
         let harness = DialogSubmissionFixture(mode, payload: payload).harness()
         await #expect(throws: mode.refusal) {
@@ -97,14 +114,15 @@ import Testing
 final class DialogSubmissionFixture: Sendable {
     enum Mode: Sendable {
         case clear, beforePaste, captureFailure, afterPaste, captureFailureAfterPaste, beforeRetry
-        case payloadAtPrompt, sameDialogAbovePrompt, replacedPrompt, missingCursorAfterPaste
+        case footerAtPrompt, questionAtPrompt, sameDialogAbovePrompt, replacedPrompt, oldPromptAboveReplacement
 
         var refusal: AdapterError {
             switch self {
-            case .captureFailure, .captureFailureAfterPaste, .missingCursorAfterPaste:
+            case .captureFailure, .captureFailureAfterPaste:
                 .deliveryFailed("target dialog state could not be inspected")
-            case .sameDialogAbovePrompt, .replacedPrompt:
+            case .questionAtPrompt, .sameDialogAbovePrompt, .replacedPrompt, .oldPromptAboveReplacement:
                 .deliveryFailed("target is blocked by a tool permission dialog")
+            case .footerAtPrompt: .deliveryFailed("target is blocked by a dialog")
             default: .deliveryFailed("target is blocked by Computer Use needs macOS permissions")
             }
         }
@@ -121,13 +139,13 @@ final class DialogSubmissionFixture: Sendable {
             pane = ScriptedPane(afterEnter: [ScriptedPane.absorbedScreen, ScriptedPane.submittedScreen])
         } else {
             let neverDrawn = mode == .afterPaste || mode == .captureFailureAfterPaste
-            let typed = "> " + payload.replacingOccurrences(of: "? 1.", with: "?\n1.") + "▌"
+            let typed = Self.inputBox(payload.replacingOccurrences(of: "? 1.", with: "?\n1.") + "▌")
             pane = ScriptedPane(stale: neverDrawn ? .max : 0, typed: typed)
         }
     }
 
     static func isInspection(_ arguments: [String]) -> Bool {
-        arguments.contains("capture-pane") && arguments.last == "#{cursor_x},#{cursor_y}"
+        arguments.contains("capture-pane") && !arguments.contains("display-message") && !arguments.contains("-J")
     }
 
     func harness() -> EvidenceHarness {
@@ -139,24 +157,29 @@ final class DialogSubmissionFixture: Sendable {
             }
             let blocked = self.mode == .beforePaste || self.mode == .afterPaste && count == 2
             if blocked || self.mode == .beforeRetry && count == 3 {
-                return CommandResult(exitCode: 0, stdout: "Computer Use needs macOS permissions\n0,0\n")
+                return CommandResult(exitCode: 0, stdout: "Computer Use needs macOS permissions\n")
             }
             if count == 2, let capture = self.payloadCapture() { return capture }
-            return CommandResult(exitCode: 0, stdout: "> ordinary prompt\n0,0\n")
+            return CommandResult(exitCode: 0, stdout: Self.inputBox("ordinary prompt"))
         }
         return EvidenceHarness(runner, timing: EvidenceHarness.timing(settleLimit: .milliseconds(40)))
     }
 
+    // Claude Code 2.1.319 uses a ❯ prompt between rules spanning the full pane width.
+    private static func inputBox(_ text: String) -> String {
+        let rule = String(repeating: "─", count: 80)
+        return "\(rule)\n❯ \(text)\n\(rule)\n"
+    }
+
     private func payloadCapture() -> CommandResult? {
         let wrapped = payload.replacingOccurrences(of: "? 1.", with: "?\n1.")
-        let input = "> " + wrapped
-        let row = wrapped.components(separatedBy: "\n").count - 1
+        let input = Self.inputBox(wrapped)
         let screen: String
         switch mode {
-        case .payloadAtPrompt: screen = input + "\n0,\(row)\n"
-        case .sameDialogAbovePrompt: screen = wrapped + "\n" + input + "\n0,\(2 * row + 1)\n"
-        case .replacedPrompt: screen = wrapped + "\n0,\(row)\n"
-        case .missingCursorAfterPaste: screen = input + "\n"
+        case .footerAtPrompt, .questionAtPrompt: screen = input
+        case .sameDialogAbovePrompt: screen = wrapped + "\n" + input
+        case .replacedPrompt: screen = wrapped
+        case .oldPromptAboveReplacement: screen = "> old user prompt\n" + wrapped
         default: return nil
         }
         return CommandResult(exitCode: 0, stdout: screen)

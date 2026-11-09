@@ -13,10 +13,9 @@ agent gate cannot detect a dialog inside a running agent.
 
 The new inspection runs after the buffer is filled, immediately before the paste launch, and again
 immediately before every Enter launch, including the first Enter after timed-out acceptance and the
-conditional retry. Inspection uses `capture-pane -p -t <paneID>` for the visible screen plus cursor metadata
-in the same tmux invocation, without scrollback. A thrown capture, nonzero exit, empty output, or missing
-or invalid cursor produces `unknown`, which never authorizes input. A successfully captured blank screen
-is still an inspectable screen.
+conditional retry. Inspection uses a single `capture-pane -p -t <paneID>` for the visible screen,
+without scrollback or cursor metadata. A thrown capture, nonzero exit, or empty output produces `unknown`,
+which never authorizes input. A successfully captured blank screen is still an inspectable screen.
 
 A pre-paste veto deletes the unused buffer and throws `AdapterError.deliveryFailed`. It sends no paste,
 Enter, or Escape. A veto after paste throws without flushing or rolling back text. The existing launch
@@ -24,12 +23,8 @@ accounting keeps an executed or possibly executed paste and taints that pane aga
 The admission ticket, whole-submission admission at paste launch, and possible-submission accounting
 are unchanged: the safety veto applies even after admission.
 
-The pre-paste inspection excludes no payload. Before each Enter, the submission ticket supplies the exact
-pasted text, including any framing. The input region runs from the nearest border-stripped row starting
-with `>` at or above the captured cursor through the cursor row. Only rows inside that region whose
-trimmed text (dropping a leading `> `) is a non-empty substring of the whitespace-normalized payload are
-excluded. Rows outside that region always remain eligible, even when identical to payload lines. If a
-dialog replaces the input box and no prompt row remains, nothing is excluded.
+All visible rows remain eligible at every inspection, including the pasted payload. PR 1 stays fail-closed;
+position-based own-input exclusion is deferred to #1179.
 
 The evidence ledger's `submitted` method marks an insert submitted even for a failed outcome. When no
 Enter was executed or possibly executed, the adapter therefore reports the failed submit outcome through
@@ -54,7 +49,7 @@ Only fixed table titles leave the adapter; arbitrary pane text is never included
   `computerUsePermissions`; `Computer Use wants to control these apps` gives `computerUseAppApproval`.
   Leading and trailing non-alphanumeric decoration (icons or a colon) is trimmed before whole-title
   comparison. Adjacent normalized lines joined with one space can equal a title wrapped at a word boundary.
-- Within the last 12 nonblank lines, a case-insensitive line beginning `Do you want to ` together with a
+- Within the last 12 nonblank lines, a case-insensitive line beginning `Do you want to ` (optionally after `❯`) together with a
   line matching `^(❯\s*)?1\.\s*Yes` gives `toolPermission`, titled `a tool permission dialog`.
 - Within that region, a case-insensitive whole line ending with the words `esc to cancel` gives
   `modalFooter`, titled `a dialog`. The implemented pattern is `^(?:.*\s)?esc to cancel$`.
@@ -68,6 +63,19 @@ The two known titles were verified against Claude Code 2.1.319 and may drift. Th
 after "Esc to cancel", "Would you like to …" prompts, or other agents' approval overlays are not guarded
 unless another rule recognises them. A generic numbered-select rule is a possible follow-up. The future
 doctor change should flag when a known title stops matching its fixture; no doctor check ships in this slice.
+
+## Availability cost (accepted)
+
+A pasted line ending with `esc to cancel` can match the modal footer rule. Pasted `Do you want to …`
+plus a separate `1. Yes` row can match the tool permission rule, including a single-line payload wrapped
+across screen rows. Both shapes veto Enter even when they are haild's own input. This fail-closed cost is
+accepted for PR 1: after the paste, the pane is tainted until haild restarts. #1179 tracks own-input exclusion
+and recovery.
+
+Claude Code 2.1.319 renders its input prompt as `❯` between full-width `─` rule rows, not `>`.
+An old `> old user prompt` transcript row above a replacement dialog must never hide that dialog.
+The regression fixtures use the 2.1.319 input box shape, and replacement dialogs remain eligible even
+when their text also appears in the submitted payload.
 
 ## Atomicity limit
 
@@ -133,9 +141,9 @@ Host strict SwiftLint with the Xcode developer directory and the required non-co
 check both passed for all ten changed Swift files, with no output. `git diff --check` also passed.
 Exactly four production files change, using the PR-shape exclusions; no production path is renamed.
 
-## Review delta verification
+## Prior review delta verification (superseded behavior)
 
-The review follow-up adds position-bounded payload exclusion, cursor capture validation, decorated whole-title
+The prior review follow-up added position-bounded payload exclusion, cursor capture validation, decorated whole-title
 fixtures, and exact refusal-error assertions. The detector checks multiline payloads directly. Submission
 fixtures render a single-line payload across multiple input rows because public delivery rejects literal
 line breaks. Identical dialog text above the input, a dialog replacing the prompt, and missing cursor
@@ -185,3 +193,13 @@ awk 'length($0)>120 && $0 !~ /^[[:space:]]*\/\//'
 production files. Both VM build directories were deleted, and no verification jobs remained running.
 This is synthetic package-test evidence; no live dialog, simulator, installed build, or physical-device
 validation is claimed for the delta.
+
+## Fail-closed delta verification
+
+This delta removes position-based payload exclusion and cursor capture validation. It retains decorated
+whole-title matching, block-element stripping, exact refusal-error assertions, the #1172 atomicity note,
+and the recognised-dialog-shapes coverage limits. Tests retain the real dialog above the input and the
+replacement dialog vetoes, and add the old-transcript-prompt counterexample and both accepted availability
+costs, including sticky taint after refusal. Own-input exclusion and recovery move to #1179.
+
+Verification is pending for this delta.

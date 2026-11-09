@@ -139,7 +139,7 @@ let twoSessions = "$1|1758230000|%1|501|claude-hail\n$2|1758230001|%2|502|codex\
 
 /// Default visible prompt for listing-only fixtures. Cursor observations and history captures stay unchanged.
 func clearDialogCapture(_ arguments: [String]) -> CommandResult? {
-    guard arguments.contains("capture-pane"), arguments.last == "#{cursor_x},#{cursor_y}",
+    guard arguments.contains("capture-pane"), !arguments.contains("display-message"),
           !arguments.contains("-J") else { return nil }
-    return CommandResult(exitCode: 0, stdout: "> synthetic prompt\n0,0\n")
+    return CommandResult(exitCode: 0, stdout: "> synthetic prompt\n")
 }
