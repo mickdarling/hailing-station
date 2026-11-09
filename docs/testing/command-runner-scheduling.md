@@ -39,6 +39,7 @@ The continuation never resumes early. This change adds no command timeout or kil
   lines on each pipe: 98,304 bytes per pipe, exceeding 64 KiB on both. Both strings and exit status
   must match exactly. Sequential draining would wedge while the other pipe fills.
 - Existing launch evidence and adapter admission tests remain unchanged.
+- `CommandLaunchAdmissionTests.oneRunnerLaunchesConcurrentCommandsBeforeEitherCompletes` requires both children on one runner to create markers before release within a 15-second watchdog, then checks both exit codes and distinct stdout values.
 
 ## Dev Work VM evidence
 
