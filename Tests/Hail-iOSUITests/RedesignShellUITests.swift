@@ -50,12 +50,29 @@ final class RedesignShellUITests: XCTestCase {
         XCTAssertFalse(connection.exists, "VoiceOver can reach the hidden station")
 
         section("station", in: app, isPad: isPad).tap()
-        let shown = expectation(for: NSPredicate(format: "isHittable == true"), evaluatedWith: connection)
-        wait(for: [shown], timeout: 5)
+        waitUntilHittable(connection)
+
+        // A tool pushed inside the station's stack is hidden with it, and is still there on return.
+        openStationLabs(app)
+        let labsToggle = app.switches["station.redesign.shell"]
+        XCTAssertTrue(labsToggle.waitForExistence(timeout: 5))
+        devices.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["station.devices.mac-setup"].waitForExistence(timeout: 5))
+        XCTAssertFalse(labsToggle.exists, "VoiceOver can reach a tool pushed inside the hidden station")
+        XCTAssertFalse(connection.exists, "VoiceOver can reach the hidden station")
+        section("station", in: app, isPad: isPad).tap()
+        waitUntilHittable(app.navigationBars["Labs"])
     }
 
     @MainActor
-    private func turnOnShellInLabs(_ app: XCUIApplication) {
+    private func waitUntilHittable(_ element: XCUIElement) {
+        let shown = expectation(for: NSPredicate(format: "isHittable == true"), evaluatedWith: element)
+        wait(for: [shown], timeout: 5)
+    }
+
+    /// Opens Labs from the station's own tool links.
+    @MainActor
+    private func openStationLabs(_ app: XCUIApplication) {
         let labs = app.buttons["Labs"]
         for _ in 0..<6 where !(labs.exists && labs.isHittable) { app.swipeUp() }
         XCTAssertTrue(labs.isHittable, "Labs is reachable from the station tools")
@@ -64,6 +81,11 @@ final class RedesignShellUITests: XCTestCase {
         labs.tap()
         if !title.waitForExistence(timeout: 3), labs.exists, labs.isHittable { labs.tap() }
         XCTAssertTrue(title.waitForExistence(timeout: 5), "Labs opens")
+    }
+
+    @MainActor
+    private func turnOnShellInLabs(_ app: XCUIApplication) {
+        openStationLabs(app)
 
         let toggle = app.switches["station.redesign.shell"]
         for _ in 0..<4 where !(toggle.exists && toggle.isHittable) { app.swipeUp() }
