@@ -386,3 +386,55 @@ two of them.
 Both VM build directories were deleted, and no verification jobs remained running.
 This is synthetic package and CLI evidence, with no live dialog, simulator, installed-build,
 physical-device or captured-output round-trip validation.
+
+## Per-request dialog notices
+
+This slice carries the typed dialog cause, possible paste or Enter effects, and earlier delivered-line
+count through routing and local dispatch. Dialog refusals keep ambient listening active on both the
+configured target and a voice-routed target. Other own-target refusal behavior is unchanged. Reply
+ownership and the last-input device are never committed for a dialog refusal.
+
+The device names the target using its configured spoken route name, with the listed target name as
+fallback. Known causes say `A <title> dialog is open on <target>.`; failed inspection says
+`Couldn't check <target> for a dialog.` The next sentence distinguishes untouched requests, possible
+input-box text, possible submission, and singular or plural earlier delivered lines. Existing phone
+refusal codes, request UUIDs, heard-turn correlation, notice order and acknowledgement snapshots are
+preserved. No notice prefix is added.
+
+The `confirm-not-sent` clip is eligible only when effects are `none` and no earlier line was delivered.
+Possible paste, possible Enter, or any earlier delivered line suppresses it. Existing privacy and
+connection-teardown checks still apply to eligible clips. The existing delivery-refusal audit remains.
+Tests use synthetic typed errors, adapters, child events and loopback device frames; they do not prove
+a live dialog, device hearing, an installed build, or a captured-output round trip.
+
+Verification used Swift 6.3.3 on the Dev Work VM, in a fresh checkout synchronized by local bundles.
+The source/test snapshot is `b3ddae98f61b4a1358128f306470e6fbb9a12009`. Before every run, verification
+waited for the shared lane; each attached SSH run had closed stdin, background task policy, at most
+four workers, a 600-second cap, signal handling and process-group cleanup.
+
+The focused filter covered `HostSessionDialogNoticeTests`, `WebSocketListenerDialogNoticeTests`,
+`AmbientWiringDialogNoticeTests`, `HostDialogPartialTests` and `RightyoInputConsumerTests` three times.
+All passed: 117 reported tests in five suites, in 12.237, 11.853 and 11.145 seconds, with no skips.
+This includes all wording rows, clip eligibility, real split-delivery counts, stable CLI tokens,
+request UUIDs, own-target heard turns and acknowledgement snapshots. Routed refusals keep their
+existing nil heard turn and absent acknowledgement; the next own-target utterance still succeeds.
+
+The broader ambient, routing, host, reply, listener, local-dispatch and tmux filter passed once,
+unsplit: 723 reported tests in 128 suites, 297.224 seconds. Ten deliberate known-issue records came
+from the existing preflight and recipient-handoff deadline/cancellation tests. Ten existing
+functions in five tmux-dependent suites were skipped because tmux was unavailable; all new tests ran.
+The full Reply CLI suite passed: 126 tests, 228.417 seconds. Its existing text-reason assertions are
+unchanged; the additional dialog case pins the production partial-error branch. Policy CLI checks
+exited 0 with no output after a successful haild build.
+
+The warnings-as-errors package/test build completed in 138.48 seconds. The build and its enclosing
+verification both exited 0. The linker emitted the VM's known missing module-cache debug-file
+warnings; this is a successful warnings-as-errors build, not a warning-free linker run.
+Host strict SwiftLint with the Xcode developer directory and the non-comment 120-column check both
+exited 0 and printed nothing for all ten changed Swift files. No host builds were run. The production
+file count is four relative to the structured-evidence base, using the checker exclusions, with no
+renames. Existing test assertions were retained. Preliminary verification caught and corrected an
+async fallback expression and new-fixture setup/expectation errors before the final passes above.
+Both isolated VM build directories were deleted and no verification jobs remained running.
+All evidence remains synthetic; no simulator, live dialog, installed build, device hearing or
+captured-output round trip is claimed.
