@@ -13,7 +13,8 @@ The overcommit safety-path changes in #980 had not covered this runner.
 
 Each run now creates a labelled serial dispatch queue for preparation, synchronous launch, stdout
 reading, process-exit waiting and the stderr join. A separate labelled serial queue drains stderr
-concurrently. These serial queues target the overcommit root queue, so neither path waits for a
+concurrently. Both queues use `.userInitiated` QoS, preserving the previous detached task's priority
+for tmux commands. These serial queues target the overcommit root queue, so neither path waits for a
 constrained global worker. A checked throwing continuation suspends the caller until the work ends;
 no cooperative-pool thread blocks on the child. The stderr `DataBox` locks only to transfer bytes,
 with the blocking read evaluated before acquiring its lock.
@@ -38,8 +39,10 @@ The continuation never resumes early. This change adds no command timeout or kil
 - `CommandLaunchAdmissionTests.aVerboseChildDrainsBothPipesConcurrently` interleaves 8,192 twelve-byte
   lines on each pipe: 98,304 bytes per pipe, exceeding 64 KiB on both. Both strings and exit status
   must match exactly. Sequential draining would wedge while the other pipe fills.
+- `CommandLaunchAdmissionTests.oneRunnerLaunchesConcurrentCommandsBeforeEitherCompletes` requires both
+  children on one runner to create markers before release within a 15-second watchdog, then checks both
+  exit codes and distinct stdout values.
 - Existing launch evidence and adapter admission tests remain unchanged.
-- `CommandLaunchAdmissionTests.oneRunnerLaunchesConcurrentCommandsBeforeEitherCompletes` requires both children on one runner to create markers before release within a 15-second watchdog, then checks both exit codes and distinct stdout values.
 
 ## Dev Work VM evidence
 
@@ -61,7 +64,7 @@ Test run with 1 test in 2 suites failed after 9.060 seconds with 1 issue.
 The same regression passed with the fix: one test in 1.291 s, including saturation setup. The fixed
 four-second command-completion assertion passed; successful assertions do not print their operands.
 
-The first full-family attempt lacked the build-directory symlink used by the publisher CLI fixture;
+The first full GlobalQueueStarvation timing family attempt lacked the build-directory symlink used by the publisher CLI fixture;
 that case reached its 60-second test limit (eight tests, one issue, 73.286 s overall). Correcting only
 that verification setup made the complete serial family pass: eight tests in 13.520 s. The regression
 and focused tests use the same fixed production source throughout subsequent verification.
@@ -109,9 +112,9 @@ synchronized by bundle before the remaining checks; the tested source and test c
 `python3 -m unittest discover -s Tests/ReplyCLITests` passed all 124 tests in 232.856 s
 (233.044 s phase wall time, exit 0).
 
-Host lint used strict SwiftLint with the full Xcode developer directory and the requested non-comment
-120-column `awk` check on every changed Swift file. Both exited 0 and printed nothing. The change has
-one production file under the PR-shape checker's exact exclusions, two test files and this document.
+Host lint used strict SwiftLint with the full Xcode developer directory and a 120-column line-length check
+that ignores comment-only lines on every changed Swift file. Both exited 0 and printed nothing. The change has
+one production file under the PR-shape checker's exact exclusions, three test files and this document.
 
 The warnings-as-errors wrapper built the package and tests with four workers: `werr build=0`,
 exit 0, 85.23 s build duration and 86.085 s phase wall time. The toolchain emitted missing `.pcm`
@@ -120,3 +123,52 @@ module-cache-reference warnings; this is a successful build, not a claim of warn
 Both VM build directories and the fixture build-directory symlink were removed after verification.
 No verification processes remain running. No build was installed or uploaded, and no branch was pushed.
 The command timeout/kill expectation remains deferred to #1167.
+
+## QoS review delta verification
+
+The review delta sets both per-run queues to `.userInitiated`, restoring the previous
+`Task.detached(priority: .userInitiated)` priority for tmux commands. The queues remain labelled,
+serial, per run and untargeted, using the overcommit root. The timing-lane comment and documentation
+corrections are the only other changes.
+
+Verification used a fresh local-seeded Dev Work VM clone, synchronized by a bundle of
+`origin/main..HEAD`, with Swift 6.3.3. Before every run, the test driver waited for the shared lane
+with `while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done`. SSH used stdin from `/dev/null`
+and waited for completion. A process-group watchdog capped each run at ten minutes and trapped
+termination signals to kill remaining children. Each run used `taskpolicy -b` and at most four workers.
+
+The test-selection wrapper ran `swift test --no-parallel -j 4` with the Command Line Tools Testing
+framework and plugin flags. Its exact `--filter` values were:
+
+- Concurrency (three runs):
+  `HailDaemonKitTests.CommandLaunchAdmissionTests/oneRunnerLaunchesConcurrentCommandsBeforeEitherCompletes`
+- Starvation regression:
+  `HailDaemonKitTests.GlobalQueueStarvationTests.OwnedStdioChildCommandRunner/aCompletedCommandReturnsOnTime`
+- Serial timing family: `GlobalQueueStarvation`
+- Focused launch/adapter selection: `HailDaemonKitTests\.(CommandLaunch|Tmux)`
+
+| Run | Tests / suites | Swift Testing duration | Phase wall time | Exit |
+| --- | --- | --- | --- | --- |
+| Concurrency 1 | 1 / 1 | 0.482 s | 106.268 s | 0 |
+| Concurrency 2 | 1 / 1 | 0.393 s | 15.694 s | 0 |
+| Concurrency 3 | 1 / 1 | 0.471 s | 1.872 s | 0 |
+| Starvation regression | 1 / 2 | 1.350 s | 2.287 s | 0 |
+| GlobalQueueStarvation timing family | 8 / 8 | 13.405 s | 14.405 s | 0 |
+| Focused launch/adapter selection | 163 / 32 | 108.220 s | 109.180 s | 0 |
+
+Concurrency 1 included the fresh build (102.54 s). Before concurrency 2, the added timing-lane comment
+was moved above the existing doc comment to satisfy SwiftLint; no executable code changed. The clone
+was resynchronized by bundle, and concurrency 2 rebuilt that test file. Later test runs used `--skip-build`.
+
+The warnings-as-errors build wrapper, `vw-werr.sh` with workspace argument `vw1156r`, built the
+package and tests using `swift build --build-tests -j 4 -Xswiftc -warnings-as-errors` and the same
+Testing framework flags, under the outer ten-minute watchdog. It has no test filter and runs no tests.
+It reported `werr build=0` and exited 0: build duration 142.97 s, phase wall time 143.921 s. The toolchain
+again emitted missing `.pcm` module-cache-reference warnings; this records build success rather than
+warning-free output.
+
+Host verification ran strict SwiftLint with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`
+and `awk 'length($0)>120 && $0 !~ /^[[:space:]]*\/\//'` on all four Swift files changed from
+`origin/main`. Both exited 0 with zero output. Both VM build directories and the fixture symlink were
+deleted, and a process check confirmed no verification processes remained. This is synthetic macOS
+package evidence only. No GitHub calls, push, installation or upload occurred for this delta.

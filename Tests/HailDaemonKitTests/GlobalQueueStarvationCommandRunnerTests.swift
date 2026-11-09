@@ -3,6 +3,7 @@ import Testing
 @testable import HailDaemonKit
 
 extension GlobalQueueStarvationTests {
+    // OwnedStdioChildCommandRunner deliberately matches OwnedStdioChild for scripts/verify.sh's serial timing lane.
     /// The command runner must drain both pipes and join after exit without a constrained worker (#1156).
     @Suite struct OwnedStdioChildCommandRunner {
         @Test func aCompletedCommandReturnsOnTime() async throws {

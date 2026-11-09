@@ -82,9 +82,9 @@ public struct ProcessCommandRunner: GuardedCommandRunner {
         // Caller cancellation is neither propagated nor observed: the command runs to completion and returns
         // its result (or launch/admission error), just as the previous detached task did. Never resume early.
         try await withCheckedThrowingContinuation { continuation in
-            // Labelled serial queues target the overcommit root queue, so reads, exit and drain joins never
-            // wait for a free constrained worker, as blocks queued on the global queues do (#1156, #980).
-            DispatchQueue(label: "hailing.command-runner.run").async {
+            // Per-run labelled serial queues retain user-initiated QoS and target the overcommit root queue;
+            // reads, exit and drain joins never wait for a constrained global worker (#1156, #980).
+            DispatchQueue(label: "hailing.command-runner.run", qos: .userInitiated).async {
                 continuation.resume(with: Result {
                     let process = Process()
                     if executable.contains("/") {
@@ -109,7 +109,7 @@ public struct ProcessCommandRunner: GuardedCommandRunner {
                     let errBox = DataBox()
                     let drained = DispatchGroup()
                     drained.enter()
-                    DispatchQueue(label: "hailing.command-runner.stderr").async {
+                    DispatchQueue(label: "hailing.command-runner.stderr", qos: .userInitiated).async {
                         errBox.set(errHandle.readDataToEndOfFile())
                         drained.leave()
                     }
