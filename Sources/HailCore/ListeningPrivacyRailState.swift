@@ -7,7 +7,8 @@
 ///
 /// | # | Microphone | Privacy, station and host                                      | Kind                 | Tone    |
 /// |---|------------|----------------------------------------------------------------|----------------------|---------|
-/// | 1 | not off    | listening paused (another app has the microphone)              | `paused`             | alert   |
+/// | 1 | not off,   | listening paused (another app has the microphone) and talk not | `paused`             | alert   |
+/// |   | not live   | capturing                                                      |                      |         |
 /// | 2 | not off    | privacy unknown, pending or unconfirmed; station not ready;    | `mayBeRecording`     | alert   |
 /// |   |            | host claims not capturing (moved away, elsewhere, stopped,     |                      |         |
 /// |   |            | private listening unavailable); or the run is reconnecting     |                      |         |
@@ -118,7 +119,8 @@ public struct ListeningPrivacyRailState: Equatable, Sendable {
     /// Rows 1 to 3, then rows 4 and 5.
     private static func micNotOff(_ facts: Facts) -> Self {
         let mic = facts.mic
-        if facts.listening == .paused {
+        // A live microphone or talk capture is never "another app has the microphone" (Codex review of #1153).
+        if facts.listening == .paused, mic != .live, !facts.talkCapturing {
             return Self(kind: .paused, mic: mic, summary: "Listening paused · resumes by itself",
                         detail: "Another app has the microphone. Listening resumes when it lets go.")
         }

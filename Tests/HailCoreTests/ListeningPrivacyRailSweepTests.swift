@@ -28,7 +28,27 @@ struct ListeningPrivacyRailSweepTests {
                 #expect(item.talk == .idle, "\(item)")
                 #expect(item.listening == .listening, "\(item)")
             }
+            // Codex review of #1153: a live microphone or talk capture is never blamed on another app.
+            if state.kind == .paused {
+                #expect(item.mic != .live, "\(item)")
+                #expect(!talkCapturing, "\(item)")
+            }
             #expect(state.mic == item.mic || item.mic == nil || state.mic == .uncertain, "\(item)")
+        }
+    }
+
+    // Codex review of #1153: paused claims another app has the microphone, so active capture outranks it.
+    @Test func pausedNeverHidesActiveCapture() {
+        let live = Fixture.resolve(mic: .live, listening: .paused, privacy: Fixture.notPrivate)
+        #expect(live.kind == .recording)
+        #expect(live.summary == "Recording")
+        #expect(!live.accessibilityLabel.contains("Another app"))
+        for talk: TalkCapturePhase in [.starting, .recording, .finishing] {
+            for privacy in Fixture.privacies {
+                let state = Fixture.resolve(mic: .uncertain, listening: .paused, talk: talk, privacy: privacy)
+                #expect(state.kind != .paused, "\(talk) \(String(describing: privacy))")
+                #expect(state.tone == .alert, "\(talk) \(String(describing: privacy))")
+            }
         }
     }
 
