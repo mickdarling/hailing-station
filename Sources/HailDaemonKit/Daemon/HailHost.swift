@@ -21,7 +21,7 @@ public enum HostError: Error, Equatable, Sendable, CustomStringConvertible {
         case .unknownTarget(let target): "unknownTarget(\(String(reflecting: target)))"
         case .adapterUnavailable(let kind, let reason):
             "adapterUnavailable(kind: \(String(reflecting: kind)), reason: \(String(reflecting: reason)))"
-        case .refused(let reason): "refused(\(reason))"
+        case .refused(let reason): "refused(\(String(reflecting: reason)))"
         case .denied(let denial): "denied(\(denial))"
         case .partial(let delivered, let reason):
             "partial(delivered: \(delivered), reason: \(String(reflecting: reason.description)))"
