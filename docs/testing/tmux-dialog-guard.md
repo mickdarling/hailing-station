@@ -250,3 +250,19 @@ PR-shape checker's exclusions and rename handling. Against the round-1 head `54f
 Both isolated VM build directories were deleted, and no verification jobs remained running.
 This is synthetic package verification, with no live dialog, simulator, installed build, physical-device,
 or captured-output round-trip proof.
+
+## Structured dialog evidence
+
+The dialog detector now throws an internal cause-only veto. The delivery failure boundary attaches
+`DialogBlock` effects from the existing paste and Enter accounting: `none`, `pasteMayHaveExecuted`,
+or `enterMayHaveExecuted`. Known causes use fixed detector-table titles; failed inspection uses
+`uninspectable`. Taint, authority retirement, possible-submission precedence, ledger updates and
+submit outcomes retain their existing behavior.
+
+`AdapterError.blockedByDialog` preserves the previous interpolated `deliveryFailed("…")` text.
+A later-line `HostError.partial` retains a `.dialog` reason after policy and cancellation precedence;
+a first-line refusal retains the adapter error. Existing String reasons construct `.text` through
+an overload, preserving equality assertions and CLI interpolation without changing the CLI source.
+`HostDialogPartialTests` pins block messages, adapter error text, reason descriptions and partial
+interpolation byte for byte. Submission tests assert causes and effects while retaining their
+buffer deletion, key, taint and ledger checks. Routing and device wording remain follow-up work.

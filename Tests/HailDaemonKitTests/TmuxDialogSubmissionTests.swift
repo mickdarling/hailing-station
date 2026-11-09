@@ -57,7 +57,7 @@ import Testing
 
     @Test func dialogBeforeRetrySendsNoSecondEnter() async {
         let harness = DialogSubmissionFixture(.beforeRetry).harness()
-        let refusal = AdapterError.deliveryFailed("target is blocked by Computer Use needs macOS permissions")
+        let refusal = DialogSubmissionFixture.Mode.beforeRetry.refusal
         await #expect(throws: refusal) {
             try await harness.adapter.deliver("synthetic input", to: "codex", binding: nil)
         }
@@ -117,14 +117,21 @@ final class DialogSubmissionFixture: Sendable {
         case footerAtPrompt, questionAtPrompt, sameDialogAbovePrompt, replacedPrompt, oldPromptAboveReplacement
 
         var refusal: AdapterError {
+            let cause: DialogBlock.Cause
             switch self {
-            case .captureFailure, .captureFailureAfterPaste:
-                .deliveryFailed("target dialog state could not be inspected")
+            case .captureFailure, .captureFailureAfterPaste: cause = .uninspectable
             case .questionAtPrompt, .sameDialogAbovePrompt, .replacedPrompt, .oldPromptAboveReplacement:
-                .deliveryFailed("target is blocked by a tool permission dialog")
-            case .footerAtPrompt: .deliveryFailed("target is blocked by a dialog")
-            default: .deliveryFailed("target is blocked by Computer Use needs macOS permissions")
+                cause = .known(title: "a tool permission dialog")
+            case .footerAtPrompt: cause = .known(title: "a dialog")
+            default: cause = .known(title: "Computer Use needs macOS permissions")
             }
+            let effects: DialogBlock.Effects
+            switch self {
+            case .clear, .beforePaste, .captureFailure: effects = .none
+            case .beforeRetry: effects = .enterMayHaveExecuted
+            default: effects = .pasteMayHaveExecuted
+            }
+            return .blockedByDialog(DialogBlock(cause: cause, effects: effects))
         }
     }
     private let inspections = Mutex(0)

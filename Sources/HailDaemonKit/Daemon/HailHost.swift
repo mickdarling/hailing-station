@@ -3,13 +3,44 @@
 import Foundation
 import Synchronization
 public import HailProtocol
-public enum HostError: Error, Equatable, Sendable {
+public enum HostError: Error, Equatable, Sendable, CustomStringConvertible {
     case unknownTarget(String)
     case adapterUnavailable(kind: String, reason: String)
     case refused(SanitizeError)
     case denied(Denial)
-    case partial(delivered: [String], reason: String)
+    case partial(delivered: [String], reason: HostPartialReason)
     case policyUnavailable(String)
+
+    /// Retains source compatibility for existing literals, interpolations and String variables.
+    public static func partial(delivered: [String], reason: String) -> Self {
+        .partial(delivered: delivered, reason: .text(reason))
+    }
+
+    public var description: String {
+        switch self {
+        case .unknownTarget(let target): "unknownTarget(\(String(reflecting: target)))"
+        case .adapterUnavailable(let kind, let reason):
+            "adapterUnavailable(kind: \(String(reflecting: kind)), reason: \(String(reflecting: reason)))"
+        case .refused(let reason): "refused(\(reason))"
+        case .denied(let denial): "denied(\(denial))"
+        case .partial(let delivered, let reason):
+            "partial(delivered: \(delivered), reason: \(String(reflecting: reason.description)))"
+        case .policyUnavailable(let reason): "policyUnavailable(\(String(reflecting: reason)))"
+        }
+    }
+}
+
+/// Preserves structured adapter evidence while retaining the existing CLI representation.
+public enum HostPartialReason: Sendable, Equatable, CustomStringConvertible {
+    case text(String)
+    case dialog(DialogBlock)
+
+    public var description: String {
+        switch self {
+        case .text(let text): text
+        case .dialog(let block): "\(AdapterError.blockedByDialog(block))"
+        }
+    }
 }
 final class ObservationCleanup: Sendable {
     private let lease: Mutex<ProviderObservation?>
@@ -442,6 +473,9 @@ extension HailHost {
         }
         if error is CancellationError {
             return HostError.partial(delivered: delivered, reason: "delivery cancelled")
+        }
+        if case AdapterError.blockedByDialog(let block) = error {
+            return HostError.partial(delivered: delivered, reason: .dialog(block))
         }
         if error is AdapterError { return HostError.partial(delivered: delivered, reason: "\(error)") }
         return HostError.partial(delivered: delivered, reason: "adapter delivery failed")

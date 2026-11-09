@@ -20,6 +20,11 @@ enum TmuxDialogKind: String, Sendable {
     }
 }
 
+/// The detector supplies only the cause; delivery accounting supplies effects at the failure boundary.
+struct TmuxDialogVeto: Error, Sendable {
+    let cause: DialogBlock.Cause
+}
+
 extension TmuxAdapter {
     // Verified against Claude Code 2.1.319; titles and recognised dialog shapes may drift.
     private static let knownDialogs: [TmuxDialogKind] = [.computerUsePermissions, .computerUseAppApproval]
@@ -79,8 +84,8 @@ extension TmuxAdapter {
     func requireClearDialog(_ session: Session) async throws {
         switch await inspectDialog(session) {
         case .clear: return
-        case .dialog(_, let title): throw AdapterError.deliveryFailed("target is blocked by \(title)")
-        case .unknown: throw AdapterError.deliveryFailed("target dialog state could not be inspected")
+        case .dialog(let kind, _): throw TmuxDialogVeto(cause: .known(title: kind.title))
+        case .unknown: throw TmuxDialogVeto(cause: .uninspectable)
         }
     }
 }

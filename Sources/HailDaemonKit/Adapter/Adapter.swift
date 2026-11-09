@@ -26,17 +26,47 @@ public enum TargetEvent: Sendable, Equatable {
 }
 
 /// Failures an adapter reports. The listener maps these onto `ErrorCode` (#10 item 3, #44).
-public enum AdapterError: Error, Equatable, Sendable {
+public enum AdapterError: Error, Equatable, Sendable, CustomStringConvertible {
     case unknownTarget(String)
     /// The target named exists but its binding is not the one the caller authorized.
     case rebound(String)
     case deliveryFailed(String)
+    case blockedByDialog(DialogBlock)
     case captureFailed(String)
     /// The target's input already holds text that was never submitted, so nothing was delivered (#894). Only the
     /// reason is named: neither the pending text nor the refused text is carried, previewed or hashed.
     case inputPending(reason: PendingInputReason)
+    public var description: String {
+        switch self {
+        case .unknownTarget(let target): "unknownTarget(\(String(reflecting: target)))"
+        case .rebound(let target): "rebound(\(String(reflecting: target)))"
+        case .deliveryFailed(let reason): "deliveryFailed(\(String(reflecting: reason)))"
+        case .blockedByDialog(let block): "deliveryFailed(\(String(reflecting: block.description)))"
+        case .captureFailed(let reason): "captureFailed(\(String(reflecting: reason)))"
+        case .inputPending(let reason): "inputPending(reason: \(reason))"
+        }
+    }
 }
-
+/// Bounded dialog evidence, without captured pane text or an inference of successful delivery.
+public struct DialogBlock: Sendable, Equatable, CustomStringConvertible {
+    public enum Cause: Sendable, Equatable {
+        /// A fixed title from the detector's table, never copied from the pane.
+        case known(title: String), uninspectable
+    }
+    public enum Effects: Sendable, Equatable { case none, pasteMayHaveExecuted, enterMayHaveExecuted }
+    public let cause: Cause
+    public let effects: Effects
+    public init(cause: Cause, effects: Effects) {
+        self.cause = cause
+        self.effects = effects
+    }
+    public var description: String {
+        switch cause {
+        case .known(let title): "target is blocked by \(title)"
+        case .uninspectable: "target dialog state could not be inspected"
+        }
+    }
+}
 /// Why a delivery was refused with unsent text already in the target's input (#894), as a log-safe token.
 public enum PendingInputReason: String, Sendable, Equatable, CustomStringConvertible {
     /// Text at the cursor did not leave within the adapter's wait for it to clear.
@@ -48,7 +78,6 @@ public enum PendingInputReason: String, Sendable, Equatable, CustomStringConvert
 
     public var description: String { rawValue }
 }
-
 /// Registered input shape, not a client-selected label or permission grant (#152).
 public enum AdapterInputShape: Sendable, Equatable {
     /// Each sanitized line is a separate adapter delivery; preserves existing adapters.
@@ -56,12 +85,10 @@ public enum AdapterInputShape: Sendable, Equatable {
     /// Exactly one sanitized line with explicit contextual capability; never legacy fallback.
     case singleLineContextual
 }
-
 public enum AdapterInputShapeError: Error, Sendable, Equatable {
     case contextRequired
     case singleLineRequired
 }
-
 /// Retained authority for one guarded dispatch, never a fresh grant.
 /// Validation and operation-bearing delivery admission are separate capabilities. Admission is ordered
 /// against retirement; check-only authority takes short locks only and performs no policy I/O.
