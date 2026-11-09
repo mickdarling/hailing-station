@@ -6,6 +6,7 @@ import Testing
         var calls: [[String]] = []
         func run(_ executable: String, _ arguments: [String]) async throws -> CommandResult {
             calls.append(arguments)
+            if let capture = clearDialogCapture(arguments) { return capture }
             let output = arguments.contains("list-sessions") ? twoSessions : ""
             return CommandResult(exitCode: 0, stdout: output)
         }
