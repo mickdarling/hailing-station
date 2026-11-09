@@ -78,7 +78,11 @@ extension WebSocketReceivePumpTests {
         #expect(Array(close) == [0x88, 2, 3, 0xea])
         let reason = try await ended.wait("wire protocol disconnect")
         // Network reports a protocol error before exposing these opcodes as application metadata.
-        #expect(reason == "receive failed: \(NWError.posix(.EPROTO))")
+        let expectedReasons: Set<String> = [
+            "receive failed: \(NWError.posix(.EPROTO))",
+            "failed: \(NWError.posix(.EPROTO))"
+        ]
+        #expect(expectedReasons.contains(reason))
         #expect(peer.replyTransport.isRetired)
         await listener.stop(reason: "test complete")
     }

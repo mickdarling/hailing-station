@@ -21,6 +21,15 @@ final class SlowTmuxCommandFixture: Sendable {
         guard releaseFD >= 0 else { throw CocoaError(.fileReadUnknown) }
         try Self.script.write(toFile: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable)
+        // Pay cold executable startup before any acknowledgement or admission barrier is timed.
+        let warmup = Process()
+        warmup.executableURL = URL(fileURLWithPath: executable)
+        warmup.arguments = ["warm-up"]
+        try warmup.run()
+        warmup.waitUntilExit()
+        try #require(warmup.terminationReason == .exit)
+        try #require(warmup.terminationStatus == 0)
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("launches"))
     }
 
     deinit {
@@ -39,9 +48,17 @@ final class SlowTmuxCommandFixture: Sendable {
         return text.split(separator: "\n").map(String.init)
     }
     func wait(_ name: String) async throws {
-        let deadline = ContinuousClock.now + .seconds(15)
+        let started = ContinuousClock.now
+        let deadline = started + .seconds(15)
         while !exists(name) {
-            try #require(ContinuousClock.now < deadline, "fixture acknowledgement: \(name)")
+            let now = ContinuousClock.now
+            if now >= deadline {
+                let elapsed = started.duration(to: now)
+                let launchCount = lines("launches").count
+                let context = "missing after \(elapsed); launches: \(launchCount)"
+                let diagnostic: Comment = "fixture acknowledgement \(name) \(context)"
+                try #require(now < deadline, diagnostic)
+            }
             try await Task.sleep(for: .milliseconds(2))
         }
     }
@@ -53,6 +70,7 @@ final class SlowTmuxCommandFixture: Sendable {
     echo launch >> "$root/launches"
     if [ "${1:-}" = '-L' ]; then shift 2; fi
     case "$1" in
+      warm-up) ;;
       list-sessions)
         if [ -e "$root/rebound" ]; then echo '$2|1758230001|%2|999|codex'
         else echo '$2|1758230001|%2|502|codex'; fi ;;
