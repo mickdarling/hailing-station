@@ -74,7 +74,9 @@ final class RedesignShellUITests: XCTestCase {
     @MainActor
     private func openStationLabs(_ app: XCUIApplication) {
         let labs = app.buttons["Labs"]
-        for _ in 0..<6 where !(labs.exists && labs.isHittable) { app.swipeUp() }
+        // Hittable, and clear of the bottom edge, where the build footer sits over the scrolling station.
+        let limit = app.windows.firstMatch.frame.maxY - 160
+        for _ in 0..<6 where !(labs.exists && labs.isHittable && labs.frame.maxY < limit) { app.swipeUp() }
         XCTAssertTrue(labs.isHittable, "Labs is reachable from the station tools")
         // A tap while a swipe still scrolls only stops the scroll, so tap again if Labs didn't open.
         let title = app.navigationBars["Labs"]
