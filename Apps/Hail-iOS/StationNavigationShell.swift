@@ -93,9 +93,11 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     private var pages: some View {
         ZStack {
             if state.section == .station {
+                // The slot keeps the split view's own bar, which holds its Back and sidebar controls (Codex review
+                // of #1148, round 3). Its bounds start below that bar, so the station page never covers them.
                 Color.clear
                     .anchorPreference(key: StationSlotKey.self, value: .bounds) { $0 }
-                    .stationHiddenNavigationBar()
+                    .navigationTitle(StationSection.station.title)
                     .accessibilityHidden(true)
             } else {
                 page(state.section)
@@ -105,8 +107,15 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     }
 
     private func page(_ section: StationSection) -> some View {
-        NavigationStack { detail(section) }
-            .safeAreaInset(edge: .bottom, spacing: 0) { dock(section) }
+        NavigationStack {
+            // The station's root sits under the slot's bar, so it shows none of its own; a pushed tool keeps its own.
+            if section == .station {
+                detail(section).stationHiddenNavigationBar()
+            } else {
+                detail(section)
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) { dock(section) }
     }
 
     private var sectionSelection: Binding<StationSection?> {
