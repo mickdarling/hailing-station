@@ -292,14 +292,6 @@ extension HostSession {
         self.replyEvent = replyEvent
     }
 
-    /// Called only from `deliver` after a delivered handoff, in the actor turn that confirmed `generation`.
-    func noteLastInput(to target: String, generation: UUID) {
-        stopSegmentedRepliesForRequest()
-        let entry = LastInputLedger.Entry(connection: connectionID, generation: generation, at: requestClock())
-        lastInputLedger?.record(entry, for: target)
-        replyEvent(WebSocketListenerEvent(event: "session_update_interaction", sessionID: connectionID))
-    }
-
     /// The route still names this connection on the same selection, which still covers `target` (a voice-routed
     /// request's route counts, #636), and an unpinned route is current.
     private func holds(_ route: LastInputRoute, target: String) -> Bool {
@@ -904,15 +896,6 @@ extension HostSession {
 
     func logReplyEvent(_ event: String, detail: String) {
         replyEvent(WebSocketListenerEvent(event: event, sessionID: connectionID, detail: detail))
-    }
-
-    /// Only called after a successful owner handoff, in the same actor turn as its commit.
-    private func stopSegmentedRepliesForRequest() {
-        guard peerCapabilities.contains(ReplySegments.capability) else { return }
-        let stopped = repliesInFlight.filter { segmentedReplies.contains($0) }
-        guard !stopped.isEmpty else { return }
-        for reply in stopped { stopHeldReply(reply) }
-        logReplyEvent("reply_backstop", detail: "outcome=stopped count=\(stopped.count)")
     }
 
     /// Keep the existing in-flight ids available to a dismiss already awaiting this session.

@@ -1,0 +1,74 @@
+# Delivery mapping invariants
+
+Part of #1120.
+
+This cleanup preserves reachable delivery outcomes relative to main
+`1ec93244e7d8c17050d56cdf9c0efbdceb75561e`. It removes unused mappings and helpers within four
+production files. No protocol definitions or wire messages change.
+
+## Removed paths and reachability
+
+- `Listener/HostSession+Routing.swift`: remove the `PolicyRetiredDelivery.pastedUnsent` and
+  `HostError.partial(_, _, pastedUnsent: true)` refusal mappings and their private reason constant.
+  `TmuxAdapter+Paste.pasteBuffer` admits the complete submission at paste launch;
+  `pressEnter` consumes that ticket without reacquiring retired authority. Retirement
+  alone cannot leave an admitted paste unsent. `TmuxAdapter.failDelivery` preserves genuine
+  failures and can throw `possiblySubmitted`, but never throws `pastedUnsent`.
+- `Listener/HeldRequests.swift`: remove only the `pastedUnsent` known-unsent classification in
+  `HeldSendFailure.knownUnsent`. No producer throws that case. Existing classifications for
+  policy, binding, pending input and held authority remain intact.
+- `Daemon/HailHost.swift`: remove the `pastedUnsent` derivation in `preservingPartial` and rely on
+  the existing false default. `deliverLine` still appends the current line on `possiblySubmitted`,
+  and partial policy, cancellation and adapter reasons remain unchanged.
+- `Listener/HostReplyDelivery.swift`: remove `noteLastInput(to:generation:)`, the private
+  `stopSegmentedRepliesForRequest()` helper, and their outdated caller comments. A reference audit
+  across Sources, Tests and Apps found no callers of the former and only that method calling the
+  latter. The actual commit paths in `HostSession+Routing` call `recordLastInput` under the commit
+  gates and `didNoteLastInput` afterward. Attribution, segmented-reply stopping and interaction
+  events retain that ordering.
+
+All production paths above are under `Sources/HailDaemonKit`. The exact exclusions and rename
+handling in `scripts/pr-shape.py` count four production files; this document and the new test file
+are excluded. No GitHub-dependent checker is executed.
+
+## Compatibility and carried items
+
+`HostError.partial` retains its `pastedUnsent: Bool = false` parameter. The complete reference audit
+found `Sources/haild/main.swift` destructuring all three associated values. Removing the parameter
+would require a fifth production file. Its declaration comment now states the current invariant;
+all reachable production constructors use the false default. CLI formatting remains untouched.
+
+`Adapters/Tmux/TmuxAdapter.swift` remains unchanged: `PolicyRetiredDelivery.pastedUnsent` is unused
+but still defined, and its enum comment remains a carried item. `Sanitize/PastedContent.swift`'s
+stale `TmuxAdapter.pasteToAgent` comment is also carried forward without modification.
+
+## Unchanged-behavior evidence
+
+No existing test is edited or deleted. No existing test constructs or asserts either removed mapping
+or calls either removed helper.
+
+The new `HostSessionRetirementOutcomeTests` adds:
+
+- `admittedRetirementAndFailureOutcomesStayStable`: eight combinations of retirement after paste
+  or Enter admission, successful or failed Enter, and one or two input lines. An admitted single
+  line completes; later unadmitted lines and genuine failures keep the generic refusal. Failed
+  Enter retains sticky pending input even after the pane is cleared, including the same phone
+  error frame and no additional paste or Enter. Successful completion permits fresh input.
+- `genuineFailureAndPartialFailureKeepTheSameRefusal`: first-line and second-line adapter failures
+  keep the same session refusal and the exact successful delivery prefix.
+
+The same new test file is run against unchanged main production sources before the cleanup and
+against the cleanup sources afterward. Existing `TmuxPolicyRetirementTests` retain their exact
+`possiblySubmitted` delivered-line accounting, policy-partial reasons, taint and phone-refusal
+expectations. `FinalDeliveryCommitTests.lastInputObserversRunAfterCommitGatesRelease` retains the
+observer-order proof. All existing tests and expectations remain unchanged.
+
+## Verification
+
+Verification uses the Dev Work VM, Swift 6.3.3, with a fresh baseline clone and a local
+`origin/main..HEAD` bundle. Runs wait for the shared lane to become idle, use at most four workers,
+close SSH stdin, and finish sequentially. Shared verification helpers remain unchanged.
+
+Results will be recorded after the runs finish. This is synthetic Swift package evidence and host
+strict lint only. No host build or test, simulator, physical-device proof, live captured-output
+round trip, installation, upload or push is part of this cleanup.

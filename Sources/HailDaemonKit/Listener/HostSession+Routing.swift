@@ -21,8 +21,6 @@ enum HostDeliveryOutcome: Sendable, Equatable {
     /// never the text; on the wire it is still `not_allowed`, so the protocol is unchanged.
     case inputPending(reason: String)
 
-    static let policyRetiredUnsentReason = "a line was pasted but not sent — clear it on the Mac; "
-        + "hand-offs to this target are paused until haild restarts"
     static let inputPendingReason = "the target's input already holds unsent text"
 }
 
@@ -221,11 +219,6 @@ extension HostSession {
         case AdapterError.deliveryFailed(let message) where message == PastedContent.agentOnlyRefusal:
             // The tmux pane was not running an agent (#608): said plainly, as a paste refusal the device keeps.
             return .refused(.notAllowed, PastedContent.agentOnlyRefusal)
-        case PolicyRetiredDelivery.pastedUnsent:
-            return .inputPending(reason: HostDeliveryOutcome.policyRetiredUnsentReason)
-        case HostError.partial(_, _, pastedUnsent: true):
-            // Earlier lines were delivered: keep this terminal, with the unsent-paste explanation intact.
-            return .refused(.notAllowed, HostDeliveryOutcome.policyRetiredUnsentReason)
         case AdapterError.inputPending:
             // Unsent input (#894) keeps its own refusal apart from policy, lockdown and rebind refusals.
             return .inputPending(reason: HostDeliveryOutcome.inputPendingReason)
