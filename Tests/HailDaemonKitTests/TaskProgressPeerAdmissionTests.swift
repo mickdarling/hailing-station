@@ -44,8 +44,6 @@ import Testing
         rig.wake.clock.advance(by: .seconds(60))
         try await rig.launch.waitEntered()
         #expect(rig.fixture.lines("writes").isEmpty)
-        var expectedLaunches: Int = rig.fixture.lines("launches").count
-        expectedLaunches += 1 // unused buffer deletion
         let task = TaskProgressTask(id: id, session: rig.wake.target, binding: SlowTmuxCommandFixture.binding)
         try await rig.withEndedPeer(task: task, stopping: retirement == .listener) {
             #expect(rig.peer.replyTransport.isRetired)
@@ -55,6 +53,8 @@ import Testing
                 let permit = try #require(successor.replyTransport.issuePermit())
                 #expect(permit.performIfCurrent { true } == true)
             }
+            var expectedLaunches: Int = rig.fixture.lines("launches").count
+            expectedLaunches += 1 // unused buffer deletion
             rig.launch.release()
             _ = try #require(await finished.next())
             #expect(rig.fixture.lines("writes").isEmpty)
