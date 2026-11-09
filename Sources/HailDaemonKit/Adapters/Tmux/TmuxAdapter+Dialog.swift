@@ -95,7 +95,7 @@ extension TmuxAdapter {
         var rows = result.stdout.components(separatedBy: "\n")
         if rows.last == "" { rows.removeLast() }
         guard let metadata = rows.popLast()?.split(separator: ",", omittingEmptySubsequences: false),
-              metadata.count == 2, Int(metadata[0]) != nil, let cursor = Int(metadata[1]),
+              (2...3).contains(metadata.count), Int(metadata[0]) != nil, let cursor = Int(metadata[1]),
               rows.indices.contains(cursor) else { return .unknown }
         return Self.classifyDialog(
             visibleScreen: rows.joined(separator: "\n"), cursorRow: cursor, excludingPayload: excludingPayload

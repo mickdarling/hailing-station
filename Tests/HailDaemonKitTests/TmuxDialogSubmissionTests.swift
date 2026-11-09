@@ -69,8 +69,9 @@ import Testing
         #expect(calls.filter(DialogSubmissionFixture.isInspection).count == 3)
     }
 
+    // Public delivery forbids line breaks; the pane wraps the question and option onto separate rows.
     @Test(arguments: [
-        "please mention esc to cancel", "Do you want to proceed?\n1. Yes"
+        "please mention esc to cancel", "Do you want to proceed? 1. Yes"
     ])
     func payloadDialogTextAtPromptStillGetsEnter(_ payload: String) async throws {
         let harness = DialogSubmissionFixture(.payloadAtPrompt, payload: payload).harness()
@@ -81,7 +82,7 @@ import Testing
 
     @Test(arguments: [DialogSubmissionFixture.Mode.sameDialogAbovePrompt, .replacedPrompt, .missingCursorAfterPaste])
     func realDialogOrMissingCursorStillVetoesEnter(_ mode: DialogSubmissionFixture.Mode) async {
-        let payload = "Do you want to proceed?\n1. Yes"
+        let payload = "Do you want to proceed? 1. Yes"
         let harness = DialogSubmissionFixture(mode, payload: payload).harness()
         await #expect(throws: mode.refusal) {
             try await harness.adapter.deliver(payload, to: "codex", binding: nil)
@@ -120,7 +121,8 @@ final class DialogSubmissionFixture: Sendable {
             pane = ScriptedPane(afterEnter: [ScriptedPane.absorbedScreen, ScriptedPane.submittedScreen])
         } else {
             let neverDrawn = mode == .afterPaste || mode == .captureFailureAfterPaste
-            pane = ScriptedPane(stale: neverDrawn ? .max : 0, typed: "> " + payload + "▌")
+            let typed = "> " + payload.replacingOccurrences(of: "? 1.", with: "?\n1.") + "▌"
+            pane = ScriptedPane(stale: neverDrawn ? .max : 0, typed: typed)
         }
     }
 
@@ -146,13 +148,14 @@ final class DialogSubmissionFixture: Sendable {
     }
 
     private func payloadCapture() -> CommandResult? {
-        let input = "> " + payload
-        let row = payload.components(separatedBy: "\n").count - 1
+        let wrapped = payload.replacingOccurrences(of: "? 1.", with: "?\n1.")
+        let input = "> " + wrapped
+        let row = wrapped.components(separatedBy: "\n").count - 1
         let screen: String
         switch mode {
         case .payloadAtPrompt: screen = input + "\n0,\(row)\n"
-        case .sameDialogAbovePrompt: screen = payload + "\n" + input + "\n0,\(2 * row + 1)\n"
-        case .replacedPrompt: screen = payload + "\n0,\(row)\n"
+        case .sameDialogAbovePrompt: screen = wrapped + "\n" + input + "\n0,\(2 * row + 1)\n"
+        case .replacedPrompt: screen = wrapped + "\n0,\(row)\n"
         case .missingCursorAfterPaste: screen = input + "\n"
         default: return nil
         }
