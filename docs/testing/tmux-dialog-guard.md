@@ -144,12 +144,12 @@ Exactly four production files change, using the PR-shape exclusions; no producti
 ## Prior review delta verification (superseded behavior)
 
 The prior review follow-up added position-bounded payload exclusion, cursor capture validation, decorated whole-title
-fixtures, and exact refusal-error assertions. The detector checks multiline payloads directly. Submission
-fixtures render a single-line payload across multiple input rows because public delivery rejects literal
-line breaks. Identical dialog text above the input, a dialog replacing the prompt, and missing cursor
-metadata still veto Enter. The pre-paste inspection continues to exclude nothing.
+fixtures, and exact refusal-error assertions. Those detector fixtures checked multiline payloads directly.
+Submission fixtures rendered a single-line payload across multiple input rows because public delivery
+rejects literal line breaks. Identical dialog text above the input, a dialog replacing the prompt, and
+missing cursor metadata vetoed Enter. The prior pre-paste inspection excluded nothing.
 
-Verification uses Swift 6.3.3 on the Dev Work VM, in a fresh checkout synchronized only by local git bundles.
+That verification used Swift 6.3.3 on the Dev Work VM, in a fresh checkout synchronized only by local git bundles.
 The verified source/test snapshot is `23346ca1b1753b0ef0e5d166b5f12261d77ea587`; the subsequent verification
 record changes documentation only. No GitHub calls or pushes were made. Each run first waited with
 `while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done`, then used `taskpolicy -b`, no more than four
@@ -202,4 +202,52 @@ and the recognised-dialog-shapes coverage limits. Tests retain the real dialog a
 replacement dialog vetoes, and add the old-transcript-prompt counterexample and both accepted availability
 costs, including sticky taint after refusal. Own-input exclusion and recovery move to #1179.
 
-Verification is pending for this delta.
+Verification used Swift 6.3.3 on the Dev Work VM, with a fresh checkout synchronized by a local git
+bundle. The verified source/test snapshot is `cdcbf66c88470e15e95395e647fd0e02b1f073d6`; the subsequent
+verification record changes documentation only. No GitHub calls or pushes were made.
+
+Before each run, the wrapper waited with
+`while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done`. Every run used `taskpolicy -b`, at most four
+workers, and a 600-second process-group watchdog with signal handling and kill cleanup. SSH stdin was
+closed with `< /dev/null`, and each connection stayed attached until the run exited.
+
+The commands below used an isolated build directory (`B`) and the CLT Testing framework, macro-plugin,
+and linker search flags (`F`):
+
+```sh
+swift build --build-tests -j 4 --build-path "$B" "${F[@]}"
+swift test --skip-build --no-parallel -j 4 --build-path "$B" "${F[@]}" --filter "$FILTER"
+```
+
+The initial build completed in 143.96 seconds. These were the exact filters:
+
+```text
+HailDaemonKitTests\.(TmuxDialogDetectionTests|TmuxDialogSubmissionTests)
+HailDaemonKitTests\.(Tmux|CommandLaunch|LocalDispatch|LocalReply|TaskProgressTmux|TaskProgressPeer|ProviderReply|WebSocketReceivePump)
+```
+
+The dialog filter ran three times; each exited 0 with 16 tests, 37 cases, two suites, and no skips.
+Reported test durations were 0.075, 0.025, and 0.026 seconds. The neighboring filter ran once, unsplit,
+and exited 0: 291 reported tests in 49 suites, 115.251 seconds. Its ten existing tmux-dependent test
+skips are the same five suites named above. The five deliberate known-issue records are from
+`LocalDispatchPreflightWaitTests`: missing/late arrival (two), dispatch ending before listing (two),
+and the suspended-step deadline (one). There were no unexpected test failures.
+
+The requested `vw-werr.sh vw1119c` wrapper exited 0 and reported `werr build=0`. It built the package
+and tests with four workers and `-Xswiftc -warnings-as-errors` in 139.45 seconds. The log contained no
+compiler errors. The linker emitted the known missing SDK module-cache debug-file warnings; this is
+a successful warnings-as-errors build, not a warning-free linker run.
+
+Host `swiftlint lint --strict --quiet` with
+`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` and the required check below both exited 0
+and printed nothing for all ten Swift files changed by PR 1:
+
+```sh
+awk 'length($0)>120 && $0 !~ /^[[:space:]]*\/\//'
+```
+
+`git diff --check` passed. The PR still changes exactly the same four production files under the
+PR-shape checker's exclusions and rename handling; this delta modifies two of those four.
+Both isolated VM build directories were deleted, and no verification jobs remained running.
+This is synthetic package verification, with no live dialog, simulator, installed build, physical-device,
+or captured-output round-trip proof.
