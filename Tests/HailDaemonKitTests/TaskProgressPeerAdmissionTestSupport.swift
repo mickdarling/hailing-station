@@ -63,16 +63,17 @@ struct TaskProgressPeerRig {
                                   pollInterval: nil, submitTiming: timing)
         let wake = try await TaskProgressGuardedWakeRig.make(adapter: adapter, name: "codex",
                                                             binding: SlowTmuxCommandFixture.binding)
-        let (peerID, peer, controller) = try await wake.listener.taskProgressPeerFixture()
+        let (peerID, peer) = try await wake.listener.taskProgressPeerFixture()
+        let controller = try #require(await wake.listener.taskProgressController)
         return Self(wake: wake, peerID: peerID, peer: peer, controller: controller,
                     fixture: fixture, files: files, launch: launch)
     }
 
     func endPeer(task: TaskProgressTask, stopping: Bool = false) -> Task<Void, Never> {
         Task {
-            await PeerAmbientTeardownScope.$beforeEnd.withValue({ await teardown.hold(task) }) {
+            await PeerAmbientTeardownScope.$beforeEnd.withValue({ await teardown.hold(task) }, operation: {
                 if stopping { await wake.listener.stop() } else { await wake.listener.peerEnded(peerID) }
-            }
+            })
         }
     }
 
@@ -100,9 +101,9 @@ struct TaskProgressPeerRig {
 }
 
 extension WebSocketListener {
-    func taskProgressPeerFixture() throws -> (UUID, WebSocketPeer, ListenerTaskProgress) {
+    func taskProgressPeerFixture() throws -> (UUID, WebSocketPeer) {
         let entry = try #require(peers.first)
-        return (entry.key, entry.value, try #require(taskProgressController))
+        return (entry.key, entry.value)
     }
 }
 #endif

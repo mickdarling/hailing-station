@@ -6,6 +6,33 @@ import Testing
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct TaskProgressPeerAdmissionTests {
     enum Retirement: CaseIterable { case peer, listener, audience, sameAudiencePeer }
 
+    @Test(arguments: [false, true])
+    func handoffRetainsOnlyItsSelectedAudiencePeer(retireAudience: Bool) async throws {
+        let rig = try await TaskProgressPeerRig.make(beforeAdmission: false)
+        defer { rig.release() }
+        let selected = try await rig.replacePeer(sameAudience: false)
+        let generation = rig.wake.host.targetPolicy.snapshot(for: rig.wake.target)
+        let task = TaskProgressTask(session: rig.wake.target, binding: SlowTmuxCommandFixture.binding)
+        let publication = TaskProgressPublicationAuthority(generation: generation, binding: task.binding,
+                                                           taskFence: TaskProgressOutputFence())
+        let attempt = TaskProgressWakeAttempt()
+        let lifetime = TaskProgressAdmissionLifetime(expires: rig.wake.clock.now.advanced(by: .seconds(60)),
+                                                     clock: rig.wake.clock.clock)
+        let revision = await rig.wake.listener.taskProgressPrivacyRevision()
+        let handoff = try #require(await rig.wake.listener.taskProgressHandoff(for: task, authority: publication,
+            privacyRevision: revision, attempt: attempt, lifetime: lifetime))
+        rig.peer.replyTransport.retire()
+        if retireAudience {
+            selected.replyTransport.retire()
+            #expect(throws: CancellationError.self) { try handoff() }
+            #expect(!attempt.hasAttempt)
+        } else {
+            try handoff()
+            #expect(attempt.hasAttempt)
+        }
+        await rig.wake.listener.stop()
+    }
+
     @Test(arguments: Retirement.allCases)
     func retiredPeerRefusesWakeBeforeSubmissionWhileTeardownWaits(_ retirement: Retirement) async throws {
         let rig = try await TaskProgressPeerRig.make(beforeAdmission: true)
