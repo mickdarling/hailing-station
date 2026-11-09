@@ -119,22 +119,18 @@ struct VoiceDockView: View {
 #Preview("Voice dock · synthetic") {
     let label = DestinationLabel(hostName: "Studio", targetName: "build", targetKind: "tmux", targetID: "%1")
     let all = DockAccessories(escape: true, privacy: true, paste: true)
-    func state(_ phase: TalkCapturePhase, pending: Bool = false, interrupting: Bool = false,
-               destination: DestinationControlState) -> VoiceDockState {
-        .resolve(talk: TalkActivity(phase: phase, sendPending: pending, interrupting: interrupting),
-                 destination: destination, accessories: all)
-    }
-    let cases: [(String, VoiceDockState)] = [
-        ("Ready", state(.idle, destination: .confirmed(label))),
-        ("Recording", state(.recording, destination: .confirmed(label))),
-        ("Pending", state(.idle, pending: true, destination: .confirmed(label))),
-        ("Confirming", state(.idle, destination: .confirming(saved: label))),
-        ("Interrupting", state(.recording, interrupting: true, destination: .confirmed(label)))
+    let talks: [(TalkActivity, DestinationControlState)] = [
+        (TalkActivity(phase: .idle, sendPending: false, interrupting: false), .confirmed(label)),
+        (TalkActivity(phase: .recording, sendPending: false, interrupting: false), .confirmed(label)),
+        (TalkActivity(phase: .idle, sendPending: true, interrupting: false), .confirmed(label)),
+        (TalkActivity(phase: .idle, sendPending: false, interrupting: false), .confirming(saved: label)),
+        (TalkActivity(phase: .recording, sendPending: false, interrupting: true), .confirmed(label))
     ]
+    let states = talks.map { VoiceDockState.resolve(talk: $0.0, destination: $0.1, accessories: all) }
     ScrollView {
         VStack(spacing: 16) {
-            ForEach(cases, id: \.0) { item in
-                VoiceDockView(state: item.1, caption: "Also check what happens after the connection",
+            ForEach(states.indices, id: \.self) { index in
+                VoiceDockView(state: states[index], caption: "Also check what happens after the connection",
                               onIntent: { _ in })
             }
         }
