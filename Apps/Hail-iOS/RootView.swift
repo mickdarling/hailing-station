@@ -34,6 +34,8 @@ struct StationRootView: View, AmbientDestinationOwner {
     @State var authorizedConnectionGeneration: UUID?
     @State var selectionRevision: UInt = 0
     @State var showingDestinations = false
+    /// The redesign's navigation (#1115), owned here above both the shell and today's station.
+    @State var navigation = StationNavigationState()
     @State var scenePhaseRevision: UInt = 0
     @Environment(\.scenePhase) var scenePhase
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
@@ -49,7 +51,7 @@ struct StationRootView: View, AmbientDestinationOwner {
     }
 
     var body: some View {
-        NavigationStack { content }
+        stationRoot
         .environment(connections)
         .modifier(StationMenuStatusPublisher(connections: connections, destination: destination?.label))
         .modifier(ReplySegmentNotices(connections: connections, banners: $station.value.announcementBanners))

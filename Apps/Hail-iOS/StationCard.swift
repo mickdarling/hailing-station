@@ -43,6 +43,7 @@ struct CaptureSafeLabsView: View {
             #if os(iOS)
             NavigationLink("Routing spike") { RoutingSpikeView() }
             #endif
+            StationRedesignLabsSection()
         }
         .navigationTitle("Labs")
         .stationToolBackNavigation()
