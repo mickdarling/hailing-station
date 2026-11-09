@@ -386,7 +386,7 @@ General socket/barrier helpers and production files are unchanged.
 
 | Test / assertion | Verdict | Accounting |
 | --- | --- | --- |
-| `textAndSelectionWaitForPriorResponseProcessing`: transport pong before dispatch release | TIGHTENED | Pending receive allows the macOS 15 callback; explicit `pongAt < releaseAt` under the five-second pong watchdog. |
+| `textAndSelectionWaitForPriorResponseProcessing`: transport pong before dispatch release | KEPT | The release is reached only after the awaited pong, under the unchanged five-second watchdog. The pending receive lets the macOS 15 callback fire; the explicit `pongAt < releaseAt` documents the ordering and adds no strength beyond that control flow. |
 | Same: exact application barrier pong and nonce after prior processing | KEPT | Same payload equality and unexpected-payload failure; uses the retained receive. |
 | Same: deliveries equal `["synthetic input", "later input"]` | KEPT | Existing assertion unchanged. |
 | Same: binding sessions equal `["synthetic-binding", "synthetic-other-binding"]` | KEPT | Existing assertion unchanged. |
@@ -395,7 +395,7 @@ General socket/barrier helpers and production files are unchanged.
 | `malformedBehindParkedTextCompletesThenCloses`: delivered input empty at acknowledged park | KEPT | Existing assertion unchanged. |
 | Same: admissions equal `[first]` at acknowledged park | KEPT | Existing assertion unchanged. |
 | Same: malformed JSON is below the frame limit | KEPT | Existing assertion unchanged. |
-| Same: transport pong before dispatch release | TIGHTENED | Same shared pending receive and watchdog; explicit `pongAt < releaseAt`. |
+| Same: transport pong before dispatch release | KEPT | Same control-flow proof under the same watchdog; the explicit `pongAt < releaseAt` documents it. |
 | Same: transport is not retired before release | KEPT | Existing assertion unchanged. |
 | Same: delivered input remains empty after pong, before release | KEPT | Existing assertion unchanged. |
 | Same: admissions remain `[first]` after pong, before release | KEPT | Existing assertion unchanged. |
@@ -417,25 +417,20 @@ General socket/barrier helpers and production files are unchanged.
 | Same: session state is `.closed` | KEPT | Existing assertion unchanged. |
 | Same: reply transport is retired | KEPT | Existing assertion unchanged. |
 | Same: peer is ended | KEPT | Existing assertion unchanged. |
+| `helloDeadlineRetiresTheReceivingPeer`: the retained receive fails once the hello deadline retires the peer | TIGHTENED | New `#expect(throws:)` on the retained receive. Production sends no frame on hello timeout. |
+| `protocolClosureRetiresTheReceivingPeer`: exact protocol-version error response | KEPT | Same exact match, now read through the retained receive. |
 
-The VM workspace `~/codex-workspaces/vwf4` was re-synchronized to baseline
-`dcc4ad7fd8eb0458cb61c6d9ae7d8d5bb40e9744` plus these test changes. Host/VM SHA-256 hashes
-matched for all three changed Swift files. Before synchronization and each phase, the VM waited with
-`while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done` in a separate script so the wait did not
-match its own command line. Every SSH invocation used `< /dev/null` and completed synchronously.
-Each validation phase had a 600-second process-group watchdog and was joined; no validation job
-remained afterward. Shared-runner SHA-256 checksums matched before and after verification.
+Verification ran on the Dev Work VM (Swift 6.3.3), re-synchronized to baseline
+`dcc4ad7fd8eb0458cb61c6d9ae7d8d5bb40e9744` plus these test changes; host and VM SHA-256 hashes
+matched for all three changed Swift files. Synchronization and each phase started only when the VM's
+shared test runner was idle; every SSH invocation used a closed standard input (`< /dev/null`) and ran
+synchronously with a 600-second process-group watchdog, and each phase was joined. No validation job
+remained afterward, and the shared runner scripts' SHA-256 checksums matched before and after.
 
-The commands below ran in order: ten runs of each targeted filter, then three runs of the prefix
-filter, then the warnings-as-errors helper. A private command wrapper capped its Swift jobs at four
-without changing either shared helper.
-
-```sh
-WS=vwf4 ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.WebSocketReceivePumpTests/textAndSelectionWaitForPriorResponseProcessing'
-WS=vwf4 ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.WebSocketReceivePumpTests/malformedBehindParkedTextCompletesThenCloses'
-WS=vwf4 ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.WebSocketReceivePump'
-~/codex-workspaces/vw-werr.sh vwf4
-```
+The phases ran in order, through the VM's filtered Swift Testing runner with Swift jobs capped at four:
+ten runs of each of `WebSocketReceivePumpTests/textAndSelectionWaitForPriorResponseProcessing` and
+`WebSocketReceivePumpTests/malformedBehindParkedTextCompletesThenCloses`; three runs of the
+`WebSocketReceivePump` suites; then the VM build with warnings as errors.
 
 | Phase | Result |
 | --- | --- |
