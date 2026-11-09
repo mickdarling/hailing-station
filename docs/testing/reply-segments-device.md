@@ -159,7 +159,7 @@ notice and saved Station tools setting.
 
 ## P4a VM verification commands
 
-Every Swift invocation uses `/tmp/hs932-p4-tools/swift`, an offline wrapper expanding to:
+Every Swift invocation uses an offline Swift wrapper expanding to:
 
 ```sh
 /usr/sbin/taskpolicy -b /usr/bin/swift "$@" -j 4 -Xswiftc -j1 --disable-automatic-resolution \
@@ -169,21 +169,24 @@ Every Swift invocation uses `/tmp/hs932-p4-tools/swift`, an offline wrapper expa
   -Xlinker -rpath -Xlinker /Library/Developer/CommandLineTools/Library/Developer/usr/lib
 ```
 
-`/tmp/hs932-p4-tools/phase.py` runs each phase in a new process session with a 590-second deadline and SIGINT/SIGTERM
+A phase runner runs each phase in a new process session with a 590-second deadline and SIGINT/SIGTERM
 traps. On interruption/timeout it kills the owned process tree (TERM then KILL). The load shell additionally traps
 EXIT/INT/TERM to kill and wait for exactly four owned `yes` workers. Builds/tests never install dependencies.
+The commands below use generic placeholders for the machine-local helpers outside the repository:
+`SWIFT_WRAPPER` is the offline Swift wrapper, `PHASE_RUNNER` is the Python phase runner, and
+`REPEAT_SCRIPT` is the repeat script for the filter shown in each section, in normal and loaded modes.
 The known VM-only `HailDaemonKitTests.DiagnosticReplyComposition` failure (#955) is excluded; all test filters are
 HailCore-only as well.
 
 ```sh
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat.sh normal
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat.sh loaded
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build --build-tests
+python3 "$PHASE_RUNNER" "$REPEAT_SCRIPT" normal
+python3 "$PHASE_RUNNER" "$REPEAT_SCRIPT" loaded
 # Each repetition script invokes this five times; loaded runs launch four owned yes workers.
-/tmp/hs932-p4-tools/swift test --skip-build --no-parallel --filter 'HailCoreTests\.ReplySegment' \
+"$SWIFT_WRAPPER" test --skip-build --no-parallel --filter 'HailCoreTests\.ReplySegment' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
   --filter 'HailCoreTests\.(Reply|Playback|PCM16|Echo|Capture|Ambient|HostConnection|Privacy|Mute|Dismiss|Segment)' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 git diff --check
@@ -211,24 +214,24 @@ P4a final-source results on the Dev Work VM (historical baseline):
 ## P4b1 synthetic verification
 
 Final source on the offline Dev Work VM, based on P4a `b716675c973ab4e267e55263b8637c206794a3ee`.
-The same `/tmp/hs932-p4-tools/swift` wrapper above supplies `taskpolicy -b`, `-j 4`, one compiler worker,
+The same offline Swift wrapper above supplies `taskpolicy -b`, `-j 4`, one compiler worker,
 no automatic dependency resolution, and the supplied Testing framework/plugin/rpath flags. Every phase uses
-`phase.py` above (590-second deadline, owned-tree kill traps). The loaded repetition script starts exactly four
+the phase runner above (590-second deadline, owned-tree kill traps). The loaded repetition script starts exactly four
 background `taskpolicy -b yes` workers; EXIT/INT/TERM traps kill and wait for those owned PIDs. All phases passed
 within the deadline. No install, upload, simulator, physical audio, network or other-clone work was performed.
 
-Exact final verification commands:
+Final verification commands with generic helper placeholders:
 
 ```sh
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat-b1.sh normal
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat-b1.sh loaded
-# repeat-b1.sh runs the following five times per phase, with the owned load workers only in loaded mode:
-/tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build --build-tests -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$REPEAT_SCRIPT" normal
+python3 "$PHASE_RUNNER" "$REPEAT_SCRIPT" loaded
+# The repeat script runs the following five times per phase, with the owned load workers only in loaded mode:
+"$SWIFT_WRAPPER" test --skip-build --no-parallel \
   --filter 'HailCoreTests\.ReplySegment(Onset|Settings)' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
   --filter 'HailCoreTests\.(Echo|Capture|Ambient|ReplySegment|Reply|Playback|Privacy|Diagnostic)' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 git diff --check
@@ -281,19 +284,19 @@ numeric/other strings, NSNull, arrays and dictionaries in either field while pre
 NSNull dictionaries are injected at the UserDefaults read boundary because NSNull cannot be persisted there.
 Valid numeric NSNumber/Double values and the existing round trip still pass.
 
-Every Swift command uses the `/tmp/hs932-p4-tools/swift` wrapper documented above (`taskpolicy -b`, `-j 4`,
+Every Swift command uses the offline Swift wrapper documented above (`taskpolicy -b`, `-j 4`,
 one compiler worker per target, offline resolution and all supplied Testing flags). Each build/test phase runs
-serially through the existing 590-second `phase.py` deadline and owned-process-tree kill trap; no load workers
-are launched. Exact commands:
+serially through the existing phase runner with its 590-second deadline and owned-process-tree kill trap;
+no load workers are launched. Commands with generic helper placeholders:
 
 ```sh
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build --build-tests -Xswiftc -warnings-as-errors
 for iteration in 1 2 3; do
-  python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
     --filter 'HailCoreTests\.ReplySegment' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 done
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
   --filter 'HailCoreTests\.(Reply|Playback|PCM16|Playout|Segment)' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 git diff --check
@@ -343,20 +346,20 @@ physical-device audio, upload or installed-build change. No PR or independent re
 
 Every Swift command uses the existing wrapper documented above (`taskpolicy -b`, `-j 4`, one compiler worker
 per target, offline resolution and all supplied Testing framework/plugin/rpath flags). Each serial phase uses
-`phase.py` with a 590-second deadline and owned-process-tree kill trap. The loaded script starts exactly four
+the phase runner with a 590-second deadline and owned-process-tree kill trap. The loaded script starts exactly four
 owned background `taskpolicy -b yes` workers and kills/waits for them in EXIT/INT/TERM traps.
 
-Exact final-source verification commands:
+Final-source verification commands with generic helper placeholders:
 
 ```sh
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat-b1-r2-final.sh normal
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat-b1-r2-final.sh loaded
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build --build-tests -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$REPEAT_SCRIPT" normal
+python3 "$PHASE_RUNNER" "$REPEAT_SCRIPT" loaded
 # Each repetition script runs this five times; loaded mode owns four yes workers:
-/tmp/hs932-p4-tools/swift test --skip-build --no-parallel --filter 'HailCoreTests\.ReplySegment' \
+"$SWIFT_WRAPPER" test --skip-build --no-parallel --filter 'HailCoreTests\.ReplySegment' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
   --filter 'HailCoreTests\.(Echo|Capture|Ambient|ReplySegment|Reply|Playback|Privacy|Diagnostic)' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 git diff --check
@@ -374,7 +377,7 @@ Results:
   requested serial regression passed in 23.562 s. Total across both verification rounds: 20 segment runs
   (1,020 function executions, 1,860 case invocations) and two 296-test regression runs.
 - `git diff --check` passed. Changed Swift lines fit 120 columns; no new lint waiver. SwiftLint is unavailable.
-- Final verification logs are host-local `/tmp/hs932-p4b1-r2-*.log`, outside version control.
+- Final verification logs are retained on the VM, outside version control.
 
 ## Host build and physical follow-up
 
@@ -401,13 +404,13 @@ independently; real UserDefaults Boolean round trips remain covered.
 The existing wrappers above supply `taskpolicy -b`, `-j 4`, one compiler worker per target, offline resolution,
 and every supplied Testing framework/plugin/rpath flag. Each serial phase has the 590-second deadline and
 owned-process-tree kill trap. No load workers, network, other clones, simulator, physical audio or delivery were used.
-Exact commands (each test iteration is a separate bounded phase):
+Commands with generic helper placeholders (each test iteration is a separate bounded phase):
 
 ```sh
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build --build-tests -Xswiftc -warnings-as-errors
 for iteration in 1 2 3; do
-  python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
     --filter 'HailCoreTests\.ReplySegment' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 done
 git diff --check
@@ -416,8 +419,8 @@ git diff --check
 Both warnings-as-errors builds passed (production 5.37 s; build-tests 59.20 s). The segment filter passed 3/3:
 26 test functions in five suites, 39 case invocations per run (78 function executions, 117 case invocations total),
 in 0.574/0.457/0.492 s. P4a has no onset detector suites; those belong to P4b1. `git diff --check` passed.
-One production file changes, plus settings regressions and this record. Logs are host-local
-`/tmp/hs932-p4a-r3-*.log`. No PR, independent review or GitHub checks were created or claimed.
+One production file changes, plus settings regressions and this record. Logs are retained on the VM,
+outside the repository. No PR, independent review or GitHub checks were created or claimed.
 
 
 ## P4b1 carry-forward of P4a fix round 2 (offline bundle r3)
@@ -437,16 +440,16 @@ P4b1 remains an inert detector; this fix adds no app/controller wiring or physic
 The same offline Swift wrapper and 590-second owned-process-tree kill trap documented above were used for
 each serial phase, with `taskpolicy -b`, `-j 4`, one compiler worker per target and all supplied Testing flags.
 No load workers, network, other clone, simulator, physical audio, upload or installed-build change was used.
-Exact commands:
+Commands with generic helper placeholders:
 
 ```sh
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build --build-tests -Xswiftc -warnings-as-errors
 for iteration in 1 2 3; do
-  python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
     --filter 'HailCoreTests\.ReplySegment' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 done
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
   --filter 'HailCoreTests\.(Reply|Playback|PCM16|Playout|Segment|Echo|Capture|Ambient)' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 git diff --check
@@ -456,7 +459,7 @@ Both warnings-as-errors builds passed (production 5.45 s; build-tests 60.46 s). 
 53 test functions in nine suites, 95 case invocations per run; 3/3 passed in 0.816/0.910/0.831 s
 (159 function executions, 285 case invocations total). The exact requested serial regression passed:
 317 tests in 62 suites, 24.952 s. The #955 daemon diagnostic test was explicitly excluded in every command.
-`git diff --check` passed. Logs are host-local `/tmp/hs932-p4b1-r3-*.log`.
+`git diff --check` passed. Logs are retained on the VM, outside the repository.
 Evidence is synthetic macOS VM evidence only; no PR, independent review or GitHub checks were created or claimed.
 
 
@@ -487,16 +490,16 @@ missing/closed/expired-window refusal; and repeated-call idempotence.
 
 Every phase runs serially through the existing 590-second deadline/owned-process-tree kill trap. Every Swift
 command uses the wrapper above (`taskpolicy -b`, `-j 4`, `-Xswiftc -j1`, offline resolution, and all supplied
-Testing framework/plugin/rpath flags). No background load workers are added. Exact commands:
+Testing framework/plugin/rpath flags). No background load workers are added. Commands with generic helper placeholders:
 
 ```sh
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build --build-tests -Xswiftc -warnings-as-errors
 for iteration in 1 2 3; do
-  python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
     --filter 'HailCoreTests\.ReplySegment' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 done
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
   --filter 'HailCoreTests\.(Echo|Capture|Ambient|ReplySegment|TapCapture)' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 git diff --check
@@ -512,7 +515,7 @@ Final-source results:
 - `git diff --check` passed. Local classification using the checker's exact exclusions found one production file
   this round, two for cumulative P4b1, and no security-path matches. `rg` found only the API declaration under
   `Sources`, confirming no production caller. SwiftLint is unavailable; changed Swift lines were checked by hand.
-- Logs are host-local `/tmp/hs932-p4b1-r4-*.log`, outside version control.
+- Logs are retained on the VM, outside version control.
 
 Evidence remains synthetic macOS VM evidence only. No network, other-clone access, simulator, physical-device
 audio, install, upload, PR, independent review or GitHub check is performed or claimed.
@@ -520,23 +523,23 @@ audio, install, upload, PR, independent review or GitHub check is performed or c
 ## P4b2 offline VM verification
 
 Base: `af3ea8212a61bac32cad745d54c4a60212f0df1b`. Every Swift command uses the existing
-`/tmp/hs932-p4-tools/swift` wrapper documented above: `taskpolicy -b`, `-j 4`, one compiler worker
+offline Swift wrapper documented above: `taskpolicy -b`, `-j 4`, one compiler worker
 per target, offline resolution, and all supplied Testing framework/plugin/rpath flags. Every counted phase
-runs serially through `phase.py` with a 590-second deadline and owned-process-tree termination traps.
+runs serially through the phase runner with a 590-second deadline and owned-process-tree termination traps.
 The loaded script owns exactly four background `taskpolicy -b yes` workers and kills/waits for them
 on EXIT/INT/TERM. No other clone is used.
 
-Exact final verification commands:
+Final verification commands with generic helper placeholders:
 
 ```sh
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat-b2.sh normal
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat-b2.sh loaded
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build --build-tests -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$REPEAT_SCRIPT" normal
+python3 "$PHASE_RUNNER" "$REPEAT_SCRIPT" loaded
 # Each repetition script runs this five times; loaded mode owns four yes workers:
-/tmp/hs932-p4-tools/swift test --skip-build --no-parallel --filter 'HailCoreTests\.ReplySegment' \
+"$SWIFT_WRAPPER" test --skip-build --no-parallel --filter 'HailCoreTests\.ReplySegment' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
   --filter 'HailCoreTests\.(Reply|Playback|PCM16|Playout|Segment|Echo|Capture|Ambient|HostConnection|Privacy|Diagnostic|Heard)' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 git diff --check
@@ -559,7 +562,7 @@ Final results:
   changed code fits 120 columns.
 - Local classification uses the checker's exact exclusion tuples and `SECURITY_PATHS`: exactly four
   production files, no renames, no security-path matches. Tests extend existing files only.
-- Logs are host-local `/tmp/hs932-p4b2-*.log`, outside version control. No network, PR, independent review,
+- Logs are retained on the VM, outside version control. No network, PR, independent review,
   GitHub check, simulator, physical audio, signing, upload or installed-build change is performed or claimed.
 
 A full-Xcode host must build the iOS/iPadOS app (RootView is outside this VM's package build) and macOS app
@@ -588,16 +591,16 @@ change, and content-free scope/diagnostic fields. Existing admission tests now p
 
 Every build/test phase runs serially through the existing 590-second deadline and owned-process-tree kill trap.
 The wrapper shown above applies `taskpolicy -b`, `-j 4 -Xswiftc -j1`, offline resolution and all supplied Testing
-framework/plugin/rpath flags. No background load workers are added. Exact commands:
+framework/plugin/rpath flags. No background load workers are added. Commands with generic helper placeholders:
 
 ```sh
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build --build-tests -Xswiftc -warnings-as-errors
 for iteration in 1 2 3; do
-  python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
     --filter 'HailCoreTests\.ReplySegment' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 done
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
   --filter 'HailCoreTests\.(Echo|Capture|Ambient|ReplySegment|TapCapture)' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 git diff --check
@@ -612,7 +615,7 @@ Final-source results:
   test was explicitly excluded from every test command.
 - `git diff --check` passed. Local classification using the checker's exact exclusions found only the specified
   production file and no security-path matches. SwiftLint is unavailable; changed Swift lines were checked by hand.
-- Logs are host-local `/tmp/hs932-p4b1-r6-*.log`, outside version control.
+- Logs are retained on the VM, outside version control.
 
 Evidence remains synthetic macOS VM evidence only: no network, other-clone access, simulator, physical-device
 audio, install, upload, PR, independent review or GitHub check is performed or claimed.
@@ -651,20 +654,20 @@ it checks intermediate and final deadlines. Its Replay test observes both equal-
 checks ids 1/2, plus no event for a refused onset. Existing admission waits now wait for the new conversation entry,
 since actual reply ingress already creates entries. Nine new test functions cover twelve case invocations.
 
-Every build/test uses the previously documented `/tmp/hs932-p4-tools/swift` wrapper, including `taskpolicy -b`,
-`-j 4 -Xswiftc -j1`, offline resolution and all supplied Testing flags. Each phase runs serially under `phase.py`
+Every build/test uses the previously documented offline Swift wrapper, including `taskpolicy -b`,
+`-j 4 -Xswiftc -j1`, offline resolution and all supplied Testing flags. Each phase runs serially under the phase runner
 with a 590-second deadline and owned-tree TERM/KILL traps. The repetition script owns exactly four background
 `taskpolicy -b yes` workers only in loaded mode, with EXIT/INT/TERM kill-and-wait cleanup.
 
 ```sh
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat-b2-r2.sh normal
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/repeat-b2-r2.sh loaded
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build --build-tests -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$REPEAT_SCRIPT" normal
+python3 "$PHASE_RUNNER" "$REPEAT_SCRIPT" loaded
 # Each repetition script invokes this five times:
-/tmp/hs932-p4-tools/swift test --skip-build --no-parallel --filter 'HailCoreTests\.ReplySegment' \
+"$SWIFT_WRAPPER" test --skip-build --no-parallel --filter 'HailCoreTests\.ReplySegment' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
   --filter 'HailCoreTests\.(Reply|Playback|PCM16|Playout|Segment|Echo|Capture|Ambient|HostConnection|Privacy|Diagnostic|Heard)' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 git diff --check
@@ -686,7 +689,7 @@ Final-source results:
 - `git diff --check` passed. SwiftLint is unavailable on this VM; changed Swift code was checked by hand for
   the configured line/function/type length, complexity, nesting and opted-in rules. No new waiver was added;
   the wiring type has 103 nonblank/noncomment code lines, below the 150-line warning threshold.
-- Logs are host-local `/tmp/hs932-p4b2-r2-*.log`, outside version control. No network, other-clone edits, PR/issue
+- Logs are retained on the VM, outside version control. No network, other-clone edits, PR/issue
   changes, independent review, GitHub checks, simulator/physical audio, install, signing or upload is claimed.
   App/physical validation and P5 notice/settings UI remain deferred as described above.
 
@@ -729,20 +732,20 @@ counter formatting before/after the five-second deadline.
 
 ### P5 VM verification
 
-All Swift build/test commands use the existing `/tmp/hs932-p4-tools/swift` wrapper documented above
+All Swift build/test commands use the existing offline Swift wrapper documented above
 (`taskpolicy -b`, `-j 4 -Xswiftc -j1`, offline resolution, and all supplied Testing framework/plugin/rpath flags).
-Every phase runs serially under `/tmp/hs932-p4-tools/phase.py`: 590-second deadline and owned-process-tree
+Every phase runs serially under the phase runner: 590-second deadline and owned-process-tree
 TERM/KILL traps on timeout, INT or TERM. No load workers, network or other-clone access are used.
 
 ```sh
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build --build-tests -Xswiftc -warnings-as-errors
 # Five separate bounded phases:
 for iteration in 1 2 3 4 5; do
-  python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
     --filter 'HailCoreTests\.ReplySegmentPresentationTests' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 done
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
   --filter 'HailCoreTests\.(ReplySegment|Reply|Playback|Segment)' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 git diff --check
@@ -763,7 +766,7 @@ Final-source results:
   below the 200-line type-body error limit. No waiver was added. New core/tests are 73/154 lines.
 - Local classification using the checker's exact exclusions/rename rules found four production files, no renames
   and no `SECURITY_PATHS` matches. No app build, simulator, physical audio, independent review, GitHub check,
-  signing, installation or TestFlight delivery is claimed. Logs stay in `/tmp/hs932-p5-*.log`.
+  signing, installation or TestFlight delivery is claimed. Logs stay on the VM, outside the repository.
 
 ### P5 full-Xcode host and physical gate (required, not performed on VM)
 
@@ -815,21 +818,21 @@ asserting a visible notice and exactly one announcement decision for each, while
 after dismissal stay silent. `eventIDAloneControlsNoticeIdentity` confirms changed payload fields cannot repeat
 an already consumed id. Existing nil/expiry/stale-timer/VoiceOver tests now use event ids.
 
-All tests use `--no-parallel`; each phase runs through `/tmp/hs932-p4-tools/phase.py` (590-second deadline, owned-process-tree
-TERM/KILL traps). Every Swift invocation uses `/tmp/hs932-p4-tools/swift`: `taskpolicy -b`, `-j 4 -Xswiftc -j1`,
+All tests use `--no-parallel`; each phase runs through the phase runner (590-second deadline, owned-process-tree
+TERM/KILL traps). Every Swift invocation uses the offline Swift wrapper: `taskpolicy -b`, `-j 4 -Xswiftc -j1`,
 `--disable-automatic-resolution`, and the supplied Testing framework/plugin/rpath flags recorded above.
-No load workers are added. Exact verification commands:
+No load workers are added. Verification commands with generic helper placeholders:
 
 ```sh
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build -Xswiftc -warnings-as-errors
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift build --build-tests -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build -Xswiftc -warnings-as-errors
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" build --build-tests -Xswiftc -warnings-as-errors
 for iteration in 1 2 3 4 5; do
-  python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+  python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
     --filter 'HailCoreTests\.ReplySegmentPresentationTests' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 done
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
   --filter 'HailCoreTests\.ReplySegment' --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
-python3 /tmp/hs932-p4-tools/phase.py /tmp/hs932-p4-tools/swift test --skip-build --no-parallel \
+python3 "$PHASE_RUNNER" "$SWIFT_WRAPPER" test --skip-build --no-parallel \
   --filter 'HailCoreTests\.(ReplySegment|Reply|Playback|Segment)' \
   --skip 'HailDaemonKitTests.DiagnosticReplyComposition'
 git diff --check
@@ -848,7 +851,7 @@ Final-source results:
 - Local classification with the checker's exact exclusions and rename handling confirmed the same four P5
   production files relative to `p4b2-r2`, no renames and no security-path matches. SwiftLint is unavailable;
   changed Swift code was checked against the configured rules, with no added code line over 120 columns.
-- Logs remain host-local `/tmp/hs932-p5-r2-*.log`, outside version control.
+- Logs remain on the VM, outside version control.
 
 Evidence is synthetic macOS VM evidence only. No network, other-clone access, independent review, GitHub check,
 app/simulator build, physical-device audio, signing, installation or upload is performed or claimed. The P5 host

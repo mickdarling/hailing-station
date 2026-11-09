@@ -188,8 +188,8 @@ Both reported `build=0`, `test=0`. Final results: **161 tests in 30 suites passe
 lint repair so this evidence covers the final Swift files; the initial run also passed 161 tests. The supplied
 script uses the bounded background-policy CLT build and serial filtered test commands documented above.
 
-Generator verification in the VM verification clone (`GENERATED_OUTPUT` is a temporary
-output directory outside the repository):
+Generator verification in the VM verification clone (`GENERATED_OUTPUT` is a scratch directory
+outside the repository):
 
 ```sh
 taskpolicy -b .build/debug/hail-protocol-gen "$GENERATED_OUTPUT"/frames
