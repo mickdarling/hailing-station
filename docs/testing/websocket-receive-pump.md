@@ -166,19 +166,19 @@ The recording authorizer observes valid frames entering authorization, not every
 closed peer and unchanged selection/command assertions establish no later observable processing;
 there is no direct session-entry counter in the existing production seams.
 
-Follow-up verification used the re-synchronized `vwf4` VM workspace at the requested baseline.
+Follow-up verification ran on the Dev Work VM (Swift 6.3.3), re-synchronized to the requested baseline.
 Every phase waited for the shared runner to be idle; SSH stdin was `/dev/null`, and all jobs were joined.
 The shared helpers and production files were unchanged. The targeted command used the filter
 `HailDaemonKitTests\.WebSocketReceivePumpTests/malformedBehindParkedTextCompletesThenCloses`;
 the suite filter was `HailDaemonKitTests\.WebSocketReceivePumpTests`, and the final prefix filter was
-`HailDaemonKitTests\.WebSocketReceivePump`. All used `WS=vwf4` and `vw327-run.sh`.
+`HailDaemonKitTests\.WebSocketReceivePump`. All used the VM's filtered Swift Testing runner.
 
 | Follow-up phase | Result |
 | --- | --- |
 | New test, three runs | 1 test each; 0.016, 0.016 and 0.014 seconds; every build/test exit 0. |
 | Its suite, three runs | 30 tests each; 8.434, 8.466 and 8.206 seconds; every build/test exit 0. |
 | All receive-pump suites, once | 30 tests; 8.513 seconds; build/test exit 0. |
-| `~/codex-workspaces/vw-werr.sh vwf4` | `werr build=0`; wrapper exit 0; existing module-cache warnings. |
+| VM build with warnings as errors | `werr build=0`; wrapper exit 0; existing module-cache warnings. |
 | Host strict SwiftLint | New Swift file: zero violations, exit 0, with the required Xcode developer directory. |
 | Host width check | Swift output empty; document's 40 existing long lines unchanged; no new long lines. |
 
