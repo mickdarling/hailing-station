@@ -2,9 +2,9 @@
 
 Part of #1120.
 
-This dead-mapping cleanup removes mappings that can no longer run relative to main
-`d13765e79ffc52dcbff55af091b7c2552c28a7d5`. Delivery errors, reasons, exit codes and partial
-accounting are unchanged.
+This dead-mapping cleanup removes mappings that can no longer run. It was first verified against main
+`d13765e79ffc52dcbff55af091b7c2552c28a7d5` and then rebased unchanged onto later main, as described under
+Verification. Delivery errors, reasons, exit codes and partial accounting are unchanged.
 
 ## Removed mappings and comments
 
@@ -56,8 +56,8 @@ use at most four workers and finish sequentially.
 The unchanged-main baseline passed two Swift tests in one suite (seven parameterized cases),
 with build and test exit 0, and one CLI parity test (nine cases), exit 0.
 
-The cleanup source/test snapshot is `2bf619280087fefab0df81c5dd3b925cd5360c7f`.
-The verification-record commit changes only this document.
+The first verification ran on the cleanup source/test snapshot `2bf619280087fefab0df81c5dd3b925cd5360c7f`,
+based on `d13765e7`. The verification-record commit changes only this document.
 
 | Check | Result |
 | --- | --- |
@@ -91,6 +91,21 @@ build artifacts, the same command passed without source changes. The linker emit
 module-cache debug-info warnings; the compiler build completed successfully. All requested runs
 finished, and no job from this session remains running.
 
-This records Swift package tests and CLI verification on the Dev Work VM, Swift 6.3.3, plus host
-lint. No host build or test, simulator run, physical-device proof, live captured-output round trip,
-installation, upload or push is claimed.
+## Rebased verification
+
+The same patch, with an unchanged stable patch-id and no overlap with the intervening main changes,
+was rebased onto `7dc953c4d2aff222a5018496f51bf2704c1df560` and verified again on a fresh Dev Work VM
+clone (Swift 6.3.3):
+
+| Check | Result |
+| --- | --- |
+| The regression filter above, extended with `DeliveryMappingCleanup` | 452 tests in 75 suites; build=0, test=0; 10 tmux availability skips |
+| `python3 -m unittest discover -s Tests/ReplyCLITests` | 125 tests; exit 0 |
+| Warnings as errors | build=0, exit 0 |
+
+A host build-only check of the package and tests, with Xcode Swift 6.2.4 under `taskpolicy -b` and
+`-j 4`, passed at that rebased head. The pull request records the final head and its CI.
+
+This records Swift package tests and CLI verification on the Dev Work VM, Swift 6.3.3, host lint
+and a host build-only check. No host test run, simulator run, physical-device proof, live
+captured-output round trip, installation or upload is claimed.
