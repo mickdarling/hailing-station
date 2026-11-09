@@ -64,11 +64,9 @@ public final class CommandLaunch: Sendable {
 }
 
 #if os(macOS)
-/// `Foundation.Process` runner. stdout and stderr stay separate: stderr is drained on a Dispatch thread,
-/// not a second cooperative-pool task (which starved the pool under parallel tests), and stdout on the
-/// calling detached task; both run to EOF and the stderr drain is joined only after the process has
-/// exited, so a verbose child on either pipe cannot wedge the runner. Resolves `executable` through
-/// `/usr/bin/env` when it has no slash.
+/// `Foundation.Process` runner. Labelled serial queues drain stdout and stderr concurrently and join the child
+/// without blocking cooperative-pool threads or waiting for constrained global workers (#1156, #980).
+/// Resolves `executable` through `/usr/bin/env` when it has no slash.
 public struct ProcessCommandRunner: GuardedCommandRunner {
     private let beforeLaunch: (@Sendable ([String]) -> Void)?
     public init() { beforeLaunch = nil }
@@ -81,47 +79,53 @@ public struct ProcessCommandRunner: GuardedCommandRunner {
     public func run(
         _ executable: String, _ arguments: [String], launch: CommandLaunch
     ) async throws -> CommandResult {
-        try await Task.detached(priority: .userInitiated) {
-            let process = Process()
-            if executable.contains("/") {
-                process.executableURL = URL(fileURLWithPath: executable)
-                process.arguments = arguments
-            } else {
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-                process.arguments = [executable] + arguments
+        // Caller cancellation is neither propagated nor observed: the command runs to completion and returns
+        // its result (or launch/admission error), just as the previous detached task did. Never resume early.
+        try await withCheckedThrowingContinuation { continuation in
+            // Per-run labelled serial queues retain user-initiated QoS and target the overcommit root queue;
+            // reads, exit and drain joins never wait for a constrained global worker (#1156, #980).
+            DispatchQueue(label: "hailing.command-runner.run", qos: .userInitiated).async {
+                continuation.resume(with: Result {
+                    let process = Process()
+                    if executable.contains("/") {
+                        process.executableURL = URL(fileURLWithPath: executable)
+                        process.arguments = arguments
+                    } else {
+                        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                        process.arguments = [executable] + arguments
+                    }
+                    let out = Pipe()
+                    let err = Pipe()
+                    process.standardOutput = out
+                    process.standardError = err
+                    process.standardInput = FileHandle.nullDevice
+                    beforeLaunch?(arguments)
+                    var admissionError: (any Error)?
+                    do { try launch.perform { try process.run() } } catch {
+                        guard launch.evidence == .possiblyExecuted else { throw error }
+                        admissionError = error
+                    }
+                    let errHandle = err.fileHandleForReading
+                    let errBox = DataBox()
+                    let drained = DispatchGroup()
+                    drained.enter()
+                    DispatchQueue(label: "hailing.command-runner.stderr", qos: .userInitiated).async {
+                        errBox.set(errHandle.readDataToEndOfFile())
+                        drained.leave()
+                    }
+                    let stdout = String(bytes: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                    process.waitUntilExit()
+                    drained.wait()
+                    let stderr = String(bytes: errBox.get(), encoding: .utf8) ?? ""
+                    if let admissionError { throw admissionError }
+                    return CommandResult(exitCode: process.terminationStatus, stdout: stdout, stderr: stderr)
+                })
             }
-            let out = Pipe()
-            let err = Pipe()
-            process.standardOutput = out
-            process.standardError = err
-            process.standardInput = FileHandle.nullDevice
-            beforeLaunch?(arguments)
-            var admissionError: (any Error)?
-            do { try launch.perform { try process.run() } } catch {
-                guard launch.evidence == .possiblyExecuted else { throw error }
-                admissionError = error
-            }
-            let errHandle = err.fileHandleForReading
-            let errBox = DataBox()
-            let drained = DispatchGroup()
-            drained.enter()
-            DispatchQueue.global(qos: .utility).async {
-                errBox.set(errHandle.readDataToEndOfFile())
-                drained.leave()
-            }
-            let stdout = String(bytes: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            process.waitUntilExit()
-            await withCheckedContinuation { (joined: CheckedContinuation<Void, Never>) in
-                drained.notify(queue: .global(qos: .utility)) { joined.resume() }
-            }
-            let stderr = String(bytes: errBox.get(), encoding: .utf8) ?? ""
-            if let admissionError { throw admissionError }
-            return CommandResult(exitCode: process.terminationStatus, stdout: stdout, stderr: stderr)
-        }.value
+        }
     }
 }
 
-/// Hands the stderr bytes from the Dispatch thread back to the task. A class because `Mutex` is noncopyable.
+/// Hands the stderr bytes between the drain and run queues. A class because `Mutex` is noncopyable.
 private final class DataBox: Sendable {
     private let storage = Mutex(Data())
 

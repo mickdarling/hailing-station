@@ -5,6 +5,24 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite(.serialized, .timeLimit(.minutes(1))) struct CommandLaunchAdmissionTests {
+    @Test func aVerboseChildDrainsBothPipesConcurrently() async throws {
+        // stderr exceeds pipe capacity before stdout closes; sequential draining would wedge.
+        let script = #"""
+        i=0
+        while [ "$i" -lt 8192 ]; do
+          printf 'stdout-line\n'
+          printf 'stderr-line\n' >&2
+          i=$((i + 1))
+        done
+        """#
+        let result = try await ProcessCommandRunner().run("/bin/sh", ["-c", script])
+        let expectedOut = String(repeating: "stdout-line\n", count: 8192)
+        let expectedErr = String(repeating: "stderr-line\n", count: 8192)
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == expectedOut)
+        #expect(result.stderr == expectedErr)
+    }
+
     @Test func launchEvidenceDistinguishesRefusalFailureAndExecution() async throws {
         let runner = ProcessCommandRunner()
         let refused = CommandLaunch { _ in throw DeliveryAdmissionError.unsupported }
