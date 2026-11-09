@@ -670,6 +670,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
         /// How long a child launched start-private (#735 S-2b) has to emit `started` before it is killed.
         public var startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline
+        var gapClock: @Sendable () -> ContinuousClock.Instant = { .now }
         /// How long each child has to ack a `{"duck":true}` (#735 S-8). Not configurable: tests only shorten it.
         var ackDeadline: TimeInterval = RightyoAmbientPipeline.ackDeadline
         /// The bound on a privacy entry's announcement (#735 S-8 HS-C), nil for start + ack + margin (round 3: never a
@@ -1169,7 +1170,6 @@ extension AmbientRightyoRouter {
         let pipeline = state.withLock { $0.active?.stream == stream ? $0.active?.pipeline : nil }
         guard let pipeline else { return }
         let result = pipeline.send(audio: bytes, sequence: sequence)
-        if let gap = result.gap { emit("ambient_gap_filled", detail: gap.detail) }
         // Refused input means the child is gone; overload still drops oldest audio without blocking the gate.
         if !result.accepted { inputClosed(stream, pipeline: pipeline) }
     }
@@ -1382,6 +1382,8 @@ extension AmbientRightyoRouter {
             onDismiss: dismissed(on: connection, target: target, listener: listener),
             onAcknowledge: acknowledged(on: connection, target: target, listener: listener, notices: notices)
         )
+        settings.gapClock = configuration.gapClock
+        settings.onGapFill = { [weak self] in self?.emit("ambient_gap_filled", detail: $0) }
         (settings.replyControl, settings.onAcknowledgementSkipped) = (configuration.replyControl, skipped())
         settings.heardRequests = heardRequests(on: connection, target: target, listener: listener, notices: notices)
         settings.onOverheard = overheard(on: connection, target: target, listener: listener)

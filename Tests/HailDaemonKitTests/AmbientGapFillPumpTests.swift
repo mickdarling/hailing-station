@@ -18,6 +18,7 @@ extension AmbientGapFillTests {
             pump.start { frame in
                 guard let frame else { Issue.record("expected frame"); return }
                 guard case .audio(let audio) = frame.payload else { await park.wait(); return }
+                if audio.sequence == 6 { host.clock.advance(.seconds(1)) }
                 #expect(await host.env.gate.admit(audio, connection: host.connection,
                                                   target: RecipientTestRig.target) == nil)
                 if audio.sequence == 0 {
@@ -49,6 +50,7 @@ extension AmbientGapFillTests {
         let hostBytes = try host.heard(session)
         try await phone.send(stream, 0)
         let phoneSession = try #require(phone.env.router.activePipeline?.session)
+        phone.clock.advance(.seconds(1))
         // Exactly the same hole already present at ingress, as with the phone's oldest-non-final drop.
         for sequence in 6...36 { try await phone.send(stream, sequence, final: sequence == 36) }
         await phone.env.router.settle()
@@ -56,7 +58,7 @@ extension AmbientGapFillTests {
         #expect(hostBytes == expected)
         #expect(try phone.heard(phoneSession) == expected)
         #expect(hostBytes.count == 37 * 3_200)
-        #expect(host.fills.map(\.detail) == ["missing=5 filled_ms=500 capped=false"])
+        #expect(host.fills.map(\.detail) == ["fills=1 missing=5 filled_ms=500 capped=0"])
         #expect(phone.fills.map(\.detail) == host.fills.map(\.detail))
     }
 

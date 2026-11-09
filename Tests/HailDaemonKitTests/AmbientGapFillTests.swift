@@ -14,18 +14,23 @@ import Testing
             try await rig.send(stream, try #require(sequences.first))
             let session = try #require(rig.env.router.activePipeline?.session)
             var expected = AmbientGapFillRig.chunk(sequences[0])
-            var details: [String] = []
+            var fills = 0, totalMissing = 0, totalMS = 0, capped = 0
             for (last, sequence) in zip(sequences, sequences.dropFirst()) {
                 let missing = sequence - last - 1
+                rig.clock.advance(.milliseconds((min(missing, 30) + 1) * 100))
                 if missing > 0 {
                     expected.append(AmbientGapFillRig.silence(missing))
-                    details.append("missing=\(missing) filled_ms=\(min(missing, 30) * 100) capped=\(missing > 30)")
+                    fills += 1; totalMissing += missing; totalMS += min(missing, 30) * 100
+                    if missing > 30 { capped += 1 }
                 }
                 expected.append(AmbientGapFillRig.chunk(sequence))
                 try await rig.send(stream, sequence, final: sequence == sequences.last)
             }
             await rig.env.router.settle() // EOF and child task completion acknowledge every stdin byte.
             #expect(try rig.heard(session) == expected)
+            let details = fills == 0 ? [] : [
+                "fills=\(fills) missing=\(totalMissing) filled_ms=\(totalMS) capped=\(capped)"
+            ]
             #expect(rig.fills.map(\.detail) == details.map(Optional.some))
             #expect(rig.fills.allSatisfy { $0.sessionID == nil && $0.endpoint == nil })
             // A segment after final is refused: it cannot synthesize a trailing gap.
@@ -42,6 +47,7 @@ import Testing
             let first = UUID(), second = UUID()
             try await rig.send(first, 0)
             let firstSession = try #require(rig.env.router.activePipeline?.session)
+            rig.clock.advance(.seconds(1))
             try await rig.send(first, 4, final: true)
             await rig.env.router.settle()
             try await rig.send(second, 0)
@@ -65,7 +71,8 @@ import Testing
         """)
         defer { fake.cleanUp() }
         try fake.install(fixture: "enrolled-formed-request.jsonl")
-        let pipeline = try AmbientPrivacyAudioGateTests.pipeline(fake, startPrivate: false)
+        let clock = AmbientGapTestClock()
+        let pipeline = try AmbientPrivacyAudioGateTests.pipeline(fake, startPrivate: false, gapClock: { clock.now })
         if !suppressFirst { #expect(pipeline.send(audio: AmbientGapFillRig.chunk(0), sequence: 0).accepted) }
         #expect(pipeline.reportDuck(true))
         #expect(!pipeline.hearsAudio && !pipeline.childStarted)
@@ -73,6 +80,7 @@ import Testing
             let result = pipeline.send(audio: AmbientGapFillRig.chunk(sequence), sequence: sequence)
             #expect(result.accepted && result.gap == nil)
         }
+        clock.advance(.seconds(4))
         _ = pipeline.reportDuck(false)
         let resumed = pipeline.send(audio: AmbientGapFillRig.chunk(100), sequence: 100)
         #expect(resumed.accepted)

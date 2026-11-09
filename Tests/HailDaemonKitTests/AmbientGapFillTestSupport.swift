@@ -15,9 +15,13 @@ struct AmbientGapFillRig {
     let env: AmbientWiringRig
     let connection = UUID()
     let logs: AmbientGapFillLogs
+    let clock: AmbientGapTestClock
 
-    static func make(backlogBytes: Int = 524_288) async throws -> Self {
-        let fake = try FakeRightyo("""
+    static func make(backlogBytes: Int = 524_288, holdStarted: Bool = false) async throws -> Self {
+        let fake = try FakeRightyo(holdStarted ? """
+        /bin/cat > "$7.raw"
+        /usr/bin/sed -n -e '1p' -e '$p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
+        """ : """
         /usr/bin/sed -n '1p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
         /bin/cat > "$7.raw"
         /usr/bin/sed -n '$p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
@@ -25,10 +29,13 @@ struct AmbientGapFillRig {
         do {
             try fake.install(fixture: "enrolled-formed-request.jsonl")
             let logs = AmbientGapFillLogs()
+            let clock = AmbientGapTestClock()
             let env = try await ambientRig(fake, timing: .init(
                 eofGrace: 20, termGrace: 20, backlogBytes: backlogBytes, backlogAge: 60
-            ), onEvent: { event in logs.events.withLock { $0.append(event) } })
-            return Self(fake: fake, env: env, logs: logs)
+            ), replyControl: true, onEvent: { event in
+                logs.events.withLock { $0.append(event) }
+            }, gapClock: { clock.now })
+            return Self(fake: fake, env: env, logs: logs, clock: clock)
         } catch { fake.cleanUp(); throw error }
     }
 
@@ -57,5 +64,11 @@ struct AmbientGapFillRig {
         await env.listener.stop(reason: "synthetic gap test complete")
         fake.cleanUp()
     }
+}
+/// An injected monotonic instant; advancing it never waits for the wall clock.
+final class AmbientGapTestClock: Sendable {
+    private let instant = Mutex(ContinuousClock.now)
+    var now: ContinuousClock.Instant { instant.withLock { $0 } }
+    func advance(_ duration: Duration) { instant.withLock { $0 += duration } }
 }
 #endif

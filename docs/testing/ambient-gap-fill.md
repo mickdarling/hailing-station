@@ -1,101 +1,174 @@
 # Ambient sequence gap fill (#1147)
 
-This change preserves missing time before the next admitted ambient segment reaches RightyO. It does not
-change the gate's admission checks, the phone queue, F4 receive-pump eviction, or the ambient event shape.
-The listener keeps each segment's sequence when forwarding it to its active pipeline. Each pipeline starts
-with no last-forwarded sequence; the first accepted segment has no prefix. Privacy wishes and sequence-aware enqueues share the sequence lock, so privacy-on cannot race a prefix.
-Only a successful child enqueue
-advances that sequence. Final/ended events retain their existing ordered EOF path, with no trailing fill.
-A new stream (or replacement child) starts fresh; refused streams and reply audio cannot reach this path.
+This implementation preserves missing time before the next admitted ambient segment reaches RightyO.
+It changes neither the gate nor its 40 KiB/s token bucket (409,600-byte burst), admission policy, phone queue,
+F4 receive-pump eviction, or ambient event shape. Evidence below is synthetic; physical validation is deferred.
 
-## Format, bounds and ordering
+## Duration and cumulative bound
 
-- One missing sequence represents 100 ms of 16 kHz mono PCM16: 1,600 Int16 samples, 3,200 zero bytes.
-- A gap is `sequence - lastForwardedSequence - 1`. Each fill is capped at 30 segments: 3,000 ms,
-  48,000 samples, 96,000 bytes. Subtraction and capping precede multiplication, including at `Int.max`.
-- HailDaemonKit has no HailCore dependency. Its host constant is pinned to `AmbientAudioFormat.chunkBytes`
-  by `AmbientGapFormatTests.hostGapDurationMatchesCanonicalTerminalChunks` in the existing cross-module test target.
-- Silence and its following PCM form one stdin queue item, under the existing ordered writer lock. The full
-  prefix is permitted beside the configured PCM backlog budget (normally 65,536 bytes); pending storage is
-  therefore bounded by that budget plus at most 96,000 bytes. The writer retains a reserve equal to its
-  largest prefix for the child's lifetime, so an ordinary segment following a capped fill cannot immediately
-  evict it by shrinking the budget. Oldest-whole-item eviction still applies at this bound; streams without
-  holes keep the original budget. No unbounded queue, blocking write or new worker is introduced. Existing age and
-  pipe-failure handling still applies. This fills holes upstream of the pipeline; it does not reconstruct
-  later stdin-backlog losses.
-- No-gap PCM is byte-identical. Raw, unsequenced pipeline callers retain their existing behavior.
-- Each accepted prefix emits `ambient_gap_filled missing=N filled_ms=M capped=true|false`, with no session,
-  endpoint, stream identity, text or audio. It counts enqueued fills, not proof that an overloaded child heard them.
+The shipping terminal splits PCM at `AmbientAudioFormat.chunkBytes` in
+[`AmbientAudioStreamer.takeSegments`](../../Sources/HailCore/AmbientAudioStreamer.swift#L97-L110):
+exactly 3,200 bytes per segment except the final tail. At 16 kHz mono PCM16 that is 100 ms, or 32,000 bytes/s.
+The host retains that fixed size; a neighbouring frame's sender-controlled length cannot choose the fill size.
+`AmbientGapFormatTests.hostGapDurationMatchesCanonicalTerminalChunks` pins the host constant to the terminal.
 
-## Privacy choice
+Each pipeline owns a fresh sequence and duration ledger. Its injectable `gapClock` returns
+`ContinuousClock.Instant`, defaulting to `ContinuousClock.now`; elapsed time never uses `Date`.
+Let `first` be the instant of its first successful sequence-aware write, and let:
 
-Suppressed segments do not advance the last-forwarded sequence. If forwarding resumes in that same child,
-its gap can include the suppressed interval, but the fill is still capped at three seconds. If no segment
-was forwarded before suppression, the first later segment gets no fill. No silence is enqueued while privacy
-is on, even after privacy is confirmed. When the existing privacy proof gate suppresses PCM, neither PCM nor
-silence is enqueued. A park, lockdown or refusal that prevents an active pipeline from accepting a segment
-cannot create silence through this path.
+```text
+elapsed         = now - first
+writtenDuration = (accepted real PCM bytes + accepted silence bytes) / 32,000 bytes/s
+missing         = sequence - last - 1
+available       = max(0, min(missing * 100 ms, 3 s, elapsed - writtenDuration))
+fillSlices      = floor(available / 100 ms)
+fillBytes       = fillSlices * 3,200
+```
 
-The existing confirmed-private in-memory PCM path for recognizing the owner's exit command is preserved.
-Privacy mode is not a blanket microphone-to-child mute in the existing architecture: confirmed-private
-children may hear PCM in RAM. This change does not remove that behavior or weaken its existing assertions.
-Confirmed-private accepted segments update the sequence without adding silence; public forwarding after
-unconfirmed suppressed segments uses the capped policy above.
+The implementation subtracts sequence numbers before multiplying, bounds duration to three seconds, and floors
+using integer duration components. `Int.max` jumps are safe. Every successful enqueue charges both its PCM and
+its prefix to the cumulative duration (31,250 ns/byte); a suppressed or refused write changes nothing.
+The ledger conservatively retains charges for writer-backlog losses. It measures audio committed to the writer,
+not proof of playback. A real PCM burst may already lead the clock; a fill cannot increase that lead. There is
+no per-segment rounding credit: tiny positive elapsed times do not buy a whole 3,200-byte slice.
 
-## Synthetic coverage
+Concrete clock-driven cases:
 
-All new captures use the existing fake RightyO and ambient test support. Gate actor returns acknowledge event
-handling; the F4 dispatch park acknowledges entry and release; worker completion and EOF/reaped child tasks
-acknowledge complete output. No sleep decides test ordering.
+- A frozen-clock flood of 1,000 two-byte frames, jumping 32 sequences each time, writes 2,000 real bytes,
+  zero silence, and zero fill lines. With 1 ms between frames (999 ms total), it writes only nine slices
+  (28,800 silence bytes), coalesced into one final line: `fills=9 missing=279 filled_ms=900 capped=9`.
+- After the first 3,200 bytes, advancing one second and jumping over ten sequences fills 900 ms: the first
+  real segment already consumed 100 ms. Allowing that first 100 ms to play before a one-second outage fills
+  exactly 1,000 ms (32,000 bytes).
+- Four immediate real chunks consume 400 ms. At 350 ms elapsed, a later gap fills zero; at 650 ms it fills
+  200 ms, rounding the remaining 250 ms down. The next real chunk is then charged too.
+- 128 chunks exhaust the gate's 409,600-byte burst at a frozen clock. Its next two chunks are dropped.
+  After advancing 100 ms the gate admits another chunk, but the pipeline has already committed 12.8 s:
+  the two-sequence gap fills zero. Gate drops receive the same cumulative bound as phone or pump holes.
 
-| Expectation | Test |
+Only a successful write advances `last = max(last ?? sequence, sequence)`. Direct pipeline duplicates and
+reorders receive no fill and cannot move it backwards or wedge the next increasing sequence. The gate still
+rejects non-increasing input and ends that stream without forwarding the rejected frame or synthesizing fill.
+A fresh stream or replacement child, including reload on the same stream, starts with no prefix or old budget.
+Final/ended input retains ordered EOF with no trailing silence; raw unsequenced callers retain their behavior.
+
+## Queue, counters and logging
+
+Silence and its following real PCM remain one queue item: neither can be reordered or evicted separately.
+The pending-byte bound is `backlogBytes + largest currently queued prefix`, at most 65,536 + 96,000 bytes
+with the default backlog. Removing a prefix through drain, eviction, expiry or abandonment removes its allowance.
+After the last prefix leaves the queue, overload eviction is again the original PCM-only `backlogBytes` bound.
+One in-flight item remains subject to the existing writer age, pipe-failure and abandonment rules.
+Metadata and oldest-item removal remain O(1) amortised; there are at most 30 distinct nonzero prefix sizes.
+For zero prefix the writer passes the original `Data` storage directly; it allocates no new concatenation.
+
+Public `writtenBytes` and `droppedBytes` count **only real PCM**, including partial writes or expiry partway
+through a prefixed item. Synthetic zeros are excluded. `droppedChunks` still counts evicted/expired real PCM
+items, including an item with a prefix. The duration ledger separately charges accepted silence for budgeting.
+
+`ambient_gap_filled` is coalesced per pipeline, at most once per elapsed second during input, with the remaining
+aggregate flushed once on EOF/teardown. That final remainder may follow a periodic line within a second.
+Its token-only fields are `fills=N missing=N filled_ms=M capped=K`: number of nonzero fills, sum of their
+missing sequences, total enqueued silence milliseconds, and number reduced by either cap. Missing totals
+saturate at `Int.max`. A zero-budget gap emits no line and contributes no fill totals. Repeated teardown cannot
+emit the same remainder twice. Logs name no session, endpoint, device, text or audio, and count enqueues rather
+than proof an overloaded child heard them. A separate log mutex supports flush; the sequence lock is used only
+by sequence-aware `send`, never by `reportDuck`.
+
+## Privacy and lockdown
+
+When `mayHearAudio` is false, `send` writes neither PCM nor silence and advances neither sequence nor duration.
+On resume, the gap may include suppressed sequences, still capped by **both** three seconds and the cumulative
+wall-clock budget. If suppression preceded the first written segment, that first later segment gets no fill.
+Silence may be queued in the same instant privacy turns on, just as PCM could on main; it carries no content.
+There is no new sequence lock in `reportDuck` and no claim of atomic privacy-on versus enqueue ordering.
+
+Confirmed-private children retain the existing in-memory PCM path to recognize the owner's exit command.
+That PCM is real written audio and consumes duration; it advances the sequence but synthesizes no private silence.
+Privacy mode is therefore not a blanket microphone-to-child mute after the child's privacy proof is confirmed.
+
+Lockdown is not an ambient microphone gate in the current design:
+[`HostSession` authorizes audio when ambient listening is configured](../../Sources/HailDaemonKit/Listener/HostSession.swift#L95-L104),
+and [`ambient` routes admitted audio to the gate's sink without `HailHost.send`](../../Sources/HailDaemonKit/Listener/HostSession+Routing.swift#L74-L103).
+[Lockdown instead denies delivery requests in `Policy.evaluateWithEvidence`](../../Sources/HailDaemonKit/Policy/Policy.swift#L158-L165).
+This change does not invent a lockdown audio gate. A refused stream cannot reach the pipeline; privacy parks
+and restores keep their existing admission and child-proof behavior.
+
+## Synthetic traceability
+
+Tests use the existing fake RightyO, gate, router, stdin writer and loopback listener. Clock advances choose
+budgets without wall-clock sleeps. Actor returns, listener ping/pong barriers, worker synchronization and
+EOF/reaped tasks acknowledge processing; bounded polling only awaits existing child I/O milestones.
+
+| Expectation | Test in `AmbientGapFillTests` unless qualified |
 | --- | --- |
-| Single and multiple gaps; final immediately after gap | `AmbientGapFillTests.orderedPCMAndTokenOnlyCounts` |
-| Exactly 3 s, above cap, `Int.max`, and a capped fill followed by contiguous PCM | Same test, with the default 64 KiB stdin backlog |
-| No-gap byte-identical control and no trailing fill after final | Same test |
-| New stream after a gap, no cross-stream prefix | `AmbientGapFillTests.newStreamStartsFreshAfterAGap` |
-| Privacy proof suppression; capped resume; no prefix before first forwarded PCM | `AmbientGapFillTests.privacySuppressionWritesNeitherPCMNorSilenceAndResumeIsCapped` |
-| Confirmed-private exit PCM unchanged; no private silence | `AmbientGapFillTests.confirmedPrivateExitAudioDoesNotSynthesizeSilence` |
-| Actual F4 eviction through gate, router, pipeline and fake stdin; equivalent phone hole | `AmbientGapFillTests.hostPumpEvictionAndPhoneHoleReachRightyoWithIdenticalSilence` |
-| Refused and reply audio start no child and emit no fill | `AmbientGapFillTests.refusedAndReplyAudioNeverStartAChildOrFill` |
-| Host duration matches the terminal | `AmbientGapFormatTests.hostGapDurationMatchesCanonicalTerminalChunks` |
+| Single/multiple gaps, final after gap, 3 s cap, above cap, `Int.max`, contiguous/no-gap PCM | `orderedPCMAndTokenOnlyCounts` |
+| Tiny two-byte jump flood; exact silence/log totals and zero frozen-clock amplification | `tinyJumpFloodHasCumulativeBudgetAndBoundedLogs` |
+| One-second outage, including the first real chunk's duration | `realOutageFillsOnlyElapsedUnwrittenTime` |
+| Ahead-of-clock burst, zero budget and whole-slice floor | `burstAheadOfClockCannotBuySilence` |
+| Actual gate over-rate drop followed by bounded fill | `overRateDropCannotBuySilenceAfterABurst` |
+| Direct pipeline duplicate/reorder and later progress | `duplicateAndReorderDoNotRegressOrWedgePipelineSequence` |
+| Invalid write advances neither sequence nor duration | `refusedWriteDoesNotAdvanceSequenceOrConsumeBudget` |
+| Gate non-increasing rejection produces no fill | `gateNonIncreasingRejectionProducesNoFill` |
+| Fresh stream, no cross-stream fill | `newStreamStartsFreshAfterAGap` |
+| Same-stream reload, no fill across child replacement | `reloadStartsFreshAcrossAnOpenHole` |
+| Suppression, capped resume, suppression before first forwarded PCM | `privacySuppressionWritesNeitherPCMNorSilenceAndResumeIsCapped` |
+| Initial PCM, open hole, privacy on through listener, suppressed frames, bounded resume through listener | `listenerPrivacyDuringHoleWritesNothingAndResumeHasBothBounds` |
+| Confirmed-private exit PCM unchanged, no private silence | `confirmedPrivateExitAudioDoesNotSynthesizeSilence` |
+| F4 pump eviction and equivalent phone hole, exactly 118,400 bytes | `hostPumpEvictionAndPhoneHoleReachRightyoWithIdenticalSilence` |
+| Refused/reply audio starts no child and emits no fill | `refusedAndReplyAudioNeverStartAChildOrFill` |
+| Ten fills per periodic line; zero-budget exclusion; EOF remainder flushed once | `logCoalescesEachSecondAndFlushesOnlyTheRemainder` |
+| Drained prefix restores main's eviction and real-byte accounting | `RightyoStdinGapTests.drainedFillRestoresMainEvictionAndRealPCMCounters` |
+| Evicted prefix excluded from dropped-real-byte count | `RightyoStdinGapTests.evictedPrefixDoesNotCountAsDroppedRealAudio` |
+| Host constant matches shipping terminal chunks | `AmbientGapFormatTests.hostGapDurationMatchesCanonicalTerminalChunks` |
 
-The pump test parks dispatch, sends sequences 0 through 36 with a protected final, and proves five evictions.
-Both host and phone-hole paths produce exactly 118,400 bytes: 32 original chunks plus five silent chunks.
+The listener privacy test holds the child's `started` proof until EOF. It forwards initial PCM, opens a hole,
+switches privacy on through the real listener, and sends sequences 2, 20 and 49 while suppressed. No extra real
+bytes and no fill appear. Privacy off resumes sequence 50. Exact final child bytes are initial PCM + 1,400 ms
+silence + resumed PCM at 1,500 ms elapsed, or initial PCM + 3,000 ms silence + resumed PCM at 4,100 ms.
+Each run records exactly 6,400 real written bytes and zero dropped real bytes: suppressed audio cannot enter
+through the silence prefix or be charged as written duration.
 
-| Existing tests touched | KEPT | TIGHTENED | WEAKENED |
+| Existing test or support touched | KEPT | TIGHTENED | WEAKENED |
 | --- | --- | --- | --- |
-| None; all existing test files and assertions remain unchanged | All | None | None |
+| `orderedPCMAndTokenOnlyCounts` | All exact child-byte, cap, final refusal and identity-free log assertions | Explicit monotonic advances provide the required budget; exact aggregate log fields replace per-gap fields | None |
+| `newStreamStartsFreshAfterAGap` | Both exact child outputs and one fill line | Explicit monotonic outage before the existing gap | None |
+| `privacySuppressionWritesNeitherPCMNorSilenceAndResumeIsCapped` | Every suppression, capped resume, exact child-byte and zero-drop assertion | Injected clock advances four seconds before resume | None |
+| `hostPumpEvictionAndPhoneHoleReachRightyoWithIdenticalSilence` | Five pump evictions, both exact outputs, 118,400 bytes, log parity, one outstanding receive | Explicit outage on both paths; exact aggregate fields | None |
+| `AmbientGapFillRig` | Existing fake capture, admission and teardown checks | Frozen injected clock, optional held startup proof, control descriptor for listener privacy | None |
+| `AmbientPrivacyAudioGateTests.pipeline`, `ambientRig` | All existing test assertions, defaults and call sites | Optional injected monotonic clock; default remains real monotonic time | None |
+
+All other existing assertions remain unchanged. New test files add coverage; no existing assertion is weakened.
 
 ## Verification status
 
-Validation ran on the Dev Work VM, Swift 6.3.3, from a fresh GitHub clone at baseline `1ec93244`, synchronized
-by a bundle containing `origin/main..HEAD`. Every run waited for the shared lane to become idle. Commands
-ran through SSH with stdin closed, with at most four build workers; shared helpers were not modified.
+Review-fix validation completed on the Dev Work VM, synchronized from GitHub main `72d9b44f` plus the branch
+bundle. Every run waited for the shared lane to become idle and ran through blocking SSH with stdin closed.
+Builds used at most four workers, including the warnings-as-errors build; shared helpers were unchanged.
 
 | Final-source check | Result |
 | --- | --- |
-| Targeted ambient, gate, privacy-audio, receive-pump and format suites | 63 tests in 7 suites passed |
-| Ambient, WebSocket, Listener, HostSession, Rightyo and Reply regression suites | 932 tests in 165 suites passed |
-| Changed gap-fill and format suites, three additional runs | 7 tests in 2 suites passed in each run |
+| Targeted gap, gate (including rate/identity), privacy-audio, receive-pump and format suites | 75 tests in 8 suites passed; build 0, test 0 |
+| Changed gap-fill, privacy-audio, stdin-gap and format suites, three repetitions | 25 tests in 4 suites passed in each run; all builds/tests 0 |
+| `HailDaemonKitTests\.(Ambient\|WebSocket\|Listener\|HostSession\|Rightyo\|Reply)` regression group | 946 tests in 167 suites passed; build 0, test 0; 5 known issues |
 | `python3 -m unittest discover -s Tests/ReplyCLITests` | 124 tests passed; exit 0 |
-| Warnings-as-errors build of package and tests | Build result 0; helper exit 0 |
-| Host strict SwiftLint on all 7 changed Swift files | 0 violations |
-| Host non-comment 120-column check on all 7 changed Swift files | No output |
-| Production-file count using the PR-shape checker's exclusions and rename handling | 3 of 4 allowed; 8 files total |
+| Package and test build with warnings as errors | Build 0; runner exit 0 |
+| Host strict SwiftLint across all changed Swift files | 14 files, 0 violations; exit 0 |
+| Host non-comment 120-column check across all changed Swift files | 14 files; no output |
+| PR-shape source count using exact exclusions and rename handling | 3 of 4 allowed; 15 files total relative to main |
 
-The broad run's five known issues are intentional `withKnownIssue` timeout/cancellation expectations in the
-unchanged `ReplyRecipientHandoffWaitTests`, not new failures. The warnings-as-errors build succeeded while
-CLT emitted diagnostics about missing cached Apple framework PCM files; it is not described as warning-free.
+The broad run's five known issues are intentional timeout/cancellation expectations in the unchanged
+`ReplyRecipientHandoffWaitTests`. The warnings-as-errors build passed while CLT emitted missing cached Apple
+framework PCM diagnostics; this is not described as warning-free.
 
-Across development, the targeted command ran five times: three passes and two failures in newly added fake
-startup fixtures, both corrected before the final pass. The broad command ran twice and passed both times.
-The three changed-suite repetitions, CLI suite and warnings-as-errors build above ran after the final source
-changes. No existing assertion was weakened. The final documentation update records those completed results.
+The first review-fix build found test compile errors in clock-injection call compatibility and a gate-helper
+result assertion; both were corrected. An initial corrected targeted run passed 33 tests in 5 suites, before
+the expanded 75-test targeted run and the final repetitions/regression checks above. No existing assertion
+was weakened. Host lint and line-length checks cover the complete branch diff against main, including the
+unchanged-in-this-batch cross-module format test.
 
-Host work was limited to editing and strict SwiftLint/line-length checks. No host build or test, simulator,
+Host work is limited to editing and strict SwiftLint/line-length checks. No host build or test, simulator,
 physical-device capture, live speech/VAD proof, installed-build replacement, upload or push is part of this evidence.
-
-A separate physical check remains deferred: create a real capture hole, verify a break in RightyO's VAD and
-transcription, and exercise privacy/park/lockdown transitions on the phone. Synthetic byte equality proves
-the PCM boundary, not physical microphone behavior or recognition quality.
+A separate physical check remains deferred: create a capture hole, verify a break in RightyO's VAD/transcription,
+and exercise privacy/park/lockdown transitions on the phone. Synthetic byte equality proves the PCM boundary,
+not physical microphone behavior or recognition quality.
