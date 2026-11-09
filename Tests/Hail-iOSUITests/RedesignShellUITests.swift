@@ -45,10 +45,14 @@ final class RedesignShellUITests: XCTestCase {
 
         devices.tap()
         XCTAssertTrue(app.descendants(matching: .any)["station.devices.mac-setup"].waitForExistence(timeout: 5))
-        XCTAssertFalse(connection.exists, "The hidden station leaves the accessibility tree")
+        // Still mounted (a remount would end a capture), but collapsed: it can't be seen or tapped. XCUITest still
+        // lists a collapsed surface, as the #819 tests found, so the check is that it can't be tapped.
+        XCTAssertTrue(connection.exists, "The station stays mounted while another section shows")
+        XCTAssertFalse(connection.isHittable, "The station is collapsed while another section shows")
 
         section("station", in: app, isPad: isPad).tap()
-        XCTAssertTrue(connection.waitForExistence(timeout: 5))
+        let shown = expectation(for: NSPredicate(format: "isHittable == true"), evaluatedWith: connection)
+        wait(for: [shown], timeout: 5)
     }
 
     @MainActor
