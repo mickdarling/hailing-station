@@ -25,6 +25,11 @@ class DeliveryMappingCleanupCLITests(unittest.TestCase):
         for marker in ["public enum AdapterError:", "public struct DialogBlock:", "public enum PendingInputReason:"]:
             start = adapter.index(marker)
             dependencies.append(adapter[start:adapter.index("\n}", start) + len("\n}")])
+        # A refactor must not let the splice silently extract nothing for the partial reason or its dependencies.
+        if "case text(" not in reason or "case dialog(" not in reason or "func partial(" not in overload:
+            raise AssertionError("partial-reason source extraction no longer matches HailHost.swift")
+        if any(len(part.strip().splitlines()) < 2 for part in dependencies):
+            raise AssertionError("adapter dependency extraction no longer matches Adapter.swift")
         helpers = main[main.index("func note("):main.index("func reportListingFailures(")]
         branch = main[main.index("    case .partial("):main.index("    case .policyUnavailable(")]
         source = "\n".join([
