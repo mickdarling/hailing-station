@@ -393,19 +393,24 @@ extension RightyoAmbientPipeline {
     /// Sequence-aware ambient input only. Suppressed input advances nothing; a later gap remains bounded.
     /// Confirmed-private input keeps its existing in-memory exit recognition, without synthesizing silence.
     func send(audio pcm: Data, sequence: Int) -> (accepted: Bool, gap: AmbientGapFill?) {
-        lastForwardedSequence.withLock { progress in
-            guard duck.mayHearAudio else { return (true, nil) }
+        let (result, detail) = lastForwardedSequence.withLock { progress ->
+            ((accepted: Bool, gap: AmbientGapFill?), String?) in
+            guard duck.mayHearAudio else { return ((true, nil), nil) }
             let now = gapClock()
             let elapsed = progress.first.map { now - $0 } ?? .zero
+            // Persist the three-second bucket depth, including on refused writes: old credit expires.
+            progress.writtenDuration = max(progress.writtenDuration, elapsed - .seconds(3))
             let gap = duck.active ? nil : AmbientGapFill(after: progress.last, sequence: sequence,
                                                         budget: elapsed - progress.writtenDuration)
-            guard child.input.write(pcm, leadingSilenceBytes: gap?.bytes ?? 0) else { return (false, nil) }
+            guard child.input.write(pcm, leadingSilenceBytes: gap?.bytes ?? 0) else { return ((false, nil), nil) }
             progress.first = progress.first ?? now
             progress.writtenDuration += .nanoseconds(Int64(pcm.count + (gap?.bytes ?? 0)) * 31_250)
             progress.last = max(progress.last ?? sequence, sequence)
-            gapLog.record(gap, at: now)
-            return (true, gap.flatMap { $0.bytes > 0 ? $0 : nil })
+            let detail = gapLog.record(gap, at: now)
+            return ((true, gap.flatMap { $0.bytes > 0 ? $0 : nil }), detail)
         }
+        if let detail { gapLog.emit?(detail) }
+        return result
     }
 
     /// Sets meeting mode (#735 MM-D, rightyo#227) in this stream's RightyO over the same control descriptor, only for a
@@ -1522,8 +1527,8 @@ final class AmbientGapLog: Sendable {
     private let state = Mutex(State())
     let emit: (@Sendable (String) -> Void)?
     init(emit: (@Sendable (String) -> Void)?) { self.emit = emit }
-    func record(_ gap: AmbientGapFill?, at now: ContinuousClock.Instant) {
-        let detail = state.withLock { state in
+    func record(_ gap: AmbientGapFill?, at now: ContinuousClock.Instant) -> String? {
+        state.withLock { state in
             if state.since == nil { state.since = now }
             if let gap, gap.bytes > 0 {
                 state.fills += 1
@@ -1536,7 +1541,6 @@ final class AmbientGapLog: Sendable {
             state.since = now
             return state.take()
         }
-        if let detail { emit?(detail) }
     }
     func flush() {
         if let detail = state.withLock({ $0.take() }) { emit?(detail) }

@@ -10,11 +10,14 @@ extension AmbientGapFillTests {
         let log = AmbientGapLog { detail in lines.withLock { $0.append(detail) } }
         let gap = try #require(AmbientGapFill(after: 0, sequence: 2, budget: .milliseconds(100)))
         let zero = try #require(AmbientGapFill(after: 0, sequence: 99, budget: .zero))
-        log.record(nil, at: clock.now)
+        #expect(log.record(nil, at: clock.now) == nil)
         for index in 1...25 {
             clock.advance(.milliseconds(100))
-            log.record(gap, at: clock.now)
-            log.record(zero, at: clock.now)
+            let detail = log.record(gap, at: clock.now)
+            // Recording returns the periodic line without calling external logging under the caller's lock.
+            #expect(lines.withLock { $0.count } == (index - 1) / 10)
+            if let detail { log.emit?(detail) }
+            #expect(log.record(zero, at: clock.now) == nil)
             #expect(lines.withLock { $0.count } == index / 10)
         }
         log.flush()

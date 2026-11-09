@@ -12,31 +12,51 @@ exactly 3,200 bytes per segment except the final tail. At 16 kHz mono PCM16 that
 The host retains that fixed size; a neighbouring frame's sender-controlled length cannot choose the fill size.
 `AmbientGapFormatTests.hostGapDurationMatchesCanonicalTerminalChunks` pins the host constant to the terminal.
 
-Each pipeline owns a fresh sequence and duration ledger. Its injectable `gapClock` returns
-`ContinuousClock.Instant`, defaulting to `ContinuousClock.now`; elapsed time never uses `Date`.
-Let `first` be the instant of its first successful sequence-aware write, and let:
+**DESIGNED behavior:** each pipeline has a three-second token bucket that refills at one second of audio
+per second of monotonic host time. Idle input, slow PCM, suppression and host sleep cannot bank more than
+three seconds of fill credit. Each pipeline owns a fresh sequence and duration ledger. Its injectable
+`gapClock` returns `ContinuousClock.Instant`, defaulting to `ContinuousClock.now`; elapsed time never uses `Date`.
+Let `first` be the instant of its first successful sequence-aware write. Before that write, elapsed is zero.
+For each unsuppressed attempt, the persistent ledger follows this formula:
 
 ```text
-elapsed         = now - first
-writtenDuration = (accepted real PCM bytes + accepted silence bytes) / 32,000 bytes/s
+E_k             = now_k - first
+D_before        = max(D_previous, E_k - 3 s)      // stored in writtenDuration before computing fill
 missing         = sequence - last - 1
-available       = max(0, min(missing * 100 ms, 3 s, elapsed - writtenDuration))
+available       = max(0, min(missing * 100 ms, 3 s, E_k - D_before))
 fillSlices      = floor(available / 100 ms)
 fillBytes       = fillSlices * 3,200
+D_after         = D_before + (accepted real PCM bytes + accepted silence bytes) / 32,000 bytes/s
 ```
 
-The implementation subtracts sequence numbers before multiplying, bounds duration to three seconds, and floors
-using integer duration components. `Int.max` jumps are safe. Every successful enqueue charges both its PCM and
-its prefix to the cumulative duration (31,250 ns/byte); a suppressed or refused write changes nothing.
-The ledger conservatively retains charges for writer-backlog losses. It measures audio committed to the writer,
-not proof of playback. A real PCM burst may already lead the clock; a fill cannot increase that lead. There is
-no per-segment rounding credit: tiny positive elapsed times do not buy a whole 3,200-byte slice.
+`writtenDuration` includes accepted audio duration and expired credit; it is a persistent accounting ledger,
+not simply the byte counter. Every successful enqueue charges both its PCM and its prefix (31,250 ns/byte).
+A refused write retains the stored clamp, expiring old credit, but charges no bytes and advances neither the
+sequence nor the first-write instant. Suppressed input changes no ledger state; the next unsuppressed attempt
+expires credit before computing a fill. The ledger conservatively retains charges for writer-backlog losses.
+It measures audio committed to the writer, not proof of playback.
+
+For any window from an attempted fill at `t_a` through `t_k`, total accepted synthetic silence obeys:
+
+```text
+sum(fillDuration in [t_a, t_k]) <= 3 s + (E(t_k) - E(t_a))
+```
+
+The stored clamp limits starting credit to three seconds; subsequent elapsed time replenishes it at 1 s/s,
+and both real PCM and silence consume it. Integer flooring only reduces fill. The implementation subtracts
+sequence numbers before multiplying and bounds duration before integer conversion, so `Int.max` jumps are safe.
+A real PCM burst may already lead the clock; a fill cannot increase that lead. There is no per-segment rounding
+credit: tiny positive elapsed times do not buy a whole 3,200-byte slice.
 
 Concrete clock-driven cases:
 
 - A frozen-clock flood of 1,000 two-byte frames, jumping 32 sequences each time, writes 2,000 real bytes,
   zero silence, and zero fill lines. With 1 ms between frames (999 ms total), it writes only nine slices
   (28,800 silence bytes), coalesced into one final line: `fills=9 missing=279 filled_ms=900 capped=9`.
+- After ten minutes of listener-controlled suppression, idle input, or two PCM bytes per ten seconds, a
+  frozen-clock flood of 200 two-byte jump frames fills exactly 30 slices in total. After advancing one second,
+  another 200-frame flood fills nine slices, within the ten-slice refill bound. The first flood's 400 PCM bytes
+  also consume 12.5 ms, leaving less than a full second for the second flood.
 - After the first 3,200 bytes, advancing one second and jumping over ten sequences fills 900 ms: the first
   real segment already consumed 100 ms. Allowing that first 100 ms to play before a one-second outage fills
   exactly 1,000 ms (32,000 bytes).
@@ -73,13 +93,15 @@ missing sequences, total enqueued silence milliseconds, and number reduced by ei
 saturate at `Int.max`. A zero-budget gap emits no line and contributes no fill totals. Repeated teardown cannot
 emit the same remainder twice. Logs name no session, endpoint, device, text or audio, and count enqueues rather
 than proof an overloaded child heard them. A separate log mutex supports flush; the sequence lock is used only
-by sequence-aware `send`, never by `reportDuck`.
+by sequence-aware `send`, never by `reportDuck`. `record` returns any periodic line while updating the aggregate;
+`send` calls the external log emitter only after the sequence lock is released. EOF/teardown flush also emits
+outside the sequence lock and the log mutex.
 
 ## Privacy and lockdown
 
 When `mayHearAudio` is false, `send` writes neither PCM nor silence and advances neither sequence nor duration.
-On resume, the gap may include suppressed sequences, still capped by **both** three seconds and the cumulative
-wall-clock budget. If suppression preceded the first written segment, that first later segment gets no fill.
+On resume, the gap may include suppressed sequences, bounded by the persistent three-second bucket and its
+monotonic 1 s/s refill. If suppression preceded the first written segment, that first later segment gets no fill.
 Silence may be queued in the same instant privacy turns on, just as PCM could on main; it carries no content.
 There is no new sequence lock in `reportDuck` and no claim of atomic privacy-on versus enqueue ordering.
 
@@ -104,6 +126,7 @@ EOF/reaped tasks acknowledge processing; bounded polling only awaits existing ch
 | --- | --- |
 | Single/multiple gaps, final after gap, 3 s cap, above cap, `Int.max`, contiguous/no-gap PCM | `orderedPCMAndTokenOnlyCounts` |
 | Tiny two-byte jump flood; exact silence/log totals and zero frozen-clock amplification | `tinyJumpFloodHasCumulativeBudgetAndBoundedLogs` |
+| Ten-minute listener-controlled suppression, idle sender and slow sender; 200-frame flood, then 1 s refill and another flood | `longUnchargedTimeCannotAccumulateMoreThanThreeSeconds` |
 | One-second outage, including the first real chunk's duration | `realOutageFillsOnlyElapsedUnwrittenTime` |
 | Ahead-of-clock burst, zero budget and whole-slice floor | `burstAheadOfClockCannotBuySilence` |
 | Actual gate over-rate drop followed by bounded fill | `overRateDropCannotBuySilenceAfterABurst` |
@@ -129,43 +152,57 @@ silence + resumed PCM at 1,500 ms elapsed, or initial PCM + 3,000 ms silence + r
 Each run records exactly 6,400 real written bytes and zero dropped real bytes: suppressed audio cannot enter
 through the silence prefix or be charged as written duration.
 
-| Existing test or support touched | KEPT | TIGHTENED | WEAKENED |
-| --- | --- | --- | --- |
-| `orderedPCMAndTokenOnlyCounts` | All exact child-byte, cap, final refusal and identity-free log assertions | Explicit monotonic advances provide the required budget; exact aggregate log fields replace per-gap fields | None |
-| `newStreamStartsFreshAfterAGap` | Both exact child outputs and one fill line | Explicit monotonic outage before the existing gap | None |
-| `privacySuppressionWritesNeitherPCMNorSilenceAndResumeIsCapped` | Every suppression, capped resume, exact child-byte and zero-drop assertion | Injected clock advances four seconds before resume | None |
-| `hostPumpEvictionAndPhoneHoleReachRightyoWithIdenticalSilence` | Five pump evictions, both exact outputs, 118,400 bytes, log parity, one outstanding receive | Explicit outage on both paths; exact aggregate fields | None |
-| `AmbientGapFillRig` | Existing fake capture, admission and teardown checks | Frozen injected clock, optional held startup proof, control descriptor for listener privacy | None |
-| `AmbientPrivacyAudioGateTests.pipeline`, `ambientRig` | All existing test assertions, defaults and call sites | Optional injected monotonic clock; default remains real monotonic time | None |
+| Existing assertions | Classification for this delta | Expected value and reason |
+| --- | --- | --- |
+| One-second outage | KEPT | 900 ms at 1,000 ms elapsed; 1,000 ms at 1,100 ms elapsed; the bucket does not expire credit this early |
+| Frozen and 1 ms jump floods | KEPT | Zero and nine slices respectively; no old credit exists to expire |
+| Burst and over-rate drop | KEPT | Zero/200 ms burst fill and zero over-rate fill; accepted PCM retains its charges |
+| Listener privacy and pipeline privacy | KEPT | 1,400/3,000 ms listener resume and 3,000 ms pipeline resume; each uses one bounded fill |
+| Sequence, reload, pump parity, stdin counters and format | KEPT | All existing exact values and assertions unchanged |
+| Gap-log coalescing and EOF remainder | TIGHTENED | Same exact three lines and once-per-second counts; recording itself must not invoke the emitter |
+| Existing assertions weakened | WEAKENED: none | No expected value changes in an existing test |
 
-All other existing assertions remain unchanged. New test files add coverage; no existing assertion is weakened.
+The new bucket test requires exact child bytes, exactly 30 slices after ten minutes, exactly nine more after
+one second (at most ten), exact real-byte counters and zero dropped bytes. Privacy transitions use the listener
+with ping/pong barriers; jump floods exercise the sequence-aware pipeline directly so the gate's independent
+idle and rate policies cannot mask its ledger bound. The slow sender supplies two bytes every ten seconds.
+All three cases use an injected clock and hold the child's startup proof until EOF.
 
 ## Verification status
 
-Review-fix validation completed on the Dev Work VM, synchronized from GitHub main `72d9b44f` plus the branch
-bundle. Every run waited for the shared lane to become idle and ran through blocking SSH with stdin closed.
-Builds used at most four workers, including the warnings-as-errors build; shared helpers were unchanged.
+Validation for this source revision is based on main `1b2f83ad14a9cf873b0142cb1bb146b869dd9680`, with the
+branch synchronized to the Dev Work VM by a local bundle and the source delta. Every run waits for
+the shared lane to become idle and uses blocking SSH with stdin closed. Builds use at most four workers,
+including the warnings-as-errors build; shared helpers are unchanged. SHA-256 comparison confirms all 15
+changed Swift source/test files on the VM match the host revision.
+
+The exact suite filters are:
+
+```text
+Changed: HailDaemonKitTests\.(AmbientGapFillTests|AmbientPrivacyAudioGateTests|RightyoStdinGapTests)|HailCoachingCommandTests\.AmbientGapFormatTests
+Targeted: HailDaemonKitTests\.(AmbientGapFillTests|AmbientAudioGate.*Tests|AmbientPrivacyAudioGateTests|RightyoStdinGapTests|WebSocketReceivePumpTests)|HailCoachingCommandTests\.AmbientGapFormatTests
+Broad: HailDaemonKitTests\.(Ambient|WebSocket|Listener|HostSession|Rightyo|Reply)
+```
+
+Each Swift run builds with `swift build --build-tests -j 4`, then runs
+`swift test --skip-build --no-parallel -j 4 --filter` with its filter above. Both commands use the same external
+build directory and Command Line Tools Testing framework/plugin/linker flags. The warnings-as-errors check
+builds the package and tests with four workers and `-Xswiftc -warnings-as-errors`.
 
 | Final-source check | Result |
 | --- | --- |
-| Targeted gap, gate (including rate/identity), privacy-audio, receive-pump and format suites | 75 tests in 8 suites passed; build 0, test 0 |
-| Changed gap-fill, privacy-audio, stdin-gap and format suites, three repetitions | 25 tests in 4 suites passed in each run; all builds/tests 0 |
-| `HailDaemonKitTests\.(Ambient\|WebSocket\|Listener\|HostSession\|Rightyo\|Reply)` regression group | 946 tests in 167 suites passed; build 0, test 0; 5 known issues |
+| Changed gap-fill, privacy-audio, stdin-gap and format suites, three repetitions | 26 tests in 4 suites passed in each run; all builds/tests 0 |
+| Targeted gap, gate (including rate/identity), privacy-audio, receive-pump and format suites, three repetitions | 76 tests in 8 suites passed in each run; all builds/tests 0 |
+| `HailDaemonKitTests\.(Ambient\|WebSocket\|Listener\|HostSession\|Rightyo\|Reply)` regression group | 947 tests in 167 suites passed; build 0, test 0; 5 known issues |
 | `python3 -m unittest discover -s Tests/ReplyCLITests` | 124 tests passed; exit 0 |
 | Package and test build with warnings as errors | Build 0; runner exit 0 |
-| Host strict SwiftLint across all changed Swift files | 14 files, 0 violations; exit 0 |
-| Host non-comment 120-column check across all changed Swift files | 14 files; no output |
-| PR-shape source count using exact exclusions and rename handling | 3 of 4 allowed; 15 files total relative to main |
+| Host strict SwiftLint across all changed Swift files | 15 files, zero violations; exit 0 |
+| Host non-comment 120-column check across all changed Swift files | 15 files; no output |
+| PR-shape source count using exact exclusions and rename handling | 3 of 4 allowed; 16 files total relative to main |
 
 The broad run's five known issues are intentional timeout/cancellation expectations in the unchanged
-`ReplyRecipientHandoffWaitTests`. The warnings-as-errors build passed while CLT emitted missing cached Apple
-framework PCM diagnostics; this is not described as warning-free.
-
-The first review-fix build found test compile errors in clock-injection call compatibility and a gate-helper
-result assertion; both were corrected. An initial corrected targeted run passed 33 tests in 5 suites, before
-the expanded 75-test targeted run and the final repetitions/regression checks above. No existing assertion
-was weakened. Host lint and line-length checks cover the complete branch diff against main, including the
-unchanged-in-this-batch cross-module format test.
+`ReplyRecipientHandoffWaitTests`. The warnings-as-errors build passed while Command Line Tools emitted
+missing cached Apple framework PCM diagnostics; this is not described as warning-free.
 
 Host work is limited to editing and strict SwiftLint/line-length checks. No host build or test, simulator,
 physical-device capture, live speech/VAD proof, installed-build replacement, upload or push is part of this evidence.
