@@ -362,3 +362,92 @@ was joined, and shared-helper checksums remained unchanged.
 This batch changes only `WebSocketIngressPump.swift` in production; the cumulative production count
 remains four under the PR-shape exclusions. Evidence is synthetic package testing, without physical
 device or live captured-output validation. No GitHub calls or push were performed.
+
+## Pending client receive during transport ping
+
+The supplied host diagnosis on macOS 15.8.1 identified client-side callback behavior: URLSession
+delivers transport-pong callbacks only while an application receive is pending. Raw-socket captures
+showed the server sending its pong within 14 ms, before parked dispatch was released. The VM did not
+reproduce the original missed callback deadline; the host gate remains separate verification.
+
+`pumpSocketPing` now synchronously submits one retained callback-based receive before `sendPing`.
+Its pong callback records a monotonic timestamp under the unchanged five-second watchdog. Both
+parked-dispatch tests assert that timestamp precedes a timestamp taken immediately before releasing
+their acknowledged dispatch barrier. The malformed test's existing barrier completion also rejects
+an automatic barrier timeout. Thus a successful test still proves transport progress before release.
+
+The retained reader supplies the existing first response assertion after release: the application
+barrier pong for ordered text/selection, or the synthetic first-submission response before the exact
+malformed error. Subsequent receives start only after that result is consumed. The hello-timeout
+caller consumes the expected receive failure, and the protocol-version caller consumes its expected
+error response. A failed ping or reader wait cancels the socket; caller cleanup also cancels it and
+finishes the retained signal. There is no detached receive task or second outstanding receive.
+General socket/barrier helpers and production files are unchanged.
+
+| Test / assertion | Verdict | Accounting |
+| --- | --- | --- |
+| `textAndSelectionWaitForPriorResponseProcessing`: transport pong before dispatch release | TIGHTENED | Pending receive allows the macOS 15 callback; explicit `pongAt < releaseAt` under the five-second pong watchdog. |
+| Same: exact application barrier pong and nonce after prior processing | KEPT | Same payload equality and unexpected-payload failure; uses the retained receive. |
+| Same: deliveries equal `["synthetic input", "later input"]` | KEPT | Existing assertion unchanged. |
+| Same: binding sessions equal `["synthetic-binding", "synthetic-other-binding"]` | KEPT | Existing assertion unchanged. |
+| `malformedBehindParkedTextCompletesThenCloses`: connected peer exists | KEPT | Existing rig-construction requirement unchanged. |
+| Same: application worker exists at acknowledged park | KEPT | Existing requirement unchanged. |
+| `malformedBehindParkedTextCompletesThenCloses`: delivered input empty at acknowledged park | KEPT | Existing assertion unchanged. |
+| Same: admissions equal `[first]` at acknowledged park | KEPT | Existing assertion unchanged. |
+| Same: malformed JSON is below the frame limit | KEPT | Existing assertion unchanged. |
+| Same: transport pong before dispatch release | TIGHTENED | Same shared pending receive and watchdog; explicit `pongAt < releaseAt`. |
+| Same: transport is not retired before release | KEPT | Existing assertion unchanged. |
+| Same: delivered input remains empty after pong, before release | KEPT | Existing assertion unchanged. |
+| Same: admissions remain `[first]` after pong, before release | KEPT | Existing assertion unchanged. |
+| Same: selection generation unchanged before release | KEPT | Existing assertion unchanged. |
+| Same: worker completion rejects a barrier timeout | KEPT | Existing `gate.finish(worker)` unchanged. |
+| Same: synthetic first-submission response send returns `true` | KEPT | Existing runner assertion unchanged. |
+| Same: first response exactly equals the synthetic response frame | KEPT | Same frame equality; uses the retained receive. |
+| Same: next response is exactly `.malformed`, `"malformed or oversized frame"` | KEPT | Existing assertion unchanged. |
+| Same: no application frame follows the malformed error | KEPT | Existing immediate-close receive and unexpected-frame issue unchanged. |
+| Same: close code is `.protocolError` | KEPT | Existing assertion unchanged. |
+| Same: raw close code is `1002` | KEPT | Existing assertion unchanged. |
+| Same: disconnect reason is exactly `"protocol closed"` | KEPT | Existing assertion unchanged. |
+| Same: delivered input equals `["synthetic input", "Enter"]` | KEPT | Existing assertion unchanged. |
+| Same: exactly one paste-buffer call | KEPT | Existing assertion unchanged. |
+| Same: exactly one send-keys call | KEPT | Existing assertion unchanged. |
+| Same: admissions remain `[first]` after worker join | KEPT | Existing assertion unchanged; neither later valid frame is authorized. |
+| Same: selected target remains `"tmux:codex"` | KEPT | Existing assertion unchanged. |
+| Same: selection generation unchanged after worker join | KEPT | Existing assertion unchanged. |
+| Same: session state is `.closed` | KEPT | Existing assertion unchanged. |
+| Same: reply transport is retired | KEPT | Existing assertion unchanged. |
+| Same: peer is ended | KEPT | Existing assertion unchanged. |
+
+The VM workspace `~/codex-workspaces/vwf4` was re-synchronized to baseline
+`dcc4ad7fd8eb0458cb61c6d9ae7d8d5bb40e9744` plus these test changes. Host/VM SHA-256 hashes
+matched for all three changed Swift files. Before synchronization and each phase, the VM waited with
+`while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done` in a separate script so the wait did not
+match its own command line. Every SSH invocation used `< /dev/null` and completed synchronously.
+Each validation phase had a 600-second process-group watchdog and was joined; no validation job
+remained afterward. Shared-runner SHA-256 checksums matched before and after verification.
+
+The commands below ran in order: ten runs of each targeted filter, then three runs of the prefix
+filter, then the warnings-as-errors helper. A private command wrapper capped its Swift jobs at four
+without changing either shared helper.
+
+```sh
+WS=vwf4 ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.WebSocketReceivePumpTests/textAndSelectionWaitForPriorResponseProcessing'
+WS=vwf4 ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.WebSocketReceivePumpTests/malformedBehindParkedTextCompletesThenCloses'
+WS=vwf4 ~/codex-workspaces/vw327-run.sh 'HailDaemonKitTests\.WebSocketReceivePump'
+~/codex-workspaces/vw-werr.sh vwf4
+```
+
+| Phase | Result |
+| --- | --- |
+| Ordered text/selection, ten runs | 1 test each; all ten build/test exits 0; 0.012–0.017 seconds per test run. |
+| Parked text/malformed, ten runs | 1 test each; all ten build/test exits 0; 0.014–0.017 seconds per test run. |
+| Receive-pump suites, three runs | 31 tests each; build/test exits 0; 8.466, 8.448 and 8.708 seconds. |
+| VM warnings-as-errors build | `werr build=0`; helper and validation wrapper exit 0; 28.77 seconds; existing module-cache warnings. |
+| Host strict SwiftLint | All three changed Swift files: zero violations, exit 0. |
+| Host required awk width check | All three changed Swift files: empty output, exit 0. |
+
+Host lint used `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint
+--strict` with the three changed Swift paths. The width command was
+`awk 'length($0)>120 && $0 !~ /^[[:space:]]*\/\//'` with those same paths.
+This is synthetic VM package evidence. No host build/test, physical-device test, upload, GitHub call
+or push was performed. The host gate remains responsible for checking the diagnosed host behavior.

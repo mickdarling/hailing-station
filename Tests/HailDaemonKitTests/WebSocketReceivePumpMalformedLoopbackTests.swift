@@ -18,12 +18,17 @@ extension WebSocketReceivePumpTests {
         #expect(await rig.runner.delivered.isEmpty)
         #expect(rig.admissions.frames == [first])
         try await rig.queueMalformedAndLaterFrames(on: socket)
+        // macOS 15 URLSession needs a pending receive for pong callbacks; retain the first response.
+        let (reader, pongAt) = try await pumpSocketPing(socket)
+        defer { reader.cancel() }
         #expect(!rig.peer.replyTransport.isRetired)
         #expect(await rig.runner.delivered.isEmpty)
         #expect(rig.admissions.frames == [first])
         #expect(await session.selectionGeneration == generation)
+        let releaseAt = ContinuousClock.now
+        #expect(pongAt < releaseAt)
         try await rig.barrier.gate.finish(worker)
-        try await rig.expectResponseThenMalformedClose(on: socket)
+        try await rig.expectResponseThenMalformedClose(on: socket, firstResponse: reader)
         #expect(await rig.runner.delivered == ["synthetic input", "Enter"])
         #expect(await rig.runner.calls.filter { $0.contains("paste-buffer") }.count == 1)
         #expect(await rig.runner.calls.filter { $0.contains("send-keys") }.count == 1)
@@ -95,18 +100,12 @@ private struct MalformedLoopbackRig {
                                       on: socket)
         try await recipientSocketSend(sessionFrame(target: "tmux:claude-hail",
                                                    payload: .text(TextPayload(text: "later input"))), on: socket)
-        // A transport pong acknowledges the later wire traffic while application dispatch is parked.
-        try await selectionPreflightStep("queued malformed transport pong") {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                socket.sendPing { error in
-                    if let error { continuation.resume(throwing: error) } else { continuation.resume() }
-                }
-            }
-        }
     }
 
-    func expectResponseThenMalformedClose(on socket: URLSessionWebSocketTask) async throws {
-        #expect(try await recipientSocketReceive(on: socket, step: "first submission response") == response)
+    func expectResponseThenMalformedClose(
+        on socket: URLSessionWebSocketTask, firstResponse: PumpSocketReader
+    ) async throws {
+        #expect(try await firstResponse.frame(step: "first submission response") == response)
         let malformed = try await recipientSocketReceive(on: socket, step: "queued malformed response")
         #expect(malformed.payload == .control(.error(code: .malformed, message: "malformed or oversized frame")))
         try await selectionPreflightStep("queued malformed close receive") {

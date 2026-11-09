@@ -94,10 +94,13 @@ extension WebSocketReceivePumpTests {
         try await recipientSocketSend(sessionFrame(
             target: "final:other", payload: .text(TextPayload(text: "later input"))
         ), on: socket)
-        // The transport pong can arrive while the application worker is parked.
-        try await pumpSocketPing(socket)
+        // macOS 15 URLSession delivers pong callbacks only with a receive pending; retain the next response.
+        let (reader, pongAt) = try await pumpSocketPing(socket)
+        defer { reader.cancel() }
+        let releaseAt = ContinuousClock.now
+        #expect(pongAt < releaseAt)
         await rig.adapter.handoff.resume()
-        try await recipientSocketBarrier(on: socket, step: "ordered text and selection")
+        try await reader.barrier(step: "ordered text and selection")
         #expect(await rig.adapter.deliveries == ["synthetic input", "later input"])
         #expect(await rig.adapter.contexts.map(\.binding.sessionID) == [
             "synthetic-binding", "synthetic-other-binding"
@@ -116,10 +119,12 @@ extension WebSocketReceivePumpTests {
         }
         let (session, socket) = try recipientSocket(port: await listener.start())
         defer { socket.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
-        try await pumpSocketPing(socket)
+        let (reader, _) = try await pumpSocketPing(socket)
+        defer { reader.cancel() }
         let peers = await listener.peers
         let peer = try #require(peers.values.first)
         #expect(try await ended.wait("hello deadline") == "hello timeout")
+        await #expect(throws: (any Error).self) { try await reader.frame(step: "hello deadline close") }
         #expect(peer.replyTransport.isRetired)
         #expect(await peer.ended)
         await listener.stop(reason: "test complete")
@@ -133,27 +138,18 @@ extension WebSocketReceivePumpTests {
         }
         let (session, socket) = try recipientSocket(port: await listener.start())
         defer { socket.cancel(with: .normalClosure, reason: nil); session.invalidateAndCancel() }
-        try await pumpSocketPing(socket)
+        let (reader, _) = try await pumpSocketPing(socket)
+        defer { reader.cancel() }
         let peers = await listener.peers
         let peer = try #require(peers.values.first)
         try await recipientSocketSend(helloFrame(versions: [99]), on: socket)
-        let response = try await recipientSocketReceive(on: socket)
+        let response = try await reader.frame(step: "protocol version response")
         #expect(response.payload == .control(.error(code: .protocolVersion, message: "no shared protocol version")))
         let reason = try await ended.wait("protocol close")
         #expect(["protocol closed", "peer closed", "cancelled"].contains(reason))
         #expect(peer.replyTransport.isRetired)
         #expect(await peer.ended)
         await listener.stop(reason: "test complete")
-    }
-}
-
-private func pumpSocketPing(_ socket: URLSessionWebSocketTask) async throws {
-    try await selectionPreflightStep("transport pong") {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            socket.sendPing { error in
-                if let error { continuation.resume(throwing: error) } else { continuation.resume() }
-            }
-        }
     }
 }
 
