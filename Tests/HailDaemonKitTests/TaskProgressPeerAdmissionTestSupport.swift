@@ -54,9 +54,9 @@ struct TaskProgressPeerRig {
         let files = try TaskProgressPeerFileWatch(fixture.directory)
         let launch = RecipientPublicationGate(timeout: .seconds(15))
         let runner = ProcessCommandRunner(beforeLaunch: { arguments in
-            if beforeAdmission && arguments.contains(where: { $0.hasPrefix("paste-buffer ") }) {
-                _ = launch.block(onDedicatedQueue: true)
-            }
+            let paste = arguments.contains("paste-buffer")
+                || arguments.contains(where: { $0.hasPrefix("paste-buffer ") })
+            if beforeAdmission && paste { _ = launch.block(onDedicatedQueue: true) }
         })
         let timing = TmuxSubmitTiming(settleFloor: .zero, pollInterval: .milliseconds(1), quiet: .milliseconds(1),
                                       settleLimit: .seconds(1), confirmLimit: .seconds(1))

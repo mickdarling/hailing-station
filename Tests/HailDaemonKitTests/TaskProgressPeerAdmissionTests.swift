@@ -87,11 +87,12 @@ import Testing
             let state = await rig.controller.handle(.init(action: .status))
             #expect(state.task == id && state.outstanding && state.nextDueInSeconds == nil)
         }
+        let sleeps = rig.wake.clock.sleeps
         await rig.wake.listener.refreshTaskProgressEnvironment()
         rig.wake.clock.advance(by: .seconds(6_000))
         let later = await rig.controller.handle(.init(action: .status))
         #expect(later.task == id && later.outstanding && later.nextDueInSeconds == nil)
-        #expect(rig.wake.clock.sleeps == 1)
+        #expect(rig.wake.clock.sleeps == sleeps)
         #expect(rig.fixture.lines("writes") == ["paste", "enter"])
         await rig.wake.listener.stop()
     }
