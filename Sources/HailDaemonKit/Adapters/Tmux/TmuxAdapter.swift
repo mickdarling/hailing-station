@@ -2,9 +2,9 @@
 // swiftlint:disable file_length
 import Foundation
 
-/// Retirement distinguishes a known unsent paste from an Enter that may already have reached tmux (#1028).
+/// Retired authority after an Enter that may already have reached tmux (#1028).
 enum PolicyRetiredDelivery: Error, Equatable {
-    case pastedUnsent, possiblySubmitted
+    case possiblySubmitted
 }
 
 /// Internal time source for submit waits (#917). Production keeps the continuous clock and its sleep semantics.

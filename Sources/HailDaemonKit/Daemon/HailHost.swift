@@ -8,8 +8,7 @@ public enum HostError: Error, Equatable, Sendable {
     case adapterUnavailable(kind: String, reason: String)
     case refused(SanitizeError)
     case denied(Denial)
-    /// `pastedUnsent` is retained for source compatibility; current delivery paths leave it false.
-    case partial(delivered: [String], reason: String, pastedUnsent: Bool = false)
+    case partial(delivered: [String], reason: String)
     case policyUnavailable(String)
 }
 final class ObservationCleanup: Sendable {
