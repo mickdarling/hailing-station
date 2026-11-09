@@ -387,6 +387,7 @@ public struct AmbientRouterStatus: Sendable, Equatable {
 }
 
 extension WebSocketListener {
+    /// Internal for lifecycle tests; production calls only from the peer's end callback after finish().
     func peerEnded(_ id: UUID) async {
         guard let peer = peers.removeValue(forKey: id) else { return }
         // Retire input authority before any asynchronous ambient cleanup or environment refresh.

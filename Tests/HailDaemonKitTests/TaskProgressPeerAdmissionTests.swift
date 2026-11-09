@@ -61,8 +61,45 @@ import Testing
             #expect(rig.fixture.exists("deleted"))
             #expect(rig.fixture.lines("launches").count == expectedLaunches)
             let state = await rig.controller.handle(.init(action: .status))
-            #expect(!state.outstanding, "refusal before admission releases only the unattempted wake")
+            if retirement == .listener {
+                #expect(!state.outstanding, "listener stop finishes the controller enrollment")
+                #expect(state.task == nil)
+            } else {
+                #expect(!state.outstanding, "refusal before admission releases only the unattempted wake")
+            }
             #expect(!rig.launch.timedOut)
+        }
+        await rig.wake.listener.stop()
+    }
+
+    @Test
+    func capturedHandoffRefusesSameAudienceSuccessor() async throws {
+        let rig = try await TaskProgressPeerRig.make(beforeAdmission: false)
+        defer { rig.release() }
+        let generation = rig.wake.host.targetPolicy.snapshot(for: rig.wake.target)
+        let task = TaskProgressTask(session: rig.wake.target, binding: SlowTmuxCommandFixture.binding)
+        let publication = TaskProgressPublicationAuthority(generation: generation, binding: task.binding,
+                                                           taskFence: TaskProgressOutputFence())
+        let attempt = TaskProgressWakeAttempt()
+        let lifetime = TaskProgressAdmissionLifetime(expires: rig.wake.clock.now.advanced(by: .seconds(60)),
+                                                     clock: rig.wake.clock.clock)
+        let revision = await rig.wake.listener.taskProgressPrivacyRevision()
+        let audience = try #require(rig.wake.wiring.taskProgressAudience())
+        let handoff = try #require(await rig.wake.listener.taskProgressHandoff(for: task, authority: publication,
+            privacyRevision: revision, attempt: attempt, lifetime: lifetime))
+        try await rig.withEndedPeer(task: task) {
+            #expect(rig.peer.replyTransport.isRetired)
+            let successor = try await rig.replacePeer(sameAudience: true)
+            let connection = await successor.session.connectionID
+            #expect(connection == audience.connection)
+            #expect(rig.wake.wiring.taskProgressAudience() == audience)
+            let freshAttempt = TaskProgressWakeAttempt()
+            let freshHandoff = try #require(await rig.wake.listener.taskProgressHandoff(for: task,
+                authority: publication, privacyRevision: revision, attempt: freshAttempt, lifetime: lifetime))
+            try freshHandoff()
+            #expect(freshAttempt.hasAttempt)
+            #expect(throws: CancellationError.self) { try handoff() }
+            #expect(!attempt.hasAttempt)
         }
         await rig.wake.listener.stop()
     }
