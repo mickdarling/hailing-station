@@ -40,7 +40,8 @@ final class RedesignShellUITests: XCTestCase {
         app.launch()
         let devices = section("devices", in: app, isPad: isPad)
         XCTAssertTrue(devices.waitForExistence(timeout: 10), "The shell applies after a relaunch")
-        let connection = app.descendants(matching: .any)["station.connection"]
+        // The header labels its icon and its text with the same identifier, so take the first of them.
+        let connection = app.descendants(matching: .any)["station.connection"].firstMatch
         XCTAssertTrue(connection.waitForExistence(timeout: 10))
 
         devices.tap()
