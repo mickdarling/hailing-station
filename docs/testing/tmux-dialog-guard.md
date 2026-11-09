@@ -59,9 +59,8 @@ Only fixed table titles leave the adapter; arbitrary pane text is never included
   only part of a longer line does not equal that title.
 
 The two known titles were verified against Claude Code 2.1.319 and may drift. The footer and
-"Do you want" rules cover recognised dialog shapes. Dialogs with other option glyphs, footers with hints
-after "Esc to cancel", "Would you like to …" prompts, or other agents' approval overlays are not guarded
-unless another rule recognises them. A generic numbered-select rule is a possible follow-up. The future
+"Do you want" rules cover recognised dialog shapes only; a dialog outside those shapes is not recognised
+by this slice. Broader recognition is follow-up work. The future
 doctor change should flag when a known title stops matching its fixture; no doctor check ships in this slice.
 
 ## Availability cost (accepted)
@@ -151,8 +150,8 @@ missing cursor metadata vetoed Enter. The prior pre-paste inspection excluded no
 
 That verification used Swift 6.3.3 on the Dev Work VM, in a fresh checkout synchronized only by local git bundles.
 The verified source/test snapshot is `23346ca1b1753b0ef0e5d166b5f12261d77ea587`; the subsequent verification
-record changes documentation only. No GitHub calls or pushes were made. Each run first waited with
-`while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done`, then used `taskpolicy -b`, no more than four
+record changes documentation only. No GitHub calls or pushes were made. Each run first waited for the
+shared VM lane to be idle, then used `taskpolicy -b`, no more than four
 workers, and a 600-second cap with a cleanup trap. SSH used closed stdin and remained attached until exit.
 
 The exact focused filter, run three times after rebuilding the corrected fixtures, was:
@@ -177,8 +176,8 @@ arrival and late arrival (two), dispatch ending before listing (two), and the su
 These are expected synthetic failure-path assertions, not unexpected failures. Tests used
 `swift test --skip-build --no-parallel -j 4` with the isolated build directory and CLT Testing flags.
 
-The `vw-werr.sh` wrapper with the fresh workspace argument exited 0 and reported `werr build=0`.
-It built the package and tests with four workers and `-Xswiftc -warnings-as-errors` in 102.95 seconds.
+The VM warnings-as-errors build of the package and tests exited 0 and reported `werr build=0`
+in 102.95 seconds.
 The linker again emitted missing SDK module-cache debug-file warnings; this was a successful build,
 not a warning-free linker run.
 
@@ -206,8 +205,7 @@ Verification used Swift 6.3.3 on the Dev Work VM, with a fresh checkout synchron
 bundle. The verified source/test snapshot is `cdcbf66c88470e15e95395e647fd0e02b1f073d6`; the subsequent
 verification record changes documentation only. No GitHub calls or pushes were made.
 
-Before each run, the wrapper waited with
-`while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done`. Every run used `taskpolicy -b`, at most four
+Before each run, the driver waited for the shared VM lane to be idle. Every run used `taskpolicy -b`, at most four
 workers, and a 600-second process-group watchdog with signal handling and kill cleanup. SSH stdin was
 closed with `< /dev/null`, and each connection stayed attached until the run exited.
 
@@ -233,13 +231,13 @@ skips are the same five suites named above. The five deliberate known-issue reco
 `LocalDispatchPreflightWaitTests`: missing/late arrival (two), dispatch ending before listing (two),
 and the suspended-step deadline (one). There were no unexpected test failures.
 
-The requested `vw-werr.sh vw1119c` wrapper exited 0 and reported `werr build=0`. It built the package
-and tests with four workers and `-Xswiftc -warnings-as-errors` in 139.45 seconds. The log contained no
+The VM warnings-as-errors build of the package and tests exited 0 and reported `werr build=0`
+in 139.45 seconds. The log contained no
 compiler errors. The linker emitted the known missing SDK module-cache debug-file warnings; this is
 a successful warnings-as-errors build, not a warning-free linker run.
 
 Host `swiftlint lint --strict --quiet` with
-`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` and the required check below both exited 0
+the Xcode developer directory and the required check below both exited 0
 and printed nothing for all ten Swift files changed by PR 1:
 
 ```sh
@@ -247,7 +245,8 @@ awk 'length($0)>120 && $0 !~ /^[[:space:]]*\/\//'
 ```
 
 `git diff --check` passed. The PR still changes exactly the same four production files under the
-PR-shape checker's exclusions and rename handling; this delta modifies two of those four.
+PR-shape checker's exclusions and rename handling. Against the round-1 head `54fc6a0b`, only
+`TmuxAdapter+Dialog.swift` differs among them.
 Both isolated VM build directories were deleted, and no verification jobs remained running.
 This is synthetic package verification, with no live dialog, simulator, installed build, physical-device,
 or captured-output round-trip proof.
