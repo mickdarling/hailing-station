@@ -47,10 +47,11 @@ final class RedesignShellUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["station.devices.mac-setup"].waitForExistence(timeout: 5))
         // The station stays mounted behind another section (a remount would end a capture), and is out of the
         // accessibility tree, so VoiceOver never reads its microphone or privacy state from there.
+        attachTree(of: app, named: "devices-shown")
         XCTAssertFalse(connection.exists, "VoiceOver can reach the hidden station")
 
         section("station", in: app, isPad: isPad).tap()
-        waitUntilHittable(connection)
+        waitUntilHittable(connection, in: app, named: "station-restored")
 
         // A tool pushed inside the station's stack is hidden with it, and is still there on return.
         openStationLabs(app)
@@ -58,16 +59,27 @@ final class RedesignShellUITests: XCTestCase {
         XCTAssertTrue(labsToggle.waitForExistence(timeout: 5))
         devices.tap()
         XCTAssertTrue(app.descendants(matching: .any)["station.devices.mac-setup"].waitForExistence(timeout: 5))
+        attachTree(of: app, named: "devices-over-pushed-labs")
         XCTAssertFalse(labsToggle.exists, "VoiceOver can reach a tool pushed inside the hidden station")
         XCTAssertFalse(connection.exists, "VoiceOver can reach the hidden station")
         section("station", in: app, isPad: isPad).tap()
-        waitUntilHittable(app.navigationBars["Labs"])
+        waitUntilHittable(app.navigationBars["Labs"], in: app, named: "labs-restored")
     }
 
     @MainActor
-    private func waitUntilHittable(_ element: XCUIElement) {
-        let shown = expectation(for: NSPredicate(format: "isHittable == true"), evaluatedWith: element)
-        wait(for: [shown], timeout: 5)
+    private func waitUntilHittable(_ element: XCUIElement, in app: XCUIApplication, named name: String) {
+        let shown = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: element)
+        if XCTWaiter().wait(for: [shown], timeout: 5) != .completed { attachTree(of: app, named: name) }
+        XCTAssertTrue(element.isHittable, "\(name): not reachable after the station showed again")
+    }
+
+    /// The whole accessibility tree, kept with the result, so a failure shows what VoiceOver would have.
+    @MainActor
+    private func attachTree(of app: XCUIApplication, named name: String) {
+        let attachment = XCTAttachment(string: app.debugDescription)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     /// Opens Labs from the station's own tool links.
