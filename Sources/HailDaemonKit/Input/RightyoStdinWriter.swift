@@ -8,6 +8,7 @@ final class RightyoStdinWriter: Sendable {
     private struct State {
         var queue = RightyoChunkQueue(), queued = 0, counters = RightyoChildProcess.Counters()
         var writing = false, closing = false, closed = false, abandoned = false, failed = false
+        var silenceAllowance = 0
     }
     private let input: Int32
     private let state = Mutex(State())
@@ -21,13 +22,21 @@ final class RightyoStdinWriter: Sendable {
     }
 
     var counters: RightyoChildProcess.Counters { state.withLock { $0.counters } }
-    func write(_ pcm: Data) -> Bool {
+    func write(_ pcm: Data, leadingSilenceBytes: Int = 0) -> Bool {
         guard !pcm.isEmpty, pcm.count.isMultiple(of: 2), pcm.count <= timing.backlogBytes else { return false }
+        guard (0...AmbientGapFill.maxBytes).contains(leadingSilenceBytes),
+              leadingSilenceBytes.isMultiple(of: 2) else { return false }
+        // One queue item: silence cannot be reordered or evicted separately from its following PCM.
+        var chunk = Data(repeating: 0, count: leadingSilenceBytes)
+        chunk.append(pcm)
         let (accepted, start) = state.withLock { state -> (Bool, Bool) in
             guard !state.closing, !state.failed else { return (false, false) }
-            state.queue.append((pcm, DispatchTime.now().uptimeNanoseconds))
-            state.queued += pcm.count
-            while state.queued > timing.backlogBytes { Self.dropOldest(&state) }
+            state.queue.append((chunk, DispatchTime.now().uptimeNanoseconds))
+            state.queued += chunk.count
+            // Retain a bounded reserve for this child's largest prefix, so the next ordinary segment cannot
+            // immediately evict a full 3 s fill merely by reverting to the smaller PCM-only budget.
+            state.silenceAllowance = max(state.silenceAllowance, leadingSilenceBytes)
+            while state.queued > timing.backlogBytes + state.silenceAllowance { Self.dropOldest(&state) }
             defer { state.writing = true }
             return (true, !state.writing)
         }
@@ -122,6 +131,25 @@ final class RightyoStdinWriter: Sendable {
             }
             return count
         }
+    }
+}
+
+/// Host-side canonical duration; HailDaemonKit deliberately has no dependency on the terminal's HailCore.
+/// A cross-module test pins this to AmbientAudioFormat.chunkBytes (16 kHz mono PCM16, 100 ms).
+struct AmbientGapFill: Sendable, Equatable {
+    static let chunkBytes = 3_200
+    static let maxSegments = 30
+    static let maxBytes = chunkBytes * maxSegments
+    let missing: Int
+    var bytes: Int { min(missing, Self.maxSegments) * Self.chunkBytes }
+    var detail: String {
+        "missing=\(missing) filled_ms=\(min(missing, Self.maxSegments) * 100) capped=\(missing > Self.maxSegments)"
+    }
+
+    init?(after last: Int?, sequence: Int) {
+        guard let last, last >= 0, sequence > last, sequence - last > 1 else { return nil }
+        // Subtract before multiplying, and cap before any multiplication: Int.max is safe.
+        missing = sequence - last - 1
     }
 }
 #endif

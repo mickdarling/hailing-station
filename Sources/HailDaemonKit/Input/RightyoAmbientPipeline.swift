@@ -185,6 +185,7 @@ public final class RightyoAmbientPipeline: Sendable {
     /// The producer session id handed to the child and required on every event: `hail-<lowercase uuid>`.
     public let session: String
     private let child: RightyoChildProcess
+    private let lastForwardedSequence = Mutex<Int?>(nil)
     private let consumer: RightyoInputConsumer
     let requestOutcomes: AmbientRequestOutcomes
     private let onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
@@ -376,6 +377,18 @@ extension RightyoAmbientPipeline {
         return child.write(pcm)
     }
 
+    /// Sequence-aware ambient input only. Suppressed input advances nothing; a later gap remains bounded.
+    /// Confirmed-private input keeps its existing in-memory exit recognition, without synthesizing silence.
+    func send(audio pcm: Data, sequence: Int) -> (accepted: Bool, gap: AmbientGapFill?) {
+        lastForwardedSequence.withLock { last in
+            guard duck.mayHearAudio else { return (true, nil) }
+            let gap = duck.active ? nil : AmbientGapFill(after: last, sequence: sequence)
+            guard child.input.write(pcm, leadingSilenceBytes: gap?.bytes ?? 0) else { return (false, nil) }
+            last = sequence
+            return (true, gap)
+        }
+    }
+
     /// Sets meeting mode (#735 MM-D, rightyo#227) in this stream's RightyO over the same control descriptor, only for a
     /// child whose `started` advertised `"meeting": {"version": 1}`; true when that child now holds `on`. Asked before
     /// `started`, the wish is kept and written then, if advertised. False for any other child, before `started`, or
@@ -414,8 +427,11 @@ extension RightyoAmbientPipeline {
     /// deadline already passed unwished, a fresh one is armed (#735 S-8 HS-C round 2). Never blocks.
     @discardableResult public func reportDuck(_ on: Bool) -> Bool {
         requestOutcomes.setPrivate(on)
-        return duck.report(on, write: { [child] on in child.reportDuck(on) }, written: armAckDeadline,
-                    restart: armFreshStartDeadline)
+        // Serialize the privacy wish with sequence-aware enqueues: an on cannot race a silence prefix.
+        return lastForwardedSequence.withLock { _ in
+            duck.report(on, write: { [child] on in child.reportDuck(on) }, written: armAckDeadline,
+                        restart: armFreshStartDeadline)
+        }
     }
 
     /// True once this child keeps the privacy wished for (#735 S-8: its ack came, or it started private); false when

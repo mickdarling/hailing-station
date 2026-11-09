@@ -1151,11 +1151,8 @@ extension AmbientRightyoRouter {
                               reason: "target_binding_unavailable")
             }
             start(stream, connection: connection, destination: destination, selection: scope.selection)
-        case .segment(let stream, _, let bytes):
-            let pipeline = state.withLock { $0.active?.stream == stream ? $0.active?.pipeline : nil }
-            // Overload drops the oldest audio; it never blocks the gate. Refused input means the child is gone
-            // (its run may still be finishing a dispatch), so the stream ends instead of absorbing audio.
-            if let pipeline, !pipeline.send(audio: bytes) { inputClosed(stream, pipeline: pipeline) }
+        case .segment(let stream, let sequence, let bytes):
+            forward(stream: stream, sequence: sequence, bytes: bytes)
         case .ended(let stream, let reason):
             let run = state.withLock { state -> UUID? in
                 for (id, run) in state.runs where run.stream == stream { state.runs[id]?.gateEnd = reason }
@@ -1165,6 +1162,16 @@ extension AmbientRightyoRouter {
             }
             if let run { retire(run) }
         }
+    }
+
+    /// The sequence stays beside its PCM until the same ordered child enqueue accepts both.
+    private func forward(stream: UUID, sequence: Int, bytes: Data) {
+        let pipeline = state.withLock { $0.active?.stream == stream ? $0.active?.pipeline : nil }
+        guard let pipeline else { return }
+        let result = pipeline.send(audio: bytes, sequence: sequence)
+        if let gap = result.gap { emit("ambient_gap_filled", detail: gap.detail) }
+        // Refused input means the child is gone; overload still drops oldest audio without blocking the gate.
+        if !result.accepted { inputClosed(stream, pipeline: pipeline) }
     }
 
     /// Handles queued events in order until none is left (#366), once any reload in progress is done (#405). A reload
