@@ -132,13 +132,12 @@ serial, per run and untargeted, using the overcommit root. The timing-lane comme
 corrections are the only other changes.
 
 Verification used a fresh local-seeded Dev Work VM clone, synchronized by a bundle of
-`origin/main..HEAD`, with Swift 6.3.3. Before every run, the test driver waited for the shared lane
-with `while pgrep -f vw327-run.sh >/dev/null; do sleep 20; done`. SSH used stdin from `/dev/null`
-and waited for completion. A process-group watchdog capped each run at ten minutes and trapped
+`origin/main..HEAD`, with Swift 6.3.3. Before every run, the driver waited for the shared VM lane to be idle. SSH used stdin from
+`/dev/null` and waited for completion. A process-group watchdog capped each run at ten minutes and trapped
 termination signals to kill remaining children. Each run used `taskpolicy -b` and at most four workers.
 
-The test-selection wrapper ran `swift test --no-parallel -j 4` with the Command Line Tools Testing
-framework and plugin flags. Its exact `--filter` values were:
+The VM verification wrapper built the package and tests, then ran the filtered tests without
+parallelism. Its exact filters were:
 
 - Concurrency (three runs):
   `HailDaemonKitTests.CommandLaunchAdmissionTests/oneRunnerLaunchesConcurrentCommandsBeforeEitherCompletes`
@@ -160,14 +159,12 @@ Concurrency 1 included the fresh build (102.54 s). Before concurrency 2, the add
 was moved above the existing doc comment to satisfy SwiftLint; no executable code changed. The clone
 was resynchronized by bundle, and concurrency 2 rebuilt that test file. Later test runs used `--skip-build`.
 
-The warnings-as-errors build wrapper, `vw-werr.sh` with workspace argument `vw1156r`, built the
-package and tests using `swift build --build-tests -j 4 -Xswiftc -warnings-as-errors` and the same
-Testing framework flags, under the outer ten-minute watchdog. It has no test filter and runs no tests.
+The VM warnings-as-errors build of the package and tests ran under the outer ten-minute watchdog. It has no test filter and runs no tests.
 It reported `werr build=0` and exited 0: build duration 142.97 s, phase wall time 143.921 s. The toolchain
 again emitted missing `.pcm` module-cache-reference warnings; this records build success rather than
 warning-free output.
 
-Host verification ran strict SwiftLint with `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`
+Host verification ran strict SwiftLint with the Xcode developer directory
 and `awk 'length($0)>120 && $0 !~ /^[[:space:]]*\/\//'` on all four Swift files changed from
 `origin/main`. Both exited 0 with zero output. Both VM build directories and the fixture symlink were
 deleted, and a process check confirmed no verification processes remained. This is synthetic macOS
