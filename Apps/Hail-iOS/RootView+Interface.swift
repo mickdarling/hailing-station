@@ -63,7 +63,7 @@ extension RootView {
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("station.choose-destination")
                 } else if availability == .unconfigured {
-                    NavigationLink {
+                    StationToolLink(section: .devices) {
                         ConnectivityLabView(store: connections, endpointsChanged: persist)
                     } label: {
                         Label("Set up a Mac", systemImage: "plus.circle.fill")
@@ -102,26 +102,26 @@ extension RootView {
 
     @ViewBuilder
     var toolLinks: some View {
-        NavigationLink {
+        StationToolLink(section: .devices) {
             ConnectivityLabView(store: connections, endpointsChanged: persist)
         } label: {
             Label("Mac Setup", systemImage: "network")
                 .frame(maxWidth: .infinity)
         }
         .accessibilityIdentifier("station.mac-setup-tool")
-        NavigationLink {
+        StationToolLink(section: .settings) {
             AudioDiagnosticsView(model: audioRoutes)
         } label: {
             Label("Audio", systemImage: "waveform")
                 .frame(maxWidth: .infinity)
         }
-        NavigationLink {
+        StationToolLink(section: .settings) {
             CaptureSafeLabsView(audioSession: audioRoutes, playback: playback)
         } label: {
             Label("Labs", systemImage: "wrench.and.screwdriver")
                 .frame(maxWidth: .infinity)
         }
-        NavigationLink {
+        StationToolLink(section: .settings) {
             ReplySegmentToolsView(playback: playback, gate: echoGuard.segmentOnsetGate)
         } label: {
             Label("Turn-taking", systemImage: "pause.circle")

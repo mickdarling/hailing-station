@@ -52,7 +52,7 @@ struct StationConnectionCheckView: View {
         .buttonStyle(.borderedProminent)
         .disabled(result == .checking)
         .accessibilityIdentifier("station.check-connection")
-        NavigationLink {
+        StationToolLink(section: .devices) {
             ConnectivityLabView(store: connections, endpointsChanged: endpointsChanged)
         } label: {
             Label("Mac Setup", systemImage: "gearshape")
