@@ -56,7 +56,11 @@ final class RedesignShellUITests: XCTestCase {
         let labs = app.buttons["Labs"]
         for _ in 0..<6 where !(labs.exists && labs.isHittable) { app.swipeUp() }
         XCTAssertTrue(labs.isHittable, "Labs is reachable from the station tools")
+        // A tap while a swipe still scrolls only stops the scroll, so tap again if Labs didn't open.
+        let title = app.navigationBars["Labs"]
         labs.tap()
+        if !title.waitForExistence(timeout: 3), labs.exists, labs.isHittable { labs.tap() }
+        XCTAssertTrue(title.waitForExistence(timeout: 5), "Labs opens")
 
         let toggle = app.switches["station.redesign.shell"]
         for _ in 0..<4 where !(toggle.exists && toggle.isHittable) { app.swipeUp() }
@@ -70,9 +74,10 @@ final class RedesignShellUITests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
     }
 
-    /// A tab on iPhone, a sidebar row on iPad.
+    /// A tab on iPhone, a sidebar row on iPad. The row's icon carries its identifier too but isn't hittable, so
+    /// the row is found by its title.
     @MainActor
     private func section(_ name: String, in app: XCUIApplication, isPad: Bool) -> XCUIElement {
-        app.descendants(matching: .any)[isPad ? "station.section.\(name)" : "station.tab.\(name)"].firstMatch
+        isPad ? app.staticTexts["station.section.\(name)"].firstMatch : app.buttons["station.tab.\(name)"].firstMatch
     }
 }
