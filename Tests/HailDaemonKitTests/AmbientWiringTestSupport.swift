@@ -30,7 +30,8 @@ func ambientRig(
     acknowledgementHold: AcknowledgementHold? = nil, notSentQueued: NotSentQueued? = nil,
     notSentPlaying: NotSentPlaying? = nil,
     onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil,
-    childMade: (@Sendable (UUID) -> Void)? = nil, privacy: PrivacyOffSettings = .init()
+    childMade: (@Sendable (UUID) -> Void)? = nil,
+    gapClock: (@Sendable () -> ContinuousClock.Instant)? = nil, privacy: PrivacyOffSettings = .init()
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make(guardPatterns: guardPatterns)
     let connected = ConnectedPeerIDs()
@@ -48,10 +49,11 @@ func ambientRig(
     if let notSentQueued { configuration.notSentQueued = { notSentQueued.note($0) } }
     (configuration.notSentPlaying, configuration.childMade) = (notSentPlaying?.wait, childMade)
     (configuration.privacyProbeTimeout, configuration.offScoping) = (privacy.probeTimeout, privacy.offScoping)
+    if let gapClock { configuration.gapClock = gapClock }
     configuration.notes.shortcuts = shortcuts
     let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
     let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: GuardClockAmbientSink(router: router),
-                                sweepInterval: nil)
+                                sweepInterval: nil, clock: gapClock ?? { .now })
     let listener = try WebSocketListener(
         bindAddress: "127.0.0.1", port: 0, host: rig.host,
         authorizer: PersonalTerminalAuthorizer(ambientAudio: gate).naming(routes), hostName: "mac-test",
@@ -60,7 +62,6 @@ func ambientRig(
     return AmbientWiringRig(rig: rig, listener: listener, router: router, gate: gate, connected: connected,
                             port: try await boundedAmbientListenerStart(listener))
 }
-
 /// The next frame on `socket`, or a recorded issue naming `step` once `within` passes (#378). Every receive is now
 /// bounded the same way (#704); this keeps the ambient suites' named steps.
 func receiveFrame(
@@ -68,7 +69,6 @@ func receiveFrame(
 ) async throws -> Frame {
     try await recipientSocketReceive(on: socket, step: step, within: within)
 }
-
 /// `recipientSocketBarrier` with a bound: a ping, then its pong within `within`, else an issue naming `step`. A stray
 /// reply fails the test there, as it does unbounded.
 func barrier(on socket: URLSessionWebSocketTask, step: String, within: Duration = .seconds(15)) async throws {
@@ -124,7 +124,6 @@ func settle(_ router: AmbientRightyoRouter, step: String, within: Duration = .se
     while router.liveRuns != 0, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(50)) }
     if router.liveRuns != 0 { Issue.record("router still had \(router.liveRuns) runs after \(within) at: \(step)") }
 }
-
 /// Runs `work`, waiting for it at most `within` (#735 S-8 HS-C round 2): past it, records an issue naming `step` and
 /// returns, leaving the work to end on its own, so a hang fails the test fast instead of blocking the whole run.
 /// For waits that cannot be cancelled, such as `AmbientRightyoRouter.settle()` awaiting its runs' tasks.
