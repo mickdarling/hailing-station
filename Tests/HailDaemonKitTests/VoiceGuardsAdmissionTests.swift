@@ -41,7 +41,11 @@ import Testing
         let host = try HailHost(registry: registry, store: file)
         try #require(await host.currentPolicy.voiceGuards == .off)
         try Data(#"{"version":1,"voiceGuards":null}"#.utf8).write(to: file.path)
-        await #expect(throws: (any Error).self) { try await host.send("ordinary", to: "tmux:a") }
+        let formatError = PolicyFormatError.invalidVoiceGuards("expected exactly the string \"on\" or \"off\"")
+        let fileError = PolicyFileError.malformed("\(file.path.path): \(formatError)")
+        await #expect(throws: HostError.policyUnavailable("\(fileError)")) {
+            try await host.send("ordinary", to: "tmux:a")
+        }
         #expect(await host.policyFailure != nil)
         #expect(await adapter.deliveries.isEmpty)
     }

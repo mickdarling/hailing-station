@@ -37,7 +37,7 @@ import Testing
         route.store.setLoadError(PolicyFormatError.invalidVoiceGuards("malformed"))
         _ = await route.host.refreshedPolicy()
         #expect(await route.host.voiceGuardsStatus.value == .unusable)
-        await #expect(throws: (any Error).self) { try await route.ambient() }
+        await #expect(throws: LocalDispatchRefusal.deliveryRefused) { try await route.ambient() }
         #expect(await adapter.deliveries.isEmpty)
         #expect(route.log.lines.isEmpty)
         await route.listener.stop()
@@ -62,7 +62,7 @@ import Testing
         try Data(#"{"version":1,"voiceGuards":null}"#.utf8).write(to: file.path)
         let dispatcher = AmbientListenerDispatcher(listener: listener, audit: nil,
             selection: await session.selectionGeneration, streamTarget: "final:reply")
-        await #expect(throws: (any Error).self) {
+        await #expect(throws: LocalDispatchRefusal.deliveryRefused) {
             try await dispatcher.dispatch(.init(connection: session.connectionID, target: "final:reply",
                 binding: "synthetic-binding", text: VoiceGuardsRoute.words), routed: false)
         }

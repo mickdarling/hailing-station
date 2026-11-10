@@ -54,7 +54,12 @@ import Testing
             try #require(chmod(socket.path, 0o666) == 0)
             #expect(await liveVoiceGuards(socket: socket) == nil)
             let ambient = Data(#"{"kind":"ambient","action":"status"}"#.utf8) + Data([10])
-            await #expect(throws: (any Error).self) { try await ReplyClient.transact(ambient, socketURL: socket) }
+            await #expect {
+                try await ReplyClient.transact(ambient, socketURL: socket)
+            } throws: { error in
+                guard case ReplyClientError.invalidSocket(let path) = error else { return false }
+                return path == socket.path
+            }
             #expect(await stub.requestCount == 0)
             await stub.stop()
         } catch {
