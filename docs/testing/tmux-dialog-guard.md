@@ -451,3 +451,54 @@ async fallback expression and new-fixture setup/expectation errors before the fi
 Both isolated VM build directories were deleted and no verification jobs remained running.
 All evidence remains synthetic; no simulator, live dialog, installed build, device hearing or
 captured-output round trip is claimed.
+
+
+### Amended notice wording verification
+
+The amended table above uses `Nothing was sent.` for untouched uninspectable requests, and explicitly
+names `the next line` after possible paste or Enter when earlier lines were delivered.
+`WebSocketListenerDialogNoticeTests` compares UTF-8 bytes for every cause × effects × E∈{0,1,2}
+combination: 18 rows. The loopback clip matrix covers the same 18 rows and derives eligibility directly
+from effects and E, independently of the formatter. It requires playback only for none/E=0 and checks
+suppression for all other rows, for both causes. Existing privacy, turn, request and routing checks remain.
+
+The source/test snapshot is `ffe038909b38c3ce623b50d3b9b86335e140fa6d`. Verification used Swift 6.3.3
+on the Dev Work VM in a fresh checkout synchronized by a local bundle. Every phase waited for the
+shared lane, used background task policy and at most four workers, and had a 600-second cap with signal
+handling and process-group kill cleanup. SSH stdin was closed and each connection stayed attached
+until completion.
+
+The initial package/test build completed in 224.60 seconds, but its enclosing verification exited 1
+with a parse error after the verification code was replaced during execution. With the verifier fixed,
+the unchanged-source confirmation build exited 0 in 0.46 seconds before the following test runs.
+
+The focused filter ran three times:
+
+```text
+HailDaemonKitTests\.(HostSessionDialogNoticeTests|WebSocketListenerDialogNoticeTests|AmbientWiringDialogNoticeTests|HostDialogPartialTests|RightyoInputConsumerTests)
+```
+
+All three passed: 117 reported tests in five suites, no skips, in 11.664, 11.231 and 11.541 seconds.
+Both 18-row matrices executed in each run. The same broader selection as the previous verification ran
+once, unsplit:
+
+```text
+HailDaemonKitTests\.(AmbientWiring|AmbientRouterStreamTarget|Host|LocalDispatch|Reply|RightyoInput|Tmux|VoiceRoute|WebSocketListener)
+```
+
+It passed: 723 reported tests in 128 suites, 326.930 seconds, with ten expected known-issue records from
+the existing preflight and recipient-handoff tests. The same ten functions in five tmux-dependent suites
+were skipped because tmux was unavailable; all changed tests ran. The full Reply CLI suite
+(`python3 -m unittest discover -s Tests/ReplyCLITests`) passed: 126 tests, 233.473 seconds, exit 0.
+
+
+The warnings-as-errors package/test build completed in 238.68 seconds. Its build and enclosing
+verification both exited 0. The linker emitted the known missing module-cache debug-file warnings;
+this is a successful warnings-as-errors build, not a warning-free linker run.
+Host strict SwiftLint with the Xcode developer directory and the non-comment 120-column awk check
+both exited 0 and printed nothing for all ten Swift files changed by this slice. `git diff --check`
+passed. The checker exclusions and rename handling yield exactly the same four production files
+relative to the structured-evidence base; only the existing listener file changes in this wording delta.
+Both isolated VM build directories were deleted, and no verification jobs remained running.
+No GitHub calls, pushes, host builds, installs or uploads were made. These results are synthetic
+package and CLI evidence, with no live dialog, simulator, device-hearing or captured-output proof.
