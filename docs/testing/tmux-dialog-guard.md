@@ -250,3 +250,139 @@ PR-shape checker's exclusions and rename handling. Against the round-1 head `54f
 Both isolated VM build directories were deleted, and no verification jobs remained running.
 This is synthetic package verification, with no live dialog, simulator, installed build, physical-device,
 or captured-output round-trip proof.
+
+## Structured dialog evidence
+
+The dialog detector now throws an internal cause-only veto. The delivery failure boundary attaches
+`DialogBlock` effects from the existing paste and Enter accounting: `none`, `pasteMayHaveExecuted`,
+or `enterMayHaveExecuted`. Known causes carry a bounded public `DialogKind`; failed inspection uses
+`uninspectable`. Taint, authority retirement, possible-submission precedence, ledger updates and
+submit outcomes retain their existing behavior.
+
+`DialogKind` provides exhaustive fixed `title` and `spokenName` properties. Titles retain the existing
+CLI text byte for byte. Spoken noun phrases support the planned PR 2b notices; this slice does not
+add those notices. Detector matching and fail-closed behavior are unchanged. Tests iterate every kind
+for non-empty names and pin all four titles and all four spoken names.
+
+`AdapterError.blockedByDialog` preserves the previous interpolated `deliveryFailed("…")` text.
+A later-line `HostError.partial` retains a `.dialog` reason after policy and cancellation precedence;
+a first-line refusal retains the adapter error. Existing String reasons construct `.text` through
+an overload, preserving equality assertions and CLI interpolation without changing the CLI source.
+`HostDialogPartialTests` pins block messages, adapter error text, reason descriptions and partial
+interpolation byte for byte. Submission tests assert causes and effects while retaining their
+buffer deletion, key, taint and ledger checks. Routing and device wording remain follow-up work.
+
+### Structured-evidence verification
+
+The source and Swift-test snapshot is `cee96a649781a7fc68ebb60232a8d54c46a41a3a`.
+Verification used Swift 6.3.3 on the Dev Work VM in a fresh checkout synchronized by local bundles.
+Each run waited for the shared lane, used background task policy and at most four workers, and had
+a 600-second cap with signal handling and process-group cleanup. SSH stdin was closed and each
+connection remained attached until completion.
+
+The focused filter ran three times after the corrected package/test build:
+
+```text
+HailDaemonKitTests\.(TmuxDialogDetectionTests|TmuxDialogSubmissionTests|HostDialogPartialTests)
+```
+
+Each run passed: 21 tests in three suites, no skips. Durations were 0.030, 0.029 and 0.028 seconds.
+Preliminary verification caught a parameterized-test declaration error and a nested non-dialog
+refusal description mismatch; both were corrected before these final passes.
+
+The requested neighboring filter ran once, unsplit:
+
+```text
+HailDaemonKitTests\.(Tmux|CommandLaunch|HailHost|Host|DeliveryMappingCleanup|LocalDispatch|DeliveryAdmission|Reply)
+```
+
+It passed: 400 reported tests in 76 suites, 167.140 seconds, with ten expected known-issue records.
+Five came from `LocalDispatchPreflightWaitTests` and five from `ReplyRecipientHandoffWaitTests`;
+these deliberately exercise deadline and cancellation failure paths. The same ten tmux-dependent
+functions in the five suites listed above were skipped because tmux was unavailable. All new tests ran.
+
+At that snapshot, `python3 -m unittest discover -s Tests/ReplyCLITests` ran 124 tests in 231.936
+seconds and exited 1 with one setup error. The `DeliveryMappingCleanupCLITests` fixture then extracted
+only the `case partial(...)` line into an isolated Swift enum, without `HostPartialReason` or the
+String convenience overload, so its probe failed to compile.
+
+With maintainer approval, `1ce33c633b916a90d39bf6139a7b4d245c0f9bbc` changed only that fixture's source
+extraction. It now splices `HostPartialReason`, the String overload, `AdapterError`, `DialogBlock` and
+`PendingInputReason` from the production sources; no definition is hand-copied. Its assertions are
+unchanged: exact stderr text including pluralization and the trailing newline, empty stdout, and exit 6,
+for all three reasons with zero, one and two delivered lines. On the Dev Work VM, under the same lane
+conditions, the focused fixture passed (1 test), the full Reply CLI suite passed (125 tests, 231.110
+seconds), and the warnings-as-errors build exited 0.
+
+`c880200b6e636ac4c442b6feb67d2835dca1788b` adds only a setup assertion that fails if the extraction no
+longer finds the partial reason, its overload or the adapter declarations. At that head, on the host
+with Swift 6.2.4, a package-and-test build (`swift build --build-tests`, four jobs, background task
+policy) exited 0, and the `test_delivery_mapping_cleanup.py` fixture alone passed (1 test, 4.544
+seconds). The full Reply CLI suite was not rerun on the host.
+
+The repository's policy CLI checks passed with exit 0 and no output after a successful
+`swift build --product haild -j 4` with the lane's CLT Testing flags.
+
+The warnings-as-errors package/test build completed in 135.06 seconds. Both the build and its enclosing
+verification exited 0. The linker emitted the lane's known missing module-cache debug-file warnings;
+this is a successful warnings-as-errors build, not a warning-free linker run.
+
+Host strict SwiftLint with the Xcode developer directory and the non-comment 120-column awk check
+both exited 0 and printed nothing for all six changed Swift files. The checker exclusions and rename
+handling yield exactly four production files, with no renames. The CLI source is unchanged.
+Both VM build directories were deleted and no verification jobs remained running.
+This is synthetic package and CLI evidence, with no live dialog, simulator, installed-build,
+physical-device or captured-output round-trip validation.
+
+### Typed-kind verification
+
+The source/test snapshot is `ef593f4278b96574ced511dfab5b295575c39733`. The subsequent verification
+record changes documentation only. Verification used Swift 6.3.3 on the Dev Work VM in a fresh
+checkout synchronized by local bundles. No GitHub calls or pushes were made.
+
+Each phase waited for the shared lane and used background task policy. Swift builds used at most
+four build jobs with a single compiler frontend job each, plus the lane's Command Line Tools Testing
+framework, plugin and linker flags. Each phase had a 600-second cap with signal handling and
+process-group cleanup. SSH stdin was closed and each connection remained attached until
+completion.
+
+The package/test build passed (236.50 seconds); after the final source bundle synchronization, the
+incremental package/test build also passed (5.64 seconds). Tests ran without rebuilding and without
+parallel test execution. The focused filter ran three times:
+
+```text
+HailDaemonKitTests\.(TmuxDialogDetectionTests|TmuxDialogSubmissionTests|HostDialogPartialTests)
+```
+
+Each run exited 0: 22 tests in three suites, no skips, in 0.034, 0.034 and 0.027 seconds.
+The requested neighboring filter ran once, unsplit:
+
+```text
+HailDaemonKitTests\.(Tmux|CommandLaunch|HailHost|Host|DeliveryMappingCleanup|LocalDispatch|DeliveryAdmission|Reply)
+```
+
+It exited 0: 401 reported tests in 76 suites, 164.814 seconds, with ten expected known-issue records.
+Five came from `LocalDispatchPreflightWaitTests` and five from `ReplyRecipientHandoffWaitTests`.
+The same ten tmux-dependent functions in the five suites listed above were skipped because tmux was
+unavailable. All dialog and host partial tests executed.
+
+`python3 -m unittest discover -s Tests/ReplyCLITests` passed all 125 tests in 234.826 seconds, exit 0.
+The repository policy CLI test passed with exit 0 and no test output after a successful
+`swift build --product haild` (0.35 seconds). The isolated package/test warnings-as-errors build
+passed in 218.21 seconds: build exit 0 and enclosing verification exit 0. The linker emitted the
+known missing module-cache debug-file warnings; this is not a warning-free linker claim.
+
+All four title literals match the supplied pre-delta source byte for byte. The CLI source and host
+formatting are unchanged. `HostDialogPartialTests` retains every text pin, with only typed case inputs
+substituted. The Python CLI test methods are AST-identical; only dependency extraction adds
+`DialogKind`, retaining all non-empty extraction assertions. No CLI expected-output assertion changed.
+
+On the host, strict SwiftLint with the Xcode developer directory and the non-comment 120-column
+check both exited 0 and printed nothing for all seven Swift files this PR changes against `main`,
+including `TmuxDialogDetectionTests.swift`, at `2bf8cea0bc89777f16aa1ed9c2fe442801fc4302`. No builds
+ran on the host for this delta. `git diff --check` passed. The PR-shape exclusions and rename
+handling still count exactly the same four production files, with no renames; this delta modifies
+two of them.
+Both VM build directories were deleted, and no verification jobs remained running.
+This is synthetic package and CLI evidence, with no live dialog, simulator, installed-build,
+physical-device or captured-output round-trip validation.
