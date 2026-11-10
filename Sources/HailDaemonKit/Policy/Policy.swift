@@ -24,7 +24,7 @@ public enum Tier: String, Codable, Sendable, CaseIterable {
     case locked
 }
 
-/// The owner's configured voice guard setting. This build does not yet enforce `off`.
+/// The owner's guard escalation setting for requests from the host ambient pipeline.
 public enum VoiceGuards: String, Codable, Sendable, CaseIterable { case on, off }
 
 /// What one target is allowed to do, decided at the Mac keyboard (#41 items 1, 2, 5).
@@ -67,7 +67,7 @@ public struct Policy: Codable, Sendable, Equatable {
     /// The guard rules in force: `DangerousPatternGuard.defaults` unless the policy file lists its own.
     public var guardPatterns: [GuardPattern]
     public var deliveriesPerMinute: Int
-    /// Configuration only in this slice; every delivery still runs guard escalation.
+    /// Off suppresses only ambient guard escalation; scanning and all other gates remain active.
     public var voiceGuards: VoiceGuards
 
     public init(
@@ -180,7 +180,7 @@ public struct PolicyEvaluator: Sendable {
         if let longest = waits.max() { return denied(.rateLimited(retryAfter: longest)) }
         let outcomes = guards.hits(in: request.guardLines ?? request.lines)
         let hits = outcomes.map(\.name)
-        if target.tier == .confirm || !hits.isEmpty {
+        if target.tier == .confirm || (!hits.isEmpty && !(policy.voiceGuards == .off && request.origin == .ambient)) {
             let reason = target.tier == .confirm ? "confirm tier" : "guarded: " + hits.joined(separator: ", ")
             return PolicyEvaluation(decision: .confirm(reason: reason, guardHits: hits), guardOutcomes: outcomes)
         }

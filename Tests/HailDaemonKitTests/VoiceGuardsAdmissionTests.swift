@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import HailDaemonKit
 
-/// Configuration is not enforcement: the ambient task-local and ordinary send both retain guard holds.
+/// Public sends retain guard holds even when called from an ambient task.
 @Suite(.frozenGuardBudget) struct VoiceGuardsAdmissionTests {
     @Test(arguments: [false, true])
     func offStillEscalatesGuardMatches(_ ambient: Bool) async throws {
@@ -14,10 +14,8 @@ import Testing
         let host = try HailHost(registry: registry, store: InMemoryPolicyStore(policy))
         let outcome: SendOutcome
         if ambient {
-            let generation = host.targetPolicy.snapshot(for: "tmux:a")
             outcome = try await HostSession.$ambientInputDispatch.withValue(true) {
-                try await host.sendAuthorized("guarded-token", policyGeneration: generation, from: "test",
-                                              expectedBinding: "bound", context: nil)
+                try await host.send("guarded-token", to: "tmux:a", from: "test")
             }
         } else {
             outcome = try await host.send("guarded-token", to: "tmux:a")

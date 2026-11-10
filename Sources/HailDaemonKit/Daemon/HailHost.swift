@@ -59,6 +59,7 @@ private struct HostDispatchRequest: Sendable {
     let confirmedHash: String?
     let expectedBinding: String?
     let turn: ProviderTurnContext?
+    let origin: DeliveryRequest.Origin
     var policyGeneration: TargetPolicyGeneration?
     let heldScope = HeldSendScope.current
     let taskHandoff = TaskProgressWakeScope.beforeHandoff
@@ -113,6 +114,7 @@ public actor HailHost {
     nonisolated private let heldLockdown = Mutex(false)
     nonisolated let targetPolicy: TargetPolicyAuthority
     private let replyPublicationAuthority = ReplyPublicationAuthority()
+    private let voiceGuardLog: @Sendable (String) -> Void
     private var evaluator: PolicyEvaluator
     private var limiter = RateLimiter()
     private var pending: [String: ContinuousClock.Instant] = [:]
@@ -121,7 +123,8 @@ public actor HailHost {
     public init(
         registry: Registry, sanitizing: SanitizePolicy = SanitizePolicy(), store: any PolicyStore,
         confirmationWindow: Duration = HailHost.confirmationWindow,
-        requestNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
+        requestNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+        voiceGuardLog: (@Sendable (String) -> Void)? = nil
     ) throws {
         self.registry = registry
         self.sanitizing = sanitizing
@@ -133,6 +136,7 @@ public actor HailHost {
         window = confirmationWindow
         heldNoticeWindow = min(confirmationWindow, .seconds(3_600))
         self.requestNow = requestNow
+        self.voiceGuardLog = voiceGuardLog ?? { FileHandle.standardError.write(Data(($0 + "\n").utf8)) }
         var loaded = Policy()
         do {
             loaded = try store.load()
@@ -152,7 +156,7 @@ public actor HailHost {
     public var voiceGuardsStatus: LocalVoiceGuardsReport {
         let value: LocalVoiceGuardsReport.Value = policyFailure != nil ? .unusable
             : (policy.voiceGuards == .on ? .on : .off)
-        return LocalVoiceGuardsReport(value: value, enforced: false)
+        return LocalVoiceGuardsReport(value: value, enforced: true)
     }
 
     public var currentPolicy: Policy { policy }
@@ -173,7 +177,8 @@ public actor HailHost {
         expectedBinding: String? = nil
     ) async throws -> SendOutcome {
         try await dispatch(text, request: HostDispatchRequest(
-            target: id, device: device, confirmedHash: confirmedHash, expectedBinding: expectedBinding, turn: nil
+            target: id, device: device, confirmedHash: confirmedHash,
+            expectedBinding: expectedBinding, turn: nil, origin: .ordinary
         ))
     }
 
@@ -183,7 +188,7 @@ public actor HailHost {
     ) async throws -> SendOutcome {
         try await dispatch(text, request: HostDispatchRequest(
             target: context.binding.targetID, device: device, confirmedHash: confirmedHash,
-            expectedBinding: context.binding.sessionID, turn: context
+            expectedBinding: context.binding.sessionID, turn: context, origin: .ordinary
         ))
     }
 
@@ -238,18 +243,22 @@ extension HailHost {
         try Task.checkCancellation()
         let guardLines = try screenPaste(&lines)
         var request = DeliveryRequest(
-            target: id, binding: listed.binding, lines: lines, device: dispatch.device, guardLines: guardLines
+            target: id, binding: listed.binding, lines: lines, device: dispatch.device, guardLines: guardLines,
+            origin: dispatch.origin
         )
         // No suspension from here to the first evaluation: the consumed token cannot go stale in between.
         let confirmed = HeldSendScope.current == nil ? consume(dispatch.confirmedHash, for: request) : false
         let confirmedRevision = policyRevision
         var delivered: [String] = []
+        var skipped: [GuardHit] = []
+        defer { logSkippedGuards(skipped) }
         for (index, line) in lines.enumerated() {
             try requireCurrentLine(delivered, index: index, policyGeneration: dispatch.policyGeneration)
             request.lines = Array(lines[index...])
             let evaluation = evaluator.evaluateWithEvidence(
                 request, lockdown: lockdown.isOn, limiter: limiter, now: requestNow()
             )
+            skipped.append(contentsOf: skippedGuards(in: evaluation, request: request))
             var decision = evaluation.decision
             let heldConfirmation: Bool
             if HeldSendScope.current != nil, case .confirm = decision {
@@ -283,6 +292,24 @@ extension HailHost {
         }
         return .delivered(delivered)
     }
+    private func skippedGuards(in evaluation: PolicyEvaluation, request: DeliveryRequest) -> [GuardHit] {
+        guard request.origin == .ambient, policy.voiceGuards == .off,
+              evaluation.decision == .deliver else { return [] }
+        return evaluation.guardOutcomes
+    }
+
+    /// One record per request, from existing evaluations only. Timeouts never claim a match.
+    private func logSkippedGuards(_ outcomes: [GuardHit]) {
+        guard !outcomes.isEmpty else { return }
+        let matches = Set(outcomes.filter { $0.outcome == .match }.map(\.name)).sorted()
+        let timeouts = Set(outcomes.filter { $0.outcome == .timeout }.map(\.name)).sorted()
+        var event: [String: Any] = ["event": "voice_guard_skipped", "rules": matches]
+        if !timeouts.isEmpty { event["timeout"] = true; event["timeoutRules"] = timeouts }
+        guard let data = try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]),
+              let line = String(data: data, encoding: .utf8) else { return }
+        voiceGuardLog(line)
+    }
+
     private func confirms(_ evaluation: PolicyEvaluation, confirmed: Bool) -> Bool {
         guard confirmed, case .confirm = evaluation.decision else { return false }
         guard let previous = HeldSendScope.current?.entry.readBack.guardOutcomes else { return true }
@@ -303,7 +330,7 @@ extension HailHost {
         try await dispatch(text, request: HostDispatchRequest(
             target: policyGeneration.target, device: device, confirmedHash: confirmedHash,
             expectedBinding: expectedBinding ?? policyGeneration.binding, turn: context,
-            policyGeneration: policyGeneration
+            origin: HostSession.ambientInputDispatch ? .ambient : .ordinary, policyGeneration: policyGeneration
         ))
     }
 
