@@ -340,14 +340,14 @@ The source/test snapshot is `ef593f4278b96574ced511dfab5b295575c39733`. The subs
 record changes documentation only. Verification used Swift 6.3.3 on the Dev Work VM in a fresh
 checkout synchronized by local bundles. No GitHub calls or pushes were made.
 
-Each phase waited for the shared lane, ran under `taskpolicy -b`, and used at most four workers.
-Swift builds used `-j 4 -Xswiftc -j1` and the lane's CLT Testing framework, plugin and linker flags.
-Each phase had a 600-second cap with signal handling and process-group kill cleanup. SSH stdin was
-closed with `< /dev/null`; each connection remained attached until completion.
+Each phase waited for the shared lane, used background task policy and at most four workers, and
+used the lane's Command Line Tools Testing flags. Each phase had a 600-second cap with signal
+handling and process-group cleanup. SSH stdin was closed and each connection remained attached until
+completion.
 
 The package/test build passed (236.50 seconds); after the final source bundle synchronization, the
-incremental package/test build also passed (5.64 seconds). Tests used the same Testing flags and
-`swift test --skip-build --no-parallel -j 4`. The focused filter ran three times:
+incremental package/test build also passed (5.64 seconds). Tests ran without rebuilding and without
+parallel test execution. The focused filter ran three times:
 
 ```text
 HailDaemonKitTests\.(TmuxDialogDetectionTests|TmuxDialogSubmissionTests|HostDialogPartialTests)
@@ -376,9 +376,10 @@ formatting are unchanged. `HostDialogPartialTests` retains every text pin, with 
 substituted. The Python CLI test methods are AST-identical; only dependency extraction adds
 `DialogKind`, retaining all non-empty extraction assertions. No CLI expected-output assertion changed.
 
-Host `swiftlint lint --strict --quiet` with the Xcode developer directory and the non-comment
-120-column awk check both exited 0 and printed nothing for all six changed Swift files. No builds
-ran on the host. `git diff --check` passed. The PR-shape exclusions and rename handling still count
+On the host, strict SwiftLint with the Xcode developer directory and the non-comment 120-column
+check both exited 0 and printed nothing for all seven Swift files this PR changes against `main`,
+including `TmuxDialogDetectionTests.swift`, at `2bf8cea0bc89777f16aa1ed9c2fe442801fc4302`. No builds
+ran on the host for this delta. `git diff --check` passed. The PR-shape exclusions and rename handling still count
 exactly the same four production files, with no renames; this delta modifies two of them.
 Both VM build directories were deleted, and no verification jobs remained running.
 This is synthetic package and CLI evidence, with no live dialog, simulator, installed-build,
