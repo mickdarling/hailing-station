@@ -54,10 +54,12 @@ final class RedesignShellUITests: XCTestCase {
         waitUntilHittable(connection, in: app, named: "station-restored")
 
         // In the shell a station tool opens its section instead of pushing under the station.
-        openStationTool("Labs", in: app, opens: app.navigationBars["Settings"])
+        let labs = openStationTool("Labs", in: app, opens: app.navigationBars["Settings"])
         try assertNoStation(in: app, named: "settings-shown")
         section("station", in: app, isPad: isPad).tap()
-        waitUntilHittable(connection, in: app, named: "station-restored-from-settings")
+        // The station comes back where it was left, scrolled down to its tools, since it was never remounted. So the
+        // tool just tapped is reachable again, not the header that scrolled away.
+        waitUntilHittable(labs, in: app, named: "station-restored-from-settings")
     }
 
     /// Nothing of the station is in the accessibility tree: no identifier in its namespace beyond the shell's own, and
@@ -107,9 +109,10 @@ final class RedesignShellUITests: XCTestCase {
         add(attachment)
     }
 
-    /// Taps one of the station's own tool links, and waits for what it opens.
+    /// Taps one of the station's own tool links, waits for what it opens, and returns the tool.
     @MainActor
-    private func openStationTool(_ name: String, in app: XCUIApplication, opens title: XCUIElement) {
+    @discardableResult
+    private func openStationTool(_ name: String, in app: XCUIApplication, opens title: XCUIElement) -> XCUIElement {
         let tool = app.buttons[name]
         // Hittable, and clear of the bottom edge, where the build footer sits over the scrolling station.
         let limit = app.windows.firstMatch.frame.maxY - 160
@@ -119,6 +122,7 @@ final class RedesignShellUITests: XCTestCase {
         tool.tap()
         if !title.waitForExistence(timeout: 3), tool.exists, tool.isHittable { tool.tap() }
         XCTAssertTrue(title.waitForExistence(timeout: 5), "\(name) opens")
+        return tool
     }
 
     @MainActor
