@@ -120,7 +120,10 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
                 detail(section)
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { dock(section) }
+        // The dock is hosted apart from the root too, so it hides with the station. It's empty until the dock step,
+        // which must pass #1183's tree sweep; if this modifier doesn't reach the inset there, as it didn't reach the
+        // build footer, that step must find another way that keeps the dock mounted.
+        .safeAreaInset(edge: .bottom, spacing: 0) { dock(section).stationAccessibilityScope() }
     }
 
     /// Tells assistive technologies the tree changed, so a station shown again is read afresh. In #1183's iPad test,
