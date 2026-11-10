@@ -275,7 +275,8 @@ extension LocalReplyEndpoint {
             }
             await respond(.dispatch(delivered: 1, request: owner), to: client)
         } catch is CancellationError {
-            // Before the handoff nothing was sent; after it, the record stands. Neither is a refusal.
+            // Cancellation is the caller's outcome, never a refusal: after the handoff the record stands. Before it,
+            // nothing is reported as sent, though earlier lines or a dialog-blocked paste or Enter may have landed.
             retire(client.id)
         } catch {
             let refusal = error as? LocalDispatchRefusal

@@ -529,11 +529,11 @@ This is unchanged behavior and is out of scope for this slice.
 
 The source/test snapshot is `92ec0f6d24b4e8885375776e9856074de22a99be`.
 Verification used Swift 6.3.3 on the Dev Work VM in a fresh checkout synchronized by local bundles.
-Every phase waited for the shared lane, used `taskpolicy -b` and at most four workers, and had a
-600-second cap with signal handling and process-group kill cleanup. SSH stdin was closed with
-`< /dev/null` and every connection stayed attached until completion. Swift commands used the lane's
-CLT Testing framework, plugin and linker flags, with `-j 4 -Xswiftc -j1` for builds and
-`--skip-build --no-parallel -j 4` for tests.
+Every phase waited for the shared lane, used background task policy, and had a 600-second cap with
+signal handling and process-group cleanup. SSH stdin was closed and every connection stayed attached
+until completion. Swift builds used at most four build jobs with a single compiler frontend job each,
+plus the lane's Command Line Tools Testing framework, plugin and linker flags. Tests ran with the same
+flags, without rebuilding and without parallel test execution.
 
 The initial package/test build passed in 213.91 seconds. Preliminary focused runs exposed two setup
 errors in the new cancellation fixture: an owner-role event in an anonymous-speaker session, then a
@@ -559,12 +559,11 @@ known-issue records from the existing preflight and recipient-handoff deadline/c
 The same ten functions in the five tmux-dependent suites listed above were skipped because tmux
 was unavailable. Every changed test executed.
 
-The full Reply CLI suite (`python3 -m unittest discover -s Tests/ReplyCLITests`) passed all 126 tests
-in 230.648 seconds, exit 0. The policy CLI test (`bash scripts/tests/test-policy-cli.sh`) exited 0
-with no test output after `swift build --product haild` passed in 0.35 seconds.
+The full Reply CLI suite passed all 126 tests in 230.648 seconds, exit 0. The repository's policy CLI
+test exited 0 with no test output, after an incremental build of the `haild` product passed in 0.35
+seconds.
 
-The isolated warnings-as-errors package/test build (`swift build --build-tests -Xswiftc -warnings-as-errors`)
-passed in 221.13 seconds. Both the build and its enclosing verification exited 0. The linker emitted
+The isolated warnings-as-errors package and test build passed in 221.13 seconds. Both the build and its enclosing verification exited 0. The linker emitted
 the known missing module-cache debug-file warnings; this is a successful warnings-as-errors build,
 not a warning-free linker claim.
 
