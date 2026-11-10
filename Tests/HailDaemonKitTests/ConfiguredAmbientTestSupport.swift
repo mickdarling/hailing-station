@@ -30,15 +30,17 @@ struct ConfiguredAmbientRig {
     static func make(behavior: String = ambientEchoAtEOF, fixture: String = "tool-events.jsonl",
                      routes: VoiceRoutes? = nil, capabilities: [String] = ["probe"],
                      acknowledgementHold: AcknowledgementHold? = nil,
-                     routerTarget: String = target) async throws -> Self {
+                     routerTarget: String = target, noticeTimeout: TimeInterval = 30,
+                     timing: RightyoChildProcess.Timing = .init(eofGrace: 0.5, termGrace: 0.1)) async throws -> Self {
         let base = try await VoiceRouteRig.make()
         let fake = try FakeRightyo(behavior)
         try fake.install(fixture: fixture)
         let events = AmbientEventDetails()
         var configuration = AmbientRightyoRouter.Configuration(
             executable: fake.executable, config: fake.config, target: routerTarget, binding: "startup-hint",
-            allowSynthetic: true, timing: .init(eofGrace: 0.5, termGrace: 0.1)
+            allowSynthetic: true, timing: timing
         )
+        configuration.sessionChangeNoticeTimeout = noticeTimeout
         if let acknowledgementHold {
             configuration.acknowledgements = AmbientAckLibrary(clips: ["default": [PendingInputRun.ack]])
             configuration.acknowledgementHold = acknowledgementHold.wait
@@ -80,6 +82,13 @@ struct ConfiguredAmbientRig {
         AmbientListenerDispatcher(listener: listener, audit: nil, selection: scope.selection,
                                   streamTarget: scope.target, binding: scope.binding,
                                   policyGeneration: scope.policyGeneration)
+    }
+
+    func pendingSessionChanges(_ count: Int = 1) async throws -> [AmbientSessionChangeWait] {
+        try #require(await eventually {
+            router.state.withLock { $0.runs.values.compactMap(\.sessionChange).count } == count
+        })
+        return router.state.withLock { $0.runs.values.compactMap(\.sessionChange) }
     }
 
     func request(_ scope: AmbientStreamScope) -> LocalDispatchRequest {

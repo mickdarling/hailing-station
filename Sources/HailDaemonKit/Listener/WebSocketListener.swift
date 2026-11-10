@@ -671,6 +671,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// How long a child launched start-private (#735 S-2b) has to emit `started` before it is killed.
         public var startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline
         var gapClock: @Sendable () -> ContinuousClock.Instant = { .now }
+        /// Production keeps the fixed notice bound; synthetic tests can control their wait independently.
+        var sessionChangeNoticeTimeout: TimeInterval = AmbientRightyoRouter.sessionChangeNoticeDeadline
         /// How long each child has to ack a `{"duck":true}` (#735 S-8). Not configurable: tests only shorten it.
         var ackDeadline: TimeInterval = RightyoAmbientPipeline.ackDeadline
         /// The bound on a privacy entry's announcement (#735 S-8 HS-C), nil for start + ack + margin (round 3: never a
@@ -892,8 +894,14 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             // would still be dead.
             case .started(let stream, let connection, _):
                 state.latest[connection] = stream
-            // Taken over (#366): the old stream's late failure is not reported to its device as a stop.
-            case .ended(let stream, .superseded): state.latest = state.latest.filter { $0.value != stream }
+            // These ends already report a refusal, supersede the stream or tear down its peer. Revoke before
+            // queueing: a held notice must not outlive an ending even while the worker is making room.
+            case .ended(let stream, let reason) where reason != .final && reason != .idle:
+                state.latest = state.latest.filter { $0.value != stream }
+                for (id, run) in state.runs where run.stream == stream {
+                    state.runs[id]?.failureReported = true
+                    run.sessionChange?.finish()
+                }
             default: break
             }
             if case .started(let stream, _, _) = event { state.newestStart = stream }
@@ -1442,7 +1450,8 @@ extension AmbientRightyoRouter {
     ) -> AmbientListenerDispatcher {
         let refused = deliveryRefused(on: connection, target: destination.target, listener: listener, notices: notices)
         let bindingChanged: @Sendable () async -> Void = { [weak self] in
-            let notice = AmbientSessionChangeWait()
+            let notice = AmbientSessionChangeWait(timeout: self?.configuration.sessionChangeNoticeTimeout
+                ?? AmbientRightyoRouter.sessionChangeNoticeDeadline)
             // Claim the exact child before suspending. Input closure, microphone audio and reload now defer.
             let claimed = self?.state.withLock { state -> UUID? in
                 guard let pipeline = mark.pipeline,
@@ -1512,7 +1521,7 @@ extension AmbientRightyoRouter {
         state.runs[id]?.task = Task { [weak self] in
             if reload { self?.emit("ambient_reloaded", detail: nil) }
             self?.emit("ambient_started", connection: connection, detail: nil)
-            await self?.run(pipeline, id: id, stream: stream, connection: connection, target: target)
+            await self?.run(pipeline, id: id, stream: stream, connection: connection)
         }
         return id
     }
@@ -1696,10 +1705,10 @@ extension AmbientRightyoRouter {
     }
 
     private func run(
-        _ pipeline: RightyoAmbientPipeline, id: UUID, stream: UUID, connection: UUID, target: String
+        _ pipeline: RightyoAmbientPipeline, id: UUID, stream: UUID, connection: UUID
     ) async {
         var failure: String?
-                let detail: String
+        let detail: String
         do {
             let summary = try await RightyoGuardRefusal.$current.withValue(RightyoGuardRefusal()) {
                 try await pipeline.run()
@@ -2777,6 +2786,9 @@ final class AmbientSessionChangeWait: Sendable {
     }
     private let state = Mutex(State())
     private static let deadlines = DispatchQueue(label: "hail.ambient.session-change-deadline")
+    private let timeout: TimeInterval
+
+    init(timeout: TimeInterval = AmbientRightyoRouter.sessionChangeNoticeDeadline) { self.timeout = timeout }
     var isOpen: Bool { state.withLock { $0.open } }
 
     func submit(_ work: () -> Bool) -> Bool {
@@ -2792,7 +2804,7 @@ final class AmbientSessionChangeWait: Sendable {
                     return false
                 }
                 if ended { continuation.resume() }
-                Self.deadlines.asyncAfter(deadline: .now() + AmbientRightyoRouter.sessionChangeNoticeDeadline) {
+                Self.deadlines.asyncAfter(deadline: .now() + timeout) {
                     self.finish()
                 }
             }

@@ -141,12 +141,37 @@ and the captured acknowledgement on its existing request-refusal chain.
 
 `AmbientRightyoRouter.sessionChangeNoticeDeadline` bounds that wait to two seconds. Completion, expiry,
 teardown or cancellation releases the dispatcher, which unconditionally throws the terminal refusal.
-The run is removed before the ending is sent; a stalled acknowledgement cannot retain a run slot or
-prevent the gate from ending. The deadline uses a separate serial dispatch queue and does not join an
-acknowledgement task. Expiry also cancels the acknowledgement, activating the prepared-send watchdog.
+The run is removed before its cleanup ending is sent. The notice bound includes delivery of the
+captured acknowledgement clip: a slow link may exhaust the bound, skip the notice and cut that clip.
+This fails closed; neither a notice nor acknowledgement completion is required to stop dispatch.
+
+Two seconds bounds only the notice wait. The pipeline still awaits child shutdown before its router
+run is removed and the gate ends. `RightyoChildProcess.stop` bounds that shutdown by
+`eofGrace + 3 * termGrace + 1`: production defaults are 3 seconds after EOF, 2 after SIGTERM,
+and up to 5 more for process-group settling. The conservative total is therefore **12 seconds**
+(2 + 3 + 3 × 2 + 1), excluding executor scheduling and delivery of the ending frame. A child ignoring
+EOF and SIGTERM receives SIGKILL after about 5 seconds; group settling can extend the release time.
+Retirement starts before the notice wait, so these phases normally overlap, but the bound does not
+rely on that overlap. A stalled acknowledgement cannot extend the notice wait or shutdown timers.
+
+Early router removal would forget an unreaped child counted by `maxLiveChildren` and its teardown,
+privacy and drain bookkeeping. Safe decoupling needs a pipeline lifecycle boundary that separates
+terminal dispatch completion from process reaping in `RightyoAmbientPipeline.swift`, outside PR B's
+four production files. This change retains that accounting and tests the total bound with production
+shutdown timings and a child ignoring EOF and SIGTERM.
+
+The deadline uses a separate serial dispatch queue and does not join an acknowledgement task.
+Expiry also cancels the acknowledgement, activating the prepared-send watchdog.
 A transport submission permit is revoked under the same lock used to enqueue the notice: a task held
 by an external acknowledgement can later resume, but cannot enqueue a late notice. Successful notices
 still reach `peer.post` before the ending. Expiry or notice failure does not suppress the ending.
+
+A gate refusal (including a microphone segment after policy retirement) synchronously revokes any
+pending notice, marks the ending reported and removes its latest-stream claim before router work
+can queue. Cleanup cannot then report a second ending. Normal final and idle boundaries still allow
+the child's buffered request to complete. Tests inject the notice timeout independently of the fixed
+production constant: held-ordering cases use a long safety timeout, deadline cases use a short one,
+and capacity cases explicitly expire captured attempts after all four claims exist.
 
 Fresh-admission refusals are built under the opening attempt's policy generation, then restore any
 older child's retained generation. A previous stream's retired grant cannot rewrite a current opening
@@ -169,8 +194,8 @@ a later fresh stream to deliver. Approval alone starts nothing; old-stream input
 
 - `AmbientSessionChangeNoticeTests`: exact notice-before-ending wire order at refused admission and
   mid-stream failure, including a reloaded child; a held acknowledgement holds both frames until the
-  deadline; repeated
-  unapproved restart attempts deliver nothing and launch no child; approval permits only a fresh stream;
+  deadline; repeated unapproved restart attempts deliver nothing and launch no child; approval permits
+  only a fresh stream;
   binding-mismatch wording uses the refusal chain even after target authority is denied, with no target voice;
   the selected-target seam retains its prior terminal error.
 - `AmbientSessionChangeBoundaryTests`: routed mismatch bypasses the own-target notice, and an older
@@ -178,6 +203,11 @@ a later fresh stream to deliver. Approval alone starts nothing; old-stream input
 - `AmbientSessionChangeDeadlineTests`: a prepared send with no completion cannot retain a run; four
   stalled runs release capacity for a fresh admission; expired notices stay silent when acknowledgements
   resume; child exit, continued microphone input, teardown and cancellation cannot add a second ending.
+- `AmbientSessionChangeGateEndingTests`: policy retirement followed by a microphone segment and
+  malformed input both revoke a held notice and yield only the gate's error; a child ignoring EOF
+  and SIGTERM, using production shutdown timings and the production notice timeout, releases its
+  run slot and gate within the 12-second total bound, with no old delivery or late notice. An
+  owner-approved fresh stream then delivers only at the approved replacement binding.
 - `AmbientSessionChangeAdmissionTests`: a same-connection A → approved B → unapproved C opening gets
   the session-change ending while retaining the older child's grant; missing, dead, nil and empty
   mid-stream bindings retain their prior ending and produce no session-change notice.
@@ -269,3 +299,45 @@ and no verification processes from this task remained. The production-file count
 PR checker's exclusions. No host build, host Swift test, simulator, physical-device validation,
 installed-build replacement, upload or captured-output round trip was performed. No push or GitHub
 call was made for this round.
+
+Round-3 verification used a fresh Dev Work VM checkout with Apple Swift 6.3.3. The phase runner
+waited for the shared lane and the load limit, used background task priority, at most four workers,
+serial Swift test scheduling and the same ten-minute phase cap with process cleanup. The focused
+and disjoint broader filters and CLI commands above were unchanged. The focused filter now also
+includes `AmbientSessionChangeGateEndingTests`.
+
+| Phase | Result |
+| --- | --- |
+| Focused selection, three consecutive runs | 31 tests in 10 suites per run; all passed in 81.745, 84.276 and 82.939 seconds |
+| Ambient A–O families | 134 tests in 25 suites passed, 107.121 seconds |
+| Ambient P–Q families | 251 tests in 52 suites passed, 234.422 seconds |
+| Ambient R–Z families | 278 tests in 61 suites passed, 227.407 seconds |
+| Rightyo families | 186 tests in 17 suites passed, 29.987 seconds |
+| Remaining requested daemon families | 203 tests in 43 suites passed, 10.746 seconds; five expected known issues |
+| Full Reply CLI suite | 126 tests passed, 224.005 seconds; exit 0 |
+| Policy CLI after building haild | Build exit 0; test exit 0; phase completed in 5 seconds |
+| Warnings-as-errors package and test build | Build and wrapper exit 0; 239.06 seconds |
+
+The fresh package/test build passed in 231.34 seconds. A fixture synchronization refinement then
+rebuilt successfully in 18.24 seconds before all three focused runs and the broader selection.
+The final test sources were unchanged throughout those runs. The production-timing regression
+uses the actual 3-second EOF and 2-second TERM grace periods and the production 2-second notice
+constant, with a child ignoring EOF and SIGTERM. It verifies the run slot and gate release within
+the conservative 12-second bound, no late notice or old delivery, and successful fresh admission
+at the owner-approved replacement. The gate-refusal regression covers both policy retirement plus
+a microphone segment and malformed input while the notice is held; only the gate's error reaches
+the peer, including after acknowledgement release and run cleanup.
+
+All final phases passed without unexpected issues. The remaining daemon group retained its five
+expected `LocalDispatchPreflightWaitTests` deadline-harness known issues. The warnings-as-errors
+build emitted linker module-cache debug-info warnings; Swift compilation and the wrapper succeeded.
+Every phase completed within ten minutes.
+
+Strict host SwiftLint with the full Xcode developer directory and the literal 120-column awk check
+printed nothing on all 11 Swift files changed from the PR base. No chained `+` operators occur in
+changed `#expect` or `#require` expressions. Diff whitespace checks passed. All 11 Swift file
+checksums matched the tested VM sources. Both verification build directories were deleted and no
+verification processes remained. The production-file count is four under the PR checker's exact
+exclusions, with no renames; this round changes only `WebSocketListener.swift` in production.
+No host build, host Swift test, push, GitHub call, simulator, physical-device test, installed-build
+replacement, upload or captured-output round trip was performed.

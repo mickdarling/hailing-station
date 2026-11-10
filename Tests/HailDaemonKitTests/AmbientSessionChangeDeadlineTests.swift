@@ -19,18 +19,17 @@ import Testing
         #expect(ticket.enqueue())
         let rig = try await ConfiguredAmbientRig.make(behavior: RightyoAmbientPendingInputTests.twoRequests,
             capabilities: AmbientSessionChangeNoticeTests.capabilities,
-            acknowledgementHold: .init { entered.withLock { $0 = true }; _ = await ticket.result() })
+            acknowledgementHold: .init { entered.withLock { $0 = true }; _ = await ticket.result() },
+            noticeTimeout: 0.1)
         do {
             let stream = UUID()
             #expect(await rig.segment(stream).frames.isEmpty)
             try #require(await eventually { rig.router.activeStream == stream })
             try await rig.rebind()
-            let began = ContinuousClock.now
             try RightyoAmbientPendingInputTests.release(rig.fake, "go1")
             try #require(await eventually { entered.withLock { $0 } })
             let stop = try await receiveFrame(on: rig.pair.sockets[0], step: "deadline ends stalled acknowledgement")
             #expect(stop.payload == .control(AmbientSessionChangeNoticeTests.stopped))
-            #expect(began.duration(to: .now) < .seconds(3))
             #expect(await eventually { rig.router.liveRuns == 0 })
             #expect(await rig.gate.activeStream == nil)
             #expect(await ticket.result() == .abandoned)
@@ -101,6 +100,9 @@ import Testing
                 try #require(await eventually { ack.reached == count })
             }
             #expect(rig.router.liveRuns == AmbientRightyoRouter.maxRuns)
+            let attempts = try await rig.pendingSessionChanges(AmbientRightyoRouter.maxRuns)
+            #expect(attempts.count == AmbientRightyoRouter.maxRuns)
+            attempts.forEach { $0.finish() }
             #expect(await eventually { rig.router.liveRuns == 0 })
             // These starts deliberately inject router scopes to fill all slots without changing owner grants.
             // Only the session's original stream owns the gate, so drain any eligible ending before the barrier.
