@@ -22,7 +22,10 @@ class DeliveryMappingCleanupCLITests(unittest.TestCase):
         reason_start = host.index("public enum HostPartialReason:")
         reason = host[reason_start:host.index("\n}", reason_start) + len("\n}")]
         dependencies = []
-        for marker in ["public enum AdapterError:", "public struct DialogBlock:", "public enum PendingInputReason:"]:
+        for marker in [
+            "public enum AdapterError:", "public enum DialogKind:",
+            "public struct DialogBlock:", "public enum PendingInputReason:",
+        ]:
             start = adapter.index(marker)
             dependencies.append(adapter[start:adapter.index("\n}", start) + len("\n}")])
         # A refactor must not let the splice silently extract nothing for the partial reason or its dependencies.

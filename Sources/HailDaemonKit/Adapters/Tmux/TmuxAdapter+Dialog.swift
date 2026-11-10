@@ -2,22 +2,8 @@ import Foundation
 
 enum TmuxDialogState: Sendable, Equatable {
     case clear
-    case dialog(kind: TmuxDialogKind, title: String)
+    case dialog(kind: DialogKind, title: String)
     case unknown
-}
-
-enum TmuxDialogKind: String, Sendable {
-    case computerUsePermissions, computerUseAppApproval, toolPermission, modalFooter
-
-    /// Fixed, bounded display titles; no pane text crosses the refusal boundary.
-    var title: String {
-        switch self {
-        case .computerUsePermissions: "Computer Use needs macOS permissions"
-        case .computerUseAppApproval: "Computer Use wants to control these apps"
-        case .toolPermission: "a tool permission dialog"
-        case .modalFooter: "a dialog"
-        }
-    }
 }
 
 /// The detector supplies only the cause; delivery accounting supplies effects at the failure boundary.
@@ -27,7 +13,7 @@ struct TmuxDialogVeto: Error, Sendable {
 
 extension TmuxAdapter {
     // Verified against Claude Code 2.1.319; titles and recognised dialog shapes may drift.
-    private static let knownDialogs: [TmuxDialogKind] = [.computerUsePermissions, .computerUseAppApproval]
+    private static let knownDialogs: [DialogKind] = [.computerUsePermissions, .computerUseAppApproval]
 
     /// Visible rows only. Every returned title is fixed here, never taken from the pane.
     static func classifyDialog(visibleScreen: String) -> TmuxDialogState {
@@ -41,13 +27,13 @@ extension TmuxAdapter {
         }
         let option = bottom.contains { $0.range(of: #"(?i)^(❯\s*)?1\.\s*Yes"#, options: .regularExpression) != nil }
         if question && option {
-            return .dialog(kind: .toolPermission, title: TmuxDialogKind.toolPermission.title)
+            return .dialog(kind: .toolPermission, title: DialogKind.toolPermission.title)
         }
         let footer = bottom.contains {
             $0.range(of: #"(?i)^(?:.*\s)?esc to cancel$"#, options: .regularExpression) != nil
         }
         if footer {
-            return .dialog(kind: .modalFooter, title: TmuxDialogKind.modalFooter.title)
+            return .dialog(kind: .modalFooter, title: DialogKind.modalFooter.title)
         }
         return .clear
     }
@@ -84,7 +70,7 @@ extension TmuxAdapter {
     func requireClearDialog(_ session: Session) async throws {
         switch await inspectDialog(session) {
         case .clear: return
-        case .dialog(let kind, _): throw TmuxDialogVeto(cause: .known(title: kind.title))
+        case .dialog(let kind, _): throw TmuxDialogVeto(cause: .known(kind))
         case .unknown: throw TmuxDialogVeto(cause: .uninspectable)
         }
     }

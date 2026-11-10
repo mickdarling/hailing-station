@@ -121,9 +121,9 @@ final class DialogSubmissionFixture: Sendable {
             switch self {
             case .captureFailure, .captureFailureAfterPaste: cause = .uninspectable
             case .questionAtPrompt, .sameDialogAbovePrompt, .replacedPrompt, .oldPromptAboveReplacement:
-                cause = .known(title: "a tool permission dialog")
-            case .footerAtPrompt: cause = .known(title: "a dialog")
-            default: cause = .known(title: "Computer Use needs macOS permissions")
+                cause = .known(.toolPermission)
+            case .footerAtPrompt: cause = .known(.modalFooter)
+            default: cause = .known(.computerUsePermissions)
             }
             let effects: DialogBlock.Effects
             switch self {

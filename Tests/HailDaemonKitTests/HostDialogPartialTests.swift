@@ -3,8 +3,8 @@ import Testing
 
 @Suite(.frozenGuardBudget, .timeLimit(.minutes(1))) struct HostDialogPartialTests {
     private static let blocks = [
-        DialogBlock(cause: .known(title: "Computer Use needs macOS permissions"), effects: .none),
-        DialogBlock(cause: .known(title: "a dialog"), effects: .pasteMayHaveExecuted),
+        DialogBlock(cause: .known(.computerUsePermissions), effects: .none),
+        DialogBlock(cause: .known(.modalFooter), effects: .pasteMayHaveExecuted),
         DialogBlock(cause: .uninspectable, effects: .enterMayHaveExecuted)
     ]
 
@@ -45,7 +45,7 @@ import Testing
     }
 
     @Test(arguments: [
-        (DialogBlock.Cause.known(title: "Computer Use needs macOS permissions"),
+        (DialogBlock.Cause.known(.computerUsePermissions),
          "target is blocked by Computer Use needs macOS permissions"),
         (.uninspectable, "target dialog state could not be inspected")
     ], [DialogBlock.Effects.none, .pasteMayHaveExecuted, .enterMayHaveExecuted])

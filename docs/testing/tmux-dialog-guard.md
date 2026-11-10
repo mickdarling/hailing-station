@@ -255,9 +255,14 @@ or captured-output round-trip proof.
 
 The dialog detector now throws an internal cause-only veto. The delivery failure boundary attaches
 `DialogBlock` effects from the existing paste and Enter accounting: `none`, `pasteMayHaveExecuted`,
-or `enterMayHaveExecuted`. Known causes use fixed detector-table titles; failed inspection uses
+or `enterMayHaveExecuted`. Known causes carry a bounded public `DialogKind`; failed inspection uses
 `uninspectable`. Taint, authority retirement, possible-submission precedence, ledger updates and
 submit outcomes retain their existing behavior.
+
+`DialogKind` provides exhaustive fixed `title` and `spokenName` properties. Titles retain the existing
+CLI text byte for byte. Spoken noun phrases support the planned PR 2b notices; this slice does not
+add those notices. Detector matching and fail-closed behavior are unchanged. Tests iterate every kind
+for non-empty names and pin all four titles and all four spoken names.
 
 `AdapterError.blockedByDialog` preserves the previous interpolated `deliveryFailed("…")` text.
 A later-line `HostError.partial` retains a `.dialog` reason after policy and cancellation precedence;
