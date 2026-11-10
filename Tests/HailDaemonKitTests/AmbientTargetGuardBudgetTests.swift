@@ -16,11 +16,13 @@ import Testing
             executable: fake.executable, config: fake.config, target: RecipientTestRig.target
         )
         _ = try await GuardBudgetClock.$current.withValue(.expiring()) {
-            try await ConnectionProbeDaemon.ambientRouter(options, host: rig.host, log: { _ in })
+            try await ConnectionProbeDaemon.ambientRouter(
+                options, host: rig.host, log: { _ in }
+            )
         }
     }
 
-    /// Every stream start validates the target again (`start` → `makePipeline` → the consumer). The router handles a
+    /// Every stream start validates the target again, from `start` through `makePipeline` to the consumer. The router
     /// start synchronously on its caller, so an expiring clock bound here reaches that check; a start arriving from a
     /// socket runs in a task the suite's clock never reaches, which is why the check itself must not read the clock.
     @Test func anExpiredGuardBudgetNoLongerRefusesTheFixedTargetAtStreamStart() async throws {
@@ -30,8 +32,8 @@ import Testing
         let env = try await ambientRig(fake, timing: .init(eofGrace: 2, termGrace: 2), events: events)
         let stream = UUID()
         GuardBudgetClock.$current.withValue(.expiring()) {
-            env.router.ambientAudio(.started(stream: stream, connection: UUID(), target: RecipientTestRig.target,
-                                     binding: "reply-binding"))
+            env.router.ambientAudio(.admittedStart(stream: stream, connection: UUID(), target: RecipientTestRig.target,
+                                     binding: "reply-binding", policy: env.admissionPolicy))
         }
         #expect(env.router.activeStream == stream)
         #expect(!events.all.contains("ambient_refused"))

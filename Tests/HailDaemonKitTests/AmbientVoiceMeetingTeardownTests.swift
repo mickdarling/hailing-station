@@ -39,8 +39,8 @@ import Testing
         let (connection, router, stream, other) = (late.connection, late.env.router, UUID(), UUID())
         late.starting(stream)
         router.ambientAudio(.ended(stream: stream, reason: .superseded))
-        router.ambientAudio(.started(stream: other, connection: UUID(), target: RecipientTestRig.target,
-                                     binding: "reply-binding"))
+        router.ambientAudio(.admittedStart(stream: other, connection: UUID(), target: RecipientTestRig.target,
+                                     binding: "reply-binding", policy: late.env.admissionPolicy))
         #expect(router.state.withLock { $0.latest[connection] == nil && $0.newestStart == other })
         router.stop(connection: connection)
         _ = router.state.withLock {
@@ -82,9 +82,9 @@ import Testing
         let (connection, router, stream, other) = (late.connection, late.env.router, UUID(), UUID())
         late.starting(stream)
         router.ambientAudio(.ended(stream: stream, reason: .superseded))
-        if newStart { router.ambientAudio(.started(stream: other, connection: UUID(),
+        if newStart { router.ambientAudio(.admittedStart(stream: other, connection: UUID(),
             target: RecipientTestRig.target,
-                                     binding: "reply-binding")) }
+                                     binding: "reply-binding", policy: late.env.admissionPolicy)) }
         #expect(router.state.withLock { $0.latest[connection] == nil })
         _ = router.state.withLock {
             router.register(late.pipeline, stream: stream, connection: connection,

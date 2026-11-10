@@ -14,10 +14,10 @@ import Testing
             timing: .init(eofGrace: 20, termGrace: 20), replyControl: false))
         let rig = try await SessionUpdateListenerRig.make(ambient: router)
         let first = UUID(), selection = await rig.session.selectionGeneration
-        router.ambientAudio(.started(stream: first, connection: rig.connectionID,
-            target: RecipientTestRig.target, selection: selection))
-        await router.taskProgressChanges.queued({}).value
         let generation = await rig.hostRig.host.inputPolicyGeneration(for: RecipientTestRig.target)
+        router.ambientAudio(.admittedStart(stream: first, connection: rig.connectionID,
+            target: RecipientTestRig.target, selection: selection, binding: "reply-binding", policy: generation))
+        await router.taskProgressChanges.queued({}).value
         let authority = TaskProgressPublicationAuthority(generation: generation, binding: "reply-binding",
                                                           taskFence: TaskProgressOutputFence())
         let attempt = TaskProgressWakeAttempt()
@@ -31,10 +31,10 @@ import Testing
         switch edge {
         case .end: router.ambientAudio(.ended(stream: first, reason: .final))
         case .replaceSameConnection:
-            router.ambientAudio(.started(stream: UUID(), connection: rig.connectionID,
-                target: RecipientTestRig.target, selection: selection))
-        case .takeOver: router.ambientAudio(.started(stream: UUID(), connection: UUID(),
-            target: RecipientTestRig.target, selection: nil))
+            router.ambientAudio(.admittedStart(stream: UUID(), connection: rig.connectionID,
+                target: RecipientTestRig.target, selection: selection, binding: "reply-binding", policy: generation))
+        case .takeOver: router.ambientAudio(.admittedStart(stream: UUID(), connection: UUID(),
+            target: RecipientTestRig.target, binding: "reply-binding", policy: generation))
         case .expired: clock.advance(by: .seconds(6 * 3_600))
         }
         #expect(throws: CancellationError.self) { try commit() }

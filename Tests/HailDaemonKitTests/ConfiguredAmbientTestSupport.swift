@@ -28,7 +28,7 @@ struct ConfiguredAmbientRig {
     let events: AmbientEventDetails
 
     static func make(behavior: String = ambientEchoAtEOF, fixture: String = "tool-events.jsonl",
-                     routes: VoiceRoutes? = nil) async throws -> Self {
+                     routes: VoiceRoutes? = nil, capabilities: [String] = ["probe"]) async throws -> Self {
         let base = try await VoiceRouteRig.make()
         let fake = try FakeRightyo(behavior)
         try fake.install(fixture: fixture)
@@ -45,7 +45,8 @@ struct ConfiguredAmbientRig {
                                             authorizer: authorizer, hostName: "mac-test", ambient: router)
         router.attach(listener)
         let port = try await boundedAmbientListenerStart(listener)
-        let pair = try await FallbackSocketPair.boundedConnect(port: port, selecting: [target])
+        let pair = try await FallbackSocketPair.boundedConnect(port: port, selecting: [target],
+                                                                   capabilities: capabilities)
         let session = try #require(await listener.peers.values.first?.session)
         return Self(base: base, fake: fake, router: router, gate: gate, session: session,
                     connection: await session.connectionID, pair: pair, listener: listener, sink: sink, events: events)

@@ -90,8 +90,9 @@ import Testing
         ))
         router.attach(rig.listener)
         let stream = UUID()
-        router.ambientAudio(.started(stream: stream, connection: UUID(), target: VoiceRouteRig.scratch,
-                                     binding: "admitted-binding"))
+        router.ambientAudio(.admittedStart(stream: stream, connection: UUID(), target: VoiceRouteRig.scratch,
+                                          binding: "admitted-binding",
+                                          policy: rig.host.targetPolicy.snapshot(for: VoiceRouteRig.scratch)))
         // The router keeps the authored admission binding; startup hints never override a stream scope.
         #expect(router.activeStream == stream)
         #expect(router.state.withLock { $0.active?.binding == "admitted-binding" })

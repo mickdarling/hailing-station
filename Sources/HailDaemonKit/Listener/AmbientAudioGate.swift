@@ -514,7 +514,7 @@ extension AmbientAudioGate {
     }
 
     // Shared with admission without adding window-only restrictions to starts or final segments.
-    private nonisolated static func hasAmbientShape(_ audio: AudioPayload) -> Bool {
+    nonisolated static func hasAmbientShape(_ audio: AudioPayload) -> Bool {
         audio.codec == .pcm16 && audio.sampleRate == sampleRate && audio.channels == 1
             && audio.reply == nil && audio.streamID != nil && wholeSamples(audio.bytes.count)
     }

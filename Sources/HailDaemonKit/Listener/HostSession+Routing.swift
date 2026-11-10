@@ -89,7 +89,8 @@ extension HostSession {
         if opening { host.targetPolicy.snapshot(for: gate.target).observePolicy() }
         let policyGeneration = host.targetPolicy.snapshot(for: gate.target)
         var binding: String?
-        if opening {
+        if opening, target == gate.target, selection.target == gate.target,
+           AmbientAudioGate.hasAmbientShape(audio), policyGeneration.wasGranted {
             // Resolve once for this admission, against the original owner grant; never use a startup hint.
             binding = await ambientBinding(policyGeneration)
             guard selection == AmbientSelection(target: selectedTarget, generation: selectionGeneration) else {
@@ -188,6 +189,7 @@ extension HostSession {
         do {
             try await host.requireSendPreflight()
             try input.policyGeneration.requireCurrent()
+            try requireAmbientAdmission(input)
             let owner = try await replyOwnership(for: input, generation: generation)
             // Legacy generic input has no retained record, so the captured selection is checked here and
             // again after the handoff; a caller outside the peer's serialized receive loop can race `select`.
@@ -216,6 +218,14 @@ extension HostSession {
         } catch {
             HeldSendScope.current?.failure.record(error)
             return deliveryRefusal(error)
+        }
+    }
+
+    /// A queued ambient request cannot acquire a replacement grant, even just to issue a read-back.
+    private func requireAmbientAdmission(_ input: borrowing AuthorizedInput) throws {
+        if let admitted = Self.ambientDeliveryStages?.generation,
+           !admitted.isSameGeneration(as: input.policyGeneration) {
+            throw HostError.denied(.notAllowed(input.target))
         }
     }
 

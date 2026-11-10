@@ -1,5 +1,6 @@
 #if os(macOS)
 import Foundation
+import HailProtocol
 import Testing
 @testable import HailDaemonKit
 
@@ -29,6 +30,26 @@ import Testing
             #expect(await rig.segment(UUID(), final: true).frames.isEmpty)
             await boundedSettle(rig.router)
             #expect(await rig.base.adapter.deliveries.map(\.binding) == ["replacement"])
+        } catch {
+            await rig.cleanUp()
+            throw error
+        }
+        await rig.cleanUp()
+    }
+
+    @Test func confirmationTierABACannotHoldAnOldStreamsQueuedRequest() async throws {
+        let rig = try await ConfiguredAmbientRig.make(behavior: "/bin/cat > /dev/null",
+                                                      capabilities: [HeldRequests.capability])
+        do {
+            #expect(await rig.segment(UUID()).frames.isEmpty)
+            let scope = try rig.scope()
+            _ = try await rig.base.host.deny(ConfiguredAmbientRig.target)
+            _ = try await rig.base.host.allow(ConfiguredAmbientRig.target, tier: .confirm)
+            await #expect(throws: LocalDispatchRefusal.deliveryRefused) {
+                try await rig.dispatcher(scope).dispatch(rig.request(scope))
+            }
+            #expect(await rig.base.host.heldRequests.entries.isEmpty)
+            #expect(await rig.base.adapter.deliveries.isEmpty)
         } catch {
             await rig.cleanUp()
             throw error

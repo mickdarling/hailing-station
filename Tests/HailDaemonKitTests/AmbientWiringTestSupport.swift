@@ -4,7 +4,6 @@ import HailProtocol
 import Synchronization
 import Testing
 @testable import HailDaemonKit
-
 /// A loopback listener with ambient listening wired to a fake `rightyo` (#203). No idle sweeper: only the frame,
 /// failure, disconnect or stop under test can end a stream.
 struct AmbientWiringRig {
@@ -52,7 +51,8 @@ func ambientRig(
     if let gapClock { configuration.gapClock = gapClock }
     configuration.notes.shortcuts = shortcuts
     let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
-    let sink = GuardClockAmbientSink(router: router, admissionBinding: admissionBinding)
+    let sink = GuardClockAmbientSink(router: router, admissionBinding: admissionBinding,
+                                     admissionPolicy: rig.host.targetPolicy.snapshot(for: RecipientTestRig.target))
     let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: sink,
                                 sweepInterval: nil, clock: gapClock ?? { .now })
     let listener = try WebSocketListener(

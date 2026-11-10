@@ -6,6 +6,23 @@ import Testing
 @testable import HailDaemonKit
 
 extension AmbientRouterStreamTargetTests {
+    @Test(arguments: [false, true])
+    func aConfiguredBindingWithoutAPolicyGenerationNeverLaunches(queued: Bool) async throws {
+        let rig = try await ConfiguredAmbientRig.make(behavior: "/bin/cat > /dev/null")
+        let router = rig.router
+        if queued { router.state.withLock { ($0.working, $0.reloading) = (true, true) } }
+        router.ambientAudio(.started(stream: UUID(), connection: rig.connection,
+                                     target: ConfiguredAmbientRig.target, binding: "s"))
+        router.state.withLock { $0.reloading = false }
+        #expect(await eventually { rig.events.details("ambient_refused").count == 1 })
+        #expect(router.activeStream == nil && router.liveRuns == 0)
+        #expect(rig.events.details("ambient_started").isEmpty)
+        let refusal = try await receiveFrame(on: rig.pair.sockets[0], step: "missing admission generation")
+        #expect(refusal.payload == .control(.error(code: .notAllowed,
+                                                 message: "ambient unavailable: target_binding_unavailable")))
+        await rig.cleanUp()
+    }
+
     @Test(arguments: [nil, ""] as [String?])
     func anUnboundStartQueuesAndSupersedesOlderFailure(binding: String?) async throws {
         // Drain stdin, then emit only the canonical fixture's session started/stopped events under this session.
@@ -23,8 +40,8 @@ extension AmbientRouterStreamTargetTests {
         defer { pair.close() }
         let router = env.router, connection = try #require(await env.listener.peers.values.first?.session.connectionID)
         let older = UUID(), refused = UUID()
-        router.ambientAudio(.started(stream: older, connection: connection, target: RecipientTestRig.target,
-                                     binding: "reply-binding"))
+        router.ambientAudio(.admittedStart(stream: older, connection: connection, target: RecipientTestRig.target,
+                                     binding: "reply-binding", policy: env.admissionPolicy))
         router.ambientAudio(.ended(stream: older, reason: .final))
         await boundedSettle(router)
         try #require(router.liveRuns == 0)
@@ -70,8 +87,8 @@ extension AmbientRouterStreamTargetTests {
         let refused = UUID(), configured = UUID(), bytes = Data(repeating: 1, count: 3_200)
         router.state.withLock { ($0.working, $0.reloading) = (true, true) }
         router.ambientAudio(.started(stream: refused, connection: connection, target: "recipient:other"))
-        router.ambientAudio(.started(stream: configured, connection: connection, target: RecipientTestRig.target,
-                                     binding: "reply-binding"))
+        router.ambientAudio(.admittedStart(stream: configured, connection: connection, target: RecipientTestRig.target,
+                                     binding: "reply-binding", policy: env.admissionPolicy))
         router.ambientAudio(.segment(stream: configured, sequence: 0, bytes: bytes))
         router.ambientAudio(.ended(stream: configured, reason: .final))
         #expect(!events.all.contains("ambient_refused") && made.withLock { $0 } == 0)
@@ -96,8 +113,8 @@ extension AmbientRouterStreamTargetTests {
         let router = env.router
         for _ in 0..<AmbientRightyoRouter.maxLiveChildren {
             let stream = UUID()
-            router.ambientAudio(.started(stream: stream, connection: UUID(), target: RecipientTestRig.target,
-                                     binding: "reply-binding"))
+            router.ambientAudio(.admittedStart(stream: stream, connection: UUID(), target: RecipientTestRig.target,
+                                     binding: "reply-binding", policy: env.admissionPolicy))
             router.ambientAudio(.ended(stream: stream, reason: .final))
         }
         #expect(router.state.withLock { $0.runs.values.filter { !$0.reaped }.count }

@@ -10,8 +10,10 @@ The session revalidates its selection after the listing suspension. The gate com
 that original generation's `performIfCurrent`, stages its events, and releases the lock before sink
 callbacks or child launch. The scope, router destination, dispatcher and reload state retain immutable
 binding and generation values. `RetainedDeliveryStages.generation` keeps dispatch tied to the admitted
-grant through the host's final delivery composition. Routed destinations keep their existing binding
-resolution and destination policy checks.
+grant through the host's final delivery composition. Dispatch also compares that retained generation with
+the input authority before creating reply ownership, issuing a read-back or retaining a held request.
+Confirmation-tier, guard-hit and rate-limit holds cannot revive an old ambient admission. Routed
+destinations keep their existing binding resolution and destination policy checks.
 
 ## Anti-takeover property
 
@@ -25,6 +27,11 @@ from the old stream are never replayed. This does not claim an atomic lease agai
 The refusal wording and ErrorCodes, routed and selected target binding resolution, and doctor behavior
 are unchanged. Distinct session-change notices and doctor diagnostics remain deferred.
 
+The session checks the opening frame's target, selection, audio shape and original grant before listing.
+It retains the post-listing selection check and the gate's atomic generation commit. The router requires
+both binding and policy generation for its configured target; alternate routed targets keep their
+existing binding resolution.
+
 ## Synthetic coverage
 
 - `ConfiguredAmbientReallowTests`: a fresh stream delivers at the owner-approved replacement binding,
@@ -32,9 +39,14 @@ are unchanged. Distinct session-change notices and doctor diagnostics remain def
 - `ConfiguredAmbientHijackTests`: zero deliveries to an unapproved name holder before admission,
   after admission and across repeated reloads; unavailable authority never uses a startup fallback.
 - `AmbientBindingAdmissionRaceTests`: policy denial, deny/reallow ABA and selection changes during
-  the listing suspension admit no stale stream or PCM.
-- `AmbientMidstreamRebindTests`: terminal binding mismatch, no redirection or buffered replay after
-  re-allow, fresh-stream recovery, and queued-dispatch retirement across deny/reallow ABA and reload.
+  the listing suspension admit no stale stream or PCM; repeated invalid opening frames and denied
+  grants cause no listing.
+- `AmbientHeldAdmissionTests`: retired admissions create no hold, read-back token or delivery across
+  confirmation, guard and rate-limit branches; valid current holds still refuse retired grants at Send.
+- `AmbientRouterStreamTargetTests`: configured binding without policy generation refuses inline and queued.
+- `AmbientMidstreamRebindTests`: confirmation-tier ABA creates no hold or delivery; terminal binding
+  mismatch, no redirection or buffered replay after re-allow, fresh-stream recovery, and queued-dispatch
+  retirement across deny/reallow ABA and reload.
 
 The existing startup-pin assertion in `AmbientRouterStreamTargetTests` now checks the admission binding.
 `AmbientStreamSelectionTests.aStreamOpensOnTheSessionsSelectionGeneration` retains its exact event-array
@@ -48,10 +60,11 @@ ambient router, wiring, privacy and restore tests retain their assertions.
 
 ## Verification
 
-Synthetic verification on 2026-11-10 used the Dev Work VM with Apple Swift 6.3.3 and a fresh checkout
-synchronized by git bundle. Each phase waited for the shared lane, ran under background task policy
-with at most four workers, and had a 600-second cap with process-group cleanup. SSH stdin was closed,
-and each phase completed before the next began. No phase exceeded ten minutes.
+Synthetic verification on 2026-11-10 used the Dev Work VM with Apple Swift 6.3.3 and a fresh checkout.
+Phases ran one at a time after the shared lane became available, at background task priority with at
+most four workers. Each phase was bounded to ten minutes and completed before the next began.
+
+Initial verification:
 
 | Phase | Result |
 | --- | --- |
@@ -64,17 +77,48 @@ and each phase completed before the next began. No phase exceeded ten minutes.
 | Additional delivery-admission and final-delivery authority checks | 33 tests in 6 suites passed, 0.038 seconds |
 | Full Reply CLI suite | 126 tests passed, 232.335 seconds; exit 0 |
 | Policy CLI after building haild | Build exit 0; test exit 0 |
-| Warnings-as-errors package and test build | Build exit 0; wrapper exit 0; 232.23 seconds |
+| Warnings-as-errors package and test build | Passed; 232.23 seconds |
 
 The 260-test group includes five expected known issues in `LocalDispatchPreflightWaitTests`, which
 deliberately exercise the deadline harness. There were no unexpected issues in the final runs.
 The warnings-as-errors build emitted linker module-cache debug-info warnings; Swift compilation and
-the wrapper both succeeded. Initial verification exposed the direct-gate fixture omissions and exact
+verification both succeeded. Initial verification exposed the direct-gate fixture omissions and exact
 STARTED expectation described above; their corrected groups passed without weakening assertions.
 
 Strict host SwiftLint and the requested 120-column check both printed nothing on all 18 changed Swift
 files. Diff whitespace checks passed. No host build or Swift test ran. The production-file count is four.
-Both VM build directories were deleted, and no verification processes remained. The final record update
-changes documentation only.
+Both VM build directories were deleted, and no verification processes remained.
+
+Round-2 verification used another fresh checkout under the same toolchain, lane, priority, worker
+limit and ten-minute phase bound. The new and changed suites included held-request, gap-fill and
+task-progress coverage.
+
+| Phase | Result |
+| --- | --- |
+| New and changed suites, three consecutive runs | 146 tests in 26 suites per run; all passed in 127.513, 124.787 and 126.766 seconds |
+| Ambient A–O families | 134 tests in 25 suites passed, 100.586 seconds |
+| Ambient P–Q families | 251 tests in 52 suites passed, 230.277 seconds |
+| Ambient R–Z families | 263 tests in 56 suites passed, 218.524 seconds |
+| Rightyo families | 186 tests in 17 suites passed, 35.117 seconds |
+| Requested listener, dispatch, session, routing, host, policy and connection-probe families | 260 tests in 50 suites passed, 5.425 seconds; the same five expected known issues |
+| Delivery-admission and final-delivery authority checks | 33 tests in 6 suites passed, 0.040 seconds |
+| Full Reply CLI suite | 126 tests passed, 233.419 seconds; exit 0 |
+| Policy CLI after building haild | Build exit 0; test exit 0 |
+| Warnings-as-errors package and test build | Passed; 219.44 seconds |
+
+The final runs had no unexpected issues. The host group retained its five expected deadline-harness
+known issues. The warnings-as-errors build emitted linker module-cache debug-info warnings; Swift
+compilation and verification succeeded. All phases completed within ten minutes.
+
+Strict host SwiftLint and the literal 120-column check printed nothing on all 24 changed Swift files.
+No chained `+` operators occur in `#expect`. Whitespace checks passed. All 24 Swift file checksums
+matched the tested VM sources. Both build directories were deleted and no verification processes
+remained. The production-file count is the same four, using the PR checker's exclusions. No host build
+or Swift test ran.
+
+Round-2 fixture updates supply policy generations alongside their synthetic admission bindings.
+An initial wider selection exposed four task-progress setup failures in direct router fixtures without
+admission authority. The final-owner, liveness and owner-control fixtures now explicitly supply their
+binding and generation. Existing test assertions and expectations are unchanged.
 
 No simulator, physical device, microphone capture, live provider or captured-output round trip is claimed.

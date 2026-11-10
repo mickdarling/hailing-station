@@ -3,8 +3,9 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
-/// Deterministic guard-budget clocks (#208). Production measures each rule's 20 ms budget on thread CPU time, with a 1 s wall cap
-/// and counts an expired budget as a hit; on a loaded runner a preempted match crossed that deadline and turned a
+/// Deterministic guard-budget clocks (#208). Production measures each rule's 20 ms budget on thread CPU time,
+/// with a 1 s wall cap, and counts an expired budget as a hit. On a loaded runner a preempted match crossed that
+/// deadline and turned a
 /// benign RightyO delivery into `confirmationRequired`. Tests whose subject is not guard timing bind `frozen`;
 /// the fail-closed path is asserted under `expiring()` or two injected clocks instead of hoping the scheduler is slow.
 extension GuardBudgetClock {
@@ -51,13 +52,15 @@ struct GuardClockAmbientSink: AmbientAudioSink {
     let router: AmbientRightyoRouter
     /// Only direct gate fixtures bypass session admission; they explicitly author their synthetic binding.
     var admissionBinding: String?
+    var admissionPolicy: TargetPolicyGeneration?
     private let clock = GuardBudgetClock.current
     func ambientAudio(_ event: AmbientAudioEvent) {
         var admitted = event
         if case .started(let stream, let connection, let scope) = event, scope.binding == nil,
            let admissionBinding {
             let bound = AmbientStreamScope(target: scope.target, selection: scope.selection,
-                                           binding: admissionBinding, policyGeneration: scope.policyGeneration)
+                                           binding: admissionBinding,
+                                           policyGeneration: scope.policyGeneration ?? admissionPolicy)
             admitted = .started(stream: stream, connection: connection, scope: bound)
         }
         GuardBudgetClock.$current.withValue(clock) { router.ambientAudio(admitted) }

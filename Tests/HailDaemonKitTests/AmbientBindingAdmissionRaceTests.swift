@@ -46,6 +46,30 @@ import Testing
         }
     }
 
+    @Test(arguments: ["wrongTarget", "wrongSelection", "wrongShape", "denied"])
+    func cheapOpeningRefusalsDoNotListTheRegistry(reason: String) async throws {
+        let adapter = GatedListingFakeAdapter(AdapterTarget(name: "a", binding: "binding-a"))
+        let host = try await host(for: adapter)
+        let sink = RecordingAmbientSink()
+        let gate = AmbientAudioGate(target: "tmux:a", sink: sink, sweepInterval: nil)
+        let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(ambientAudio: gate))
+        _ = await session.receive(helloFrame())
+        let selected = reason == "wrongSelection" ? "other:b" : "tmux:a"
+        _ = await session.receive(sessionFrame(payload: .control(.select(targetID: selected))))
+        if reason == "denied" { _ = try await host.deny("tmux:a") }
+        let before = await adapter.listingCount
+        for _ in 0..<3 {
+            var audio = ambientSegment(stream: UUID(), sequence: 0)
+            if reason == "wrongShape" { audio.sampleRate = 8_000 }
+            let target = reason == "wrongTarget" ? "other:b" : "tmux:a"
+            let result = await session.receive(sessionFrame(target: target, payload: .audio(audio)))
+            #expect(!result.frames.isEmpty)
+        }
+        #expect(await adapter.listingCount == before)
+        #expect(sink.events.isEmpty)
+        #expect(await gate.activeStream == nil)
+    }
+
     private func host(for adapter: GatedListingFakeAdapter) async throws -> HailHost {
         let registry = Registry()
         try await registry.register(adapter)
