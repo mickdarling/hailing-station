@@ -333,3 +333,53 @@ handling yield exactly four production files, with no renames. The CLI source is
 Both VM build directories were deleted and no verification jobs remained running.
 This is synthetic package and CLI evidence, with no live dialog, simulator, installed-build,
 physical-device or captured-output round-trip validation.
+
+### Typed-kind verification
+
+The source/test snapshot is `ef593f4278b96574ced511dfab5b295575c39733`. The subsequent verification
+record changes documentation only. Verification used Swift 6.3.3 on the Dev Work VM in a fresh
+checkout synchronized by local bundles. No GitHub calls or pushes were made.
+
+Each phase waited for the shared lane, ran under `taskpolicy -b`, and used at most four workers.
+Swift builds used `-j 4 -Xswiftc -j1` and the lane's CLT Testing framework, plugin and linker flags.
+Each phase had a 600-second cap with signal handling and process-group kill cleanup. SSH stdin was
+closed with `< /dev/null`; each connection remained attached until completion.
+
+The package/test build passed (236.50 seconds); after the final source bundle synchronization, the
+incremental package/test build also passed (5.64 seconds). Tests used the same Testing flags and
+`swift test --skip-build --no-parallel -j 4`. The focused filter ran three times:
+
+```text
+HailDaemonKitTests\.(TmuxDialogDetectionTests|TmuxDialogSubmissionTests|HostDialogPartialTests)
+```
+
+Each run exited 0: 22 tests in three suites, no skips, in 0.034, 0.034 and 0.027 seconds.
+The requested neighboring filter ran once, unsplit:
+
+```text
+HailDaemonKitTests\.(Tmux|CommandLaunch|HailHost|Host|DeliveryMappingCleanup|LocalDispatch|DeliveryAdmission|Reply)
+```
+
+It exited 0: 401 reported tests in 76 suites, 164.814 seconds, with ten expected known-issue records.
+Five came from `LocalDispatchPreflightWaitTests` and five from `ReplyRecipientHandoffWaitTests`.
+The same ten tmux-dependent functions in the five suites listed above were skipped because tmux was
+unavailable. All dialog and host partial tests executed.
+
+`python3 -m unittest discover -s Tests/ReplyCLITests` passed all 125 tests in 234.826 seconds, exit 0.
+The repository policy CLI test passed with exit 0 and no test output after a successful
+`swift build --product haild` (0.35 seconds). The isolated package/test warnings-as-errors build
+passed in 218.21 seconds: build exit 0 and enclosing verification exit 0. The linker emitted the
+known missing module-cache debug-file warnings; this is not a warning-free linker claim.
+
+All four title literals match the supplied pre-delta source byte for byte. The CLI source and host
+formatting are unchanged. `HostDialogPartialTests` retains every text pin, with only typed case inputs
+substituted. The Python CLI test methods are AST-identical; only dependency extraction adds
+`DialogKind`, retaining all non-empty extraction assertions. No CLI expected-output assertion changed.
+
+Host `swiftlint lint --strict --quiet` with the Xcode developer directory and the non-comment
+120-column awk check both exited 0 and printed nothing for all six changed Swift files. No builds
+ran on the host. `git diff --check` passed. The PR-shape exclusions and rename handling still count
+exactly the same four production files, with no renames; this delta modifies two of them.
+Both VM build directories were deleted, and no verification jobs remained running.
+This is synthetic package and CLI evidence, with no live dialog, simulator, installed-build,
+physical-device or captured-output round-trip validation.
