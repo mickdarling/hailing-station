@@ -1408,12 +1408,9 @@ extension AmbientRightyoRouter {
         settings.routing = voiceRouting(listener)
         settings.onVoiceRouteRefused = voiceRouteRefused(on: connection, target: target,
                                                         listener: listener, notices: notices)
-        let pipeline = try RightyoAmbientPipeline(configuration: settings,
-                                                  dispatcher: AmbientListenerDispatcher(
-                                                      listener: listener, audit: configuration.audit,
-                                                      selection: selection, streamTarget: target,
-                                                      refusalNotices: notices
-                                                  ))
+        let dispatcher = AmbientListenerDispatcher(listener: listener, audit: configuration.audit, selection: selection,
+                                                   streamTarget: target, refusalNotices: notices)
+        let pipeline = try RightyoAmbientPipeline(configuration: settings, dispatcher: dispatcher)
         mark.set(pipeline.privacyControl)
         return pipeline
     }
