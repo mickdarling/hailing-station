@@ -25,6 +25,12 @@ enum HostDeliveryOutcome: Sendable, Equatable {
     static let inputPendingReason = "the target's input already holds unsent text"
 }
 
+/// Fixed daemon safety wording; neither this notice nor a restart grants target authority.
+enum AmbientSessionChange {
+    static let notice = "The voice target's session changed. Reconnecting."
+    static let stopped = "ambient stopped: target session changed"
+}
+
 /// One input's reply owner. A contextual adapter receives `context` with the text. A host-minted ambient reference on
 /// a legacy adapter (#230) is recorded host-side only: the text goes the legacy way, pinned to the recorded binding.
 struct HostReplyOwnership {
@@ -92,14 +98,12 @@ extension HostSession {
         if opening, target == gate.target, selection.target == gate.target,
            AmbientAudioGate.hasAmbientShape(audio), policyGeneration.wasGranted {
             // Resolve once for this admission, against the original owner grant; never use a startup hint.
-            binding = await ambientBinding(policyGeneration)
+            let resolved = await ambientBinding(policyGeneration)
+            binding = resolved.binding
             guard selection == AmbientSelection(target: selectedTarget, generation: selectionGeneration) else {
                 return failure(.notAllowed, AmbientAudioGate.reselectedMessage, close: false, version: version)
             }
-            guard binding != nil else {
-                return failure(.notAllowed, "ambient target is not allowed — run haild targets allow on the Mac",
-                               close: false, version: version)
-            }
+            guard binding != nil else { return ambientBindingRefusal(changed: resolved.changed, version: version) }
             // A child can refuse startup before admission returns; its error belongs to this attempt's grant.
             ambientPolicyGeneration = policyGeneration
         }
@@ -121,18 +125,40 @@ extension HostSession {
         }
     }
 
+    private func ambientBindingRefusal(changed: Bool, version: Int) -> HostSessionResult {
+        guard changed else {
+            return failure(.notAllowed, "ambient target is not allowed — run haild targets allow on the Mac",
+                           close: false, version: version)
+        }
+        return ambientSessionChanged(version: version)
+    }
+
+    private func ambientSessionChanged(version: Int) -> HostSessionResult {
+        // The peer awaits each frame of this response batch in order; no target voice authority is acquired.
+        var frames: [Frame] = []
+        if peerCapabilities.contains(RequestRefusals.capability) {
+            frames.append(response(.error(code: .voiceRouteRefused, message: AmbientSessionChange.notice),
+                                   version: version))
+        }
+        frames.append(response(.error(code: .notAllowed, message: AmbientSessionChange.stopped), version: version))
+        return HostSessionResult(frames: frames)
+    }
+
     private func ambientTakeOver(from: String?, version: Int) -> HostSessionResult {
         guard peerCapabilities.contains(AmbientTakeOver.capability) else { return HostSessionResult(frames: []) }
         return HostSessionResult(frames: [response(.ambientMovedHere(from: from), version: version)])
     }
 
     /// One live listing for one opening grant. Admission still compares that original generation atomically.
-    private func ambientBinding(_ generation: TargetPolicyGeneration) async -> String? {
+    private func ambientBinding(_ generation: TargetPolicyGeneration) async -> (binding: String?, changed: Bool) {
         let listing = try? await host.registry.listing()
         guard generation.wasGranted, let listed = listing?.first(where: { $0.info.id == generation.target }),
-              listed.info.alive, let binding = listed.binding, !binding.isEmpty,
-              binding == generation.binding else { return nil }
-        return binding
+              listed.info.alive, let binding = listed.binding, !binding.isEmpty else { return (nil, false) }
+        guard binding == generation.binding else {
+            // Retired or unreadable authority keeps its existing refusal, rather than suggesting a retry.
+            return (nil, generation.performIfCurrent { true } == true)
+        }
+        return (binding, false)
     }
 
     private func deliver(_ input: consuming AuthorizedInput, version: Int) async -> HostSessionResult {

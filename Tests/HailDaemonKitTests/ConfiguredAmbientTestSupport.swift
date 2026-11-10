@@ -28,15 +28,22 @@ struct ConfiguredAmbientRig {
     let events: AmbientEventDetails
 
     static func make(behavior: String = ambientEchoAtEOF, fixture: String = "tool-events.jsonl",
-                     routes: VoiceRoutes? = nil, capabilities: [String] = ["probe"]) async throws -> Self {
+                     routes: VoiceRoutes? = nil, capabilities: [String] = ["probe"],
+                     acknowledgementHold: AcknowledgementHold? = nil,
+                     routerTarget: String = target) async throws -> Self {
         let base = try await VoiceRouteRig.make()
         let fake = try FakeRightyo(behavior)
         try fake.install(fixture: fixture)
         let events = AmbientEventDetails()
-        let router = AmbientRightyoRouter(configuration: .init(
-            executable: fake.executable, config: fake.config, target: target, binding: "startup-hint",
+        var configuration = AmbientRightyoRouter.Configuration(
+            executable: fake.executable, config: fake.config, target: routerTarget, binding: "startup-hint",
             allowSynthetic: true, timing: .init(eofGrace: 0.5, termGrace: 0.1)
-        ), log: { events.record($0) })
+        )
+        if let acknowledgementHold {
+            configuration.acknowledgements = AmbientAckLibrary(clips: ["default": [PendingInputRun.ack]])
+            configuration.acknowledgementHold = acknowledgementHold.wait
+        }
+        let router = AmbientRightyoRouter(configuration: configuration, log: { events.record($0) })
         let sink = RecordingAmbientSink()
         let gate = AmbientAudioGate(target: target, sink: ConfiguredRecordingSink(recording: sink, router: router),
                                     sweepInterval: nil)

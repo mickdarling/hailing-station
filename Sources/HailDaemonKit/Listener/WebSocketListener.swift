@@ -1413,13 +1413,27 @@ extension AmbientRightyoRouter {
         settings.routing = voiceRouting(listener)
         settings.onVoiceRouteRefused = voiceRouteRefused(on: connection, target: target,
                                                         listener: listener, notices: notices)
-        let dispatcher = AmbientListenerDispatcher(listener: listener, audit: configuration.audit, selection: selection,
-                                                   streamTarget: target, refusalNotices: notices,
-                                                   binding: destination.binding,
-                                                   policyGeneration: destination.policyGeneration)
+        let dispatcher = dispatcher(for: destination, connection: connection, selection: selection,
+                                    listener: listener, notices: notices)
         let pipeline = try RightyoAmbientPipeline(configuration: settings, dispatcher: dispatcher)
         mark.set(pipeline.privacyControl)
         return pipeline
+    }
+
+    private func dispatcher(
+        for destination: Destination, connection: UUID, selection: UUID?, listener: WebSocketListener,
+        notices: AmbientRefusalNotices
+    ) -> AmbientListenerDispatcher {
+        let refused = deliveryRefused(on: connection, target: destination.target, listener: listener, notices: notices)
+        let bindingChanged: @Sendable () async -> Void = {
+            // enqueue alone returns immediately. Wait until the fixed line has reached peer.post's transport queue.
+            await refused(nil, .bindingMismatch).value
+        }
+        let configured = destination.target == configuration.target
+        return AmbientListenerDispatcher(listener: listener, audit: configuration.audit, selection: selection,
+                                         streamTarget: destination.target, refusalNotices: notices,
+                                         binding: destination.binding, policyGeneration: destination.policyGeneration,
+                                         bindingChanged: configured ? bindingChanged : nil)
     }
 
     private func voiceRouting(_ listener: WebSocketListener) -> RightyoVoiceRouting? {
@@ -1464,7 +1478,7 @@ extension AmbientRightyoRouter {
         state.runs[id]?.task = Task { [weak self] in
             if reload { self?.emit("ambient_reloaded", detail: nil) }
             self?.emit("ambient_started", connection: connection, detail: nil)
-            await self?.run(pipeline, id: id, stream: stream, connection: connection)
+            await self?.run(pipeline, id: id, stream: stream, connection: connection, target: target)
         }
         return id
     }
@@ -1529,7 +1543,7 @@ extension AmbientRightyoRouter {
         return AmbientHeardRequests(show: { [weak listener] request, text in
             await listener?.showAmbientHeard(connection: connection, target: target, text: text, request: request)
         }, finish: { [weak listener] request, refusal in
-            if let refusal { refused(request, refusal) } else if let request {
+            if let refusal { _ = refused(request, refusal) } else if let request {
                 await listener?.finishHeardRequest(request, connection: connection)
             }
         })
@@ -1647,8 +1661,11 @@ extension AmbientRightyoRouter {
         emit("ambient_stop_confirmed", detail: "clip=\(pick.persona)/\(pick.index) outcome=\(outcome)")
     }
 
-    private func run(_ pipeline: RightyoAmbientPipeline, id: UUID, stream: UUID, connection: UUID) async {
+    private func run(
+        _ pipeline: RightyoAmbientPipeline, id: UUID, stream: UUID, connection: UUID, target: String
+    ) async {
         var failure: String?
+        var sessionChanged = false
         let detail: String
         do {
             let summary = try await RightyoGuardRefusal.$current.withValue(RightyoGuardRefusal()) {
@@ -1661,6 +1678,7 @@ extension AmbientRightyoRouter {
         } catch {
             let described = Self.describe(error)
             (failure, detail) = (described, described)
+            sessionChanged = target == configuration.target && error as? LocalDispatchRefusal == .bindingMismatch
             // A child that could not keep privacy (#735 S-2b, S-8: no ack) was killed and is not admitted; privacy
             // stays on.
             if let refusal = error as? RightyoPrivacyRefusal, refusal != .unsupportedChild {
@@ -1692,8 +1710,8 @@ extension AmbientRightyoRouter {
         // the phone, even a refusal after the stream ended (for example confirmation required). A run a reload
         // replaced is only logged above: its stream lives on in the new child, so even a non-zero exit stays here.
         guard !replaced, failure != nil || stillActive, let listener else { return }
-        await listener.ambientFailed(stream: stream, connection: connection,
-                                     message: "ambient stopped: \(failure ?? "listener exited")")
+        let message = sessionChanged ? AmbientSessionChange.stopped : "ambient stopped: \(failure ?? "listener exited")"
+        await listener.ambientFailed(stream: stream, connection: connection, message: message)
     }
 
     private func refuse(_ stream: UUID, connection: UUID, target: String, reason: String) {
@@ -1834,13 +1852,15 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     let refusalNotices: AmbientRefusalNotices?
     let binding: String?
     let policyGeneration: TargetPolicyGeneration?
+    let bindingChanged: (@Sendable () async -> Void)?
 
     init(listener: WebSocketListener, audit: AuditLog?, selection: UUID? = nil, streamTarget: String? = nil,
          refusalNotices: AmbientRefusalNotices? = nil, binding: String? = nil,
-         policyGeneration: TargetPolicyGeneration? = nil) {
+         policyGeneration: TargetPolicyGeneration? = nil, bindingChanged: (@Sendable () async -> Void)? = nil) {
         (self.listener, self.audit, self.selection) = (listener, audit, selection)
         (self.streamTarget, self.refusalNotices) = (streamTarget, refusalNotices)
         (self.binding, self.policyGeneration) = (binding, policyGeneration)
+        self.bindingChanged = bindingChanged
     }
 
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
@@ -1854,7 +1874,10 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     func dispatch(_ request: LocalDispatchRequest, routed: Bool) async throws -> UUID? {
         let (prepared, reference) = await listener.referenceAmbient(request)
         let from = streamTarget.flatMap { routed && $0 != prepared.target ? $0 : nil }
-        if from == nil, let binding, prepared.binding != binding { throw LocalDispatchRefusal.bindingMismatch }
+        if from == nil, let binding, prepared.binding != binding {
+            await bindingChanged?()
+            throw LocalDispatchRefusal.bindingMismatch
+        }
         if let audit {
             do {
                 _ = try await audit.record(.pushed(tool: from == nil ? "ambient-dispatch" : "ambient-dispatch-routed",
@@ -1868,6 +1891,7 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
                                                    routedFrom: from)
             }
         } catch let refusal as LocalDispatchRefusal {
+            if refusal == .bindingMismatch, from == nil { await bindingChanged?() }
             if case .blockedByDialog = refusal {
                 let name: String
                 if let routedName = listener.authorizer.voiceRoutes?.route(for: prepared.target)?.name {
@@ -2019,9 +2043,9 @@ extension AmbientRightyoRouter {
 
     /// Per-request delivery refusals, through the existing heard-turn and ordered, privacy-held notice path.
     /// Capture sanitized rule tokens before the next request resets the per-run evidence. Never log text or turn ids.
-    fileprivate func deliveryRefused(
+    func deliveryRefused(
         on connection: UUID, target: String, listener: WebSocketListener, notices: AmbientRefusalNotices
-    ) -> @Sendable (UUID?, LocalDispatchRefusal) -> Void {
+    ) -> @Sendable (UUID?, LocalDispatchRefusal) -> Task<Void, Never> {
         return { [weak self, weak listener] request, refusal in
             let acknowledged = notices.acknowledgement
             let line: String, persona: String, event: String, token: String
@@ -2034,32 +2058,37 @@ extension AmbientRightyoRouter {
                 event = "ambient_delivery_refused"
                 token = "reason=\(refusal.rawValue)"
             } else {
-                playNotSent = true
-                switch refusal {
-                case .confirmationRequired:
-                    line = "request requires confirmation at the Mac; nothing was sent"
-                    persona = AmbientStopConfirmation.needsConfirmation
-                    event = "ambient_request_refused"
-                    token = "reason=confirmation_required rules=\(RightyoGuardRefusal.current?.ruleTokens ?? "none")"
-                case .capacityExceeded:
-                    line = "request capacity reached; nothing was sent"
-                    persona = AmbientStopConfirmation.notSent
-                    event = "ambient_request_refused"
-                    token = "reason=capacity_exceeded rules=none"
-                default:
-                    line = HostDeliveryOutcome.inputPendingReason
-                    persona = AmbientStopConfirmation.notSent
-                    event = "ambient_delivery_refused"
-                    token = "reason=\(refusal.rawValue)"
-                }
+                playNotSent = refusal != .bindingMismatch
+                ((line, persona), (event, token)) = Self.deliveryRefusalMessage(refusal)
             }
-            notices.chain.enqueue { [weak self, weak listener] in
+            return notices.chain.queued { [weak self, weak listener] in
                 guard let self else { return }
                 let (shown, confirm) = await tellNotSent((line, target), after: acknowledged, on: connection,
                                                        listener: listener,
                                                        request: request, persona: persona, playNotSent: playNotSent)
                 emit(event, connection: connection, detail: "\(token) shown=\(shown) confirm=\(confirm)")
             }
+        }
+    }
+
+    private static func deliveryRefusalMessage(
+        _ refusal: LocalDispatchRefusal
+    ) -> ((String, String), (String, String)) {
+        switch refusal {
+        case .bindingMismatch:
+            return ((AmbientSessionChange.notice, AmbientStopConfirmation.notSent),
+                    ("ambient_delivery_refused", "reason=bindingMismatch"))
+        case .confirmationRequired:
+            return (("request requires confirmation at the Mac; nothing was sent",
+                     AmbientStopConfirmation.needsConfirmation),
+                    ("ambient_request_refused",
+                     "reason=confirmation_required rules=\(RightyoGuardRefusal.current?.ruleTokens ?? "none")"))
+        case .capacityExceeded:
+            return (("request capacity reached; nothing was sent", AmbientStopConfirmation.notSent),
+                    ("ambient_request_refused", "reason=capacity_exceeded rules=none"))
+        default:
+            return ((HostDeliveryOutcome.inputPendingReason, AmbientStopConfirmation.notSent),
+                    ("ambient_delivery_refused", "reason=\(refusal.rawValue)"))
         }
     }
 
