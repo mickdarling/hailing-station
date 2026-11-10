@@ -59,7 +59,7 @@ private struct HostDispatchRequest: Sendable {
     let confirmedHash: String?
     let expectedBinding: String?
     let turn: ProviderTurnContext?
-    let origin: DeliveryRequest.Origin
+    let origin: DeliveryOrigin
     var policyGeneration: TargetPolicyGeneration?
     let heldScope = HeldSendScope.current
     let taskHandoff = TaskProgressWakeScope.beforeHandoff
@@ -325,12 +325,13 @@ extension HailHost {
 
     func sendAuthorized(
         _ text: String, policyGeneration: TargetPolicyGeneration, from device: String,
-        expectedBinding: String?, context: ProviderTurnContext?, confirmedHash: String? = nil
+        expectedBinding: String?, context: ProviderTurnContext?, confirmedHash: String? = nil,
+        origin: DeliveryOrigin = .ordinary
     ) async throws -> SendOutcome {
         try await dispatch(text, request: HostDispatchRequest(
             target: policyGeneration.target, device: device, confirmedHash: confirmedHash,
             expectedBinding: expectedBinding ?? policyGeneration.binding, turn: context,
-            origin: HostSession.ambientInputDispatch ? .ambient : .ordinary, policyGeneration: policyGeneration
+            origin: origin, policyGeneration: policyGeneration
         ))
     }
 

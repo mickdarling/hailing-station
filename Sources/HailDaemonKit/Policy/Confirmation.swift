@@ -21,13 +21,14 @@ public struct PolicyEvaluation: Sendable, Equatable {
     public let guardOutcomes: [GuardHit]
 }
 
+/// Host pipeline authority, never decoded from client input.
+enum DeliveryOrigin: Sendable { case ordinary, ambient }
+
 /// One utterance headed for one target: the id, the binding the caller's listing reported, the lines the
 /// sanitizer produced (guards run on those, never on the frame text), and the device it came from, so
 /// the rate limit applies per device as well as per target (#41 item 4).
 public struct DeliveryRequest: Sendable, Equatable {
-    /// Host pipeline authority, never decoded from client input.
-    enum Origin: Sendable { case ordinary, ambient }
-    let origin: Origin
+    let origin: DeliveryOrigin
     public var target: String
     public var binding: String?
     public var lines: [String]
@@ -48,7 +49,7 @@ public struct DeliveryRequest: Sendable, Equatable {
 
     init(
         target: String, binding: String?, lines: [String], device: String, guardLines: [String]?,
-        origin: Origin = .ordinary
+        origin: DeliveryOrigin = .ordinary
     ) {
         self.origin = origin
         self.target = target

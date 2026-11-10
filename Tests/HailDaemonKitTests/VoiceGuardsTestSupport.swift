@@ -30,16 +30,19 @@ struct VoiceGuardsRoute {
     static func make(
         adapter: any Adapter, target: String = "final:reply", binding: String = "synthetic-binding",
         policy: Policy = Policy(guardPatterns: [rule], voiceGuards: .off),
-        sanitizing: SanitizePolicy = .init()
+        sanitizing: SanitizePolicy = .init(), capabilities: [String] = ["probe"],
+        now: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
     ) async throws -> Self {
         let registry = Registry(), log = VoiceGuardsLog()
         try await registry.register(adapter)
         var policy = policy
         if policy.targets[target] == nil { try policy.allow(target, binding: binding, tier: .open) }
         let store = InMemoryPolicyStore(policy)
-        let host = try HailHost(registry: registry, sanitizing: sanitizing, store: store, voiceGuardLog: log.record)
-        let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "synthetic-host")
-        _ = await session.receive(helloFrame())
+        let host = try HailHost(registry: registry, sanitizing: sanitizing, store: store, requestNow: now,
+                                voiceGuardLog: log.record)
+        let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "synthetic-host",
+                                  requestClock: now)
+        _ = await session.receive(helloFrame(capabilities: capabilities))
         _ = await session.receive(sessionFrame(payload: .control(.select(targetID: target))))
         let listener = try WebSocketListener(bindAddress: "127.0.0.1", port: 0, host: host,
                                              authorizer: PersonalTerminalAuthorizer(), hostName: "synthetic-host")

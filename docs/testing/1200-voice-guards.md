@@ -6,10 +6,13 @@ Policy version 1 accepts an owner setting, `"voiceGuards": "on"` or
 invalid guard lists remain errors. A malformed policy continues to refuse delivery.
 
 This build enforces `off` only for requests from the host ambient pipeline. The
-internal immutable delivery origin is captured from the host task-local in
-`HailHost.sendAuthorized`. The listener's ambient dispatcher binds it, and retained
-ambient requests restore it. Device names, text, routing, provenance and client
-fields cannot set it. `haild send`, local dispatch, typed device input, replies and
+internal immutable delivery origin is captured once from the host task-local at
+`HostSession.deliver` entry and passed explicitly through its private send helper to
+`HailHost.sendAuthorized`. Only `HostSession.deliver` supplies ambient origin; other
+host callers default to ordinary, including task-progress wakes even when their
+Tasks inherit ambient context. The listener's ambient dispatcher binds the marker,
+and retained ambient requests restore it only for their own release entry. Device
+names, text, routing, provenance and client fields cannot set it. `haild send`, local dispatch, typed device input, replies and
 task progress retain ordinary behavior.
 
 Only guard-hit escalation is suppressed, including guard-scan timeouts. The existing
@@ -80,7 +83,11 @@ claimed client fields, typed input and real task wakes. `VoiceGuardsPreservedGat
 covers confirm, locked, lockdown, binding, allowlist, rate limits, real tmux pending
 input and dialog vetoes, and retired final admission. `VoiceGuardsLoggingTests`
 covers escaped names, deduplication, clean scans and distinct timeout evidence.
-`VoiceGuardsReloadTests` covers off-to-on reload before the next ambient dispatch.
+`VoiceGuardsProgressInheritanceTests` covers a real listener interaction rescheduling
+a progress wake under inherited ambient context, with matching and timed-out scans.
+`VoiceGuardsHeldOriginTests` covers held ambient release, concurrent ordinary input
+and retirement across policy changes. `VoiceGuardsReloadTests` covers both reload
+directions and malformed or unusable policy refusal.
 These use synthetic inputs and targets; they do not establish physical-device behavior.
 
 The runtime origin marker proves that a request came through the host's voice
