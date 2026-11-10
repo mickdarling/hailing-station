@@ -195,8 +195,7 @@ extension HostSession {
             let owner = try await replyOwnership(for: input, generation: generation)
             // Legacy generic input has no retained record, so the captured selection is checked here and
             // again after the handoff; a caller outside the peer's serialized receive loop can race `select`.
-            guard selects(input.target, generation: generation) else {
-                if let owner { dropUncommitted(owner.context.id) }
+            guard retainsDeliverySelection(input.target, owner: owner, generation: generation) else {
                 return .selectionChanged
             }
             let outcome = try await Self.$ambientHeldRequests.withValue(takesHolds) {
@@ -221,6 +220,14 @@ extension HostSession {
             HeldSendScope.current?.failure.record(error)
             return deliveryRefusal(error)
         }
+    }
+
+    private func retainsDeliverySelection(_ target: String, owner: HostReplyOwnership?, generation: UUID) -> Bool {
+        guard selects(target, generation: generation) else {
+            if let owner { dropUncommitted(owner.context.id) }
+            return false
+        }
+        return true
     }
 
     /// A queued ambient request cannot acquire a replacement grant, even just to issue a read-back.
