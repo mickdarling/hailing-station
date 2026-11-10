@@ -52,6 +52,7 @@ final class RedesignShellUITests: XCTestCase {
 
         section("station", in: app, isPad: isPad).tap()
         waitUntilHittable(connection, in: app, named: "station-restored")
+        assertStationBack(in: app, named: "station-restored")
 
         // In the shell a station tool opens its section instead of pushing under the station.
         let labs = openStationTool("Labs", in: app, opens: app.navigationBars["Settings"])
@@ -60,6 +61,7 @@ final class RedesignShellUITests: XCTestCase {
         // The station comes back where it was left, scrolled down to its tools, since it was never remounted. So the
         // tool just tapped is reachable again, not the header that scrolled away.
         waitUntilHittable(labs, in: app, named: "station-restored-from-settings")
+        assertStationBack(in: app, named: "station-restored-from-settings")
     }
 
     /// Nothing of the station is in the accessibility tree: no identifier in its namespace beyond the shell's own, and
@@ -80,6 +82,17 @@ final class RedesignShellUITests: XCTestCase {
             sensitive.contains { label.lowercased().contains($0) }
         }
         XCTAssertEqual(spoken, [], "\(name): the hidden station's wording is in the accessibility tree")
+    }
+
+    /// The whole station is back in the accessibility tree once it shows again: its root (the header), the tools and
+    /// the build footer, which leaves the view tree while the station is hidden.
+    @MainActor
+    private func assertStationBack(in app: XCUIApplication, named name: String) {
+        for identifier in ["station.connection", "station.tools", "station.build-info"] {
+            let element = app.descendants(matching: .any)[identifier].firstMatch
+            if !element.waitForExistence(timeout: 5) { attachTree(of: app, named: "\(name)-\(identifier)") }
+            XCTAssertTrue(element.exists, "\(name): \(identifier) is back in the accessibility tree")
+        }
     }
 
     private func captures(of pattern: String, in text: String) throws -> [String] {
