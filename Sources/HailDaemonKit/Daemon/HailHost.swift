@@ -148,6 +148,13 @@ public actor HailHost {
     public func targets() async throws -> [TargetInfo] { try await registry.targets() }
     /// Kinds that failed to list on the most recent `targets()` call, with the reason.
     public func listingFailures() async -> [String: String] { await registry.lastFailures }
+    /// A single actor turn reads effective memory only; status never refreshes or admits delivery.
+    public var voiceGuardsStatus: LocalVoiceGuardsReport {
+        let value: LocalVoiceGuardsReport.Value = policyFailure != nil ? .unusable
+            : (policy.voiceGuards == .on ? .on : .off)
+        return LocalVoiceGuardsReport(value: value, enforced: false)
+    }
+
     public var currentPolicy: Policy { policy }
     public nonisolated var policySummary: String { store.summary }
     /// In-memory policy only, not a registry/binding lease or recipient grant. No suspension occurs

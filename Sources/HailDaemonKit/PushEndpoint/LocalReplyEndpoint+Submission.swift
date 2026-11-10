@@ -19,10 +19,25 @@ public protocol HostReplyPublishing: Sendable {
     func ambient(_ request: LocalAmbientRequest) async -> LocalAmbientReport
     /// `haild notify` (#609): applies the session update policy; the update's text is never logged.
     func sessionUpdate(_ request: LocalSessionUpdateRequest) async -> LocalSessionUpdateReport
+    func voiceGuardsStatus() async -> LocalVoiceGuardsReport?
     func taskProgress(_ request: LocalTaskProgressRequest) async -> LocalTaskProgressReport
 }
 
+/// Effective daemon policy, not a file snapshot. Unknown values fail decoding rather than defaulting to on.
+public struct LocalVoiceGuardsReport: Codable, Equatable, Sendable {
+    public enum Value: String, Codable, Sendable, CaseIterable { case on, off, unusable }
+    public let value: Value
+    public let enforced: Bool
+
+    public init(value: Value, enforced: Bool) {
+        self.value = value
+        self.enforced = enforced
+    }
+}
+
 extension HostReplyPublishing {
+    public func voiceGuardsStatus() async -> LocalVoiceGuardsReport? { nil }
+
     /// A destination that cannot dispatch fails closed rather than publishing input anywhere.
     public func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
         throw LocalDispatchRefusal.unsupported
@@ -43,7 +58,9 @@ extension HostReplyPublishing {
     }
 }
 
-extension WebSocketListener: HostReplyPublishing {}
+extension WebSocketListener: HostReplyPublishing {
+    public func voiceGuardsStatus() async -> LocalVoiceGuardsReport? { await host.voiceGuardsStatus }
+}
 
 struct LocalReplyConnection: Sendable {
     var id: UUID
@@ -66,6 +83,7 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
     /// Session update answers (#609) only; every other response omits the key.
     public var update: LocalSessionUpdateReport?
     public var progress: LocalTaskProgressReport?
+    public var voiceGuards: LocalVoiceGuardsReport?
 
     public init(delivered: Int, error: String? = nil, code: LocalReplyRefusal? = nil) {
         self.delivered = delivered
@@ -99,7 +117,9 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         return response
     }
 
-    private enum CodingKeys: String, CodingKey { case delivered, error, code, request, ambient, update, progress }
+    private enum CodingKeys: String, CodingKey {
+        case delivered, error, code, request, ambient, update, progress, voiceGuards
+    }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -111,6 +131,7 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         ambient = try container.decodeIfPresent(LocalAmbientReport.self, forKey: .ambient)
         update = try container.decodeIfPresent(LocalSessionUpdateReport.self, forKey: .update)
         progress = try container.decodeIfPresent(LocalTaskProgressReport.self, forKey: .progress)
+        voiceGuards = try container.decodeIfPresent(LocalVoiceGuardsReport.self, forKey: .voiceGuards)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -122,6 +143,7 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         try container.encodeIfPresent(ambient, forKey: .ambient)
         try container.encodeIfPresent(update, forKey: .update)
         try container.encodeIfPresent(progress, forKey: .progress)
+        try container.encodeIfPresent(voiceGuards, forKey: .voiceGuards)
     }
 }
 
@@ -240,7 +262,7 @@ extension LocalReplyEndpoint {
     }
 
     func submit(_ data: Data, from client: LocalReplyConnection) async {
-        // Only the exact `dispatch`, `ambient` and `update` kinds leave the reply path; anything else is a reply.
+        // Only recognized local control kinds leave the reply path; anything else is a reply.
         let kind = (try? JSONDecoder().decode(LocalRequestKind.self, from: data))?.kind
         let isDispatch = kind == LocalDispatchRequest.kind
         // A reply frame keeps the pre-#200 line cap and answer; only a dispatch may use the larger line.
@@ -256,11 +278,28 @@ extension LocalReplyEndpoint {
             return
         }
         limiter.record(bucket, at: now)
+        if kind == "voice-guards" { return await submitVoiceGuards(data, from: client) }
         if isDispatch { return await submitDispatch(data, from: client) }
         if kind == LocalAmbientRequest.kind { return await submitAmbient(data, from: client) }
         if kind == LocalSessionUpdateRequest.kind { return await submitSessionUpdate(data, from: client) }
         if kind == LocalTaskProgressRequest.kind { return await submitTaskProgress(data, from: client) }
         await submitReply(data, from: client)
+    }
+
+    /// Uses the same secured socket, frame bounds and admission budget as the other local status queries.
+    /// Unlike mutating requests, this read performs no audit or policy I/O and holds no admission lock.
+    private func submitVoiceGuards(_ data: Data, from client: LocalReplyConnection) async {
+        guard !Task.isCancelled, !stopped, connections[client.id] != nil else { return retire(client.id) }
+        guard let request = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+              request == ["kind": "voice-guards", "action": "status"] else {
+            return await respond(.init(delivered: 0, error: LocalReplyRefusal.decodeFailure.message,
+                                       code: .decodeFailure), to: client)
+        }
+        let report = await destination.voiceGuardsStatus()
+        guard !Task.isCancelled, !stopped, connections[client.id] != nil else { return retire(client.id) }
+        var response = LocalReplyResponse(delivered: 0)
+        response.voiceGuards = report
+        await respond(response, to: client)
     }
 
     private func submitReply(_ data: Data, from client: LocalReplyConnection) async {

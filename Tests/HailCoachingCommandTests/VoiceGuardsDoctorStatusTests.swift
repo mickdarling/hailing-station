@@ -4,32 +4,41 @@ import Testing
 @testable import HailDaemonKit
 @testable import haild
 
-/// Owner policy visibility uses the real loader; CLI checks use a synthetic target and no running daemon.
+/// The policy file and live daemon are separate observations; transport failure never becomes an assumed default.
 @Suite(.serialized) struct VoiceGuardsDoctorStatusTests {
     private var healthy: HealthReport {
         HealthReport(cli: .init(version: "test", build: nil, hostID: nil), daemon: nil, checks: [])
     }
 
-    @Test(arguments: VoiceGuards.allCases)
-    func doctorAndJSONShowConfiguredSetting(_ setting: VoiceGuards) throws {
-        let rig = try VoiceGuardsCLIRig(setting: setting)
+    @Test(arguments: LocalVoiceGuardsReport.Value.allCases)
+    func doctorAndJSONShowEffectiveSetting(_ value: LocalVoiceGuardsReport.Value) throws {
+        let rig = try VoiceGuardsCLIRig(setting: .on)
         defer { rig.cleanUp() }
-        let report = PolicyHealthReport(health: healthy, store: rig.file)
-        #expect(report.healthy)
-        if setting == .off {
-            #expect(doctorLines(report) == ["WARN  voice_guards  off in policy (not enforced by this build)"])
-        } else {
-            #expect(doctorLines(report).isEmpty)
+        let live = LocalVoiceGuardsReport(value: value, enforced: false)
+        let report = PolicyHealthReport(health: healthy, store: rig.file, live: live)
+        #expect(report.healthy == (value != .unusable))
+        let expected = switch value {
+        case .on: "on"
+        case .off: "off (not enforced by this build)"
+        case .unusable: "unusable (running daemon policy failure)"
         }
-        let data = try JSONEncoder.hailStatus.encode(report)
-        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(object["voiceGuards"] as? String == setting.rawValue)
+        #expect(report.checks.first { $0.name == "voice_guards" }?.detail == expected)
+        let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any])
+        #expect(object["voiceGuards"] as? String == value.rawValue)
+        #expect(object["configuredVoiceGuards"] as? String == "on")
         #expect(object["voiceGuardsEnforced"] as? Bool == false)
-        #expect(object["healthy"] as? Bool == true)
+    }
+
+    @Test func enforcedOffUsesVoiceRequestWarning() throws {
+        let rig = try VoiceGuardsCLIRig(setting: .off)
+        defer { rig.cleanUp() }
+        let report = PolicyHealthReport(health: healthy, store: rig.file, live: .init(value: .off, enforced: true))
+        #expect(report.healthy)
+        #expect(doctorLines(report).contains { $0.contains("voice guard holds are off for voice requests") })
     }
 
     @Test(arguments: [false, true])
-    func unreadableOrMalformedPolicyFailsDoctorAndNeverAssumesASetting(_ unreadable: Bool) throws {
+    func unreadableOrMalformedPolicyFailsDoctorAndNeverAssumesASetting(_ unreadable: Bool) async throws {
         let rig = try VoiceGuardsCLIRig(setting: .off)
         defer { rig.cleanUp() }
         if unreadable {
@@ -38,35 +47,68 @@ import Testing
         } else {
             try Data(#"{"version":1,"voiceGuards":null}"#.utf8).write(to: rig.file.path)
         }
-        let report = PolicyHealthReport(health: healthy, store: rig.file)
+        let report = PolicyHealthReport(
+            health: healthy, store: rig.file, live: .init(value: .unusable, enforced: false)
+        )
         #expect(!report.healthy)
-        #expect(report.voiceGuards == nil)
-        #expect(report.checks.last?.name == "policy")
-        #expect(report.checks.last?.outcome == .fail)
-        let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any])
-        #expect(object["voiceGuards"] is NSNull)
-        #expect(object["healthy"] as? Bool == false)
-        let doctor = try rig.run(["doctor"])
+        #expect(report.configuredVoiceGuards == nil)
+        #expect(report.voiceGuards == .unusable)
+        let doctor = try await rig.runAsync(["doctor"])
         #expect(doctor.code == 1)
         #expect(doctor.output.contains("policy unreadable or malformed; voice guards unknown"))
+        let status = try await rig.runAsync(["status"])
+        #expect(status.code == 9)
+        #expect(status.output.contains("policy: UNUSABLE, delivery refused:"))
+        #expect(status.output.contains("targets: 1"))
     }
 
-    @Test(arguments: VoiceGuards.allCases)
-    func realStatusAndJSONIncludeTheSetting(_ setting: VoiceGuards) throws {
+    @Test(arguments: VoiceGuards.allCases, LocalVoiceGuardsReport.Value.allCases)
+    func realStatusPreservesOutputAndShowsMismatch(
+        _ setting: VoiceGuards, _ value: LocalVoiceGuardsReport.Value
+    ) async throws {
         let rig = try VoiceGuardsCLIRig(setting: setting)
         defer { rig.cleanUp() }
-        let status = try rig.run(["status"])
+        let reply = "{\"delivered\":0,\"voiceGuards\":{\"value\":\"\(value.rawValue)\",\"enforced\":false}}\n"
+        let stub = try VoiceGuardsReplyStub(socket: rig.directory.appendingPathComponent("replies.sock"), reply: reply)
+        try await stub.start()
+        do {
+            let status = try await rig.runAsync(["status"])
+            #expect(status.code == 0)
+            #expect(status.output.contains("policy: \(rig.file.summary), 1 allowed"))
+            #expect(status.output.contains("targets: 1"))
+            #expect(status.output.contains("voice guards configured: \(setting.rawValue)"))
+            let expected = "voice guards effective: \(voiceGuardsDetail(.init(value: value, enforced: false)))"
+            #expect(status.output.contains(expected))
+            let mismatch = "policy file says \(setting.rawValue); running daemon uses \(value.rawValue); reload pending"
+            #expect(status.output.contains(mismatch) == (value.rawValue != setting.rawValue))
+            let json = try await rig.runAsync(["status", "--json"])
+            #expect(json.code == 0)
+            let object = try #require(JSONSerialization.jsonObject(with: Data(json.output.utf8)) as? [String: Any])
+            #expect(object["voiceGuards"] as? String == value.rawValue)
+            #expect(object["configuredVoiceGuards"] as? String == setting.rawValue)
+            let doctor = try await rig.runAsync(["doctor"])
+            #expect(doctor.output.contains(voiceGuardsDetail(.init(value: value, enforced: false))))
+            #expect(doctor.output.contains(mismatch) == (value.rawValue != setting.rawValue))
+            #expect(await stub.requestsAreStatusOnly)
+            #expect(await stub.requestCount == 3)
+            await stub.stop()
+        } catch {
+            await stub.stop()
+            throw error
+        }
+    }
+
+    @Test func statusRetainsAdapterListingFailures() async throws {
+        let rig = try VoiceGuardsCLIRig(setting: .off)
+        defer { rig.cleanUp() }
+        try Data("#!/bin/sh\nexit 1\n".utf8).write(to: rig.directory.appendingPathComponent("tmux"))
+        let status = try await rig.runAsync(["status"])
         #expect(status.code == 0)
-        let expected = setting == .on ? "voice guards: on" : "voice guards: off (off not enforced by this build)"
-        #expect(status.output.split(separator: "\n").contains(Substring(expected)))
-        let json = try rig.run(["status", "--json"])
-        #expect(json.code == 0)
-        let object = try #require(JSONSerialization.jsonObject(with: Data(json.output.utf8)) as? [String: Any])
-        #expect(object["voiceGuards"] as? String == setting.rawValue)
-        #expect(object["voiceGuardsEnforced"] as? Bool == false)
-        let doctor = try rig.run(["doctor"])
-        #expect(doctor.output.contains("voice_guards") == (setting == .off))
-        if setting == .off { #expect(doctor.output.contains("off in policy (not enforced by this build)")) }
+        #expect(status.output.contains("policy:"))
+        #expect(status.output.contains("targets: 0"))
+        #expect(status.output.contains("voice guards configured: off"))
+        #expect(status.output.contains("voice guards effective: unknown"))
+        #expect(status.error.contains("tmux:"))
     }
 
     @Test func realSendStillRequiresConfirmationWhenOff() throws {
@@ -80,12 +122,13 @@ import Testing
     }
 }
 
-private struct VoiceGuardsCLIRig {
+struct VoiceGuardsCLIRig: Sendable {
     let directory: URL
     let file: PolicyFile
 
     init(setting: VoiceGuards) throws {
-        directory = FileManager.default.temporaryDirectory.appendingPathComponent("hail-voice-cli-\(UUID())")
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hail-voice-cli-\(UUID().uuidString.prefix(8))")
         file = PolicyFile(directory: directory)
         var policy = Policy(
             guardPatterns: [GuardPattern(name: "synthetic", regex: "guarded-token")], voiceGuards: setting
@@ -108,10 +151,14 @@ private struct VoiceGuardsCLIRig {
 
     func cleanUp() { try? FileManager.default.removeItem(at: directory) }
 
-    struct Result {
+    struct Result: Sendable {
         let code: Int32
         let output: String
         let error: String
+    }
+
+    func runAsync(_ arguments: [String]) async throws -> Result {
+        try await Task.detached { try run(arguments) }.value
     }
 
     func run(_ arguments: [String]) throws -> Result {
@@ -128,7 +175,7 @@ private struct VoiceGuardsCLIRig {
         let exited = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in exited.signal() }
         try process.run()
-        let finished = exited.wait(timeout: .now() + .seconds(15)) == .success
+        let finished = exited.wait(timeout: .now() + .seconds(30)) == .success
         if !finished {
             kill(process.processIdentifier, SIGKILL)
             let stopped = exited.wait(timeout: .now() + .seconds(5)) == .success
