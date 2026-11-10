@@ -24,6 +24,9 @@ public enum Tier: String, Codable, Sendable, CaseIterable {
     case locked
 }
 
+/// The owner's configured voice guard setting. This build does not yet enforce `off`.
+public enum VoiceGuards: String, Codable, Sendable, CaseIterable { case on, off }
+
 /// What one target is allowed to do, decided at the Mac keyboard (#41 items 1, 2, 5).
 public struct TargetPolicy: Codable, Sendable, Equatable {
     public var tier: Tier
@@ -51,13 +54,12 @@ public enum PolicyFormatError: Error, Equatable, Sendable {
     case emptyBinding(String)
     case missingVersion
     case invalidRateLimit(Int)
+    case invalidVoiceGuards(String)
 }
 
-/// The whole policy (#41). Serialised to `policy.json` and signed by the host key in a later slice;
-/// nothing here reads or writes files. The on-disk form is versioned, refuses unknown keys (a future key
-/// with security meaning must never be dropped by an older daemon), omits the guard list when it is the
-/// default (so a fix to the defaults reaches every install without a re-sign), and is encoded with
-/// sorted keys so the signed bytes are reproducible. A rule that does not compile is refused on decode.
+/// The whole policy (#41), with file I/O and future signing separate. The versioned on-disk form refuses
+/// unknown keys and invalid guards, omits default guards so fixes reach existing installs, and encodes
+/// sorted keys for reproducible signed bytes.
 public struct Policy: Codable, Sendable, Equatable {
     public static let version = 1
 
@@ -65,16 +67,17 @@ public struct Policy: Codable, Sendable, Equatable {
     /// The guard rules in force: `DangerousPatternGuard.defaults` unless the policy file lists its own.
     public var guardPatterns: [GuardPattern]
     public var deliveriesPerMinute: Int
-
-    enum CodingKeys: String, CodingKey, CaseIterable { case version, targets, guardPatterns, deliveriesPerMinute }
+    /// Configuration only in this slice; every delivery still runs guard escalation.
+    public var voiceGuards: VoiceGuards
 
     public init(
         targets: [String: TargetPolicy] = [:], guardPatterns: [GuardPattern] = DangerousPatternGuard.defaults,
-        deliveriesPerMinute: Int = 30
+        deliveriesPerMinute: Int = 30, voiceGuards: VoiceGuards = .on
     ) {
         self.targets = targets
         self.guardPatterns = guardPatterns
         self.deliveriesPerMinute = deliveriesPerMinute
+        self.voiceGuards = voiceGuards
     }
 
     /// Allow `id` at its current `binding`; a fresh allow always starts at `confirm` unless said otherwise.
