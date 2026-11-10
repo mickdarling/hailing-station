@@ -524,3 +524,56 @@ identifiers, bindings and earlier line text.
 
 The haild CLI still answers `delivered: 0` for a dialog partial with earlier delivered lines.
 This is unchanged behavior and is out of scope for this slice.
+
+### Round-2 notice verification
+
+The source/test snapshot is `92ec0f6d24b4e8885375776e9856074de22a99be`.
+Verification used Swift 6.3.3 on the Dev Work VM in a fresh checkout synchronized by local bundles.
+Every phase waited for the shared lane, used `taskpolicy -b` and at most four workers, and had a
+600-second cap with signal handling and process-group kill cleanup. SSH stdin was closed with
+`< /dev/null` and every connection stayed attached until completion. Swift commands used the lane's
+CLT Testing framework, plugin and linker flags, with `-j 4 -Xswiftc -j1` for builds and
+`--skip-build --no-parallel -j 4` for tests.
+
+The initial package/test build passed in 213.91 seconds. Preliminary focused runs exposed two setup
+errors in the new cancellation fixture: an owner-role event in an anonymous-speaker session, then a
+missing selection generation. Both were corrected before the final runs; the final incremental
+package/test build passed in 13.86 seconds.
+
+The focused filter ran three times:
+
+```text
+HailDaemonKitTests\.(HostSessionDialogNoticeTests|WebSocketListenerDialogNoticeTests|AmbientWiringDialogNoticeTests|HostDialogPartialTests|RightyoInputConsumerTests)
+```
+
+Each run passed: 120 tests in five suites, no skips, in 25.323, 22.967 and 22.763 seconds. Both
+45-case matrices executed on each run, along with both cancellation forms and both registry-name
+fallback paths. The broader filter matches the first notice verification pass:
+
+```text
+HailDaemonKitTests\.(AmbientGap|RightyoStdinGap|RightyoInput|AmbientRouter|AmbientWiring|WebSocketListener|WebSocketPeer|Listener|LocalDispatch|HostSession|Routing|VoiceRoute|Reply|HailHost|Host|Tmux)
+```
+
+It passed once, unsplit: 727 reported tests in 128 suites, 341.326 seconds, with ten expected
+known-issue records from the existing preflight and recipient-handoff deadline/cancellation tests.
+The same ten functions in the five tmux-dependent suites listed above were skipped because tmux
+was unavailable. Every changed test executed.
+
+The full Reply CLI suite (`python3 -m unittest discover -s Tests/ReplyCLITests`) passed all 126 tests
+in 230.648 seconds, exit 0. The policy CLI test (`bash scripts/tests/test-policy-cli.sh`) exited 0
+with no test output after `swift build --product haild` passed in 0.35 seconds.
+
+The isolated warnings-as-errors package/test build (`swift build --build-tests -Xswiftc -warnings-as-errors`)
+passed in 221.13 seconds. Both the build and its enclosing verification exited 0. The linker emitted
+the known missing module-cache debug-file warnings; this is a successful warnings-as-errors build,
+not a warning-free linker claim.
+
+Host strict SwiftLint with the Xcode developer directory and the non-comment 120-column awk check
+both exited 0 and printed nothing for all ten changed Swift files. No chained string concatenation
+appears inside `#expect`. `git diff --check` passed. The PR-shape exclusions and rename handling
+still yield exactly the same four production files relative to the updated structured-evidence base,
+with no renames; this correction changes two of those production files.
+
+Both VM build directories were deleted and no verification jobs remained running. No GitHub calls,
+pushes, host builds, installs or uploads were made. These results are synthetic package and CLI
+evidence, with no live dialog, simulator, device-hearing or captured-output round-trip proof.
