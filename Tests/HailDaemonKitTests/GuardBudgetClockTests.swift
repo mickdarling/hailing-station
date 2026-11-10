@@ -49,9 +49,18 @@ extension Trait where Self == FrozenGuardBudget {
 /// so a semantic fixture cannot become a second refusal through a budget timeout.
 struct GuardClockAmbientSink: AmbientAudioSink {
     let router: AmbientRightyoRouter
+    /// Only direct gate fixtures bypass session admission; they explicitly author their synthetic binding.
+    var admissionBinding: String?
     private let clock = GuardBudgetClock.current
     func ambientAudio(_ event: AmbientAudioEvent) {
-        GuardBudgetClock.$current.withValue(clock) { router.ambientAudio(event) }
+        var admitted = event
+        if case .started(let stream, let connection, let scope) = event, scope.binding == nil,
+           let admissionBinding {
+            let bound = AmbientStreamScope(target: scope.target, selection: scope.selection,
+                                           binding: admissionBinding, policyGeneration: scope.policyGeneration)
+            admitted = .started(stream: stream, connection: connection, scope: bound)
+        }
+        GuardBudgetClock.$current.withValue(clock) { router.ambientAudio(admitted) }
     }
     func ambientInputRoute(_ route: String, connection: UUID) {
         GuardBudgetClock.$current.withValue(clock) { router.ambientInputRoute(route, connection: connection) }

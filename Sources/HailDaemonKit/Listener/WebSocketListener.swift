@@ -619,7 +619,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var executable: URL
         public var config: URL
         public var target: String
-        /// The target's binding, pinned when the daemon started; a rebind refuses dispatch rather than following.
+        /// Initial startup validation hint only. Stream dispatch uses the admission scope's binding.
         public var binding: String
         /// Admit turns that are not `live-microphone`. Tests only; the daemon leaves it false.
         public var allowSynthetic: Bool
@@ -1098,11 +1098,16 @@ extension AmbientRightyoRouter {
         var gateEnd: AmbientStreamEndReason?
         var task: Task<Void, Never>?
     }
-    /// A stream destination retained across reloads (#327). PR 2 must resolve its binding before admission;
+    /// A stream destination retained across reloads. Its binding and owner grant are resolved before admission;
     /// the router never awaits binding resolution.
     struct Destination: Sendable {
         let target: String
         let binding: String
+        let policyGeneration: TargetPolicyGeneration?
+
+        init(target: String, binding: String, policyGeneration: TargetPolicyGeneration? = nil) {
+            (self.target, self.binding, self.policyGeneration) = (target, binding, policyGeneration)
+        }
     }
 
     /// The stream feeding audio now, retaining its destination and opening selection generation (#636).
@@ -1114,6 +1119,7 @@ extension AmbientRightyoRouter {
         let selection: UUID?
         let target: String
         let binding: String
+        let policyGeneration: TargetPolicyGeneration?
     }
 }
 
@@ -1239,14 +1245,11 @@ extension AmbientRightyoRouter {
         state.peakQueue = max(state.peakQueue, state.queue.count)
     }
 
-    /// Configured starts always use the startup binding, ignoring the scope. Other starts require a binding
-    /// resolved before admission; no listing or asynchronous resolution belongs in this router.
+    /// Every start keeps its pre-admission binding. Configured streams also retain their original owner grant;
+    /// no startup hint, listing or asynchronous resolution belongs in this router.
     private func destination(for scope: AmbientStreamScope) -> Destination? {
-        if scope.target == configuration.target {
-            return Destination(target: scope.target, binding: configuration.binding)
-        }
         guard let binding = scope.binding, !binding.isEmpty else { return nil }
-        return Destination(target: scope.target, binding: binding)
+        return Destination(target: scope.target, binding: binding, policyGeneration: scope.policyGeneration)
     }
 
     /// Only a start able to spawn may make room. Refusals still queue behind work/reload already in flight.
@@ -1355,7 +1358,8 @@ extension AmbientRightyoRouter {
             if !Self.admitsPrivacy(connection, in: state) { return "private" }
             let id = register(pipeline, stream: stream, connection: connection, target: destination.target, in: &state)
             state.active = Active(stream: stream, run: id, pipeline: pipeline, since: Date(),
-                                  selection: selection, target: destination.target, binding: destination.binding)
+                                  selection: selection, target: destination.target, binding: destination.binding,
+                                  policyGeneration: destination.policyGeneration)
             // Under register's own lock (MM-E): a parked or stale-held mode reaches this child as its first mode write.
             carryModes(to: connection, stream: stream, pipeline: pipeline, in: &state)
             return nil
@@ -1409,7 +1413,9 @@ extension AmbientRightyoRouter {
         settings.onVoiceRouteRefused = voiceRouteRefused(on: connection, target: target,
                                                         listener: listener, notices: notices)
         let dispatcher = AmbientListenerDispatcher(listener: listener, audit: configuration.audit, selection: selection,
-                                                   streamTarget: target, refusalNotices: notices)
+                                                   streamTarget: target, refusalNotices: notices,
+                                                   binding: destination.binding,
+                                                   policyGeneration: destination.policyGeneration)
         let pipeline = try RightyoAmbientPipeline(configuration: settings, dispatcher: dispatcher)
         mark.set(pipeline.privacyControl)
         return pipeline
@@ -1757,7 +1763,8 @@ extension AmbientRightyoRouter {
         let pipeline: RightyoAmbientPipeline
         do {
             pipeline = try makePipeline(connection: connection, stream: old.stream,
-                                        destination: Destination(target: old.target, binding: old.binding),
+                                        destination: Destination(target: old.target, binding: old.binding,
+                                                                 policyGeneration: old.policyGeneration),
                                         selection: old.selection, listener: listener)
         } catch {
             let reason = Self.describe(error)
@@ -1790,7 +1797,8 @@ extension AmbientRightyoRouter {
             let id = register(pipeline, stream: old.stream, connection: connection, target: old.target,
                               reload: true, in: &state)
             state.active = Active(stream: old.stream, run: id, pipeline: pipeline, since: old.since,
-                                  selection: old.selection, target: old.target, binding: old.binding)
+                                  selection: old.selection, target: old.target, binding: old.binding,
+                                  policyGeneration: old.policyGeneration)
             return .reloaded
         }
         if outcome == .reloaded { taskProgressOwnerChanged() }
@@ -1818,11 +1826,21 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     let listener: WebSocketListener
     let audit: AuditLog?
     /// The selection generation the stream opened on (#636); every request it dispatches is pinned to it.
-    var selection: UUID?
+    let selection: UUID?
     /// The stream's own target (#636). A request its consumer routed to another target is dispatched bound to that
     /// route from this target; nil binds none.
-    var streamTarget: String?
-    var refusalNotices: AmbientRefusalNotices?
+    let streamTarget: String?
+    let refusalNotices: AmbientRefusalNotices?
+    let binding: String?
+    let policyGeneration: TargetPolicyGeneration?
+
+    init(listener: WebSocketListener, audit: AuditLog?, selection: UUID? = nil, streamTarget: String? = nil,
+         refusalNotices: AmbientRefusalNotices? = nil, binding: String? = nil,
+         policyGeneration: TargetPolicyGeneration? = nil) {
+        (self.listener, self.audit, self.selection) = (listener, audit, selection)
+        (self.streamTarget, self.refusalNotices) = (streamTarget, refusalNotices)
+        (self.binding, self.policyGeneration) = (binding, policyGeneration)
+    }
 
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
         try await dispatch(request, routed: false)
@@ -1835,6 +1853,7 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     func dispatch(_ request: LocalDispatchRequest, routed: Bool) async throws -> UUID? {
         let (prepared, reference) = await listener.referenceAmbient(request)
         let from = streamTarget.flatMap { routed && $0 != prepared.target ? $0 : nil }
+        if from == nil, let binding, prepared.binding != binding { throw LocalDispatchRefusal.bindingMismatch }
         if let audit {
             do {
                 _ = try await audit.record(.pushed(tool: from == nil ? "ambient-dispatch" : "ambient-dispatch-routed",
@@ -1842,8 +1861,11 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
             } catch { throw LocalReplyRefusal.auditFailure }
         }
         do {
-            return try await listener.dispatchAmbient(prepared, reference: reference, selection: selection,
-                                                      routedFrom: from)
+            let retained = RetainedDeliveryStages(generation: from == nil ? policyGeneration : nil)
+            return try await HostSession.$ambientDeliveryStages.withValue(retained) {
+                try await listener.dispatchAmbient(prepared, reference: reference, selection: selection,
+                                                   routedFrom: from)
+            }
         } catch let refusal as LocalDispatchRefusal {
             if case .blockedByDialog = refusal {
                 let name: String

@@ -23,7 +23,8 @@ extension AmbientRouterStreamTargetTests {
         defer { pair.close() }
         let router = env.router, connection = try #require(await env.listener.peers.values.first?.session.connectionID)
         let older = UUID(), refused = UUID()
-        router.ambientAudio(.started(stream: older, connection: connection, target: RecipientTestRig.target))
+        router.ambientAudio(.started(stream: older, connection: connection, target: RecipientTestRig.target,
+                                     binding: "reply-binding"))
         router.ambientAudio(.ended(stream: older, reason: .final))
         await boundedSettle(router)
         try #require(router.liveRuns == 0)
@@ -69,7 +70,8 @@ extension AmbientRouterStreamTargetTests {
         let refused = UUID(), configured = UUID(), bytes = Data(repeating: 1, count: 3_200)
         router.state.withLock { ($0.working, $0.reloading) = (true, true) }
         router.ambientAudio(.started(stream: refused, connection: connection, target: "recipient:other"))
-        router.ambientAudio(.started(stream: configured, connection: connection, target: RecipientTestRig.target))
+        router.ambientAudio(.started(stream: configured, connection: connection, target: RecipientTestRig.target,
+                                     binding: "reply-binding"))
         router.ambientAudio(.segment(stream: configured, sequence: 0, bytes: bytes))
         router.ambientAudio(.ended(stream: configured, reason: .final))
         #expect(!events.all.contains("ambient_refused") && made.withLock { $0 } == 0)
@@ -94,7 +96,8 @@ extension AmbientRouterStreamTargetTests {
         let router = env.router
         for _ in 0..<AmbientRightyoRouter.maxLiveChildren {
             let stream = UUID()
-            router.ambientAudio(.started(stream: stream, connection: UUID(), target: RecipientTestRig.target))
+            router.ambientAudio(.started(stream: stream, connection: UUID(), target: RecipientTestRig.target,
+                                     binding: "reply-binding"))
             router.ambientAudio(.ended(stream: stream, reason: .final))
         }
         #expect(router.state.withLock { $0.runs.values.filter { !$0.reaped }.count }
