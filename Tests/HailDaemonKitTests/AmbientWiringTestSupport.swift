@@ -4,7 +4,6 @@ import HailProtocol
 import Synchronization
 import Testing
 @testable import HailDaemonKit
-
 /// A loopback listener with ambient listening wired to a fake `rightyo` (#203). No idle sweeper: only the frame,
 /// failure, disconnect or stop under test can end a stream.
 struct AmbientWiringRig {
@@ -15,7 +14,6 @@ struct AmbientWiringRig {
     let connected: ConnectedPeerIDs
     let port: UInt16
 }
-
 func ambientRig(
     _ fake: FakeRightyo, timing: RightyoChildProcess.Timing, executable: URL? = nil,
     shutdownGrace: TimeInterval = AmbientRightyoRouter.defaultShutdownGrace, audit: AuditLog? = nil,
@@ -31,7 +29,8 @@ func ambientRig(
     notSentPlaying: NotSentPlaying? = nil,
     onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil,
     childMade: (@Sendable (UUID) -> Void)? = nil,
-    gapClock: (@Sendable () -> ContinuousClock.Instant)? = nil, privacy: PrivacyOffSettings = .init()
+    gapClock: (@Sendable () -> ContinuousClock.Instant)? = nil, privacy: PrivacyOffSettings = .init(),
+    admissionBinding: String? = nil
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make(guardPatterns: guardPatterns)
     let connected = ConnectedPeerIDs()
@@ -52,7 +51,9 @@ func ambientRig(
     if let gapClock { configuration.gapClock = gapClock }
     configuration.notes.shortcuts = shortcuts
     let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
-    let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: GuardClockAmbientSink(router: router),
+    let sink = GuardClockAmbientSink(router: router, admissionBinding: admissionBinding,
+                                     admissionPolicy: rig.host.targetPolicy.snapshot(for: RecipientTestRig.target))
+    let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: sink,
                                 sweepInterval: nil, clock: gapClock ?? { .now })
     let listener = try WebSocketListener(
         bindAddress: "127.0.0.1", port: 0, host: rig.host,

@@ -619,7 +619,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var executable: URL
         public var config: URL
         public var target: String
-        /// The target's binding, pinned when the daemon started; a rebind refuses dispatch rather than following.
+        /// Initial startup validation hint only. Stream dispatch uses the admission scope's binding.
         public var binding: String
         /// Admit turns that are not `live-microphone`. Tests only; the daemon leaves it false.
         public var allowSynthetic: Bool
@@ -645,7 +645,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var onMeetingChange: (@Sendable (MeetingChange) -> Void)?
         /// The wall clock that meeting and media expiries are fixed and restored on (MM-E). Tests only change it.
         var now: @Sendable () -> Date = { Date() }
-        /// Awaited by each acknowledgement just before its clip is sent. Nil in the daemon, so nothing waits: tests only
+        /// Awaited by each acknowledgement before its clip is sent. Nil in the daemon, so nothing waits: tests only
         /// set it, to hold an acknowledgement and show a not-sent notice waits for it (#894 review).
         var acknowledgementHold: (@Sendable () async -> Void)?
         /// Called with the connection once a "Nothing was sent." clip is queued on its privacy clip chain. Nil in the
@@ -950,7 +950,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     public func stop(connection: UUID) { stop(connection: connection, device: nil) }
 
-    /// Teardown parks a meeting or media mode still on (MM-E), or privacy (#941), before removing it, for the next start
+    /// Teardown parks a meeting or media mode still on (MM-E), or privacy (#941), before removing it, for next start
     /// to restore.
     public func stop(connection: UUID, device: AmbientPeerDevice?) {
         let streams = state.withLock { state -> [UUID] in
@@ -1098,11 +1098,16 @@ extension AmbientRightyoRouter {
         var gateEnd: AmbientStreamEndReason?
         var task: Task<Void, Never>?
     }
-    /// A stream destination retained across reloads (#327). PR 2 must resolve its binding before admission;
+    /// A stream destination retained across reloads. Its binding and owner grant are resolved before admission;
     /// the router never awaits binding resolution.
     struct Destination: Sendable {
         let target: String
         let binding: String
+        let policyGeneration: TargetPolicyGeneration?
+
+        init(target: String, binding: String, policyGeneration: TargetPolicyGeneration? = nil) {
+            (self.target, self.binding, self.policyGeneration) = (target, binding, policyGeneration)
+        }
     }
 
     /// The stream feeding audio now, retaining its destination and opening selection generation (#636).
@@ -1114,6 +1119,7 @@ extension AmbientRightyoRouter {
         let selection: UUID?
         let target: String
         let binding: String
+        let policyGeneration: TargetPolicyGeneration?
     }
 }
 
@@ -1239,14 +1245,12 @@ extension AmbientRightyoRouter {
         state.peakQueue = max(state.peakQueue, state.queue.count)
     }
 
-    /// Configured starts always use the startup binding, ignoring the scope. Other starts require a binding
-    /// resolved before admission; no listing or asynchronous resolution belongs in this router.
+    /// Every start keeps its pre-admission binding. Configured streams also retain their original owner grant;
+    /// no startup hint, listing or asynchronous resolution belongs in this router.
     private func destination(for scope: AmbientStreamScope) -> Destination? {
-        if scope.target == configuration.target {
-            return Destination(target: scope.target, binding: configuration.binding)
-        }
         guard let binding = scope.binding, !binding.isEmpty else { return nil }
-        return Destination(target: scope.target, binding: binding)
+        guard scope.target != configuration.target || scope.policyGeneration != nil else { return nil }
+        return Destination(target: scope.target, binding: binding, policyGeneration: scope.policyGeneration)
     }
 
     /// Only a start able to spawn may make room. Refusals still queue behind work/reload already in flight.
@@ -1355,7 +1359,8 @@ extension AmbientRightyoRouter {
             if !Self.admitsPrivacy(connection, in: state) { return "private" }
             let id = register(pipeline, stream: stream, connection: connection, target: destination.target, in: &state)
             state.active = Active(stream: stream, run: id, pipeline: pipeline, since: Date(),
-                                  selection: selection, target: destination.target, binding: destination.binding)
+                                  selection: selection, target: destination.target, binding: destination.binding,
+                                  policyGeneration: destination.policyGeneration)
             // Under register's own lock (MM-E): a parked or stale-held mode reaches this child as its first mode write.
             carryModes(to: connection, stream: stream, pipeline: pipeline, in: &state)
             return nil
@@ -1409,7 +1414,9 @@ extension AmbientRightyoRouter {
         settings.onVoiceRouteRefused = voiceRouteRefused(on: connection, target: target,
                                                         listener: listener, notices: notices)
         let dispatcher = AmbientListenerDispatcher(listener: listener, audit: configuration.audit, selection: selection,
-                                                   streamTarget: target, refusalNotices: notices)
+                                                   streamTarget: target, refusalNotices: notices,
+                                                   binding: destination.binding,
+                                                   policyGeneration: destination.policyGeneration)
         let pipeline = try RightyoAmbientPipeline(configuration: settings, dispatcher: dispatcher)
         mark.set(pipeline.privacyControl)
         return pipeline
@@ -1435,7 +1442,7 @@ extension AmbientRightyoRouter {
     /// it always precedes that run's `ambient_ended`, even when a child exits at once beside another live run (#273).
     /// A reload's run (#405) emits `ambient_reloaded` first for the same reason: a new child that fails at once must
     /// leave its failure, not the reload, as the last event. A child whose connection was torn down while it was made
-    /// is registered like any other: `closed`, recorded by `stop(connection:)`, already refuses its mode entries (#735).
+    /// is registered like any other: `closed`, recorded by `stop(connection:)`, refuses its mode entries (#735).
     func register(_ pipeline: RightyoAmbientPipeline, stream: UUID, connection: UUID, target: String,
                   reload: Bool = false,
                   in state: inout State) -> UUID {
@@ -1757,7 +1764,8 @@ extension AmbientRightyoRouter {
         let pipeline: RightyoAmbientPipeline
         do {
             pipeline = try makePipeline(connection: connection, stream: old.stream,
-                                        destination: Destination(target: old.target, binding: old.binding),
+                                        destination: Destination(target: old.target, binding: old.binding,
+                                                                 policyGeneration: old.policyGeneration),
                                         selection: old.selection, listener: listener)
         } catch {
             let reason = Self.describe(error)
@@ -1790,7 +1798,8 @@ extension AmbientRightyoRouter {
             let id = register(pipeline, stream: old.stream, connection: connection, target: old.target,
                               reload: true, in: &state)
             state.active = Active(stream: old.stream, run: id, pipeline: pipeline, since: old.since,
-                                  selection: old.selection, target: old.target, binding: old.binding)
+                                  selection: old.selection, target: old.target, binding: old.binding,
+                                  policyGeneration: old.policyGeneration)
             return .reloaded
         }
         if outcome == .reloaded { taskProgressOwnerChanged() }
@@ -1818,11 +1827,21 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     let listener: WebSocketListener
     let audit: AuditLog?
     /// The selection generation the stream opened on (#636); every request it dispatches is pinned to it.
-    var selection: UUID?
+    let selection: UUID?
     /// The stream's own target (#636). A request its consumer routed to another target is dispatched bound to that
     /// route from this target; nil binds none.
-    var streamTarget: String?
-    var refusalNotices: AmbientRefusalNotices?
+    let streamTarget: String?
+    let refusalNotices: AmbientRefusalNotices?
+    let binding: String?
+    let policyGeneration: TargetPolicyGeneration?
+
+    init(listener: WebSocketListener, audit: AuditLog?, selection: UUID? = nil, streamTarget: String? = nil,
+         refusalNotices: AmbientRefusalNotices? = nil, binding: String? = nil,
+         policyGeneration: TargetPolicyGeneration? = nil) {
+        (self.listener, self.audit, self.selection) = (listener, audit, selection)
+        (self.streamTarget, self.refusalNotices) = (streamTarget, refusalNotices)
+        (self.binding, self.policyGeneration) = (binding, policyGeneration)
+    }
 
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
         try await dispatch(request, routed: false)
@@ -1835,6 +1854,7 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     func dispatch(_ request: LocalDispatchRequest, routed: Bool) async throws -> UUID? {
         let (prepared, reference) = await listener.referenceAmbient(request)
         let from = streamTarget.flatMap { routed && $0 != prepared.target ? $0 : nil }
+        if from == nil, let binding, prepared.binding != binding { throw LocalDispatchRefusal.bindingMismatch }
         if let audit {
             do {
                 _ = try await audit.record(.pushed(tool: from == nil ? "ambient-dispatch" : "ambient-dispatch-routed",
@@ -1842,8 +1862,11 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
             } catch { throw LocalReplyRefusal.auditFailure }
         }
         do {
-            return try await listener.dispatchAmbient(prepared, reference: reference, selection: selection,
-                                                      routedFrom: from)
+            let retained = RetainedDeliveryStages(generation: from == nil ? policyGeneration : nil)
+            return try await HostSession.$ambientDeliveryStages.withValue(retained) {
+                try await listener.dispatchAmbient(prepared, reference: reference, selection: selection,
+                                                   routedFrom: from)
+            }
         } catch let refusal as LocalDispatchRefusal {
             if case .blockedByDialog = refusal {
                 let name: String
@@ -2043,7 +2066,7 @@ extension AmbientRightyoRouter {
     /// Tells the device about a refused request on its child's one notice chain:
     /// after `acknowledgement`, the latest acknowledgement when the refusal came (an un-routed request is acknowledged
     /// before it is typed, so the speaker hears the acknowledgement first), the refusal line, then an eligible clip.
-    /// Returns the line's and the clip's outcome tokens. A connection already gone (`no_connection`) gets no clip either.
+    /// Returns the line's and the clip's outcome tokens. A connection already gone (`no_connection`) gets no clip.
     private func tellNotSent(
         _ notice: (line: String, target: String), after acknowledgement: Task<Void, Never>?, on connection: UUID,
         listener: WebSocketListener?,
@@ -2060,13 +2083,13 @@ extension AmbientRightyoRouter {
     }
 
     /// "Nothing was sent." unless the connection is private (#894, Jarvis: privacy wins). Queued on the connection's
-    /// privacy clip chain, so it can never follow a "Privacy on." decided before it. Privacy (`duck`, its internal name)
+    /// privacy clip chain, so it can never follow a "Privacy on." decided before it. Privacy (`duck`, its name)
     /// is read when it is queued and again just before it plays: `suppressed_privacy` if on at either. A privacy
     /// decision landing after that last check is caught by the connection's privacy reply hold (#913), which the entry
     /// sets with the decision and the clip's enqueue checks once, under the hold's own lock, for all its frames: none
     /// is sent once privacy is decided, also `suppressed_privacy`. A connection already marked torn down gets no clip
     /// and no chain: `no_connection`.
-    /// One whose teardown lands just before the chain is taken (its mark already pruned) gets a chain; once the clip has
+    /// One whose teardown lands before the chain is taken (its mark already pruned) gets a chain; once the clip has
     /// run, a connection with no peer left has that entry dropped, as `stop(connection:)` does, so none is left behind.
     /// A connection id never comes back, so no live connection loses its chain or a clip.
     private func confirmNotSent(
@@ -2154,7 +2177,7 @@ extension AmbientRightyoRouter {
     /// Turns duck mode on or off for `connection` (#735), as `setMedia` does, and returns how many children took it.
     /// Only a child whose RightyO advertised duck mode takes it; when none does (an older RightyO) duck mode is not
     /// entered at all, nothing else changes, and the caller tells the owner. An entry no child took while duck mode is
-    /// already on (a reloaded child not started yet) leaves it on, timeout unchanged. Duck mode taken leaves media mode.
+    /// already on (a reloaded child not started yet) leaves it on, same timeout. Duck mode taken leaves media mode.
     @discardableResult
     func setDuck(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
         setDuck(on, connection: connection, reason: reason) { expected == nil || $0 == expected } ?? 0
@@ -2462,7 +2485,7 @@ extension AmbientRightyoRouter {
         state.withLock { $0.duck[connection] != nil && $0.privacy[connection]?.heardOn == true }
     }
 
-    /// Queues the clip `work` builds, given whether privacy is on, on `connection`'s chain, under the lock that reads it.
+    /// Queues the clip `work` builds, using the privacy state, on `connection`'s chain, under the lock that reads it.
     func enqueuePrivacyClip(_ connection: UUID, _ work: (Bool) -> @Sendable () async -> Void) {
         state.withLock { state in
             Self.clipChain(connection, in: &state).enqueue(work(state.duck[connection] != nil))

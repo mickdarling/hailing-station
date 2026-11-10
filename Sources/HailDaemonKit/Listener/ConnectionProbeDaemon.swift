@@ -216,7 +216,7 @@ extension ConnectionProbeDaemon {
         var ackClips: URL? // `--ambient-ack-clips` (rightyo#105); nil or no clips leaves acknowledgements off.
         var replyControl = false // `--ambient-reply-control` (rightyo#124), only with `--device-diagnostics`.
         var destinations: URL? // `--ambient-destinations` (#552); a missing file leaves spoken notes off.
-        /// `--ambient-duck-timeout` (#735): whole seconds in `AmbientRightyoRouter.duckTimeoutRange`; nil is the default.
+        /// `--ambient-duck-timeout` (#735): seconds in `AmbientRightyoRouter.duckTimeoutRange`; nil uses the default.
         var duckTimeout: TimeInterval?
         /// Where spoken notes keep their Shortcut inputs (#552); tests point it at a scratch folder.
         var noteInputs = VoiceNoteInputs()
@@ -286,7 +286,8 @@ extension ConnectionProbeDaemon {
     }
 
     /// Startup validation (#203): the executable and config pass the child's own checks, and the target is
-    /// listed, alive and bound. The binding is pinned for the daemon's lifetime, as `haild rightyo` pins it.
+    /// listed, alive and bound. This binding is an initial validation hint only; fresh ambient streams resolve
+    /// their own binding against the owner's current policy generation before admission.
     static func ambientRouter(
         _ options: AmbientOptions, host: HailHost, timing: RightyoChildProcess.Timing = .init(),
         audit: AuditLog? = nil, log: @escaping @Sendable (WebSocketListenerEvent) -> Void

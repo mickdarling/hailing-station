@@ -81,8 +81,9 @@ private final class HeldLivenessRenderer: SessionUpdateSpeechRendering {
         #expect(initial.pauseReason == "notListening" && initial.nextDueInSeconds == nil)
         #expect(clock.sleeps == 0)
         let first = UUID(), selection = await rig.session.selectionGeneration
-        router.ambientAudio(.started(stream: first, connection: rig.connectionID,
-            target: RecipientTestRig.target, selection: selection))
+        let policy = await rig.hostRig.host.inputPolicyGeneration(for: RecipientTestRig.target)
+        router.ambientAudio(.admittedStart(stream: first, connection: rig.connectionID,
+            target: RecipientTestRig.target, selection: selection, binding: "reply-binding", policy: policy))
         await router.taskProgressChanges.queued({}).value
         let listening = await rig.listener.taskProgress(.init(action: .status))
         #expect(router.activeConnection() == rig.connectionID)
@@ -95,8 +96,8 @@ private final class HeldLivenessRenderer: SessionUpdateSpeechRendering {
         clock.advance(by: .seconds(600))
         #expect(await rig.hostRig.adapter.legacy.isEmpty)
         let second = UUID()
-        router.ambientAudio(.started(stream: second, connection: rig.connectionID,
-            target: RecipientTestRig.target, selection: selection))
+        router.ambientAudio(.admittedStart(stream: second, connection: rig.connectionID,
+            target: RecipientTestRig.target, selection: selection, binding: "reply-binding", policy: policy))
         await router.taskProgressChanges.queued({}).value
         let restarted = await rig.listener.taskProgress(.init(action: .status))
         #expect(restarted.pauseReason == nil && restarted.nextDueInSeconds == 60)
@@ -118,8 +119,10 @@ private final class HeldLivenessRenderer: SessionUpdateSpeechRendering {
         await rig.listener.enableTaskProgress(clock: clock.clock)
         _ = await rig.listener.taskProgress(.init(action: .start, target: RecipientTestRig.target,
                                                   task: UUID(), seconds: 60))
-        router.ambientAudio(.started(stream: UUID(), connection: rig.connectionID, target: RecipientTestRig.target,
-                                    selection: await rig.session.selectionGeneration))
+        let policy = await rig.hostRig.host.inputPolicyGeneration(for: RecipientTestRig.target)
+        router.ambientAudio(.admittedStart(stream: UUID(), connection: rig.connectionID,
+            target: RecipientTestRig.target,
+            selection: await rig.session.selectionGeneration, binding: "reply-binding", policy: policy))
         await router.taskProgressChanges.queued({}).value
         #expect(await rig.listener.taskProgress(.init(action: .status)).nextDueInSeconds == 60)
         let pipeline = try #require(router.activePipeline)

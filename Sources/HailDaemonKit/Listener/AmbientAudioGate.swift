@@ -29,11 +29,27 @@ public enum AmbientAudioEvent: Sendable, Equatable {
 public struct AmbientStreamScope: Sendable, Equatable {
     public let target: String
     public let selection: UUID?
-    /// Resolved before admission, never by the router. Nil means no binding was resolved; the pinned gate emits nil.
+    /// Resolved before admission, never by the router. Nil means no binding was resolved.
     public let binding: String?
 
+    let policyGeneration: TargetPolicyGeneration?
+
     public init(target: String, selection: UUID? = nil, binding: String? = nil) {
+        self.init(target: target, selection: selection, binding: binding, policyGeneration: nil)
+    }
+
+    init(target: String, selection: UUID?, binding: String?, policyGeneration: TargetPolicyGeneration?) {
         (self.target, self.selection, self.binding) = (target, selection, binding)
+        self.policyGeneration = policyGeneration
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        let samePolicy = switch (lhs.policyGeneration, rhs.policyGeneration) {
+        case (nil, nil): true
+        case (.some(let left), .some(let right)): left.isSameGeneration(as: right)
+        default: false
+        }
+        return lhs.target == rhs.target && lhs.selection == rhs.selection && lhs.binding == rhs.binding && samePolicy
     }
 }
 
@@ -133,8 +149,8 @@ public actor AmbientAudioGate {
         var lastSequence: Int
         var lastActivity: ContinuousClock.Instant
         /// The session's selection generation when the stream opened (#636), nil from a caller that tracks none.
-        var selection: UUID?
-        var policyGeneration: TargetPolicyGeneration?
+        let selection: UUID?
+        let policyGeneration: TargetPolicyGeneration?
     }
 
     /// The single target an ambient stream may feed; the session's selection must also name it.
@@ -333,7 +349,7 @@ extension AmbientAudioGate {
     /// The same, with the session's selection generation, which a stream this segment opens keeps (#636).
     func admission(
         _ audio: AudioPayload, frameTarget: String?, selection: AmbientSelection, connection: UUID, device: String?,
-        policyGeneration: TargetPolicyGeneration? = nil
+        policyGeneration: TargetPolicyGeneration? = nil, binding: String? = nil
     ) -> AmbientAdmission {
         admissionEvents = []
         // Continue under the stream's original grant, never a replacement obtained after a write (#1028).
@@ -344,15 +360,14 @@ extension AmbientAudioGate {
         let result: AmbientAdmission
         // Compare and commit only gate state/events under the lock; no sink, child validation, spawn or await.
         if let expected, expected.target == target, let admitted = expected.performIfCurrent({
-            let result = admitCurrent(audio, frameTarget: frameTarget, selection: selection,
-                                      connection: connection, device: device)
-            if active?.id == audio.streamID, active?.connection == connection { active?.policyGeneration = expected }
-            return result
+            let scope = AmbientStreamScope(target: selection.target ?? "", selection: selection.generation,
+                                           binding: binding, policyGeneration: expected)
+            return admitCurrent(audio, frameTarget: frameTarget, scope: scope, connection: connection, device: device)
         }) {
             result = admitted
         } else if expected == nil {
-            result = admitCurrent(audio, frameTarget: frameTarget, selection: selection,
-                                  connection: connection, device: device)
+            let scope = AmbientStreamScope(target: selection.target ?? "", selection: selection.generation)
+            result = admitCurrent(audio, frameTarget: frameTarget, scope: scope, connection: connection, device: device)
         } else {
             let changed = expected?.target == target && expected?.wasGranted == true
             let message = changed ? "ambient target_policy_changed"
@@ -398,7 +413,7 @@ extension AmbientAudioGate {
     }
 
     private func admitCurrent(
-        _ audio: AudioPayload, frameTarget: String?, selection: AmbientSelection, connection: UUID, device: String?
+        _ audio: AudioPayload, frameTarget: String?, scope: AmbientStreamScope, connection: UUID, device: String?
     ) -> AmbientAdmission {
         expireIdle()
         if let stream = audio.streamID,
@@ -406,7 +421,7 @@ extension AmbientAudioGate {
             return .refused(.notAllowed, AmbientTakeOver.movedMessage(to: move.to))
         }
         let previous = active.flatMap { $0.connection == connection ? nil : $0 }
-        guard let refusal = check(audio, frameTarget: frameTarget, selection: selection,
+        guard let refusal = check(audio, frameTarget: frameTarget, scope: scope,
                                   connection: connection, device: device) else {
             return previous.map { .tookOver(from: $0.device) } ?? .admitted
         }
@@ -414,9 +429,9 @@ extension AmbientAudioGate {
     }
 
     private func check(
-        _ audio: AudioPayload, frameTarget: String?, selection: AmbientSelection, connection: UUID, device: String?
+        _ audio: AudioPayload, frameTarget: String?, scope: AmbientStreamScope, connection: UUID, device: String?
     ) -> (ErrorCode, String)? {
-        guard frameTarget == target, selection.target == target else {
+        guard frameTarget == target, scope.target == target else {
             return refuse(.notAllowed, "ambient target is not selected", connection: connection)
         }
         guard Self.hasAmbientShape(audio), let stream = audio.streamID else {
@@ -424,7 +439,7 @@ extension AmbientAudioGate {
         }
         if active?.id != stream {
             if let refusal = start(stream, audio: audio, connection: connection, device: device,
-                                   selection: selection.generation) { return refusal }
+                                   scope: scope) { return refusal }
         } else {
             // Another connection's stream id is never continued, and refusing it leaves that stream untouched.
             guard active?.connection == connection else { return (.notAllowed, "ambient stream is not this device's") }
@@ -435,7 +450,7 @@ extension AmbientAudioGate {
             // ends here, ahead of the rate budget, rather than letting RightyO acknowledge a turn the host will refuse.
             // The device reads an "ambient stopped:" refusal as transient and, after its recovery backoff, opens a
             // fresh stream on the new selection. Only a stream opened and continued with no generation skips this.
-            guard current.selection == selection.generation else {
+            guard current.selection == scope.selection else {
                 return refuse(.notAllowed, Self.reselectedMessage, connection: connection)
             }
             guard spend(audio.bytes.count) else { return overRate(audio, connection: connection) }
@@ -451,7 +466,7 @@ extension AmbientAudioGate {
     /// this connection's or another's (#366), superseded: a refused start (stale or retried id, rate) announces,
     /// records and disturbs nothing.
     private func start(
-        _ stream: UUID, audio: AudioPayload, connection: UUID, device: String?, selection: UUID?
+        _ stream: UUID, audio: AudioPayload, connection: UUID, device: String?, scope: AmbientStreamScope
     ) -> (ErrorCode, String)? {
         guard audio.sequence == 0, !ended.contains(stream) else {
             return (.malformed, "ambient stream must be new and start at sequence 0")
@@ -469,9 +484,11 @@ extension AmbientAudioGate {
         }
         end(.superseded)
         active = Stream(id: stream, connection: connection, device: device, lastSequence: -1, lastActivity: clock(),
-                        selection: selection)
+                        selection: scope.selection, policyGeneration: scope.policyGeneration)
         streamed.insert(connection)
-        emit(.started(stream: stream, connection: connection, target: target, selection: selection))
+        let admitted = AmbientStreamScope(target: target, selection: scope.selection, binding: scope.binding,
+                                          policyGeneration: scope.binding == nil ? nil : scope.policyGeneration)
+        emit(.started(stream: stream, connection: connection, scope: admitted))
         return nil
     }
 }
@@ -497,7 +514,7 @@ extension AmbientAudioGate {
     }
 
     // Shared with admission without adding window-only restrictions to starts or final segments.
-    private nonisolated static func hasAmbientShape(_ audio: AudioPayload) -> Bool {
+    nonisolated static func hasAmbientShape(_ audio: AudioPayload) -> Bool {
         audio.codec == .pcm16 && audio.sampleRate == sampleRate && audio.channels == 1
             && audio.reply == nil && audio.streamID != nil && wholeSamples(audio.bytes.count)
     }

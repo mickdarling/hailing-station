@@ -128,6 +128,7 @@ actor GatedListingFakeAdapter: Adapter {
     nonisolated let kind = "tmux"
     private let target: AdapterTarget
     private(set) var deliveries: [String] = []
+    private(set) var listingCount = 0
     private var gateNext = false
     private var blocked = false
     private var releases: [CheckedContinuation<Void, Never>] = []
@@ -138,6 +139,7 @@ actor GatedListingFakeAdapter: Adapter {
     }
 
     func listTargets() async throws -> [AdapterTarget] {
+        listingCount += 1
         if gateNext {
             gateNext = false
             blocked = true

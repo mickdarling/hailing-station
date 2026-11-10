@@ -48,6 +48,9 @@ extension HostSession {
     /// socket's `dispatch` kind and `haild rightyo --reply-to` never set it.
     @TaskLocal static var ambientInputDispatch = false
 
+    /// The stream's immutable admission authority, separate from unrelated task-progress contributions.
+    @TaskLocal static var ambientDeliveryStages: RetainedDeliveryStages?
+
     /// The originating session negotiated held requests; host evaluation may retain rate-limit read-backs.
     @TaskLocal static var ambientHeldRequests = false
 
@@ -85,11 +88,24 @@ extension HostSession {
         // Refresh before minting an opening grant; the gate still rechecks after the actor hop (#1028).
         if opening { host.targetPolicy.snapshot(for: gate.target).observePolicy() }
         let policyGeneration = host.targetPolicy.snapshot(for: gate.target)
-        // A child can refuse startup before admission returns; its error belongs to this attempt's grant.
-        if opening { ambientPolicyGeneration = policyGeneration.wasGranted ? policyGeneration : nil }
+        var binding: String?
+        if opening, target == gate.target, selection.target == gate.target,
+           AmbientAudioGate.hasAmbientShape(audio), policyGeneration.wasGranted {
+            // Resolve once for this admission, against the original owner grant; never use a startup hint.
+            binding = await ambientBinding(policyGeneration)
+            guard selection == AmbientSelection(target: selectedTarget, generation: selectionGeneration) else {
+                return failure(.notAllowed, AmbientAudioGate.reselectedMessage, close: false, version: version)
+            }
+            guard binding != nil else {
+                return failure(.notAllowed, "ambient target is not allowed — run haild targets allow on the Mac",
+                               close: false, version: version)
+            }
+            // A child can refuse startup before admission returns; its error belongs to this attempt's grant.
+            ambientPolicyGeneration = policyGeneration
+        }
         switch await gate.admission(
             audio, frameTarget: target, selection: selection, connection: connectionID, device: peerDeviceKind,
-            policyGeneration: policyGeneration
+            policyGeneration: policyGeneration, binding: binding
         ) {
         case .admitted:
             if opening { ambientPolicyStream = audio.streamID }
@@ -97,13 +113,26 @@ extension HostSession {
         case .tookOver(let from):
             ambientPolicyGeneration = policyGeneration
             ambientPolicyStream = audio.streamID
-            guard peerCapabilities.contains(AmbientTakeOver.capability) else { return HostSessionResult(frames: []) }
-            return HostSessionResult(frames: [response(.ambientMovedHere(from: from), version: version)])
+            return ambientTakeOver(from: from, version: version)
         case .refused(let code, let message):
             // Answer under the refused attempt's grant, then preserve any older child's retained authority.
             defer { if opening { ambientPolicyGeneration = retained } }
             return failure(code, message, close: false, version: version)
         }
+    }
+
+    private func ambientTakeOver(from: String?, version: Int) -> HostSessionResult {
+        guard peerCapabilities.contains(AmbientTakeOver.capability) else { return HostSessionResult(frames: []) }
+        return HostSessionResult(frames: [response(.ambientMovedHere(from: from), version: version)])
+    }
+
+    /// One live listing for one opening grant. Admission still compares that original generation atomically.
+    private func ambientBinding(_ generation: TargetPolicyGeneration) async -> String? {
+        let listing = try? await host.registry.listing()
+        guard generation.wasGranted, let listed = listing?.first(where: { $0.info.id == generation.target }),
+              listed.info.alive, let binding = listed.binding, !binding.isEmpty,
+              binding == generation.binding else { return nil }
+        return binding
     }
 
     private func deliver(_ input: consuming AuthorizedInput, version: Int) async -> HostSessionResult {
@@ -160,6 +189,7 @@ extension HostSession {
         do {
             try await host.requireSendPreflight()
             try input.policyGeneration.requireCurrent()
+            try requireAmbientAdmission(input)
             let owner = try await replyOwnership(for: input, generation: generation)
             // Legacy generic input has no retained record, so the captured selection is checked here and
             // again after the handoff; a caller outside the peer's serialized receive loop can race `select`.
@@ -188,6 +218,14 @@ extension HostSession {
         } catch {
             HeldSendScope.current?.failure.record(error)
             return deliveryRefusal(error)
+        }
+    }
+
+    /// A queued ambient request cannot acquire a replacement grant, even just to issue a read-back.
+    private func requireAmbientAdmission(_ input: borrowing AuthorizedInput) throws {
+        if let admitted = Self.ambientDeliveryStages?.generation,
+           !admitted.isSameGeneration(as: input.policyGeneration) {
+            throw HostError.denied(.notAllowed(input.target))
         }
     }
 
@@ -359,7 +397,7 @@ extension HostSession {
         let request = owner.flatMap { replyRequests[$0.context.id] }
         let clock = requestClock, requiresOwner = owner != nil, createdAt = request?.createdAt
         let refuse = RetainedDeliveryStages.refusal(target: target)
-        var retained = RetainedDeliveryStages()
+        var retained = Self.ambientDeliveryStages ?? RetainedDeliveryStages()
         if let permit = request?.policyPermit {
             retained.gates[.replyPermit] = RetainedDeliveryStages.gate({ permit.performIfCurrent($0) == true },
                                                                       refusal: refuse)

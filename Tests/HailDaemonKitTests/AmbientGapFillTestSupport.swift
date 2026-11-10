@@ -34,7 +34,7 @@ struct AmbientGapFillRig {
                 eofGrace: 20, termGrace: 20, backlogBytes: backlogBytes, backlogAge: 60
             ), replyControl: true, onEvent: { event in
                 logs.events.withLock { $0.append(event) }
-            }, gapClock: { clock.now })
+            }, gapClock: { clock.now }, admissionBinding: "reply-binding")
             return Self(fake: fake, env: env, logs: logs, clock: clock)
         } catch { fake.cleanUp(); throw error }
     }
