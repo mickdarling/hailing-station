@@ -53,7 +53,9 @@ extension RootView {
     func stationSection(_ section: StationSection) -> some View {
         switch section {
         case .station:
-            content
+            // The station's tool links open their section rather than push under a station that hides while another
+            // section shows (`StationToolLink`). Selecting a section is the only thing the opener can do.
+            content.environment(\.stationSectionOpener, StationSectionOpener { navigation.apply(.select($0)) })
         case .sessions:
             // The destination step fills this in. Until then the station's own destination control is the one place
             // to choose a destination.

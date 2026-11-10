@@ -11,7 +11,7 @@ final class RedesignShellUITests: XCTestCase {
     }
 
     @MainActor
-    func testShellAppliesOnlyAfterRelaunchAndKeepsTheStationMounted() {
+    func testShellAppliesOnlyAfterRelaunchAndKeepsTheStationMounted() throws {
         let app = XCUIApplication()
         let isPad = UIDevice.current.userInterfaceIdiom == .pad
         // Landscape, so an iPad shows its sidebar without the system's reveal button.
@@ -46,25 +46,45 @@ final class RedesignShellUITests: XCTestCase {
 
         devices.tap()
         XCTAssertTrue(app.descendants(matching: .any)["station.devices.mac-setup"].waitForExistence(timeout: 5))
-        // The station stays mounted behind another section (a remount would end a capture), and is out of the
-        // accessibility tree, so VoiceOver never reads its microphone or privacy state from there.
-        attachTree(of: app, named: "devices-shown")
-        XCTAssertFalse(connection.exists, "VoiceOver can reach the hidden station")
+        // The station stays mounted behind another section (a remount would end a capture), and nothing of it is in
+        // the accessibility tree, so VoiceOver never reads its microphone or privacy state from there.
+        try assertNoStation(in: app, named: "devices-shown")
 
         section("station", in: app, isPad: isPad).tap()
         waitUntilHittable(connection, in: app, named: "station-restored")
 
-        // A tool pushed inside the station's stack is hidden with it, and is still there on return.
-        openStationLabs(app)
-        let labsToggle = app.switches["station.redesign.shell"]
-        XCTAssertTrue(labsToggle.waitForExistence(timeout: 5))
-        devices.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["station.devices.mac-setup"].waitForExistence(timeout: 5))
-        attachTree(of: app, named: "devices-over-pushed-labs")
-        XCTAssertFalse(labsToggle.exists, "VoiceOver can reach a tool pushed inside the hidden station")
-        XCTAssertFalse(connection.exists, "VoiceOver can reach the hidden station")
+        // In the shell a station tool opens its section instead of pushing under the station.
+        openStationTool("Labs", in: app, opens: app.navigationBars["Settings"])
+        try assertNoStation(in: app, named: "settings-shown")
         section("station", in: app, isPad: isPad).tap()
-        waitUntilHittable(app.navigationBars["Labs"], in: app, named: "labs-restored")
+        waitUntilHittable(connection, in: app, named: "station-restored-from-settings")
+    }
+
+    /// Nothing of the station is in the accessibility tree: no identifier in its namespace beyond the shell's own, and
+    /// none of its sensitive wording. A sweep of the whole tree, so a later toolbar item or link that forgets
+    /// `stationAccessibilityScope()` fails here too.
+    @MainActor
+    private func assertNoStation(in app: XCUIApplication, named name: String) throws {
+        let tree = app.debugDescription
+        attachTree(tree, named: name)
+        let identifiers = try captures(of: #"identifier: '(station\.[^']*)'"#, in: tree)
+        XCTAssertTrue(identifiers.contains { $0.hasPrefix("station.tab.") || $0.hasPrefix("station.section.") },
+                      "\(name): the sweep found none of the shell's own controls, so it proves nothing")
+        let shellOwn = ["station.tab.", "station.section.", "station.devices.", "station.settings."]
+        let leaked = identifiers.filter { identifier in !shellOwn.contains { identifier.hasPrefix($0) } }
+        XCTAssertEqual(leaked, [], "\(name): the hidden station is in the accessibility tree")
+        let sensitive = ["microphone", "destination", "talk", "privacy", "private", "listening", "recording"]
+        let spoken = try captures(of: #"label: '([^']*)'"#, in: tree).filter { label in
+            sensitive.contains { label.lowercased().contains($0) }
+        }
+        XCTAssertEqual(spoken, [], "\(name): the hidden station's wording is in the accessibility tree")
+    }
+
+    private func captures(of pattern: String, in text: String) throws -> [String] {
+        let regex = try NSRegularExpression(pattern: pattern)
+        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match in
+            Range(match.range(at: 1), in: text).map { String(text[$0]) }
+        }
     }
 
     @MainActor
@@ -77,30 +97,33 @@ final class RedesignShellUITests: XCTestCase {
     /// The whole accessibility tree, kept with the result, so a failure shows what VoiceOver would have.
     @MainActor
     private func attachTree(of app: XCUIApplication, named name: String) {
-        let attachment = XCTAttachment(string: app.debugDescription)
+        attachTree(app.debugDescription, named: name)
+    }
+
+    private func attachTree(_ tree: String, named name: String) {
+        let attachment = XCTAttachment(string: tree)
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
     }
 
-    /// Opens Labs from the station's own tool links.
+    /// Taps one of the station's own tool links, and waits for what it opens.
     @MainActor
-    private func openStationLabs(_ app: XCUIApplication) {
-        let labs = app.buttons["Labs"]
+    private func openStationTool(_ name: String, in app: XCUIApplication, opens title: XCUIElement) {
+        let tool = app.buttons[name]
         // Hittable, and clear of the bottom edge, where the build footer sits over the scrolling station.
         let limit = app.windows.firstMatch.frame.maxY - 160
-        for _ in 0..<6 where !(labs.exists && labs.isHittable && labs.frame.maxY < limit) { app.swipeUp() }
-        XCTAssertTrue(labs.isHittable, "Labs is reachable from the station tools")
-        // A tap while a swipe still scrolls only stops the scroll, so tap again if Labs didn't open.
-        let title = app.navigationBars["Labs"]
-        labs.tap()
-        if !title.waitForExistence(timeout: 3), labs.exists, labs.isHittable { labs.tap() }
-        XCTAssertTrue(title.waitForExistence(timeout: 5), "Labs opens")
+        for _ in 0..<6 where !(tool.exists && tool.isHittable && tool.frame.maxY < limit) { app.swipeUp() }
+        XCTAssertTrue(tool.isHittable, "\(name) is reachable from the station tools")
+        // A tap while a swipe still scrolls only stops the scroll, so tap again if the tool didn't open.
+        tool.tap()
+        if !title.waitForExistence(timeout: 3), tool.exists, tool.isHittable { tool.tap() }
+        XCTAssertTrue(title.waitForExistence(timeout: 5), "\(name) opens")
     }
 
     @MainActor
     private func turnOnShellInLabs(_ app: XCUIApplication) {
-        openStationLabs(app)
+        openStationTool("Labs", in: app, opens: app.navigationBars["Labs"])
 
         let toggle = app.switches["station.redesign.shell"]
         for _ in 0..<4 where !(toggle.exists && toggle.isHittable) { app.swipeUp() }
