@@ -201,7 +201,11 @@ extension HostSession {
         try requireSelection(of: request, generation: generation)
         let listing = try await host.registry.listing()
         guard let listed = listing.first(where: { $0.info.id == request.target }), listed.info.alive,
-              listed.binding == request.binding else { throw LocalDispatchRefusal.bindingMismatch }
+              let binding = listed.binding, !binding.isEmpty else {
+            AmbientBindingChange.current?.unavailable()
+            throw LocalDispatchRefusal.bindingMismatch
+        }
+        guard binding == request.binding else { throw LocalDispatchRefusal.bindingMismatch }
         // No suspension between this check and `deliver`'s own generation snapshot: the two cannot diverge.
         try requireSelection(of: request, generation: generation)
         return try dispatchOutcome(await deliver(input))

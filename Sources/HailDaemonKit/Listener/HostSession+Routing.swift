@@ -103,7 +103,12 @@ extension HostSession {
             guard selection == AmbientSelection(target: selectedTarget, generation: selectionGeneration) else {
                 return failure(.notAllowed, AmbientAudioGate.reselectedMessage, close: false, version: version)
             }
-            guard binding != nil else { return ambientBindingRefusal(changed: resolved.changed, version: version) }
+            guard binding != nil else {
+                // Build this refusal under the opening grant without replacing an older child's authority.
+                ambientPolicyGeneration = policyGeneration
+                defer { ambientPolicyGeneration = retained }
+                return ambientBindingRefusal(changed: resolved.changed, version: version)
+            }
             // A child can refuse startup before admission returns; its error belongs to this attempt's grant.
             ambientPolicyGeneration = policyGeneration
         }

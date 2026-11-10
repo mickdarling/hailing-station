@@ -127,16 +127,30 @@ No simulator, physical device, microphone capture, live provider or captured-out
 
 A live, nonempty configured-target binding that differs from the opening grant is refused with
 `not_allowed: ambient stopped: target session changed`. An own-target mid-stream `bindingMismatch`
-remains terminal and receives the same ending. Missing, dead, empty, unreadable or retired authority
-keeps its existing refusal. No new ErrorCode or app behavior is introduced.
+from a live, nonempty replacement receives the same ending. Missing, dead, nil or empty bindings retain
+`ambient stopped: dispatch bindingMismatch` without a session-change notice. Unreadable or retired
+authority keeps its existing refusal. No new ErrorCode or app behavior is introduced.
 
-Before that ending, a capable device receives the fixed daemon request-refusal line:
+The host attempts to send a capable device the fixed daemon request-refusal line before that ending:
 "The voice target's session changed. Reconnecting." At fresh admission, the session returns the
 notice and ending in one ordered frame batch, and the peer awaits each send. At mid-stream dispatch,
-the configured target's dispatcher awaits the task returned by the child's existing request-refusal
-chain. That task waits behind earlier refusals and the captured acknowledgement, then awaits
-`showRouteRefusal` through `peer.post`. Thus the notice reaches the transport queue before the terminal
-exception unwinds to the router's ending error. Merely enqueueing a notice would not establish this order.
+the configured target's dispatcher claims terminal ownership of the exact child before suspending.
+Further microphone segments are not forwarded, reload cannot replace that child, and input closure
+cannot publish a competing ending. The child retires while the notice waits behind earlier refusals
+and the captured acknowledgement on its existing request-refusal chain.
+
+`AmbientRightyoRouter.sessionChangeNoticeDeadline` bounds that wait to two seconds. Completion, expiry,
+teardown or cancellation releases the dispatcher, which unconditionally throws the terminal refusal.
+The run is removed before the ending is sent; a stalled acknowledgement cannot retain a run slot or
+prevent the gate from ending. The deadline uses a separate serial dispatch queue and does not join an
+acknowledgement task. Expiry also cancels the acknowledgement, activating the prepared-send watchdog.
+A transport submission permit is revoked under the same lock used to enqueue the notice: a task held
+by an external acknowledgement can later resume, but cannot enqueue a late notice. Successful notices
+still reach `peer.post` before the ending. Expiry or notice failure does not suppress the ending.
+
+Fresh-admission refusals are built under the opening attempt's policy generation, then restore any
+older child's retained generation. A previous stream's retired grant cannot rewrite a current opening
+attempt's session-change ending into `ambient target_policy_changed`. No authority is transferred.
 
 The fixed safety line requires the live connection, negotiated session, current selection, request-refusal
 capability and transport permit. It requires no target binding authority and produces no target voice
@@ -154,12 +168,19 @@ a later fresh stream to deliver. Approval alone starts nothing; old-stream input
 ### Additional synthetic coverage
 
 - `AmbientSessionChangeNoticeTests`: exact notice-before-ending wire order at refused admission and
-  mid-stream failure, including a reloaded child; a held acknowledgement holds both frames; repeated
+  mid-stream failure, including a reloaded child; a held acknowledgement holds both frames until the
+  deadline; repeated
   unapproved restart attempts deliver nothing and launch no child; approval permits only a fresh stream;
   binding-mismatch wording uses the refusal chain even after target authority is denied, with no target voice;
   the selected-target seam retains its prior terminal error.
 - `AmbientSessionChangeBoundaryTests`: routed mismatch bypasses the own-target notice, and an older
   device receives only the existing-code ending.
+- `AmbientSessionChangeDeadlineTests`: a prepared send with no completion cannot retain a run; four
+  stalled runs release capacity for a fresh admission; expired notices stay silent when acknowledgements
+  resume; child exit, continued microphone input, teardown and cancellation cannot add a second ending.
+- `AmbientSessionChangeAdmissionTests`: a same-connection A → approved B → unapproved C opening gets
+  the session-change ending while retaining the older child's grant; missing, dead, nil and empty
+  mid-stream bindings retain their prior ending and produce no session-change notice.
 - `AmbientSessionChangeRecoveryTests`: the exact ending triggers a new sequence-zero resume stream;
   persistent refusal exhausts the existing three device retries at 1, 3 and 10 seconds.
 
@@ -169,6 +190,8 @@ accessibility announcement. No physical device, microphone, live provider, insta
 round trip is claimed. No app source or TestFlight identifier changes are included.
 
 ### PR B verification
+
+Initial verification:
 
 Synthetic verification on 2026-11-10 used the Dev Work VM, Apple Swift 6.3.3 and a fresh checkout.
 Each phase waited for the shared lane and ran at background priority, with at most four workers,
@@ -208,3 +231,41 @@ passed. All six Swift file checksums matched the tested VM sources. The producti
 using the PR checker's exclusions.
 Both VM build directories were deleted after verification, and no verification processes from this task
 remained. No push, installed-build replacement, upload, simulator or physical-device validation was performed.
+
+Round-2 verification used another fresh checkout on the Dev Work VM with Apple Swift 6.3.3.
+Phases waited for the shared lane and ran one at a time at background priority, with at most four
+workers, serial test scheduling and the same ten-minute phase bound and process cleanup.
+The focused and broader selections above were unchanged; the focused selection additionally matched
+the two new session-change suites.
+
+| Phase | Result |
+| --- | --- |
+| Focused selection, three consecutive runs | 29 tests in 9 suites per run; all passed in 78.901, 79.041 and 78.296 seconds |
+| Ambient A–O families | 134 tests in 25 suites passed, 105.590 seconds |
+| Ambient P–Q families | 251 tests in 52 suites passed, 238.945 seconds |
+| Ambient R–Z families | 276 tests in 60 suites passed, 236.178 seconds |
+| Rightyo families | 186 tests in 17 suites passed, 34.699 seconds |
+| Remaining requested daemon families | 203 tests in 43 suites passed, 13.617 seconds; five expected known issues |
+| Full Reply CLI suite | 126 tests passed, 233.125 seconds; exit 0 |
+| Policy CLI after building haild | Build exit 0; test exit 0; phase completed in 52 seconds |
+| Warnings-as-errors package and test build | Build and wrapper exit 0; 243.10 seconds |
+
+The final runs had no unexpected issues. The remaining daemon group retained the same five deliberate
+`LocalDispatchPreflightWaitTests` deadline-harness known issues. The warnings-as-errors build emitted
+linker module-cache debug-info warnings; Swift compilation and the wrapper succeeded. All phases
+completed within ten minutes.
+
+Swift test phases used `swift test --skip-build --no-parallel -j 4` with the filters above. Builds used
+`swift build --build-tests -j 4 -Xswiftc -j1`; the separate warnings build added
+`-Xswiftc -warnings-as-errors`. These commands also supplied the VM toolchain's framework, Testing
+plugin and runtime-linker arguments. CLI verification used
+`python3 -m unittest discover -s Tests/ReplyCLITests` and `bash scripts/tests/test-policy-cli.sh`,
+the latter after `swift build --product haild -j 4 -Xswiftc -j1` with the same toolchain arguments.
+
+Strict host SwiftLint and the literal 120-column check printed nothing on all ten changed Swift files.
+No chained `+` occurs in the changed `#expect` or `#require` expressions. Whitespace checks passed,
+and all ten Swift file checksums matched the tested VM sources. Both VM build directories were deleted,
+and no verification processes from this task remained. The production-file count is four using the
+PR checker's exclusions. No host build, host Swift test, simulator, physical-device validation,
+installed-build replacement, upload or captured-output round trip was performed. No push or GitHub
+call was made for this round.
