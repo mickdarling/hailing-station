@@ -82,6 +82,8 @@ import Testing
         #expect(try await rig.confirmation(on: first) == MeetingRig.on.text)
         let (socket, newer) = try await rig.start()
         #expect(try await rig.confirmation(on: socket) == RestoreRig.resumed.text)
+        // The confirmation words are the same either way; the decided hook fences the recording decision (#1192).
+        #expect(await eventually { rig.changes.count == 3 }, "first restore decided marker")
         try await recipientSocketSend(audio(UUID(), 0), on: first)
         #expect(await eventually { rig.router.activeConnection() == old }, "old connection restart marker")
         #expect(await eventually { rig.control(3) == RestoreRig.gate }, "old connection gated marker")
