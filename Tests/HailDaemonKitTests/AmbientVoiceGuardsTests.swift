@@ -22,8 +22,10 @@ import Testing
         ), log: { events.record($0) })
         router.attach(route.listener)
         let stream = UUID(), connection = await route.session.connectionID
-        router.ambientAudio(.started(stream: stream, connection: connection, target: route.target,
-                                    selection: await route.session.selectionGeneration, binding: route.binding))
+        let policy = route.host.targetPolicy.snapshot(for: route.target)
+        router.ambientAudio(.admittedStart(stream: stream, connection: connection, target: route.target,
+                                    selection: await route.session.selectionGeneration, binding: route.binding,
+                                    policy: policy))
         try #require(await eventually { router.activeStream == stream })
         router.ambientAudio(.segment(stream: stream, sequence: 0, bytes: Data(count: 3_200)))
         router.ambientAudio(.ended(stream: stream, reason: .final))
