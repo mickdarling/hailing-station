@@ -43,7 +43,10 @@ class DeliveryMappingCleanupCLITests(unittest.TestCase):
             "enum HostError: Error {", declaration, overload, "}",
             helpers,
             "let delivered = Array(CommandLine.arguments.dropFirst(2))",
-            "let error = HostError.partial(delivered: delivered, reason: CommandLine.arguments[1])",
+            'let reason: HostPartialReason = CommandLine.arguments[1] == "dialog"',
+            '    ? .dialog(DialogBlock(cause: .uninspectable, effects: .enterMayHaveExecuted))',
+            '    : .text(CommandLine.arguments[1])',
+            "let error = HostError.partial(delivered: delivered, reason: reason)",
             "switch error {", branch, "}",
         ])
         scratch = tempfile.TemporaryDirectory(prefix="hail-partial-parity-")
@@ -73,3 +76,17 @@ class DeliveryMappingCleanupCLITests(unittest.TestCase):
                     self.assertEqual(result.returncode, 6)
                     self.assertEqual(result.stderr, expected)
                     self.assertEqual(result.stdout, "")
+
+    def test_dialog_reason_keeps_the_production_cli_branch(self):
+        for delivered in [[], ["one"], ["one", "two"]]:
+            with self.subTest(delivered=delivered):
+                result = subprocess.run(
+                    [str(self.binary), "dialog", *delivered],
+                    capture_output=True, text=True, timeout=15, check=False,
+                )
+                count = len(delivered)
+                suffix = "" if count == 1 else "s"
+                reason = 'deliveryFailed("target dialog state could not be inspected")'
+                self.assertEqual(result.returncode, 6)
+                self.assertEqual(result.stderr, f"haild: delivered {count} line{suffix}, then: {reason}\n")
+                self.assertEqual(result.stdout, "")

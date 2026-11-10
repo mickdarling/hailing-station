@@ -17,6 +17,7 @@ enum HostDeliveryOutcome: Sendable, Equatable {
     /// The target may have received the text, but no reply ownership survived the handoff.
     case unowned(String)
     case refused(ErrorCode, String)
+    case blockedByDialog(DialogBlock, earlierDelivered: Int)
     /// The target's input already holds unsent text (#894): nothing was handed off. Its own name and plain reason,
     /// never the text; on the wire it is still `not_allowed`, so the protocol is unchanged.
     case inputPending(reason: String)
@@ -110,6 +111,7 @@ extension HostSession {
         // `paste_refused` to a device that takes request refusals, so it ends that request and keeps the connection;
         // the message is the plain reason. Lockdown, rate limits and unknown targets keep their own codes, as for
         // spoken text. Spoken text alone, and any device without the capability, is answered as before.
+        let target = input.target
         let carriesPaste = input.carriesPaste, takesRefusals = peerCapabilities.contains(RequestRefusals.capability)
         let refusal: (ErrorCode) -> ErrorCode = { code in
             Self.refusalCode(code, carriesPaste: carriesPaste, takesRequestRefusals: takesRefusals)
@@ -128,6 +130,10 @@ extension HostSession {
             return failure(.notAllowed, message, close: false, version: version)
         case .refused(let code, let message):
             return failure(refusal(code), message, close: false, version: version)
+        case .blockedByDialog(let block, let earlier):
+            let name = await dialogTargetName(target)
+            let message = DialogDeliveryNotice(block: block, earlierDelivered: earlier).message(target: name)
+            return failure(refusal(.notAllowed), message, close: false, version: version)
         case .inputPending(let reason):
             return failure(refusal(.notAllowed), reason, close: false, version: version)
         }
@@ -214,11 +220,22 @@ extension HostSession {
         return .held(notice)
     }
 
+    private func dialogTargetName(_ target: String) async -> String {
+        #if os(macOS)
+        if let name = authorizer.voiceRoutes?.route(for: target)?.name { return name }
+        #endif
+        return (try? await host.targets().first { $0.id == target }?.name) ?? "the target"
+    }
+
     private func deliveryRefusal(_ error: any Error) -> HostDeliveryOutcome {
         switch error {
         case AdapterError.deliveryFailed(let message) where message == PastedContent.agentOnlyRefusal:
             // The tmux pane was not running an agent (#608): said plainly, as a paste refusal the device keeps.
             return .refused(.notAllowed, PastedContent.agentOnlyRefusal)
+        case AdapterError.blockedByDialog(let block):
+            return .blockedByDialog(block, earlierDelivered: 0)
+        case HostError.partial(let delivered, .dialog(let block)):
+            return .blockedByDialog(block, earlierDelivered: delivered.count)
         case AdapterError.inputPending:
             // Unsent input (#894) keeps its own refusal apart from policy, lockdown and rebind refusals.
             return .inputPending(reason: HostDeliveryOutcome.inputPendingReason)

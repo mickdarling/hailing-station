@@ -58,12 +58,46 @@ public struct LocalDispatchRequest: Codable, Sendable, Equatable {
 }
 
 /// Stable dispatch refusals. The wire `code` reuses the reply vocabulary; `error` names the exact reason.
-public enum LocalDispatchRefusal: String, Error, Sendable, Equatable {
+public enum LocalDispatchRefusal: Error, Sendable, Equatable, RawRepresentable, CustomStringConvertible {
     case unsupported, unknownConnection, connectionEnded, sessionNotReady, notAuthorized, targetNotSelected
     case selectionChanged, bindingMismatch, confirmationRequired, capacityExceeded, deliveryRefused
     case ownershipLost, connectionLost
-    /// The target's input already holds unsent text (#894); every other refusal of the target stays `deliveryRefused`.
+    /// The target's input already holds unsent text (#894).
     case inputPending
+    case blockedByDialog(DialogBlock, earlierDelivered: Int)
+
+    /// Existing CLI tokens remain decodable; a token alone can never recreate dialog evidence.
+    public init?(rawValue: String) {
+        let existing: [Self] = [
+            .unsupported, .unknownConnection, .connectionEnded, .sessionNotReady, .notAuthorized, .targetNotSelected,
+            .selectionChanged, .bindingMismatch, .confirmationRequired, .capacityExceeded, .deliveryRefused,
+            .ownershipLost, .connectionLost, .inputPending
+        ]
+        guard let refusal = existing.first(where: { $0.rawValue == rawValue }) else { return nil }
+        self = refusal
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .unsupported: "unsupported"
+        case .unknownConnection: "unknownConnection"
+        case .connectionEnded: "connectionEnded"
+        case .sessionNotReady: "sessionNotReady"
+        case .notAuthorized: "notAuthorized"
+        case .targetNotSelected: "targetNotSelected"
+        case .selectionChanged: "selectionChanged"
+        case .bindingMismatch: "bindingMismatch"
+        case .confirmationRequired: "confirmationRequired"
+        case .capacityExceeded: "capacityExceeded"
+        case .deliveryRefused: "deliveryRefused"
+        case .ownershipLost: "ownershipLost"
+        case .connectionLost: "connectionLost"
+        case .inputPending: "inputPending"
+        case .blockedByDialog: "blockedByDialog"
+        }
+    }
+
+    public var description: String { rawValue }
 
     public var message: String {
         let reason = switch self {
@@ -78,6 +112,7 @@ public enum LocalDispatchRefusal: String, Error, Sendable, Equatable {
         case .confirmationRequired: "target requires confirmation at the Mac"
         case .capacityExceeded: "connection holds too many live requests"
         case .deliveryRefused: "target action was refused"
+        case .blockedByDialog: "target is blocked by a dialog"
         case .ownershipLost: "handed off, but no reply ownership survived"
         case .connectionLost: "handed off, but the connection ended before it could own the reply"
         case .inputPending: HostDeliveryOutcome.inputPendingReason
@@ -172,6 +207,8 @@ extension HostSession {
         return try dispatchOutcome(await deliver(input))
     }
 
+    // Each outcome keeps its existing CLI refusal and cancellation precedence.
+    // swiftlint:disable:next cyclomatic_complexity
     private func dispatchOutcome(_ outcome: HostDeliveryOutcome) throws -> UUID? {
         switch outcome {
         case .delivered(let owner): return owner
@@ -185,9 +222,12 @@ extension HostSession {
         case .confirmationRequired: throw LocalDispatchRefusal.confirmationRequired
         case .unowned: throw LocalDispatchRefusal.ownershipLost
         case .refused(.rateLimited, _): throw LocalDispatchRefusal.capacityExceeded
-        // The host refuses a cancelled caller before its handoff; that is the caller's outcome, not a refusal
-        // of the target, and nothing was sent.
-        case .refused where Task.isCancelled, .inputPending where Task.isCancelled: throw CancellationError()
+        // Cancellation remains the caller's outcome for target refusals, including dialog evidence.
+        // It does not assert that earlier lines or possible paste/Enter effects were absent.
+        case .refused where Task.isCancelled, .inputPending where Task.isCancelled,
+             .blockedByDialog where Task.isCancelled: throw CancellationError()
+        case .blockedByDialog(let block, let earlier):
+            throw LocalDispatchRefusal.blockedByDialog(block, earlierDelivered: earlier)
         case .refused: throw LocalDispatchRefusal.deliveryRefused
         case .inputPending: throw LocalDispatchRefusal.inputPending
         }
@@ -235,7 +275,8 @@ extension LocalReplyEndpoint {
             }
             await respond(.dispatch(delivered: 1, request: owner), to: client)
         } catch is CancellationError {
-            // Before the handoff nothing was sent; after it, the record stands. Neither is a refusal.
+            // Cancellation is the caller's outcome, never a refusal: after the handoff the record stands. Before it,
+            // nothing is reported as sent, though earlier lines or a dialog-blocked paste or Enter may have landed.
             retire(client.id)
         } catch {
             let refusal = error as? LocalDispatchRefusal
