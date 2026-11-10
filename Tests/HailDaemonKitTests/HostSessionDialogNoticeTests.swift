@@ -37,6 +37,21 @@ import Testing
         #expect(await session.lastInputLedger?.latest(for: "tmux:a") == nil)
     }
 
+    @Test func phoneWithoutAVoiceRouteUsesTheOwnerVisibleListingName() async throws {
+        let session = try await ready(earlier: 2, displayName: "Owner Session")
+        let result = await session.receive(sessionFrame(target: "tmux:a", payload: .text(TextPayload(
+            text: "synthetic private line"
+        ))))
+        let control = try onlyControl(result)
+        let expected = "Couldn't check Owner Session for a dialog. "
+            + "2 earlier lines went through. The next line may be in the input box; the rest were not submitted."
+        #expect(control == .error(code: .notAllowed, message: expected))
+        guard case .error(_, let message, _) = control else { return }
+        for privateText in ["tmux:a", "b1", "tail of a", "synthetic private line"] {
+            #expect(!message.contains(privateText))
+        }
+    }
+
     @Test func legacyTokensRemainStableAndDialogEvidenceCannotBeDecodedFromAToken() {
         let tokens = ["unsupported", "unknownConnection", "connectionEnded", "sessionNotReady", "notAuthorized",
                       "targetNotSelected", "selectionChanged", "bindingMismatch", "confirmationRequired",
@@ -54,11 +69,12 @@ import Testing
         #expect(dialog.message == "dispatch refused [blockedByDialog]: target is blocked by a dialog")
     }
 
-    private func ready(earlier: Int, capable: Bool = false) async throws -> HostSession {
+    private func ready(earlier: Int, capable: Bool = false, displayName: String? = nil) async throws -> HostSession {
         let error: any Error = earlier == 0 ? AdapterError.blockedByDialog(Self.block)
             : HostError.partial(delivered: Array(repeating: "synthetic private line", count: earlier),
                                 reason: .dialog(Self.block))
-        let adapter = FakeAdapter(kind: "tmux", targets: [.init(name: "a", binding: "b1")], deliverError: error)
+        let adapter = FakeAdapter(kind: "tmux", targets: [.init(name: "a", displayName: displayName, binding: "b1")],
+                                  deliverError: error)
         let registry = Registry()
         try await registry.register(adapter)
         var policy = Policy(guardPatterns: [.init(name: "synthetic guard", regex: "^synthetic guarded command$")],

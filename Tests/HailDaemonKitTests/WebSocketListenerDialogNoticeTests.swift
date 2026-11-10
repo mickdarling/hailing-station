@@ -20,16 +20,24 @@ import Testing
          "2 earlier lines went through, and the next line may have too; check the Mac before resending.")
     ]
 
-    @Test(arguments: rows, [false, true])
+    static var causes: [DialogBlock.Cause] { DialogKind.allCases.map { .known($0) } + [.uninspectable] }
+
+    static func firstSentence(_ cause: DialogBlock.Cause) -> String {
+        switch cause {
+        case .known(.computerUsePermissions): "A Computer Use permissions dialog is open on Deck. "
+        case .known(.computerUseAppApproval): "A Computer Use app approval dialog is open on Deck. "
+        case .known(.toolPermission): "A tool permission dialog is open on Deck. "
+        case .known(.modalFooter): "A dialog is open on Deck. "
+        case .uninspectable: "Couldn't check Deck for a dialog. "
+        }
+    }
+
+    @Test(arguments: rows, causes)
     // swiftlint:disable:next large_tuple
-    func exactWordingAndClipEligibility(row: (DialogBlock.Effects, Int, String), unknown: Bool) {
+    func exactWordingAndClipEligibility(row: (DialogBlock.Effects, Int, String), cause: DialogBlock.Cause) {
         let (effects, earlier, remainder) = row
-        let title = "Computer Use needs macOS permissions"
-        let cause: DialogBlock.Cause = unknown ? .uninspectable : .known(title: title)
         let notice = DialogDeliveryNotice(block: .init(cause: cause, effects: effects), earlierDelivered: earlier)
-        let first = unknown ? "Couldn't check Deck for a dialog. "
-            : "A Computer Use needs macOS permissions dialog is open on Deck. "
-        let expected = first + remainder
+        let expected = Self.firstSentence(cause) + remainder
         #expect(Array(notice.message(target: "Deck").utf8) == Array(expected.utf8))
         #expect(notice.untouched == (effects == .none && earlier == 0))
     }

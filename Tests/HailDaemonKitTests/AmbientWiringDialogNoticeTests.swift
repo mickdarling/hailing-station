@@ -7,14 +7,13 @@ import Testing
 
 /// Loopback device frames and synthetic children/adapters only.
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct AmbientWiringDialogNoticeTests {
-    @Test(arguments: WebSocketListenerDialogNoticeTests.rows, [false, true])
+    @Test(arguments: WebSocketListenerDialogNoticeTests.rows, WebSocketListenerDialogNoticeTests.causes)
     func everyNoticeUsesTheSpokenNameAndOnlyUntouchedRequestsPlayTheClip(
         // swiftlint:disable:next large_tuple
-        row: (DialogBlock.Effects, Int, String), unknown: Bool
+        row: (DialogBlock.Effects, Int, String), cause: DialogBlock.Cause
     ) async throws {
         let (effects, earlier, _) = row
-        let block = DialogBlock(cause: unknown ? .uninspectable
-                                : .known(title: "Computer Use needs macOS permissions"), effects: effects)
+        let block = DialogBlock(cause: cause, effects: effects)
         let run = try await PendingInputRun.make(routes: routes())
         defer { run.close() }
         let error: any Error = earlier == 0 ? AdapterError.blockedByDialog(block)

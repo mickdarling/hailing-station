@@ -222,9 +222,10 @@ extension HostSession {
         case .confirmationRequired: throw LocalDispatchRefusal.confirmationRequired
         case .unowned: throw LocalDispatchRefusal.ownershipLost
         case .refused(.rateLimited, _): throw LocalDispatchRefusal.capacityExceeded
-        // The host refuses a cancelled caller before its handoff; that is the caller's outcome, not a refusal
-        // of the target, and nothing was sent.
-        case .refused where Task.isCancelled, .inputPending where Task.isCancelled: throw CancellationError()
+        // Cancellation remains the caller's outcome for target refusals, including dialog evidence.
+        // It does not assert that earlier lines or possible paste/Enter effects were absent.
+        case .refused where Task.isCancelled, .inputPending where Task.isCancelled,
+             .blockedByDialog where Task.isCancelled: throw CancellationError()
         case .blockedByDialog(let block, let earlier):
             throw LocalDispatchRefusal.blockedByDialog(block, earlierDelivered: earlier)
         case .refused: throw LocalDispatchRefusal.deliveryRefused

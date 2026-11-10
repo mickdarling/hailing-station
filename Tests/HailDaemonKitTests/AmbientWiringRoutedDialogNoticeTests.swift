@@ -5,6 +5,34 @@ import Testing
 @testable import HailDaemonKit
 
 extension AmbientWiringDialogNoticeTests {
+    @Test func ambientWithoutAVoiceRouteUsesTheOwnerVisibleListingName() async throws {
+        let run = try await PendingInputRun.make()
+        defer { run.close() }
+        await run.adapter.setTargets([.init(name: "reply", displayName: "Owner Session", binding: "reply-binding")])
+        let block = DialogBlock(cause: .known(.toolPermission), effects: .pasteMayHaveExecuted)
+        await run.adapter.failHandoff(with: HostError.partial(delivered: ["synthetic private line"],
+                                                            reason: .dialog(block)))
+        try await run.speak()
+        let message = "A tool permission dialog is open on Owner Session. "
+            + "1 earlier line went through. The next line may be in the input box; the rest were not submitted."
+        let expected = AmbientWiringInputPendingTests.acknowledged
+            + [.control(.error(code: .voiceRouteRefused, message: message))]
+        let frames = try await run.seen(3)
+        #expect(frames == expected)
+        for frame in frames {
+            if case .control(.error(_, let actual, _)) = frame {
+                for privateText in ["recipient:reply", "reply-binding", "synthetic private line"] {
+                    #expect(!actual.contains(privateText))
+                }
+            }
+        }
+        #expect(await eventually { !run.log.details("ambient_delivery_refused").isEmpty })
+        let connection = try #require(await run.connection)
+        #expect(run.queued.count(for: connection) == 0)
+        try await barrier(on: run.socket, step: "listing fallback has no clip or pane text")
+        await run.finish()
+    }
+
     /// A routed refusal has no heard bubble or acknowledgement, as before; its turn stays nil.
     @Test func routedDialogKeepsItsSpokenNameWithoutInventingAHeardTurn() async throws {
         let script = PendingInputRun.routeThenTarget.replacingOccurrences(of: "Deck.", with: "Deck, add a slide.")

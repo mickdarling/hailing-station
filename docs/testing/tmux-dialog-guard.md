@@ -395,13 +395,22 @@ configured target and a voice-routed target. Other own-target refusal behavior i
 ownership and the last-input device are never committed for a dialog refusal.
 
 The device names the target using its configured spoken route name, with the listed target name as
-fallback. Known causes say `A <title> dialog is open on <target>.`; failed inspection says
-`Couldn't check <target> for a dialog.` The next sentence distinguishes untouched requests, possible
+fallback. Known causes use the kind's spoken name; failed inspection keeps its existing sentence.
+
+| Cause | First sentence |
+| --- | --- |
+| Computer Use permissions | `A Computer Use permissions dialog is open on <target>.` |
+| Computer Use app approval | `A Computer Use app approval dialog is open on <target>.` |
+| Tool permission | `A tool permission dialog is open on <target>.` |
+| Modal footer | `A dialog is open on <target>.` |
+| Uninspectable | `Couldn't check <target> for a dialog.` |
+
+The next sentence distinguishes untouched requests, possible
 input-box text, possible submission, and singular or plural earlier delivered lines. Existing phone
 refusal codes, request UUIDs, heard-turn correlation, notice order and acknowledgement snapshots are
 preserved. No notice prefix is added.
 
-The current wording table uses the first sentence above, followed by the exact text below.
+The current wording table uses the corresponding first sentence above, followed by the exact text below.
 `E` is the number of earlier delivered lines. Each cause uses every row; `L` is
 `1 earlier line` for E=1 and `2 earlier lines` for E=2 (and the corresponding plural for larger counts).
 
@@ -452,7 +461,6 @@ Both isolated VM build directories were deleted and no verification jobs remaine
 All evidence remains synthetic; no simulator, live dialog, installed build, device hearing or
 captured-output round trip is claimed.
 
-
 ### Amended notice wording verification
 
 The amended table above uses `Nothing was sent.` for untouched uninspectable requests, and explicitly
@@ -491,7 +499,6 @@ the existing preflight and recipient-handoff tests. The same ten functions in fi
 were skipped because tmux was unavailable; all changed tests ran. The full Reply CLI suite
 (`python3 -m unittest discover -s Tests/ReplyCLITests`) passed: 126 tests, 233.473 seconds, exit 0.
 
-
 The warnings-as-errors package/test build completed in 238.68 seconds. Its build and enclosing
 verification both exited 0. The linker emitted the known missing module-cache debug-file warnings;
 this is a successful warnings-as-errors build, not a warning-free linker run.
@@ -502,3 +509,18 @@ relative to the structured-evidence base; only the existing listener file change
 Both isolated VM build directories were deleted, and no verification jobs remained running.
 No GitHub calls, pushes, host builds, installs or uploads were made. These results are synthetic
 package and CLI evidence, with no live dialog, simulator, device-hearing or captured-output proof.
+
+### Typed-kind notice and cancellation corrections
+
+Known notices use `DialogKind.spokenName`. Formatter and loopback clip cases come from
+`DialogKind.allCases` plus uninspectable, crossed with all three effects and E∈{0,1,2}: 45 combinations
+each. Expected first sentences and suffixes are literal strings, compared byte for byte by the
+formatter test. The clip matrix independently requires playback only for none/E=0 for every cause.
+
+Cancelled callers receiving direct or partial dialog outcomes propagate `CancellationError` without
+per-request refusal evidence, notice or clip. Selection precedence is unchanged. Phone and ambient
+fallback tests use the owner-visible registry name when no voice route exists, and exclude pane
+identifiers, bindings and earlier line text.
+
+The haild CLI still answers `delivered: 0` for a dialog partial with earlier delivered lines.
+This is unchanged behavior and is out of scope for this slice.

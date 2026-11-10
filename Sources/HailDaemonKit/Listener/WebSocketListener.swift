@@ -24,7 +24,7 @@ struct DialogDeliveryNotice {
     func message(target: String) -> String {
         let first: String
         switch block.cause {
-        case .known(let title): first = "A \(title) dialog is open on \(target)."
+        case .known(let kind): first = "A \(kind.spokenName) is open on \(target)."
         case .uninspectable: first = "Couldn't check \(target) for a dialog."
         }
         return first + " " + remainder
