@@ -8,7 +8,7 @@ or upload. The remaining device and queue requirements of #1212 are deferred exp
 
 - `voice_stopped` carries only optional bounded integer `latency_ms` (0...60,000). Both encoding and decoding enforce
   the bound; decoding and schema reject unknown fields and explicit null. The host capability is `device_voice_stop`.
-  A future PR needs `protocol:compatible` and `security:critical`; no GitHub metadata is changed by this work.
+  This PR carries `protocol:compatible` and `security:critical`; this local revision changes no GitHub metadata.
 - Negotiation, matching protocol version, authorization, the reporting connection's active ambient stream and privacy
   off gate the host stop. Unready, inactive and private reports have content-free reason tokens.
 - The handler reuses `WebSocketListener.stopReplyPlayback(connection:)`, including the existing in-flight reply
@@ -48,7 +48,7 @@ Later device work must tap echo-cancelled capture before masking, enforce privac
 playback/queue before sending, and validate owner latency and self-trigger rejection physically before default-on.
 Those detector, device queue, reply-text guard timing, battery and physical proof expectations are not claimed here.
 
-## Verification
+## Round 1 verification (historical)
 
 The Dev Work VM uses a fresh `vw1212a` workspace at the requested main base, with the local source delta copied
 without a push. Phases run sequentially after the shared lane is idle. Each phase has a 590-second deadline and
@@ -127,7 +127,7 @@ an extension to keep the actor within the configured type-body limit.
 The PR-shape checker's exact exclusions yield **four production files**: `Control.swift`, `Schema.swift`,
 `HostSession.swift` and `WebSocketListener.swift`. There are no renames. Tests, documentation and the canonical
 schema JSON are excluded by that checker. The two listener files require `security:critical`; the capability-gated
-v1 extension requires `protocol:compatible` for a future PR. No labels were changed.
+v1 extension requires `protocol:compatible`. This PR carries both labels; no labels were changed locally.
 
 The separate warnings-as-errors wrapper completed in **232.10 seconds**, reported **`werr build=0`**, and exited 0.
 Its build log contains zero errors and 120 CLT debug-symbol warnings about missing module-cache files; all warning
@@ -139,4 +139,103 @@ Both job build directories (the workspace `.build` and the separate wrapper buil
 were deleted. No job build/test processes remained. No generated build product is included in the change.
 
 No online PR-shape, CI check or independent review is claimed. Only the two authorized issue reads were made;
-there was no push or PR.
+the existing PR was neither updated nor published by that local verification session.
+
+## Round 2 fixes and deterministic coverage
+
+The actual listener now passes no report callback without ambient wiring. `AmbientListenerWiring.deviceVoiceStopped`
+is required, so a wiring cannot silently inherit a no-op. Pre-hello reports fail closed with a malformed error;
+authorization denial always logs `reason=unauthorized`, including the read-only probe authorizer. All ingress and
+router refusal/coalesced lines are bounded per reason and connection to one per ten seconds; the next line includes
+the suppressed count. Accepted reports less than one second apart refresh the window and retire pending clips but
+send no second `stop_playback`. The hyphenated dismissal token `reason=device-voice-stop` is intentional: it follows
+RightyO's `reason=stop-phrase` convention.
+
+Stop confirmations now prepare a whole clip, then check the connection's window and pending-confirmation token
+under the same lock as the final enqueue. An accepted report retires every pending confirmation on that connection,
+including work paused for longer than ten seconds. Known ordering bound: a RightyO dismissal whose confirmation
+has already enqueued before the host records the device report can still speak. PR 3 must have the device drop a
+host stop-confirmation clip arriving within a short window after its local stop; that device mitigation is deferred.
+
+- `DeviceVoiceStopRaceTests`: hold a confirmation, accept a device stop, advance eleven seconds and release;
+  assert exactly the `device_stopped` token and a ping/pong with no text/audio clip. Also cover a stop on A followed
+  by B's ordinary spoken RightyO confirmation; queued take-over/reload refusal; and teardown followed by a new
+  stream on the same connection ID with normal spoken confirmation.
+- `DeviceVoiceStopTests.anotherConnectionCannotStopTheActiveConnectionsReplies`: publish first audio on the active
+  connection, report from another, then assert the active reply's final audio still publishes and arrives.
+- `DeviceVoiceStopAdmissionTests`: negotiate through the actual listener with/without ambient wiring; assert one
+  stop for a burst, one coalesced token and the exact later suppressed count; test independent refusal reasons at
+  the nine/ten-second boundary. `DeviceVoiceStopSessionTests` adds read-only refusal log coalescing with exact counts.
+- Five negative `voice_stopped` fixtures cover extra keys and latency -1, 60001, null and 1.5. Both
+  `scripts/check_schema.py` and `LimitsAndNegativesTests.everyNegativeFixtureIsRejectedByItsPayloadRule` discover
+  the directory automatically; neither consumer needs a production change. A positive canonical fixture is deferred:
+  it needs `Sources/HailProtocolFixtures/Fixtures.swift`, which would be a fifth production file.
+
+Round 2 uses only the authorized `gh issue view 1212` read. No remote publication or existing PR update is performed.
+This remains synthetic host evidence; device detection, app delivery and physical proof are outside this revision.
+
+## Round 2 verification
+
+Verification uses a fresh `vw1212a2` checkout seeded from the host's local bundle at
+`681fb23acdd3b9b2e305c52463168550f841fd9a`, with the working source delta copied locally. It uses the same
+four-worker flags, background priority, disabled automatic resolution, sequential phases and 590-second process-group
+watchdog above; every phase has signal/finally TERM/KILL cleanup. No dependency fetch or synthetic load workers run.
+The separate wrapper starts with a fresh `vw1212a2-werr` build path and the same external Swift shim.
+
+The final focused selection is:
+
+```bash
+selection='DeviceVoiceStop|AmbientWiringStopConfirmation|HostPlaybackStop'
+selection+='|TaskProgressGuardedWake|TaskProgressHostIntegration|LocalSessionUpdate'
+selection+='|AmbientWiringOwnerReplyRouting|AbandonedReplyEcho904'
+taskpolicy -b swift build --build-tests "${flags[@]}" -Xswiftc -warnings-as-errors
+# Three separate capped phases:
+taskpolicy -b swift test --skip-build --no-parallel "${flags[@]}" --filter "$selection"
+```
+
+The broad selections and CLI command are identical to round 1's table above. Schema verification on the VM uses:
+
+```bash
+taskpolicy -b swift run --skip-build hail-protocol-gen
+taskpolicy -b python3 scripts/check_schema.py
+taskpolicy -b python3 -m unittest scripts/tests/test_check_schema.py
+```
+
+All final phases passed. Swift Testing reports functions separately from parameterized case executions:
+
+| Selection | Runs | Functions / suites | Case executions per run | Result / seconds |
+| --- | ---: | ---: | ---: | --- |
+| Final focused selection | 3 | 67 / 14 | 126 | pass; 14.654, 13.192, 14.204 |
+| `HailProtocolTests` | 1 | 167 / 31 | 578 | pass; 0.241 |
+| `HailDaemonKitTests\.Ambient[A-M]` | 1 | 134 / 25 | 207 | pass; 107.422 |
+| `HailDaemonKitTests\.Ambient[N-S]` | 1 | 317 / 65 | 488 | pass; 334.761 |
+| `HailDaemonKitTests\.Ambient[T-Z]` | 1 | 214 / 49 | 395 | pass; 135.120 |
+| `HailDaemonKitTests\.Rightyo` | 1 | 186 / 17 | 228 | pass; 34.380 |
+| Listener partition (round 1 selection) | 1 | 22 / 5 | 67 | pass; 0.818 |
+
+The requested broad daemon families passed **873 functions and 1,385 case executions**. The final focused repeats
+include complete confirmation audio-payload assertions; three preliminary repeats also passed before those assertions
+were tightened. Production sources were identical throughout these test runs. The final default-path
+warnings-as-errors test build passed in **16.49 seconds**. Earlier compile attempts caught callback type inference
+and an unused lock result; both were corrected before the reported test runs.
+
+The full Reply CLI suite passed **126 tests in 230.982 seconds**, exit 0. The VM generator regenerated 57 canonical
+fixtures and the v1 schema without content drift. Both VM schema checks passed: **57 valid fixtures, 126 negatives
+rejected, zero failures; 11 checker unit tests in 0.003 seconds**. The Swift conformance log explicitly includes all
+five new `control-voice-stopped-*` negative fixtures.
+
+The separate warnings-as-errors wrapper passed in **233.61 seconds**, with **`werr build=0`**, wrapper exit 0 and
+zero build errors. Its 120 warning lines all belong to the existing CLT missing-module-cache debug-symbol category;
+there are no other warning categories. This is a successful Swift warnings-as-errors build, with that toolchain
+limitation recorded, rather than a claim of warning-free linker output.
+
+Host strict SwiftLint (`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`), the awk 120-column check and
+whitespace validation passed and printed nothing for **all 16 changed Swift files** against the PR base. The
+PR-shape checker's exact exclusions still give **four production files**: `Control.swift`, `Schema.swift`,
+`HostSession.swift` and `WebSocketListener.swift`; there are no renames. The production/test source commit is
+`dfc6085836bde7c456573ffe411936594264fdc1`.
+
+Final SHA-256 verification matched all 16 changed Swift files, the canonical schema and the five new negative
+fixtures between host and VM (22 files). The scoped cleanup removed the workspace `.build`, separate wrapper build
+and both compiler shim paths after verification; no job build/test processes remained. No generated build product
+is committed. No simulator, physical-device, captured-output round-trip or installation proof is claimed.
