@@ -671,9 +671,9 @@ work removes its token set when empty. A held confirmation retired by teardown l
 Device playback diagnostics remain the source of actual playback-end reports to RightyO; the report adds no second
 reply-ended notification.
 
-This slice adds the protocol and host handling only. Device detection, app wiring, physical latency/self-trigger
-proof, and clearing detached reply jobs waiting on the reply-audio lock remain later work. It does not enable a
-stop detector or change its default.
+The original host slice added the protocol and host handling; the queued CLI audio boundary is implemented below.
+Device detection, app wiring and physical latency/self-trigger proof remain later work. Neither host slice enables
+a stop detector or changes its default.
 
 ## Queued CLI audio and stop ordering (#1212, PR 1b)
 
@@ -697,23 +697,45 @@ Wrapped final audio retains the independent terminal-frame budget. Actual public
   A ticket grants no recipient or policy authority. Daemon restarts invalidate tickets. A CLI cannot infer support
   from an ordinary reply acknowledgement: missing `replyAudio` is a refusal, with no unguarded audio fallback.
 
-A detached job obtains a ticket on its first failed attempt to take `reply-audio.lock`, before reporting itself
-queued. Text and optional Markdown metadata have already been delivered. On lock acquisition it checks admission
-before reading/synthesizing audio, and wraps every later audio frame with its ticket. A job that acquires the lock
-immediately sends its existing frames without queue requests. Foreground publication also stays unchanged.
+Every detached audio job obtains a ticket at `awaitAudioTurn` entry, before attempting `reply-audio.lock`.
+Text and optional Markdown metadata have already been delivered. On lock acquisition it checks admission before
+reading/synthesizing audio, and wraps every later audio frame with its ticket. This includes jobs that take the
+lock without waiting, covering the preceding reply's device playout tail. Foreground publication stays unchanged.
 
-Each accepted playback stop marks its connection with the current counter before retiring in-flight replies.
+Each accepted playback stop marks its connection and every associated reply target with the current counter
+before retiring in-flight replies. The host association set includes selected/covered voice-route targets, targets
+of in-flight and pinned replies, and request owners on the connection. Hello names and device kinds are
+unauthenticated and are never identity keys. Target marks retain the 256 most recently stopped targets (refreshing
+a target moves it to the end), outlive connection teardown and expire with the daemon epoch. Only host stop paths
+write marks; local socket enqueue/check/publish requests cannot create or refresh them. In-flight target bookkeeping
+is bounded by the existing 64 flights per connection; pins retain their existing global bound of 64.
+
 Both a RightyO playback-scope dismissal and an accepted device `voice_stopped` mark the queue, including repeated
-reports whose outbound `stop_playback` is coalesced. Spoken mute keeps its existing in-flight retirement and never
-marks the queue. The ticket check and stop mark share a synchronous lock: no audio handoff can pass an older
-admission after the stop mark. No time window or cross-process wall clock is involved.
+reports whose outbound `stop_playback` is coalesced. Spoken mute and privacy entry explicitly do not mark it.
+Privacy's separate delivery hold still prevents publication while private. The ticket check and stop mark share
+a synchronous lock: no audio handoff can pass an older admission after the stop mark. No time window or
+cross-process wall clock is involved.
 
-The destination is resolved at each decision through the existing routing rules above: owned request first,
-otherwise the reply's existing text/first-frame pin, current last input, single selector or ambient owner. The
-stop mark is read only for that resolved connection; a stop on A cannot skip a reply destined for B. A ticket
-at or below that mark loses its audio; a later ticket is admitted even 100 ms after the stop. Text/cards already
-delivered remain intact and the request is not withdrawn. The daemon emits a content-free
-`reply_audio_skipped reason=stopped request=<UUID|none> ticket=N` event. The job handles the skip as success and
+The target is checked before routing, so a disconnected text pin cannot turn a stop skip into a routing refusal.
+Ordinary routing still resolves request owner, existing text/first-frame pin, current last input, single selector
+or ambient owner. Admission and final enqueue skip a ticket at or below either the resolved connection's mark or
+the frame target's mark. This prevents a pin eviction or reconnect from reviving pre-stop audio. A ticket greater
+than both marks can play immediately, including after reconnect. A shared target stop also covers replies owned
+by another connection for that target. Text/cards already delivered remain intact and the request is not withdrawn.
+No extra original-destination record is retained: target marks close both gaps while preserving ordinary routing
+for post-stop jobs, without another per-job destination lifetime.
+
+The daemon emits the content-free event
+`reply_audio_skipped reason=stopped request=<UUID|none> ticket=N`. A bounded cache of 256 skipped ticket positions
+deduplicates probe/publish and mid-stream terminal-marker attempts; after cache eviction a repeated old request
+may log again. Actual queued publication keeps the ordinary audit-before-delivery boundary and records refused
+delivery codes for doctor counts. A missing target is refused before any `pushed` audit entry.
+
+A daemon restart makes a waiting job's ticket stale: the CLI exits with an error (exit 1 in the waitable job), keeps
+its already delivered text/card, sends no audio and produces no `reply_audio_skipped` event. It does not retry with
+an unguarded frame or silently reinterpret a refusal as a stop.
+
+The job handles the skip as success and
 writes `reply audio skipped after a stop` to stderr. As with other post-readiness diagnostics, a detached job's
 stderr follows its existing redirection to `/dev/null` after releasing its caller; the daemon event is the durable
 observable diagnostic. There is no terminal audio marker for a job whose audio never started.

@@ -341,11 +341,14 @@ product is committed. All requested VM phases passed under their individual caps
 proof, live captured-output round trip, online CI result, independent review, installation, upload, push, or PR
 update is claimed.
 
-## 1b: queued reply audio (synthetic evidence only)
+## 1b round 1: queued reply audio (historical synthetic evidence)
 
 This local slice starts at PR #1214's unmerged head `ad25cb8c7ea339ac0455a191747e5caf997283c3`, on
-`feat/1212-queued-reply-stop`. No push, PR, install, upload or installed-build replacement is in scope. This is
+`feat/1212-queued-reply-stop`. At that historical verification, no push, PR, install, upload or installed-build
+replacement was in scope. This is
 host-side synthetic evidence, not a device detector, physical hearing or live captured-output round trip.
+
+The ordering and coverage descriptions in this round-1 section are historical; round 2 supersedes them below.
 
 ### Ordering, destination and retained text
 
@@ -379,7 +382,8 @@ session-update revision tracking is fixed. Proposed split: bump the revision at 
 
 The checker exclusions and rename handling give four production files, relative to the specified PR 1a head:
 `HostReplyDelivery.swift`, `WebSocketListener.swift`, `LocalReplyEndpoint+Submission.swift`, `ReplyCommand.swift`.
-There are no renames. Listener edits make this `security:critical`; independent exact-head review remains pending.
+There were no renames. Listener edits made this `security:critical`; at that historical verification independent
+exact-head review was pending.
 No review, GitHub check or PR-shape network validation is claimed.
 
 ### Deterministic coverage
@@ -478,3 +482,58 @@ shim/directory were removed after verification; no job build/test processes rema
 checksum and cleanup logs are retained outside the repository under the task's `vw1212b` log names. No generated
 build product is committed. Only the authorized `gh issue view 1212 --comments` and `gh pr view 1214` calls were
 made; there was no push, PR, GitHub metadata change, online PR-shape/CI check or independent-review claim.
+
+## 1b round 2: target stop marks and every detached job
+
+This round starts at `13ce1b808b3455f9a9cbdf1ca97411123ababe53`, based on main
+`cc36af90ccb4bfcc3dc6f282ad13f0bc6f8081a8`. New commits only; the authorized GitHub read is
+`gh issue view 1212 --comments`. No push, PR, installation, upload or installed-build replacement is performed.
+All tests are synthetic host/CLI checks; no simulator, physical hearing or captured-output round trip is claimed.
+
+### Fixes and design
+
+- `HostReplyDelivery.swift`: stops snapshot the connection's selected target, all covered configured voice-route
+  targets, pinned reply targets, in-flight reply targets and request-owner targets. A separate in-flight map follows
+  the existing 64-flight bound per connection and is discarded at teardown. Pins retain their global 64-entry bound.
+  The queue retains the 256 most recently stopped targets, refreshing order only on another host stop; socket
+  enqueue/check/publish never creates or refreshes marks. Target marks survive peer teardown, until eviction or
+  daemon epoch replacement. Neither Hello name nor device kind is an identity key.
+- The target check precedes recipient resolution, so even an unavailable old text pin produces a content-free skip.
+  Resolved admission and final enqueue also compare against both the connection and frame-target marks under the
+  stop lock. Existing routing remains authoritative for actual delivery. No extra original-destination record is
+  needed: target marks cover pin eviction and reconnection while retaining ordinary routing for post-stop jobs.
+  A ticket strictly greater than both marks plays, including after reconnect. Shared-target stops cover both owners.
+- `ReplyCommand.swift`: every detached audio job allocates a ticket at `awaitAudioTurn` entry, before attempting
+  the lock, checks it after acquisition and carries it on every audio frame. Uncontended jobs are covered during
+  the previous reply's playout tail. Only jobs that actually wait emit the queued note/readiness signal.
+- `WebSocketListener.swift`: `markQueuedAudio` has no default; every listener call chooses explicitly. Device
+  `voice_stopped` and RightyO playback dismissal pass true; mute and privacy entry pass false. Privacy's delivery
+  hold continues to govern publication while private.
+- `LocalReplyEndpoint+Submission.swift`: queued-audio refusals use ordinary refusal logging and doctor audit
+  counts, including the existing audit-failure/request-pending/reply-stopped exclusions. Missing targets are refused
+  before a pushed audit entry. Queue allocation/probes do not produce pushed entries.
+- Restart outcome: a stale ticket remains a refusal. A waitable CLI job exits 1, keeps text/metadata, sends no audio
+  and emits no stop-skip event. No compatibility fallback bypasses the ticket.
+- Skip diagnostics retain the last 256 skipped ticket positions, avoiding duplicate probe/publish or mid-stream
+  terminal-marker lines for a job. After that bounded cache evicts a position, repeating it can log again.
+
+### Deterministic regressions
+
+- `ReplyQueuedAudioTargetTests`: stop, real disconnect/reconnect, then admission, with retained and evicted text
+  pins; preserved delivered text; audio-only pre-stop silence; post-stop audio on the fresh connection; eviction
+  plus a real delivered input on B after A's stop; target bound and teardown lifetime.
+- `ReplyQueuedAudioAssociationTests`: independent selected, covered, pinned, in-flight and request-owner target
+  associations, an unrelated target, and a continuation-held final enqueue to B stopped through A's target mark.
+- `ReplyQueuedAudioProbeTests`: request-owner check twice then publish with exact request/frame/flight/pin-state
+  assertions; single-selector and ambient-owner audio-only decision sites; real privacy entry and exit through
+  `announceEntry`, with the pre-entry ticket still admissible.
+- `ReplyQueuedAudioEndpointTests`: real local socket refusal, no missing-target pushed audit, and the exact
+  `RefusalSummary` count consumed by doctor. `ReplyQueuedAudioRoutingTests` records shared-target ownership and
+  asserts invalid/stale tickets produce no stop-skip log. Existing queue/race suites retain post-stop playback
+  without reconnect, both stop sources, coalescing and the final-enqueue race on the same connection.
+- Python `QueuedReplyStopTests`: uncontended jobs checked while owning the kernel lock, skipped before rendering
+  or admitted with a ticket on every frame; a stale waiting job's exact error/text-only outcome. Existing cases
+  retain speech/PCM contention, explicit retry, first-publication stop and legacy refusal coverage.
+
+Negative assertions follow awaited handlers/jobs, explicit continuation gates or socket ping/pong barriers.
+There are no settle-then-negative assertions or blocked Swift cooperative threads in the new coverage.

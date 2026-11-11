@@ -69,6 +69,7 @@ import Testing
                     try await rig.env.listener.replyAudio(.init(action: "check", ticket: ticket, frame: audio))
                 }
             }
+            #expect(rig.details("reply_audio_skipped") == [])
             try await barrier(on: rig.socket, step: "invalid tickets send nothing")
         } catch {
             await rig.finish()
