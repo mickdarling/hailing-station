@@ -1108,3 +1108,113 @@ and after it. Cleanup checks those hashes again, deletes the workspace `.build`,
 directory and temporary compiler shim/directory, and confirms no owned build/test processes remain. The VM git
 worktree is clean. Logs, checksums, superseded-run evidence, lint, source count and cleanup evidence remain outside
 the repository under the task's `vw1212b5` names. No generated product or private deployment data is committed.
+
+## 1b round 4b: immediate cut and bounded resolution
+
+This correction starts at `f1f9028a04f8056e3ad7d0054913e09f0be3b5aa`,
+on `feat/1212-queued-reply-stop`, and adds new commits only. Source/test verification uses
+`092fcc5d94cac6c7680479b3f5b61fb0f78c140e`. The only GitHub call is
+`gh issue view 1212 --comments`; no push, PR creation/update, installed-build replacement or upload occurs.
+
+### Stop ordering and deadline
+
+`WebSocketListener.stopReplyPlayback` synchronously captures the queue barrier at line 591, then registers
+`stopsInFlight` and calls the existing session retirement at line 598. The stopped IDs enter the listener ledger
+at line 599, and the `stop_playback` send is at line 603. Only afterward does line 607 await the session target
+snapshot/mark. The original `defer` fail-closed resolution remains. Neither the retirement nor the wire stop
+awaits the barrier, session snapshot, or target resolution. Coalesced and unsupported-device outcomes still
+resolve queue targets after the immediate retirement/send decision. The snapshot receives just-retired IDs so
+in-flight-only target associations remain covered after reordering.
+
+`ReplyAudioQueue.stopResolutionDeadline` (`HostReplyDelivery.swift:12`) is **250 ms**, replacing the two-second
+literal. The default task sleeps for that named duration. `docs/reply-protocol.md` documents the duration,
+fail-closed floor, and immediate-cut ordering.
+
+### Deterministic tests
+
+- New `ReplyQueuedAudioImmediateStopTests.playbackCutPrecedesHeldTargetResolution` covers device reports and
+  direct playback stops. It publishes in-flight audio, holds both target resolution and its deadline open, then
+  observes the actual `stop_playback` frame on the stopping connection. Before releasing either hold it verifies
+  remaining frames are refused as `replyStopped` and completes a socket ping/pong barrier. Thus the test observes
+  the stop and retirement while resolution is still held, without a timing-based negative assertion.
+- Round 4 already supplies `ReplyQueuedAudioPendingTests.boundedTimeoutRaisesFloorAndReleasesFirstFrame` with
+  an injected timeout hold. Its timeout-driving and floor/pre-cutoff/post-cutoff assertions remain unchanged;
+  the correction adds only the exact 250 ms constant assertion. Releasing the hold drives the production timeout
+  task, releases admission and globally silences the cutoff ticket even for an unrelated target. Later tickets
+  play both before and after timeout, and a late snapshot cannot undo the floor.
+- Existing held-hop, retired-flight, teardown, final-enqueue, privacy, coalescing and CLI tests remain selected.
+
+### VM commands and load controls
+
+The fresh `vw1212b6` Dev Work VM checkout is cloned solely from a local git bundle. All 22 changed Swift/Python
+source and test files match host SHA-256 checksums before verification. Each phase runs serially after checking
+the shared build/test lane, at background priority, under a 590-second process-group watchdog with signal/finally
+TERM/KILL cleanup. SwiftPM uses four jobs, each compiler one worker, automatic resolution disabled. No dependency
+fetch or synthetic load worker runs. The separate wrapper starts with a fresh `vw1212b6-werr` build directory.
+
+Use the CLT framework/plugin/linker `flags` array above, with one capped phase per invocation:
+
+```bash
+taskpolicy -b swift build --build-tests "${flags[@]}" -Xswiftc -warnings-as-errors
+# Three invocations each:
+taskpolicy -b swift test --skip-build --no-parallel "${flags[@]}" --filter \
+  'ReplyQueuedAudio|DeviceVoiceStop|AmbientWiringStopConfirmation|HostPlaybackStop|AmbientWiringVoiceMute|LocalReplyEndpoint|LocalVoiceGuardsStatus'
+taskpolicy -b python3 -m unittest discover -s Tests/ReplyCLITests -p test_queued_reply_stop.py
+# Once:
+taskpolicy -b python3 -m unittest discover -s Tests/ReplyCLITests
+# One invocation per daemon selection in the results table:
+taskpolicy -b swift test --skip-build --no-parallel "${flags[@]}" --filter "$selection"
+# External Swift shim adds -Xswiftc -j1 --disable-automatic-resolution:
+/bin/zsh ~/codex-workspaces/vw-werr.sh vw1212b6
+```
+
+An initial host driver had a shell-function truncation and exited before starting any VM verification phase.
+The corrected driver runs the commands above; no failed test result is omitted by that driver correction.
+
+### Results
+
+Every runtime selection starts tests and exits 0. Function counts differ from parameterized case executions:
+
+| Selection / phase | Runs | Functions / suites | Case executions per run | Result / seconds |
+| --- | ---: | ---: | ---: | --- |
+| Fresh test build, warnings as errors | 1 | — | — | pass; 237.98 |
+| Focused Swift selection above | 3 | 112 / 26 | 172 | pass; 53.438, 53.344, 53.912 |
+| Focused Python `QueuedReplyStopTests` | 3 | 19 Python tests | — | pass; 10.302, 10.099, 9.679 |
+| Full Reply CLI | 1 | 145 Python tests | — | pass; 244.248 |
+| `HailDaemonKitTests\.Ambient[A-M]` | 1 | 134 / 25 | 207 | pass; 106.713 |
+| `HailDaemonKitTests\.Ambient[N-S]` | 1 | 317 / 65 | 488 | pass; 338.097 |
+| `HailDaemonKitTests\.Ambient[T-Z]` | 1 | 214 / 49 | 395 | pass; 126.296 |
+| `HailDaemonKitTests\.Rightyo` | 1 | 186 / 17 | 228 | pass; 29.940 |
+| `HailDaemonKitTests\.(Listener\|WebSocket\|Host\|DeviceVoiceStop)` | 1 | 154 / 27 | 286 | pass; 25.371 |
+| `HailDaemonKitTests\.Reply` | 1 | 107 / 26 | 146 | pass with five intentional known issues; 59.703 |
+| Separate fresh warnings-as-errors wrapper | 1 | — | — | pass; 247.37 (249 including wrapper) |
+
+The six daemon partitions total **1,112 functions and 1,750 case executions**. The five known issues are the
+existing `ReplyRecipientHandoffWaitTests` deliberate missing-handoff timeout, two cancellation-registration
+cases, and the first waiter's timeout/cancellation while a second survives. There are no unexpected failures,
+skips or continuation-misuse diagnostics. Focused Swift and CLI repetitions have no known issues.
+
+The wrapper reports **`werr build=0`**, exits 0, and its full build log has **zero errors and 120 warnings**.
+Every warning is the existing CLT missing-ModuleCache debug-info category; no other warning category occurs.
+This is a successful Swift warnings-as-errors build, with the linker debug-info limitation recorded.
+
+Host strict SwiftLint and the independent 120-column awk check both exit 0 and print nothing for all **20 changed
+Swift files** against the PR base. Both logs are zero bytes. Whitespace validation passes. Exact commands:
+
+```bash
+swift_files=( $(git diff --name-only cc36af90ccb4bfcc3dc6f282ad13f0bc6f8081a8 HEAD -- '*.swift') )
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swiftlint lint --strict --quiet "${swift_files[@]}"
+awk 'length($0)>120 {print FILENAME ":" FNR ":" length($0)}' "${swift_files[@]}"
+git diff --check cc36af90ccb4bfcc3dc6f282ad13f0bc6f8081a8 HEAD
+```
+
+Using the checker's exact exclusions and rename handling, round 4b changes **two production files** and the
+complete slice remains at **four** against `cc36af90ccb4bfcc3dc6f282ad13f0bc6f8081a8`:
+`HostReplyDelivery.swift`, `WebSocketListener.swift`, `LocalReplyEndpoint+Submission.swift`, `ReplyCommand.swift`.
+There are no renames or new lint suppressions. No independent review or online PR-shape/CI result is claimed.
+
+After verification, all **22 changed Swift/Python files** still match the host checksums and the VM worktree is
+clean. Cleanup removes the workspace `.build`, separate `vw1212b6-werr` build directory and temporary compiler
+shim/directory, then confirms no owned build/test processes remain. Logs, checksums, lint and cleanup evidence
+remain outside version control under `vw1212b6` names. No generated product or private deployment data is committed.
+This is synthetic VM evidence only; no simulator, physical-device or captured-output round-trip proof is claimed.
