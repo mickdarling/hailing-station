@@ -70,9 +70,13 @@ import Testing
 
     @Test func waitingAdmissionCanBeCancelled() async throws {
         let queue = ReplyAudioQueue(), connection = UUID(), waiting = VoiceStopConfirmationHold()
+        let timeout = VoiceStopConfirmationHold()
         queue.register(connection)
-        let ticket = try queue.ticket(), stop = try #require(queue.captureStop(connection))
-        defer { queue.resolve(stop, targets: []) }
+        let ticket = try queue.ticket()
+        let stop = try ReplyAudioEnqueueTesting.$stopTimeout.withValue({ await timeout.wait() }, operation: {
+            try #require(queue.captureStop(connection))
+        })
+        defer { queue.resolve(stop, targets: []); timeout.release() }
         let admission = Task {
             try await ReplyAudioEnqueueTesting.$waiting.withValue({ waiting.release() }, operation: {
                 try await queue.waitForStops(ticket)

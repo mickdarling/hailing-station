@@ -68,8 +68,8 @@ extension ReplyQueuedAudioRaceTests {
     @Test func pendingStopAcceptedAfterRoutingSuspendsFinalEnqueue() async throws {
         let rig = try await DeviceVoiceStopRig.make()
         let enqueue = VoiceStopConfirmationHold(), routed = VoiceStopConfirmationHold()
-        let waiting = VoiceStopConfirmationHold()
-        defer { enqueue.release() }
+        let waiting = VoiceStopConfirmationHold(), timeout = VoiceStopConfirmationHold()
+        defer { enqueue.release(); timeout.release() }
         do {
             let listener = rig.env.listener, queue = listener.replyAudioQueue
             let peer = try #require(await listener.peers.values.first)
@@ -86,7 +86,9 @@ extension ReplyQueuedAudioRaceTests {
                 })
             }
             await routed.wait()
-            let stop = try #require(queue.captureStop(connection))
+            let stop = try ReplyAudioEnqueueTesting.$stopTimeout.withValue({ await timeout.wait() }, operation: {
+                try #require(queue.captureStop(connection))
+            })
             enqueue.release()
             await waiting.wait() // The final synchronous gate refused; its caller retried asynchronously.
             queue.resolve(stop, targets: [RecipientTestRig.target])
