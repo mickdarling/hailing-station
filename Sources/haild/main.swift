@@ -199,15 +199,17 @@ func send(_ host: HailHost, id: String, text: String) async throws {
 func status(_ host: HailHost) async throws {
     print(DaemonInfo.banner)
     let failure = await host.policyFailure
+    let configured = failure == nil ? await host.currentPolicy.voiceGuards.rawValue : "unusable"
     if let failure {
         print("policy: UNUSABLE, delivery refused: \(failure)")
     } else {
         let policy = await host.currentPolicy
         print("policy: \(host.policySummary), \(policy.targets.count) allowed")
-        let setting = policy.voiceGuards.rawValue
-        let caveat = policy.voiceGuards == .off ? " (off not enforced by this build)" : ""
-        print("voice guards: \(setting)\(caveat)")
     }
+    print("voice guards configured: \(configured)")
+    let live = await liveVoiceGuards()
+    print("voice guards effective: \(voiceGuardsDetail(live))")
+    if let mismatch = voiceGuardsMismatch(configured: configured, live: live) { print(mismatch) }
     print("targets: \(try await host.targets().count)")
     await reportListingFailures(host)
     if failure != nil { exit(9) }
@@ -361,10 +363,10 @@ do {
     case "status":
         switch arguments.dropFirst().first {
         case nil: try await status(try await makeHost())
-        case "--json" where arguments.count == 2: try statusJSON()
+        case "--json" where arguments.count == 2: try await statusJSON()
         default: usage()
         }
-    case "doctor" where arguments.count == 1: doctor()
+    case "doctor" where arguments.count == 1: await doctor()
     case "reply": try await reply(arguments.dropFirst())
     case "ambient": try await ambient(arguments.dropFirst())
     case "notify": try await notify(arguments.dropFirst())
