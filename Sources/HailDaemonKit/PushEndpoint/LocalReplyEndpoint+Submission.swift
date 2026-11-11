@@ -328,7 +328,8 @@ extension LocalReplyEndpoint {
         }
         let keys: Set<String> = fields["action"] as? String == "enqueue"
             ? ["kind", "action"] : ["kind", "action", "ticket", "frame"]
-        guard Set(fields.keys) == keys else { throw LocalReplyRefusal.decodeFailure }
+        guard Set(fields.keys) == keys || fields["action"] as? String == "enqueue"
+                && Set(fields.keys) == keys.union(["frame"]) else { throw LocalReplyRefusal.decodeFailure }
         if let ticket = fields["ticket"] as? [String: Any], Set(ticket.keys) != ["epoch", "position"] {
             throw LocalReplyRefusal.decodeFailure
         }

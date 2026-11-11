@@ -185,6 +185,7 @@ private func requireTextFrameFits(_ options: ReplyOptions) throws {
 }
 
 private struct ReplyAudioSkipped: Error {}
+private struct ReplyAudioUnsupported: Error {}
 
 private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: ReplyStreamPacing) async throws {
     do { try await streamReplyAudio(options, rendererRoot: rendererRoot, pacing: pacing) } catch is ReplyAudioSkipped {
@@ -198,6 +199,13 @@ private func streamReplyAudio(_ options: ReplyOptions, rendererRoot: URL, pacing
         id: UUID(), hostID: options.host, targetID: options.target, audioStreamID: streamID,
         requestID: options.requestID
     )
+    let probe = streamID.map { stream in
+        Frame(timestamp: replyTimestamp(), target: options.target, source: options.host,
+            payload: .audio(AudioPayload(codec: .pcm16, sampleRate: options.sampleRate, channels: 1,
+                sequence: 0, streamID: stream, isFinal: false, bytes: Data([0, 0]), reply: descriptor)))
+    }
+    // Ordering precedes text; a failed ticket still leaves the text/card delivered before audio fails closed.
+    let entry = await ReplyBackground.requestAudioTicket(probe: probe, socket: options.socket)
     var frames = 0, deliveries = 0
     RequestKeepAlive.begin(requestBound: options.requestID != nil)
     if let frame = textFrame(options, descriptor: descriptor) {
@@ -205,11 +213,9 @@ private func streamReplyAudio(_ options: ReplyOptions, rendererRoot: URL, pacing
         deliveries += try await ReplyBackground.submit(frame, socketURL: options.socket)
         frames += 1
     }
-    guard let streamID else { return printSubmitted(frames: frames, deliveries: deliveries) }
-    let probe = Frame(timestamp: replyTimestamp(), target: options.target, source: options.host,
-        payload: .audio(AudioPayload(codec: .pcm16, sampleRate: options.sampleRate, channels: 1,
-            sequence: 0, streamID: streamID, isFinal: false, bytes: Data([0, 0]), reply: descriptor)))
-    try await ReplyBackground.awaitAudioTurn(socket: options.socket, target: options.target, probe: probe)
+    guard let streamID, let probe else { return printSubmitted(frames: frames, deliveries: deliveries) }
+    try await ReplyBackground.awaitAudioTurn(socket: options.socket, target: options.target, probe: probe,
+                                            ticket: entry.get())
     let context = PCMReplyContext(
         sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
         socket: options.socket, pacing: pacing,
@@ -960,6 +966,11 @@ extension ReplyBackground {
                 try await waitForAudioQueueBudget()
                 continue
             }
+            if request.action == "enqueue", response.delivered == 0, response.code == nil,
+               let error = response.error,
+               ["unknown action", "unsupported request", "unknown request kind"].contains(error) {
+                throw ReplyAudioUnsupported()
+            }
             if let error = response.error { throw ReplyClientError.refused(error) }
             guard let report = response.replyAudio, response.code == nil else {
                 throw ReplyClientError.refused("daemon does not support queued reply audio")
@@ -985,12 +996,26 @@ extension ReplyBackground {
     /// A request-bound reply (#467) answers what the user just said, so it supersedes an older reply still playing
     /// to the same target: it leaves a stop file named for that job, which ends at its next frame with its terminal
     /// marker. It waits only while its own request stays current; past that its audio is skipped before any starts.
-    static func awaitAudioTurn(socket: URL, target: String, probe: Frame) async throws {
+    static func requestAudioTicket(
+        probe: Frame?, socket: URL
+    ) async -> Result<LocalReplyAudioTicket?, any Error> {
+        guard isDetachedJob, let probe else { return .success(nil) }
+        do {
+            let report = try await audioRequest(.init(action: "enqueue", frame: probe), socket: socket)
+            guard let ticket = report.ticket, !report.skipped else {
+                throw ReplyClientError.refused("daemon did not issue an audio queue ticket")
+            }
+            return .success(ticket)
+        } catch is ReplyAudioUnsupported {
+            note("reply_audio_queue unsupported")
+            return .success(nil)
+        } catch { return .failure(error) }
+    }
+
+    static func awaitAudioTurn(
+        socket: URL, target: String, probe: Frame, ticket: LocalReplyAudioTicket?
+    ) async throws {
         guard isDetachedJob else { return }
-        let report = try await audioRequest(LocalReplyAudioRequest(action: "enqueue"), socket: socket)
-        guard let ticket = report.ticket, !report.skipped else {
-            throw ReplyClientError.refused("daemon did not issue an audio queue ticket")
-        }
         let directory = socket.deletingLastPathComponent()
         let lock = try openAudioLock("reply-audio.lock", directory: directory)
         let waiters: Int32
@@ -1014,7 +1039,7 @@ extension ReplyBackground {
             }
             try await Task.sleep(for: .milliseconds(250))
         }
-        try await checkQueuedAudio(ticket, probe: probe, socket: socket)
+        if let ticket { try await checkQueuedAudio(ticket, probe: probe, socket: socket) }
         ownsTurn = true
         let id = UUID()
         let record = Data("\(id.uuidString) \(target)\n".utf8)

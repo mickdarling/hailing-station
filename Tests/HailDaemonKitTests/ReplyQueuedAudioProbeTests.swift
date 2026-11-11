@@ -71,6 +71,37 @@ import Testing
         await rig.finish()
     }
 
+    @Test func privacyDecisionBeforeExitCannotMarkPostExitTicket() async throws {
+        let rig = try await DuckRig(script: AmbientPrivacyConfirmAfterAckTests.heldSwitch(),
+            clips: AmbientDuckModeTests.clips, capabilities: [DuckMode.capability, PlaybackStop.capability])
+        let hold = VoiceStopConfirmationHold()
+        defer { hold.release(); rig.close() }
+        do {
+            try #require(await eventually { rig.details("ambient_duck_confirmed").count == 1 })
+            let listener = rig.env.listener, connection = try #require(rig.connection())
+            ReplyAudioEnqueueTesting.$afterPrivacyDecision.withValue({ await hold.wait() }, operation: {
+                rig.env.router.ambientPrivacy(true, connection: connection)
+            })
+            AmbientPrivacyAckGateTests.go(rig.fake)
+            try #require(await eventually { hold.entered })
+            rig.env.router.ambientPrivacy(false, connection: connection)
+            try #require(await eventually { await !listener.replyHold.holds(connection) })
+            let audio = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
+            let fresh = try #require(await listener.replyAudio(.init(action: "enqueue", frame: audio)).ticket)
+            hold.release()
+            try #require(await eventually { rig.details("ambient_duck_confirmed").count == 3 })
+            _ = try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "late entry stop complete")
+            #expect(try await listener.replyAudio(.init(action: "publish", ticket: fresh, frame: audio))
+                == LocalReplyAudioReport())
+            #expect(try await receiveFrame(on: rig.socket, step: "post-exit job plays") == audio)
+        } catch {
+            hold.release()
+            await rig.finish()
+            throw error
+        }
+        await rig.finish()
+    }
+
     @Test(arguments: [false, true])
     func queuedAudioStaysSilentAfterPrivacyEntry(withEntryClip: Bool) async throws {
         let rig = try await DuckRig(script: AmbientPrivacyConfirmAfterAckTests.heldSwitch(),

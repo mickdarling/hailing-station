@@ -51,31 +51,58 @@ import Testing
         do {
             try await rig.start()
             let listener = rig.env.listener, reply = uncorrelatedDescriptor(audio: true)
-            let text = recipientText(reply)
+            let text = recipientText(reply), audio = recipientAudio(reply, sequence: 0, final: true)
+            let ticket = try #require(await listener.replyAudio(.init(action: "enqueue", frame: audio)).ticket)
             #expect(try await listener.publish(text) == 1)
             #expect(try await receiveFrame(on: rig.socket, step: "text on A") == text)
-            let ticket = try await queuedAudioTicket(listener)
+            let connection = try #require(rig.env.router.activeConnection())
+            let peer = try #require(await listener.peers.values.first)
+            _ = await peer.session.receive(sessionFrame(payload: .control(.select(targetID: "recipient:other"))))
+            await evict(reply, on: listener, connection: connection)
+            // Evict BEFORE the stop, with T absent from A's current associations.
+            let ledger = await listener.lastInput
+            #expect(!ledger.targets(on: connection, inFlight: []).contains(RecipientTestRig.target))
             try await rig.report()
             #expect(try await receiveFrame(on: rig.socket, step: "A stops").payload == .control(.stopPlayback))
             try #require(await eventually { rig.details("ambient_dismissed").count == 1 })
-            let connection = try #require(rig.env.router.activeConnection())
             let other = try await FallbackSocketPair.boundedConnect(port: rig.env.port,
                 selecting: [RecipientTestRig.target])
             defer { other.close() }
-            await evict(reply, on: listener, connection: connection)
             let context = try await other.submitInput(on: 0, rig: rig.env.rig)
             #expect(context.connectionID != connection)
-            let audio = recipientAudio(reply, sequence: 0, final: true)
             #expect(await listener.lastInputRoute(audio)?.entry.connection == context.connectionID)
             #expect(try await listener.replyAudio(.init(action: "check", ticket: ticket, frame: audio)).skipped)
             #expect(try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: audio)).skipped)
             try await rig.pair.boundedBarrier(step: "A stays silent")
             try await other.boundedBarrier(step: "B gets no stopped audio")
+            let fresh = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
+            let later = try #require(await listener.replyAudio(.init(action: "enqueue", frame: fresh)).ticket)
+            #expect(try await listener.replyAudio(.init(action: "publish", ticket: later, frame: fresh))
+                == LocalReplyAudioReport())
+            #expect(try await receiveFrame(on: other.sockets[0], step: "post-stop T plays on B") == fresh)
         } catch {
             await rig.finish()
             throw error
         }
         await rig.finish()
+    }
+
+    @Test func outstandingJobEvictionRaisesFloorAndConsumptionRemovesRecord() throws {
+        let queue = ReplyAudioQueue(), connection = UUID()
+        let reply = uncorrelatedDescriptor(audio: true), frame = recipientAudio(reply, sequence: 0)
+        let old = try queue.ticket(frame: frame)
+        queue.deliveredText(reply.id, to: connection)
+        for _ in 0..<ReplyAudioQueue.jobLimit { _ = try queue.ticket(frame: frame) }
+        if case .stopped = queue.enqueue(old, connection: nil, target: "unrelated", { true }) {} else {
+            Issue.record("outstanding eviction must fail closed globally")
+        }
+        let fresh = try queue.ticket(frame: frame)
+        queue.finish(fresh)
+        queue.stop(connection, targets: [])
+        queue.forget(connection)
+        if case .sent(true) = queue.enqueue(fresh, connection: nil, target: RecipientTestRig.target, { true }) {} else {
+            Issue.record("a finished ticket must leave no destination association")
+        }
     }
 
     private func evict(_ reply: ReplyDescriptor, on listener: WebSocketListener, connection: UUID) async {
@@ -97,7 +124,7 @@ import Testing
         if case .sent(true) = queue.enqueue(after, connection: UUID(), target: "retained", { true }) {} else {
             Issue.record("a later ticket must play")
         }
-        // Fill exactly to the bound, then evict the first target at a newer counter position.
+        // Fill exactly to the bound, then evict the oldest mark ("retained", at before.position).
         for index in 0..<(ReplyAudioQueue.targetLimit - 1) {
             queue.stop(connection, targets: ["target-\(index)"])
         }
@@ -107,6 +134,9 @@ import Testing
             if case .stopped = queue.enqueue(before, connection: nil, target: target, { false }) {} else {
                 Issue.record("eviction must leave pre-stop audio silent for \(target)")
             }
+        }
+        if case .sent(true) = queue.enqueue(after, connection: nil, target: "unrelated", { true }) {} else {
+            Issue.record("an unrelated ticket above the evicted floor must play")
         }
         let later = try queue.ticket()
         for target in ["retained", "unrelated", "overflow"] {

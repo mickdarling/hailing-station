@@ -55,6 +55,44 @@ import Testing
         }
     }
 
+    @Test func targetStopLeavesOtherConnectionsStreamingReplyIntact() async throws {
+        let rig = try await DeviceVoiceStopRig.make()
+        do {
+            try await rig.start()
+            let listener = rig.env.listener
+            let other = try await FallbackSocketPair.boundedConnect(port: rig.env.port,
+                selecting: [RecipientTestRig.target], capabilities: [PlaybackStop.capability])
+            defer { other.close() }
+            let context = try await other.submitInput(on: 0, rig: rig.env.rig)
+            let reply = recipientDescriptor(context, audio: true)
+            let first = recipientAudio(reply, sequence: 0)
+            let streaming = try #require(await listener.replyAudio(.init(action: "enqueue", frame: first)).ticket)
+            #expect(try await listener.replyAudio(.init(action: "publish", ticket: streaming, frame: first))
+                == LocalReplyAudioReport())
+            #expect(try await receiveFrame(on: other.sockets[0], step: "A streaming") == first)
+            let queued = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
+            let waiting = try #require(await listener.replyAudio(.init(action: "enqueue", frame: queued)).ticket)
+            try await rig.report()
+            #expect(try await receiveFrame(on: rig.socket, step: "B stops").payload == .control(.stopPlayback))
+            try #require(await eventually { rig.details("ambient_dismissed").count == 1 })
+            #expect(try await listener.replyAudio(.init(action: "publish", ticket: waiting, frame: queued)).skipped)
+            let final = recipientAudio(reply, sequence: 1, final: true)
+            #expect(try await listener.replyAudio(.init(action: "publish", ticket: streaming, frame: final))
+                == LocalReplyAudioReport())
+            #expect(try await receiveFrame(on: other.sockets[0], step: "A terminates cleanly") == final)
+            let peer = try #require(await listener.peers.values.first {
+                $0.session.connectionID == context.connectionID
+            })
+            #expect(await peer.session.repliesInFlight.isEmpty)
+            try await other.boundedBarrier(step: "A received no stop playback")
+            try await rig.pair.boundedBarrier(step: "B queued audio silent")
+        } catch {
+            await rig.finish()
+            throw error
+        }
+        await rig.finish()
+    }
+
     @Test func targetStopWinsFinalEnqueueOnAnotherConnection() async throws {
         let rig = try await DeviceVoiceStopRig.make()
         let hold = VoiceStopConfirmationHold()

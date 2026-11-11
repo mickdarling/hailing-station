@@ -695,15 +695,19 @@ Wrapped final audio retains the independent terminal-frame budget. Actual public
   `delivered: 0`, no error/code, and `replyAudio: {"skipped":true}`. Other refusals retain the existing codes.
 - Unknown outer request/ticket keys, malformed shapes, foreign epochs, zero and unissued positions fail closed.
   A ticket grants no recipient or policy authority. Daemon restarts invalidate tickets. A CLI cannot infer support
-  from an ordinary reply acknowledgement: missing `replyAudio` is a refusal, with no unguarded audio fallback.
+  from an ordinary reply acknowledgement: missing `replyAudio` is a refusal.
 
-Every detached audio job obtains a ticket at `awaitAudioTurn` entry, before attempting `reply-audio.lock`.
-Text and optional Markdown metadata have already been delivered. On lock acquisition it checks admission before
+Every detached audio job requests its ticket before submitting text or optional Markdown metadata, then attempts
+`reply-audio.lock`. Enqueue may include the job's audio probe as `frame`, establishing its reply id and target.
+A failed ticket request still delivers text and metadata, then refuses audio. On lock acquisition it checks admission before
 reading/synthesizing audio, and wraps every later audio frame with its ticket. This includes jobs that take the
 lock without waiting, covering the preceding reply's device playout tail. Foreground publication stays unchanged.
 
 Each accepted playback stop marks its connection and every associated reply target with the current counter
-before retiring in-flight replies. The host association set includes selected/covered voice-route targets, targets
+before retiring in-flight replies. Every stop source captures its position synchronously when accepted, before
+scheduling work or awaiting another actor. Delayed connection/target marks use `max(existing, captured)`; they
+never read a newer counter. Privacy entry marks unconditionally at entry; its delayed announcement does not
+mark again. The host association set includes selected/covered voice-route targets, targets
 of in-flight and pinned replies, and request owners on the connection. Hello names and device kinds are
 unauthenticated and are never identity keys. Target marks retain the 1024 most recently stopped targets (refreshing
 a target moves it to the end), outlive connection teardown and expire with the daemon epoch. Only host stop and
@@ -717,8 +721,7 @@ the daemon epoch; newer tickets remain playable.
 
 Both a RightyO playback-scope dismissal and an accepted device `voice_stopped` mark the queue, including repeated
 reports whose outbound `stop_playback` is coalesced. Privacy entry also marks the queue: its unconditional pending
-reply drop marks before any exit releases the hold, even if no entry clip is announced. Its announcement stop
-explicitly marks as well. Spoken mute explicitly does not mark the queue. Privacy's separate delivery hold still
+reply drop applies the entry's captured mark before any exit releases the hold, even if no entry clip is announced. Spoken mute explicitly does not mark the queue. Privacy's separate delivery hold still
 prevents text and audio publication while private. The ticket check and stop mark share
 a synchronous lock: no audio handoff can pass an older admission after the stop mark. No time window or
 cross-process wall clock is involved.
@@ -727,11 +730,17 @@ The target is checked before routing, so a disconnected text pin cannot turn a s
 Ordinary routing still resolves request owner, existing text/first-frame pin, current last input, single selector
 or ambient owner. Admission and final enqueue skip a ticket at or below the resolved connection's mark, the frame
 target's mark, or the global eviction floor. This prevents a pin eviction or reconnect from reviving pre-stop audio.
-A ticket greater than all three marks can play immediately, including after reconnect. A shared target stop covers replies owned
+A ticket greater than all three marks can play immediately, including after reconnect. A shared target stop covers queued replies owned
 by another connection for that target. Playback stops leave delivered text/cards intact and do not withdraw the
 request. Privacy retains its existing request drop and delivery hold.
-No extra original-destination record is retained: target marks close both gaps while preserving ordinary routing
-for post-stop jobs, without another per-job destination lifetime.
+A separate outstanding-job record retains ticket position, reply id, target, delivered-text connection (once known),
+and whether first audio publication succeeded. Successful text delivery records that destination independently of
+the 64-pin cache. Stops also mark every target whose outstanding text destination was that connection, even if
+its pin was evicted before the stop. The record holds at most 1024 jobs; oldest-job eviction raises the same global
+floor to that ticket position. Skipped tickets and successfully published final frames remove their records;
+abandoned jobs remain bounded and eviction fails closed. Target marks apply only before the first successful
+audio enqueue. Another connection's already streaming reply continues to its final frame; its own connection
+marks and in-flight retirement retain the existing `stop_playback` behavior.
 
 The daemon emits the content-free event
 `reply_audio_skipped reason=stopped request=<UUID|none> ticket=N`. A bounded cache of 256 skipped ticket positions
@@ -747,3 +756,11 @@ The job handles the skip as success and
 writes `reply audio skipped after a stop` to stderr. As with other post-readiness diagnostics, a detached job's
 stderr follows its existing redirection to `/dev/null` after releasing its caller; the daemon event is the durable
 observable diagnostic. There is no terminal audio marker for a job whose audio never started.
+
+During install/restart version skew, only an explicit zero-delivery enqueue response with no refusal code and
+error exactly `unknown action`, `unsupported request`, or `unknown request kind` selects legacy unticketed
+behavior for that job. The CLI logs `reply_audio_queue unsupported` once to stderr and keeps the ordinary audio
+turn lock. A missing queue acknowledgement, generic decode error, connection error, timeout or stale ticket
+remains fail closed; none is evidence of missing capability. Legacy fallback cannot provide queue-stop ordering.
+Foreground (non-detached) jobs take no ticket and therefore have no queued-audio guarantee. A device
+`voice_stopped` ignored with `reason=no_active_stream` marks nothing.

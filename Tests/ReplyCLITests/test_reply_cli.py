@@ -443,6 +443,8 @@ class ReplyCLITests(unittest.TestCase):
                                         response = dict(response, replyAudio={"skipped": False})
                                 if queued and audio_queue is not None:
                                     response = audio_queue(decoded, response)
+                                    if response is None:
+                                        continue  # explicit synthetic connection loss, with no acknowledgement
                                 try:
                                     client.sendall(json.dumps(response).encode() + b"\n")
                                 except (BrokenPipeError, ConnectionResetError):

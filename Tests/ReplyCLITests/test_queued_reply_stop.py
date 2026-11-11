@@ -37,6 +37,15 @@ class QueuedReplyStopTests(unittest.TestCase):
     def test_legacy_daemon_cannot_silently_admit_unguarded_queued_audio(self):
         self.exercise(skipped=False, pcm=False, mode="legacy")
 
+    def test_explicit_unsupported_request_uses_legacy_audio_once(self):
+        self.exercise(skipped=False, pcm=False, mode="unsupported", contended=False)
+
+    def test_connection_loss_at_ticket_keeps_text_and_fails_closed(self):
+        self.exercise(skipped=False, pcm=False, mode="connection", contended=False)
+
+    def test_stop_between_ticket_and_text_keeps_text_but_skips_audio(self):
+        self.exercise(skipped=True, pcm=False, contended=False)
+
     def test_uncontended_job_holding_lock_at_stop_skips_before_rendering(self):
         self.exercise(skipped=True, pcm=False, contended=False)
 
@@ -48,11 +57,20 @@ class QueuedReplyStopTests(unittest.TestCase):
 
     def exercise(self, skipped, pcm, mode=None, contended=True):
         request = str(uuid.uuid4()).upper()
-        controls, attempts = [], {}
+        controls, attempts, wire_order = [], {}, []
+
+        def frame_response(index):
+            wire_order.append("frame")
+            return {"delivered": 1}
 
         def queue_response(message, response):
             action = message["action"]
             attempts[action] = attempts.get(action, 0) + 1
+            wire_order.append(action)
+            if mode == "unsupported" and action == "enqueue":
+                return {"delivered": 0, "error": "unsupported request"}
+            if mode == "connection" and action == "enqueue":
+                return None
             if mode == "legacy" and action == "enqueue":
                 return {"delivered": 1}
             if mode == "retry" and attempts[action] == 1:
@@ -73,7 +91,7 @@ class QueuedReplyStopTests(unittest.TestCase):
             return response
 
         with tempfile.TemporaryDirectory(prefix="hail-queue-stop-") as scratch:
-            with self.rig.reply_server(lambda index: {"delivered": 1}, audio_queue=queue_response,
+            with self.rig.reply_server(frame_response, audio_queue=queue_response,
                                        queue_requests=controls) as (path, frames):
                 lock = Path(path).with_name("reply-audio.lock")
                 with lock.open("w+") as holder:
@@ -98,13 +116,26 @@ class QueuedReplyStopTests(unittest.TestCase):
                     self.addCleanup(self.finish_job, job)
                     self.rig.wait_for(lambda: len(controls) >= 1, 10)
                     self.assertEqual(controls[0]["action"], "enqueue")
+                    self.rig.wait_for(lambda: len(frames) >= 1, 10)
+                    self.assertEqual(wire_order[:2], ["enqueue", "frame"])
                     self.assertEqual(frames[0][1]["payload"]["text"], "synthetic response")
                     self.assertEqual(frames[0][1]["payload"]["metadata"], "synthetic card")
-                    if contended and mode != "legacy":
+                    if contended and mode not in ("legacy", "connection"):
                         self.rig.wait_for(lambda: self.waiter_registered(lock.with_name("reply-audio.waiters")), 10)
                     fcntl.flock(holder, fcntl.LOCK_UN)
                     stdout, stderr = job.communicate(timeout=15)
-                    self.assertEqual(job.returncode, 1 if mode in ("legacy", "stale") else 0, stderr.decode())
+                    self.assertEqual(job.returncode, 1 if mode in ("legacy", "stale", "connection") else 0, stderr.decode())
+                    if mode == "unsupported":
+                        self.assertEqual(stderr.count(b"reply_audio_queue unsupported"), 1)
+                        self.assertEqual([item["action"] for item in controls], ["enqueue"])
+                        self.assertGreater(len(frames), 1)
+                        self.assertTrue(frames[-1][1]["payload"]["final"])
+                        return
+                    if mode == "connection":
+                        self.assertNotIn(b"reply_audio_queue unsupported", stderr)
+                        self.assertEqual(len(frames), 1)
+                        self.assertEqual([item["action"] for item in controls], ["enqueue"])
+                        return
                     if mode == "legacy":
                         self.assertIn(b"daemon does not support queued reply audio", stderr)
                         self.assertEqual(len(frames), 1)
@@ -133,6 +164,7 @@ class QueuedReplyStopTests(unittest.TestCase):
                 else:
                     publications = [item for item in controls if item["action"] == "publish"]
                     self.assertTrue(publications)
+                    self.assertEqual(len(publications), sum(frame[1]["type"] == "audio" for frame in frames))
                     self.assertTrue(all(item["ticket"] == ticket for item in publications))
                     self.assertTrue(frames[-1][1]["payload"]["final"])
                 if mode == "retry":
