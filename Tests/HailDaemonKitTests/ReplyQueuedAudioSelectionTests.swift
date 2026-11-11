@@ -12,10 +12,12 @@ import Testing
         var stopping: Task<Void, Never>?
         defer { holds.release() }
         do {
-            try await rig.start()
-            let listener = rig.env.listener, queue = listener.replyAudioQueue
+            if source != "playback" { try await rig.start() }
+            let listener = rig.env.listener
+            let peer = try #require(await listener.peers.values.first)
+            let connection = await peer.session.connectionID
             let other = try await FallbackSocketPair.boundedConnect(port: rig.env.port,
-                selecting: [RecipientTestRig.target])
+                selecting: [RecipientTestRig.target, "recipient:other"])
             defer { other.close() }
             _ = try await other.submitInput(on: 0, rig: rig.env.rig)
             let reply = uncorrelatedDescriptor(audio: true), text = recipientText(reply)
@@ -24,8 +26,7 @@ import Testing
             #expect(try await receiveFrame(on: other.sockets[0], step: "B retains text") == text)
             let audio = recipientAudio(reply, sequence: 0, final: true)
             let old = try #require(await listener.replyAudio(.init(action: "enqueue", frame: audio)).ticket)
-            let unrelated = try await queuedAudioTicket(listener)
-            let connection = try #require(rig.env.router.activeConnection())
+            let unrelated = try await queuedOtherTarget(on: other, listener: listener)
             stopping = Task { await stop(source, rig: rig, connection: connection, holds: holds) }
             await holds.entered.wait()
             if source != "privacy" {
@@ -36,8 +37,8 @@ import Testing
             holds.capture.release()
             await stopping?.value
             #expect(try await listener.replyAudio(.init(action: "publish", ticket: old, frame: audio)).skipped)
-            // U's pre-stop ticket is admitted; the capture neither adds U nor raises the global floor.
-            expectAdmitted(queue, ticket: unrelated, target: "recipient:other")
+            // U's pre-stop audio really plays on C; the new selection neither marks U nor raises the floor.
+            try await playOtherTarget(unrelated, on: other, listener: listener)
             try await playFresh(on: other, listener: listener)
             try await other.boundedBarrier(step: "B retains text without pre-stop audio")
         } catch {
@@ -130,10 +131,23 @@ extension ReplyQueuedAudioSelectionTests {
         }
     }
 
-    private func expectAdmitted(_ queue: ReplyAudioQueue, ticket: LocalReplyAudioTicket, target: String) {
-        if case .sent(true) = queue.enqueue(ticket, connection: nil, target: target, { true }) {} else {
-            Issue.record("post-capture selection must not mark the new target")
-        }
+    private func playOtherTarget(
+        _ unrelated: (LocalReplyAudioTicket, Frame), on other: FallbackSocketPair, listener: WebSocketListener
+    ) async throws {
+            #expect(try await listener.replyAudio(.init(action: "publish", ticket: unrelated.0, frame: unrelated.1))
+                == LocalReplyAudioReport())
+            #expect(try await receiveFrame(on: other.sockets[1], step: "C pre-stop U plays") == unrelated.1)
+    }
+    private func queuedOtherTarget(
+        on pair: FallbackSocketPair, listener: WebSocketListener
+    ) async throws -> (LocalReplyAudioTicket, Frame) {
+        try await recipientSocketSend(sessionFrame(target: "recipient:other",
+            payload: .text(TextPayload(text: "synthetic U input"))), on: pair.sockets[1])
+        try await recipientSocketBarrier(on: pair.sockets[1], step: "C owns U input")
+        let reply = ReplyDescriptor(id: UUID(), hostID: "mac-test", targetID: "recipient:other", audioStreamID: UUID())
+        let audio = recipientAudio(reply, sequence: 0, final: true)
+        let ticket = try #require(await listener.replyAudio(.init(action: "enqueue", frame: audio)).ticket)
+        return (ticket, audio)
     }
     private func expectStopped(_ queue: ReplyAudioQueue, ticket: LocalReplyAudioTicket, target: String) {
         if case .stopped = queue.enqueue(ticket, connection: nil, target: target, { true }) {} else {
