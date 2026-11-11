@@ -72,6 +72,36 @@ import Testing
         await rig.finish()
     }
 
+    @Test func refusedQueuedPublishCountsForDoctorAndMissingTargetIsNotPushed() async throws {
+        let rig = try await DeviceVoiceStopRig.make()
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hs-qa-\(UUID().uuidString.prefix(8))")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let socket = scratch.appendingPathComponent("config/reply.sock")
+        let auditDirectory = scratch.appendingPathComponent("audit")
+        let endpoint = try LocalReplyEndpoint(socketURL: socket, destination: rig.env.listener,
+            audit: AuditLog(directory: auditDirectory))
+        try await endpoint.start()
+        do {
+            let ticket = try await queuedAudioTicket(rig.env.listener)
+            var frame = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
+            frame.target = nil
+            let missing = try await exchange(.init(action: "publish", ticket: ticket, frame: frame), socket: socket)
+            #expect(missing.code == .replyTargetMissing && missing.delivered == 0)
+            let history = try AuditHistory(directory: auditDirectory).today()
+            #expect(history.allSatisfy { !$0.contains("\"kind\":\"pushed\"") })
+            let summary = try RefusalSummary.read(from: AuditHistory(directory: auditDirectory))
+            #expect(summary.counts == [.init(reason: "replyTargetMissing", last15Minutes: 1, lastHour: 1)])
+            try await barrier(on: rig.socket, step: "refused queued publish sends nothing")
+        } catch {
+            await endpoint.stop()
+            await rig.finish()
+            throw error
+        }
+        await endpoint.stop()
+        await rig.finish()
+    }
+
     private func exchange(_ request: LocalReplyAudioRequest, socket: URL) async throws -> LocalReplyResponse {
         try await submit(JSONEncoder().encode(request), socket: socket.path)
     }

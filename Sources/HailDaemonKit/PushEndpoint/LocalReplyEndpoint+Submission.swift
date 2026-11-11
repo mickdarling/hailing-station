@@ -336,14 +336,17 @@ extension LocalReplyEndpoint {
     }
 
     private func submitReplyAudio(_ data: Data, from client: LocalReplyConnection) async {
+        var refusedTarget: String?
         do {
             let request = try Self.decodeReplyAudio(data)
             try Task.checkCancellation()
             guard !stopped, connections[client.id] != nil else { throw CancellationError() }
             // Publication keeps the same audit-before-delivery boundary as an ordinary reply frame.
             if request.action == "publish", let frame = request.frame {
+                guard let target = frame.target else { throw LocalReplyRefusal.replyTargetMissing }
+                refusedTarget = target
                 do {
-                    _ = try await audit.record(.pushed(tool: "local-reply", target: frame.target ?? "unknown",
+                    _ = try await audit.record(.pushed(tool: "local-reply", target: target,
                                                       bytes: data.count))
                 } catch { throw LocalReplyRefusal.auditFailure }
             }
@@ -358,6 +361,14 @@ extension LocalReplyEndpoint {
             retire(client.id)
         } catch {
             let reason = LocalReplyRefusal(error)
+            replyLogger.error(
+                "Local reply refused (\(reason.rawValue)): \(String(reflecting: error), privacy: .private)"
+            )
+            if reason != .auditFailure, reason != .requestPending, reason != .replyStopped {
+                _ = try? await audit.record(.deliveryRefused(
+                    target: refusedTarget ?? "unknown", device: "local-reply", reason: reason.rawValue
+                ))
+            }
             await respond(.init(delivered: 0, error: reason.message, code: reason), to: client)
         }
     }

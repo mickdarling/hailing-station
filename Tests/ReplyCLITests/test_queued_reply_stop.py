@@ -37,7 +37,16 @@ class QueuedReplyStopTests(unittest.TestCase):
     def test_legacy_daemon_cannot_silently_admit_unguarded_queued_audio(self):
         self.exercise(skipped=False, pcm=False, mode="legacy")
 
-    def exercise(self, skipped, pcm, mode=None):
+    def test_uncontended_job_holding_lock_at_stop_skips_before_rendering(self):
+        self.exercise(skipped=True, pcm=False, contended=False)
+
+    def test_uncontended_job_after_stop_publishes_every_frame_with_ticket(self):
+        self.exercise(skipped=False, pcm=False, contended=False)
+
+    def test_daemon_restart_refuses_stale_waiter_without_audio_skip(self):
+        self.exercise(skipped=False, pcm=False, mode="stale")
+
+    def exercise(self, skipped, pcm, mode=None, contended=True):
         request = str(uuid.uuid4()).upper()
         controls, attempts = [], {}
 
@@ -52,6 +61,12 @@ class QueuedReplyStopTests(unittest.TestCase):
                 if action == "check":
                     return {"delivered": 0, "code": "requestPending"}
             if action == "check":
+                # The check is after acquisition even without contention; the job owns this kernel lock.
+                with lock.open("r+") as observer:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(observer, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if mode == "stale":
+                    return {"delivered": 0, "error": "invalid reply payload", "code": "invalidReplyPayload"}
                 return {"delivered": 0, "replyAudio": {"skipped": skipped}}
             if mode == "publish_skip" and action == "publish":
                 return {"delivered": 0, "replyAudio": {"skipped": True}}
@@ -62,7 +77,8 @@ class QueuedReplyStopTests(unittest.TestCase):
                                        queue_requests=controls) as (path, frames):
                 lock = Path(path).with_name("reply-audio.lock")
                 with lock.open("w+") as holder:
-                    fcntl.flock(holder, fcntl.LOCK_EX)
+                    if contended:
+                        fcntl.flock(holder, fcntl.LOCK_EX)
                     environment = self.rig.speech_environment(1)
                     renderer_pid = Path(scratch) / "renderer.pid"
                     environment["REPLY_RENDERER_TEST_PIDFILE"] = str(renderer_pid)
@@ -80,18 +96,27 @@ class QueuedReplyStopTests(unittest.TestCase):
                     job = subprocess.Popen(arguments, cwd=support.REPO, env=environment,
                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
                     self.addCleanup(self.finish_job, job)
-                    self.rig.wait_for(lambda: len(controls) == 1, 10)
+                    self.rig.wait_for(lambda: len(controls) >= 1, 10)
                     self.assertEqual(controls[0]["action"], "enqueue")
                     self.assertEqual(frames[0][1]["payload"]["text"], "synthetic response")
                     self.assertEqual(frames[0][1]["payload"]["metadata"], "synthetic card")
                     fcntl.flock(holder, fcntl.LOCK_UN)
                     stdout, stderr = job.communicate(timeout=15)
-                    self.assertEqual(job.returncode, 1 if mode == "legacy" else 0, stderr.decode())
+                    self.assertEqual(job.returncode, 1 if mode in ("legacy", "stale") else 0, stderr.decode())
                     if mode == "legacy":
                         self.assertIn(b"daemon does not support queued reply audio", stderr)
                         self.assertEqual(len(frames), 1)
                         return
-                    self.assertIn(b"reply audio queued behind another reply", stderr)
+                    if mode == "stale":
+                        self.assertIn(b"invalid reply payload", stderr)
+                        self.assertNotIn(b"reply audio skipped after a stop", stderr)
+                        self.assertEqual(len(frames), 1)
+                        self.assertEqual([item["action"] for item in controls], ["enqueue", "check"])
+                        return
+                    if contended:
+                        self.assertIn(b"reply audio queued behind another reply", stderr)
+                    else:
+                        self.assertNotIn(b"reply audio queued behind another reply", stderr)
                 checks = [item for item in controls if item["action"] == "check"]
                 ticket = checks[-1]["ticket"]
                 self.assertGreater(ticket["position"], 0)

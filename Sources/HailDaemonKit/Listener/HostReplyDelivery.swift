@@ -11,6 +11,8 @@ final class ReplyAudioQueue: Sendable {
         let epoch = UUID()
         var position: UInt64 = 0
         var stops: [UUID: UInt64] = [:]
+        var targets: [(key: String, position: UInt64)] = []
+        var skipped: [UInt64] = []
     }
     enum Outcome { case stopped, sent(Bool) }
     private let state = Mutex(State())
@@ -21,16 +23,35 @@ final class ReplyAudioQueue: Sendable {
             return LocalReplyAudioTicket(epoch: $0.epoch, position: $0.position)
         }
     }
-    func stop(_ connection: UUID) { state.withLock { $0.stops[connection] = $0.position } }
+    /// Host stop associations only; socket queue requests cannot create or refresh target marks.
+    func stop(_ connection: UUID, targets: Set<String>) {
+        state.withLock { state in
+            state.stops[connection] = state.position
+            for target in targets.sorted() {
+                state.targets.removeAll { $0.key == target }
+                state.targets.append((target, state.position))
+            }
+            state.targets.removeFirst(max(0, state.targets.count - 256))
+        }
+    }
+    func firstSkip(_ ticket: LocalReplyAudioTicket) -> Bool {
+        state.withLock { state in
+            guard !state.skipped.contains(ticket.position) else { return false }
+            state.skipped.append(ticket.position)
+            state.skipped.removeFirst(max(0, state.skipped.count - 256))
+            return true
+        }
+    }
     func forget(_ connection: UUID) { state.withLock { $0.stops[connection] = nil } }
     func valid(_ ticket: LocalReplyAudioTicket) -> Bool {
         state.withLock { ticket.epoch == $0.epoch && ticket.position > 0 && ticket.position <= $0.position }
     }
-    func enqueue(_ ticket: LocalReplyAudioTicket, connection: UUID, _ send: () -> Bool) -> Outcome {
-        state.withLock {
-            guard ticket.epoch == $0.epoch, ticket.position > 0,
-                  ticket.position <= $0.position else { return .sent(false) }
-            guard ticket.position > ($0.stops[connection] ?? 0) else { return .stopped }
+    func enqueue(_ ticket: LocalReplyAudioTicket, connection: UUID?, target: String, _ send: () -> Bool) -> Outcome {
+        state.withLock { state in
+            guard ticket.epoch == state.epoch, ticket.position > 0,
+                  ticket.position <= state.position else { return .sent(false) }
+            guard ticket.position > (connection.flatMap { state.stops[$0] } ?? 0),
+                  ticket.position > (state.targets.last { $0.key == target }?.position ?? 0) else { return .stopped }
             return .sent(send())
         }
     }
@@ -40,12 +61,13 @@ private final class ReplyAudioAdmission: Sendable {
     let queue: ReplyAudioQueue
     let ticket: LocalReplyAudioTicket
     let probe: Bool
+    let target: String
     let skipped = Mutex(false)
-    init(queue: ReplyAudioQueue, ticket: LocalReplyAudioTicket, probe: Bool) {
-        self.queue = queue; self.ticket = ticket; self.probe = probe
+    init(queue: ReplyAudioQueue, ticket: LocalReplyAudioTicket, probe: Bool, target: String) {
+        self.queue = queue; self.ticket = ticket; self.probe = probe; self.target = target
     }
-    func enqueue(connection: UUID, _ send: () -> Bool) -> Bool {
-        switch queue.enqueue(ticket, connection: connection, send) {
+    func enqueue(connection: UUID?, _ send: () -> Bool) -> Bool {
+        switch queue.enqueue(ticket, connection: connection, target: target, send) {
         case .stopped:
             skipped.withLock { $0 = true }
             return false
@@ -289,6 +311,7 @@ final class LastInputLedger: Sendable {
         var latest: [String: Entry] = [:]
         var pins: [Pin] = []
         var routed: [UUID] = []
+        var flights: [UUID: [UUID: String]] = [:]
     }
 
     private let state = Mutex(State())
@@ -299,6 +322,21 @@ final class LastInputLedger: Sendable {
             guard state.latest.count > Self.targetLimit,
                   let oldest = state.latest.min(by: { $0.value.at < $1.value.at })?.key else { return }
             state.latest[oldest] = nil
+        }
+    }
+
+    func trackFlights(_ replies: [UUID], frame: Frame, connection: UUID) {
+        state.withLock { state in
+            var flights = state.flights[connection] ?? [:]
+            if let reply = HostSession.replyID(frame), let target = frame.target { flights[reply] = target }
+            state.flights[connection] = flights.filter { replies.contains($0.key) }
+        }
+    }
+
+    func targets(on connection: UUID, inFlight: [UUID]) -> Set<String> {
+        state.withLock { state in
+            Set(state.pins.filter { $0.entry.connection == connection }.map(\.target))
+                .union(state.flights[connection]?.filter { inFlight.contains($0.key) }.values.map { $0 } ?? [])
         }
     }
 
@@ -329,7 +367,10 @@ final class LastInputLedger: Sendable {
     /// A departed connection is no target's last input device. Its pins stay (bounded), so the rest of a reply that
     /// started there is refused rather than moved to another device.
     func forget(connection: UUID) {
-        state.withLock { state in state.latest = state.latest.filter { $0.value.connection != connection } }
+        state.withLock { state in
+            state.latest = state.latest.filter { $0.value.connection != connection }
+            state.flights[connection] = nil
+        }
     }
 }
 
@@ -553,10 +594,24 @@ extension HostSession {
         return .init(connection: connectionID, generation: selectionGeneration, at: requestClock())
     }
 
+    /// Snapshot all host-known associations before retiring playback. Names in Hello confer no identity.
+    func markQueuedAudioStopped(_ queue: ReplyAudioQueue) {
+        var targets = lastInputLedger?.targets(on: connectionID, inFlight: repliesInFlight) ?? []
+        if let selectedTarget { targets.insert(selectedTarget) }
+        #if os(macOS)
+        if let routes = authorizer.voiceRoutes {
+            targets.formUnion(routes.routes.map(\.target).filter { covers($0) })
+        }
+        #endif
+        targets.formUnion(replyRequests.values.map { $0.context.binding.targetID })
+        queue.stop(connectionID, targets: targets)
+    }
+
     /// Tracks which replies' audio is mid-stream on this connection, so a stop knows what to cut (#309).
     private func noteReplyDelivered(_ frame: Frame) {
         guard case .audio(let audio) = frame.payload, let reply = audio.reply else { return }
         repliesInFlight.removeAll { $0 == reply.id }
+        defer { lastInputLedger?.trackFlights(repliesInFlight, frame: frame, connection: connectionID) }
         if audio.isFinal {
             segmentedReplies.remove(reply.id)
             return
@@ -743,17 +798,25 @@ extension WebSocketListener {
         }
         guard ["check", "publish"].contains(request.action), let ticket = request.ticket,
               replyAudioQueue.valid(ticket), let frame = request.frame,
-              case .audio = frame.payload else { throw LocalReplyRefusal.invalidReplyPayload }
-        let admission = ReplyAudioAdmission(queue: replyAudioQueue, ticket: ticket, probe: request.action == "check")
+              case .audio = frame.payload, let target = frame.target else {
+            throw LocalReplyRefusal.invalidReplyPayload
+        }
+        let admission = ReplyAudioAdmission(queue: replyAudioQueue, ticket: ticket,
+                                            probe: request.action == "check", target: target)
         do {
+            _ = try validatedReply(frame)
+            guard admission.enqueue(connection: nil, { true }) else { throw ReplyAudioProbe.stopped }
             _ = try await ReplyAudioScope.$admission.withValue(admission) { try await publish(frame) }
         } catch ReplyAudioProbe.admitted {
             return LocalReplyAudioReport()
         } catch {
             guard admission.skipped.withLock({ $0 }) else { throw error }
             let requestID = if case .audio(let audio) = frame.payload { audio.reply?.requestID } else { nil as UUID? }
-            log(WebSocketListenerEvent(event: "reply_audio_skipped",
-                detail: "reason=stopped request=\(requestID?.uuidString ?? "none") ticket=\(ticket.position)"))
+            if replyAudioQueue.firstSkip(ticket) {
+                log(WebSocketListenerEvent(event: "reply_audio_skipped",
+                    detail: "reason=stopped request=\(requestID?.uuidString ?? "none")"
+                        + " ticket=\(ticket.position)"))
+            }
             return LocalReplyAudioReport(skipped: true)
         }
         return LocalReplyAudioReport()

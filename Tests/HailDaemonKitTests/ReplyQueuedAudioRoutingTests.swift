@@ -7,7 +7,7 @@ import Testing
 
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct ReplyQueuedAudioRoutingTests {
     @Test(arguments: [false, true])
-    func correlatedDestinationDeterminesWhichStopApplies(stopOwner: Bool) async throws {
+    func sharedTargetStopCoversBothRequestOwners(stopOwner: Bool) async throws {
         let rig = try await RecipientTestRig.make()
         let events = Mutex<[WebSocketListenerEvent]>([])
         let listener = try WebSocketListener(bindAddress: "127.0.0.1", port: 0, host: rig.host,
@@ -26,20 +26,15 @@ import Testing
             #expect(try await receiveFrame(on: pair.sockets[1], step: "owned text") == text)
             let ticket = try await queuedAudioTicket(listener)
             let connection = stopOwner ? contextB.connectionID : contextA.connectionID
-            #expect(await listener.stopReplyPlayback(connection: connection) == "stopped")
+            #expect(await listener.stopReplyPlayback(connection: connection, markQueuedAudio: true) == "stopped")
             #expect(try await receiveFrame(on: pair.sockets[stopOwner ? 1 : 0], step: "scoped stop")
                 .payload == .control(.stopPlayback))
             let result = try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: audio))
-            #expect(result.skipped == stopOwner)
-            if stopOwner {
-                let request = try #require(reply.requestID)
-                #expect(events.withLock { $0.filter { $0.event == "reply_audio_skipped" }.map(\.detail) }
-                    == ["reason=stopped request=\(request.uuidString) ticket=\(ticket.position)"])
-                try await expectRetainedRequest(contextB, frame: audio, listener: listener)
-            } else {
-                #expect(try await receiveFrame(on: pair.sockets[1], step: "other connection audio") == audio)
-                #expect(events.withLock { $0.allSatisfy { $0.event != "reply_audio_skipped" } })
-            }
+            #expect(result.skipped)
+            let request = try #require(reply.requestID)
+            #expect(events.withLock { $0.filter { $0.event == "reply_audio_skipped" }.map(\.detail) }
+                == ["reason=stopped request=\(request.uuidString) ticket=\(ticket.position)"])
+            try await expectRetainedRequest(contextB, frame: audio, listener: listener)
             try await pair.boundedBarrier(step: "scoped queue decision complete")
         } catch {
             await listener.stop(reason: "synthetic failure")

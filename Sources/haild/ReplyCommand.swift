@@ -987,6 +987,10 @@ extension ReplyBackground {
     /// marker. It waits only while its own request stays current; past that its audio is skipped before any starts.
     static func awaitAudioTurn(socket: URL, target: String, probe: Frame) async throws {
         guard isDetachedJob else { return }
+        let report = try await audioRequest(LocalReplyAudioRequest(action: "enqueue"), socket: socket)
+        guard let ticket = report.ticket, !report.skipped else {
+            throw ReplyClientError.refused("daemon did not issue an audio queue ticket")
+        }
         let directory = socket.deletingLastPathComponent()
         let lock = try openAudioLock("reply-audio.lock", directory: directory)
         let waiters: Int32
@@ -994,7 +998,7 @@ extension ReplyBackground {
             close(lock)
             throw error
         }
-        var ticket: LocalReplyAudioTicket?, ownsTurn = false, superseding: URL?
+        var waiting = false, ownsTurn = false, superseding: URL?
         defer { if !ownsTurn { close(lock); close(waiters) } }
         defer { _ = flock(waiters, LOCK_UN) } // queued signal ends on acquisition, failure or cancellation
         defer { restartBound() } // a queued job gets the whole bound for its own stream (Codex P1)
@@ -1003,7 +1007,7 @@ extension ReplyBackground {
             guard errno == EWOULDBLOCK || errno == EINTR else {
                 throw ReplyCommandError.invalid("cannot take the reply audio lock")
             }
-            if ticket == nil { ticket = try await beginAudioWait(socket: socket, waiters: waiters) }
+            if !waiting { try beginAudioWait(waiters: waiters); waiting = true }
             if superseding == nil { superseding = requestSupersession(lock, target: target, directory: directory) }
             if let latest = RequestKeepAlive.latest(final: false), ContinuousClock.now >= latest {
                 throw ReplyCommandError.invalid("another reply is still playing; this reply's audio was skipped")
@@ -1020,20 +1024,14 @@ extension ReplyBackground {
         turn.withLock { $0 = ReplyAudioTurn(id: id, stop: stop, waiters: waiters) }
     }
 
-    private static func beginAudioWait(socket: URL, waiters: Int32) async throws -> LocalReplyAudioTicket {
-        let report = try await audioRequest(LocalReplyAudioRequest(action: "enqueue"), socket: socket)
-        guard let issued = report.ticket, !report.skipped else {
-            throw ReplyClientError.refused("daemon did not issue an audio queue ticket")
-        }
+    private static func beginAudioWait(waiters: Int32) throws {
         try signalAudioWaiter(waiters)
         suspendBound()
         note("reply audio queued behind another reply")
         ready()
-        return issued
     }
 
-    private static func checkQueuedAudio(_ ticket: LocalReplyAudioTicket?, probe: Frame, socket: URL) async throws {
-        guard let ticket else { return }
+    private static func checkQueuedAudio(_ ticket: LocalReplyAudioTicket, probe: Frame, socket: URL) async throws {
         let report = try await audioRequest(
             LocalReplyAudioRequest(action: "check", ticket: ticket, frame: probe), socket: socket
         )
