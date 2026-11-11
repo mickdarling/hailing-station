@@ -595,7 +595,8 @@ extension WebSocketListener {
         }
         let playbackStop = UUID()
         stopsInFlight[playbackStop] = peer.session
-        let result = await peer.session.stopReplyPlayback(voiceStopAt: voiceStopAt)
+        await ReplyAudioEnqueueTesting.beforeStopSession?()
+        let result = await peer.session.stopReplyPlayback(voiceStopAt: voiceStopAt, queue: replyAudioQueue, stop: stop)
         for id in result.stopped { stoppedReplyIDs.record(id) }
         stopsInFlight[playbackStop] = nil
         // The first-frame barrier is already registered. Cut current playback before resolving targets.
@@ -605,7 +606,7 @@ extension WebSocketListener {
             outcome = "stopped"
         } else { outcome = result.stopped.isEmpty ? "idle" : "cut" }
         if let stop {
-            await peer.session.markQueuedAudioStopped(replyAudioQueue, stop: stop, retired: result.targets)
+            await peer.session.markQueuedAudioStopped(replyAudioQueue, stop: stop, targets: result.targets)
         }
         return outcome
     }
@@ -1462,7 +1463,8 @@ extension AmbientRightyoRouter {
             if state.shuttingDown { return "stopping" }
             // Fail closed (#941): a child that may have been made public while privacy is parked never hears audio.
             if !Self.admitsPrivacy(connection, in: state) { return "private" }
-            let id = register(pipeline, stream: stream, connection: connection, target: destination.target, in: &state)
+            let id = register(pipeline, stream: stream, connection: connection, target: destination.target,
+                              selection: selection, in: &state)
             state.active = Active(stream: stream, run: id, pipeline: pipeline, since: Date(),
                                   selection: selection, target: destination.target, binding: destination.binding,
                                   policyGeneration: destination.policyGeneration)
@@ -1584,11 +1586,18 @@ extension AmbientRightyoRouter {
     /// leave its failure, not the reload, as the last event. A child whose connection was torn down while it was made
     /// is registered like any other: `closed`, recorded by `stop(connection:)`, refuses its mode entries (#735).
     func register(_ pipeline: RightyoAmbientPipeline, stream: UUID, connection: UUID, target: String,
-                  reload: Bool = false,
+                  reload: Bool = false, selection: UUID? = nil,
                   in state: inout State) -> UUID {
         let id = UUID()
         state.runs[id] = Run(stream: stream, connection: connection, pipeline: pipeline)
-        if !state.shuttingDown, !state.closed.contains(connection) { state.streamTargets[connection] = target }
+        if !state.shuttingDown, !state.closed.contains(connection) {
+            state.streamTargets[connection] = target
+            // Mirror the router's admitted stream/selection under the queue lock. All stop sources, including
+            // privacy restore/pre-arm callbacks already under this router lock, capture it with their cutoff.
+            state.listener?.value?.replyAudioQueue.admittedSelection(
+                .init(target: target, generation: selection), connection: connection
+            )
+        }
         // A new or reloaded child starts with media mode off (#551). Told under the same lock `setMedia` changes it
         // under, so it can never miss a change made while it was starting.
         if state.media[connection] != nil || state.meeting[connection] != nil {
@@ -1978,7 +1987,7 @@ extension AmbientRightyoRouter {
             state.retirements += 1
             state.runs[old.run]?.retiredAt = state.retirements
             let id = register(pipeline, stream: old.stream, connection: connection, target: old.target,
-                              reload: true, in: &state)
+                              reload: true, selection: old.selection, in: &state)
             state.active = Active(stream: old.stream, run: id, pipeline: pipeline, since: old.since,
                                   selection: old.selection, target: old.target, binding: old.binding,
                                   policyGeneration: old.policyGeneration)
@@ -3156,22 +3165,22 @@ extension WebSocketListener {
 struct VoicePlaybackStopResult {
     let frame: Frame?
     let stopped: [UUID]
-    var targets: Set<String> = []
+    var targets: Set<String>?
     var coalesced = false
 }
 
 extension HostSession {
     /// Retire on every report. Only the redundant outbound frame uses the last accepted stop's fixed window.
     func stopReplyPlayback(
-        voiceStopAt now: ContinuousClock.Instant?
+        voiceStopAt now: ContinuousClock.Instant?, queue: ReplyAudioQueue? = nil, stop: ReplyAudioQueue.Stop? = nil
     ) -> VoicePlaybackStopResult {
-        guard let now else { return stopReplyPlayback() }
+        guard let now else { return stopReplyPlayback(queue: queue, stop: stop) }
         guard case .ready = state else { return VoicePlaybackStopResult(frame: nil, stopped: []) }
         let previous = acceptedVoiceStop
         let coalesced = previous.map {
             $0.at.duration(to: now) < .seconds(1) && $0.revision == replyFlightRevision
         } ?? false
-        let result = stopReplyPlayback()
+        let result = stopReplyPlayback(queue: queue, stop: stop)
         // Retirement also writes the ledger; retain its new revision without sliding the accepted timestamp.
         acceptedVoiceStop = (coalesced ? previous?.at ?? now : now, replyFlightRevision)
         return VoicePlaybackStopResult(frame: coalesced ? nil : result.frame,

@@ -14,6 +14,8 @@ final class ReplyAudioQueue: Sendable {
         let id = UUID()
         let connection: UUID
         let position: UInt64
+        let selection: AmbientSelection?
+        let targets: Set<String>
         let beforeSnapshot: (@Sendable () async -> Void)?
     }
     private struct Job {
@@ -27,6 +29,7 @@ final class ReplyAudioQueue: Sendable {
         let epoch = UUID()
         var position: UInt64 = 0
         var connections: Set<UUID> = []
+        var selections: [UUID: AmbientSelection] = [:]
         var stops: [UUID: UInt64] = [:]
         var targets: [(key: String, position: UInt64)] = []
         var jobs: [Job] = []
@@ -54,10 +57,12 @@ final class ReplyAudioQueue: Sendable {
     @discardableResult func captureStop(_ connection: UUID) -> Stop? {
         let stop = state.withLock { state -> Stop? in
             guard state.connections.contains(connection) else { return nil }
-            let stop = Stop(connection: connection, position: state.position,
+            let selection = state.selections[connection]
+            let targets = Set(selection?.target.map { [$0] } ?? [])
+            let stop = Stop(connection: connection, position: state.position, selection: selection, targets: targets,
                             beforeSnapshot: ReplyAudioEnqueueTesting.beforeStopSnapshot)
             state.pending[stop.id] = stop
-            Self.mark(connection, targets: [], through: stop.position, in: &state)
+            Self.mark(connection, targets: targets, through: stop.position, in: &state)
             return stop
         }
         if let stop {
@@ -124,7 +129,9 @@ final class ReplyAudioQueue: Sendable {
     }
     func register(_ connection: UUID) { state.withLock { _ = $0.connections.insert(connection) } }
     func forget(_ connection: UUID) {
-        state.withLock { $0.stops[connection] = nil; $0.connections.remove(connection) }
+        state.withLock {
+            $0.stops[connection] = nil; $0.selections[connection] = nil; $0.connections.remove(connection)
+        }
     }
     func valid(_ ticket: LocalReplyAudioTicket) -> Bool {
         state.withLock { ticket.epoch == $0.epoch && ticket.position > 0 && ticket.position <= $0.position }
@@ -154,12 +161,24 @@ final class ReplyAudioQueue: Sendable {
 }
 
 extension ReplyAudioQueue {
+    /// Mirrored by the router under its admission lock, before privacy callbacks can capture a stop.
+    func admittedSelection(_ selection: AmbientSelection, connection: UUID) {
+        state.withLock { state in
+            guard state.connections.contains(connection) else { return }
+            state.selections[connection] = selection
+        }
+    }
+    /// A changed generation can hide earlier covered targets. Only pre-cutoff tickets fail closed.
+    func raiseFloor(through stop: Stop) {
+        state.withLock { $0.floor = max($0.floor, stop.position) }
+    }
+
     /// nil means the snapshot failed. Retain its cutoff globally before opening the first-frame barrier.
     func resolve(_ stop: Stop, targets: Set<String>?) {
         let waiters = state.withLock { state -> [CheckedContinuation<Void, Never>] in
             guard state.pending.removeValue(forKey: stop.id) != nil else { return [] }
             if let targets {
-                Self.mark(stop.connection, targets: targets, through: stop.position, in: &state)
+                Self.mark(stop.connection, targets: targets.union(stop.targets), through: stop.position, in: &state)
             }
             // Retirement can remove in-flight ledger entries before the actor snapshots them. Retain any
             // targets that did arrive, but fail closed at the accepted cutoff if the snapshot lost its peer.
@@ -229,6 +248,7 @@ private final class ReplyAudioAdmission: Sendable {
 enum ReplyAudioEnqueueTesting {
     @TaskLocal static var afterPrivacyDecision: (@Sendable () async -> Void)?
     @TaskLocal static var waiting: (@Sendable () -> Void)?
+    @TaskLocal static var beforeStopSession: (@Sendable () async -> Void)?
     @TaskLocal static var afterStopSend: (@Sendable () async -> Void)?
     @TaskLocal static var beforeStopSnapshot: (@Sendable () async -> Void)?
     @TaskLocal static var stopTimeout: (@Sendable () async -> Void)?
@@ -750,12 +770,15 @@ extension HostSession {
         return .init(connection: connectionID, generation: selectionGeneration, at: requestClock())
     }
 
-    /// Retired targets were captured before traffic could prune their flights. Names in Hello confer no identity.
-    func markQueuedAudioStopped(_ queue: ReplyAudioQueue, stop: ReplyAudioQueue.Stop, retired: Set<String> = []) async {
-        await stop.beforeSnapshot?()
-        guard case .ready = state else { return queue.resolve(stop, targets: nil) }
+    /// One actor step captures every association before retirement, a send, or a privacy drop can erase it.
+    func queuedAudioStopTargets(_ queue: ReplyAudioQueue? = nil, stop: ReplyAudioQueue.Stop? = nil) -> Set<String>? {
+        guard case .ready = state else { return nil }
+        if let stop, let accepted = stop.selection {
+            let changed = accepted.generation.map { $0 != selectionGeneration }
+                ?? (accepted.target != selectedTarget)
+            if changed { queue?.raiseFloor(through: stop) }
+        }
         var targets = lastInputLedger?.targets(on: connectionID, inFlight: repliesInFlight) ?? []
-        targets.formUnion(retired)
         if let selectedTarget { targets.insert(selectedTarget) }
         #if os(macOS)
         if let routes = authorizer.voiceRoutes {
@@ -763,6 +786,14 @@ extension HostSession {
         }
         #endif
         targets.formUnion(replyRequests.values.map { $0.context.binding.targetID })
+        return targets
+    }
+
+    /// The hold delays resolution only. It never permits a later selection to change the captured associations.
+    nonisolated func markQueuedAudioStopped(
+        _ queue: ReplyAudioQueue, stop: ReplyAudioQueue.Stop, targets: Set<String>?
+    ) async {
+        await stop.beforeSnapshot?()
         queue.resolve(stop, targets: targets)
     }
 
@@ -828,10 +859,12 @@ extension HostSession {
     /// A `dismiss` asked to stop playback (#309). Every reply mid-stream on this connection is stopped: its
     /// remaining frames are refused, so the reply CLI retires its renderer. The `stop_playback` frame is
     /// returned only for a ready device that advertised it; an older device would refuse it as malformed.
-    func stopReplyPlayback() -> VoicePlaybackStopResult {
+    func stopReplyPlayback(
+        queue: ReplyAudioQueue? = nil, stop: ReplyAudioQueue.Stop? = nil
+    ) -> VoicePlaybackStopResult {
         guard case .ready(let version) = state else { return VoicePlaybackStopResult(frame: nil, stopped: []) }
         let stopped = repliesInFlight
-        let targets = lastInputLedger?.targets(on: connectionID, inFlight: stopped) ?? []
+        let targets = queuedAudioStopTargets(queue, stop: stop)
         stoppedReplies.append(contentsOf: repliesInFlight)
         stoppedReplies.removeFirst(max(0, stoppedReplies.count - Self.playbackStopLimit))
         repliesInFlight.removeAll()
@@ -1196,7 +1229,10 @@ extension WebSocketListener {
         }
         // Runs for every privacy entry, even when its later announcement has no clip. The serial
         // notice queue completes this mark before releasing the hold on a fast entry then exit.
-        if let stop { await peer.session.markQueuedAudioStopped(replyAudioQueue, stop: stop) }
+        if let stop {
+            let targets = await peer.session.queuedAudioStopTargets(replyAudioQueue, stop: stop)
+            await peer.session.markQueuedAudioStopped(replyAudioQueue, stop: stop, targets: targets)
+        }
         return await peer.session.dropRepliesForPrivacy()
     }
 
