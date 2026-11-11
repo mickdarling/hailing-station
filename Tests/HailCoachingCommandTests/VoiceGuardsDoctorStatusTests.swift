@@ -111,10 +111,10 @@ import Testing
         #expect(status.error.contains("tmux:"))
     }
 
-    @Test func realSendStillRequiresConfirmationWhenOff() throws {
+    @Test func realSendStillRequiresConfirmationWhenOff() async throws {
         let rig = try VoiceGuardsCLIRig(setting: .off)
         defer { rig.cleanUp() }
-        let result = try rig.run(["send", "tmux:a", "guarded-token"])
+        let result = try await rig.runAsync(["send", "tmux:a", "guarded-token"])
         #expect(result.code == 8)
         #expect(result.error.contains("guarded: synthetic"))
         #expect(result.error.contains("confirmation needed; run from a terminal to read back"))
@@ -125,6 +125,8 @@ import Testing
 struct VoiceGuardsCLIRig: Sendable {
     let directory: URL
     let file: PolicyFile
+    /// One fixture subprocess at a time, with blocking waits off Swift's cooperative executor.
+    private static let processQueue = DispatchQueue(label: "hail.voice-cli-test", qos: .utility)
 
     init(setting: VoiceGuards) throws {
         directory = FileManager.default.temporaryDirectory
@@ -158,7 +160,11 @@ struct VoiceGuardsCLIRig: Sendable {
     }
 
     func runAsync(_ arguments: [String]) async throws -> Result {
-        try await Task.detached { try run(arguments) }.value
+        try await withCheckedThrowingContinuation { continuation in
+            Self.processQueue.async {
+                continuation.resume(with: Swift.Result { try run(arguments) })
+            }
+        }
     }
 
     func run(_ arguments: [String]) throws -> Result {
