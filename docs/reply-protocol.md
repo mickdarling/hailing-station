@@ -724,9 +724,9 @@ cross-process wall clock is involved.
 
 The target is checked before routing, so a disconnected text pin cannot turn a stop skip into a routing refusal.
 Ordinary routing still resolves request owner, existing text/first-frame pin, current last input, single selector
-or ambient owner. Admission and final enqueue skip a ticket at or below either the resolved connection's mark or
-the frame target's mark, or the global eviction floor. This prevents a pin eviction or reconnect from reviving pre-stop audio. A ticket greater
-than all three marks can play immediately, including after reconnect. A shared target stop also covers replies owned
+or ambient owner. Admission and final enqueue skip a ticket at or below the resolved connection's mark, the frame
+target's mark, or the global eviction floor. This prevents a pin eviction or reconnect from reviving pre-stop audio.
+A ticket greater than all three marks can play immediately, including after reconnect. A shared target stop covers replies owned
 by another connection for that target. Text/cards already delivered remain intact and the request is not withdrawn.
 No extra original-destination record is retained: target marks close both gaps while preserving ordinary routing
 for post-stop jobs, without another per-job destination lifetime.

@@ -665,4 +665,11 @@ counting both names of a rename. There are no renames. The count is **4 producti
 LOW-3 doctor/audit parity stays in this slice because the count is within the limit. Item D's session-update
 revision work remains deferred to PR 1c. No online PR-shape or independent review is claimed.
 
+The initial fresh build passed, and the first two focused runs passed. The third found a round-2 test clock
+boundary: `RefusalSummary` excludes future records, while the real audit writer rounds timestamps to milliseconds.
+An immediate summary snapshot can precede that rounded timestamp. The endpoint test now injects the same exact
+clock into the audit writer and history/summary reads. It still awaits real socket responses and checks the actual
+persisted records; no delay or eventual-count retry is used. Production audit behavior is unchanged. Final focused
+verification restarts all three runs after this test-only correction. Initial failure evidence is retained.
+
 Verification results will be recorded after the fresh `vw1212b3` phases finish.

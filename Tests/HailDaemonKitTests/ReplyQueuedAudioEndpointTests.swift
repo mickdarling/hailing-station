@@ -78,9 +78,12 @@ import Testing
             .appendingPathComponent("hs-qa-\(UUID().uuidString.prefix(8))")
         defer { try? FileManager.default.removeItem(at: scratch) }
         let socket = scratch.appendingPathComponent("config/reply.sock")
+        // Use one exact clock for the writer and summary: rounded audit milliseconds must not land
+        // fractionally in the future of the summary's wall-clock snapshot.
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
         let auditDirectory = scratch.appendingPathComponent("audit")
         let endpoint = try LocalReplyEndpoint(socketURL: socket, destination: rig.env.listener,
-            audit: AuditLog(directory: auditDirectory))
+            audit: AuditLog(directory: auditDirectory, now: { now }))
         try await endpoint.start()
         do {
             let ticket = try await queuedAudioTicket(rig.env.listener)
@@ -88,19 +91,19 @@ import Testing
             frame.target = nil
             let missing = try await exchange(.init(action: "publish", ticket: ticket, frame: frame), socket: socket)
             #expect(missing.code == .replyTargetMissing && missing.delivered == 0)
-            let history = try AuditHistory(directory: auditDirectory).today()
+            let history = try AuditHistory(directory: auditDirectory).today(at: now)
             #expect(history.allSatisfy { !$0.contains("\"kind\":\"pushed\"") })
-            let summary = try RefusalSummary.read(from: AuditHistory(directory: auditDirectory))
+            let summary = try RefusalSummary.read(from: AuditHistory(directory: auditDirectory), now: now)
             #expect(summary.counts == [.init(reason: "replyTargetMissing", last15Minutes: 1, lastHour: 1)])
             let fresh = ReplyAudioQueue()
             let foreign = try fresh.ticket()
             frame = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
             let refused = try await exchange(.init(action: "publish", ticket: foreign, frame: frame), socket: socket)
             #expect(refused.code == .invalidReplyPayload && refused.delivered == 0)
-            let updated = try RefusalSummary.read(from: AuditHistory(directory: auditDirectory))
+            let updated = try RefusalSummary.read(from: AuditHistory(directory: auditDirectory), now: now)
             #expect(Set(updated.counts.map(\.reason)) == ["replyTargetMissing", "invalidReplyPayload"])
             #expect(updated.counts.allSatisfy { $0.last15Minutes == 1 && $0.lastHour == 1 })
-            let pushed = try AuditHistory(directory: auditDirectory).today()
+            let pushed = try AuditHistory(directory: auditDirectory).today(at: now)
                 .filter { $0.contains("\"kind\":\"pushed\"") }
             #expect(pushed.count == 1 && pushed[0].contains(RecipientTestRig.target))
             try await barrier(on: rig.socket, step: "refused queued publish sends nothing")
