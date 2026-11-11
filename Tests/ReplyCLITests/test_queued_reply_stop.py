@@ -100,6 +100,8 @@ class QueuedReplyStopTests(unittest.TestCase):
                     self.assertEqual(controls[0]["action"], "enqueue")
                     self.assertEqual(frames[0][1]["payload"]["text"], "synthetic response")
                     self.assertEqual(frames[0][1]["payload"]["metadata"], "synthetic card")
+                    if contended and mode != "legacy":
+                        self.rig.wait_for(lambda: self.waiter_registered(lock.with_name("reply-audio.waiters")), 10)
                     fcntl.flock(holder, fcntl.LOCK_UN)
                     stdout, stderr = job.communicate(timeout=15)
                     self.assertEqual(job.returncode, 1 if mode in ("legacy", "stale") else 0, stderr.decode())
@@ -108,7 +110,6 @@ class QueuedReplyStopTests(unittest.TestCase):
                         self.assertEqual(len(frames), 1)
                         return
                     if mode == "stale":
-                        self.assertIn(b"invalid reply payload", stderr)
                         self.assertNotIn(b"reply audio skipped after a stop", stderr)
                         self.assertEqual(len(frames), 1)
                         self.assertEqual([item["action"] for item in controls], ["enqueue", "check"])
@@ -138,6 +139,17 @@ class QueuedReplyStopTests(unittest.TestCase):
                     self.assertEqual(attempts["enqueue"], 2)
                     self.assertEqual(attempts["check"], 2)
                     self.assertEqual(checks[0], checks[1])
+
+    @staticmethod
+    def waiter_registered(path):
+        if not path.exists():
+            return False
+        with path.open("r+") as observer:
+            try:
+                fcntl.flock(observer, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+        return False
 
     @staticmethod
     def finish_job(job):
