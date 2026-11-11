@@ -99,7 +99,9 @@ extension ReplyQueuedAudioTargetTests {
         if case .stopped = queue.enqueue(old, connection: nil, target: "unrelated", { true }) {} else {
             Issue.record("outstanding eviction must fail closed globally")
         }
-        let fresh = try queue.ticket(frame: frame)
+        let freshReply = uncorrelatedDescriptor(audio: true)
+        let fresh = try queue.ticket(frame: recipientAudio(freshReply, sequence: 0))
+        queue.deliveredText(freshReply.id, to: connection)
         queue.finish(fresh)
         queue.stop(connection, targets: [])
         queue.forget(connection)
