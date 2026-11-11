@@ -722,10 +722,25 @@ the daemon epoch; newer tickets remain playable.
 
 Both a RightyO playback-scope dismissal and an accepted device `voice_stopped` mark the queue, including repeated
 reports whose outbound `stop_playback` is coalesced. Privacy entry also marks the queue: its unconditional pending
-reply drop applies the entry's captured mark before any exit releases the hold, even if no entry clip is announced. Spoken mute explicitly does not mark the queue. Privacy's separate delivery hold still
-prevents text and audio publication while private. The ticket check and stop mark share
-a synchronous lock: no audio handoff can pass an older admission after the stop mark. No time window or
-cross-process wall clock is involved.
+reply drop resolves the entry's captured stop before any exit releases the hold, even if no entry clip is announced.
+Spoken mute explicitly does not mark the queue. Privacy's separate delivery hold still prevents text and audio
+publication while private.
+
+Acceptance registers a pending-stop token (id, connection, cutoff) under the same mutex as ticket issuance and
+final audio enqueue, while the connection is registered. Capture after teardown returns no token and marks nothing.
+A first-audio admission at or below any pending cutoff waits asynchronously on a continuation. The final enqueue
+checks pending stops again under the mutex, so a stop accepted during routing cannot lose to a first frame.
+Tickets above every pending cutoff proceed immediately. Resolving the session's selected/covered, pinned,
+in-flight and request-owner targets writes their marks at the captured cutoff even after connection teardown,
+then removes the pending stop and resumes admissions outside the lock. Only the connection mark needs liveness.
+Queue retirement is recorded before in-flight ledger entries are dropped. A retired peer snapshot also raises
+the floor while retaining its arriving target marks, because its association set may now be incomplete.
+If the connection lookup or session snapshot fails, or its two-second asynchronous deadline expires, resolution
+raises the global floor to the captured cutoff before releasing the barrier. A late snapshot cannot undo that
+floor or mark later tickets. A definitive global floor ends admission waiting immediately, even if a newer stop
+is still pending; overlapping stops cannot keep an already-silent job waiting indefinitely. Admissions recheck
+all marks after waking; cancellation removes their continuations.
+No actor or cooperative thread is blocked while waiting, and no cross-process wall clock is involved.
 
 The target is checked before routing, so a disconnected text pin cannot turn a stop skip into a routing refusal.
 Ordinary routing still resolves request owner, existing text/first-frame pin, current last input, single selector
@@ -758,10 +773,15 @@ writes `reply audio skipped after a stop` to stderr. As with other post-readines
 stderr follows its existing redirection to `/dev/null` after releasing its caller; the daemon event is the durable
 observable diagnostic. There is no terminal audio marker for a job whose audio never started.
 
-During install/restart version skew, only an explicit zero-delivery enqueue response with no refusal code and
-error exactly `unknown action`, `unsupported request`, or `unknown request kind` selects legacy unticketed
-behavior for that job. The CLI logs `reply_audio_queue unsupported` once to stderr and keeps the ordinary audio
-turn lock. A missing queue acknowledgement, generic decode error, connection error, timeout or stale ticket
-remains fail closed; none is evidence of missing capability. Legacy fallback cannot provide queue-stop ordering.
+During install/restart version skew, legacy unticketed behavior is selected only for a zero-delivery **enqueue**
+response with code `decodeFailure`, error exactly `reply refused [decodeFailure]: frame decode failure`, and an
+**absent** `replyAudio` field. At both `f3f97bc7` and `cc36af90`, the older endpoint routes the unrecognized
+`kind: "reply-audio"` (enqueue, check or publish) through `submitReply`, where Frame decoding produces that exact
+coded refusal. The queue-aware endpoint always includes `replyAudio` in queue responses, including decode
+refusals, so it cannot produce the legacy signal for a valid queue request. Explicit null does not count as absence.
+The CLI logs `reply_audio_queue unsupported` once to stderr and keeps the ordinary audio turn lock. Missing or
+malformed acknowledgements, inexact/uncoded decode errors, connection failures, timeouts and stale tickets remain
+fail closed. The exact old signal during check or publication also remains fail closed: only initial enqueue can
+negotiate legacy operation. Legacy fallback cannot provide queue-stop ordering.
 Foreground (non-detached) jobs take no ticket and therefore have no queued-audio guarantee. A device
 `voice_stopped` ignored with `reason=no_active_stream` marks nothing.

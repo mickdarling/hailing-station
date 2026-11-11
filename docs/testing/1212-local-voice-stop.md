@@ -896,3 +896,215 @@ and after it. The workspace `.build`, separate `vw1212b4-werr` build directory, 
 directory are deleted after verification. No owned build/test processes remain. Runtime/build logs, initial
 failures, checksums, lint, source count and cleanup evidence remain outside the repository under the task's
 `vw1212b4` names. No generated product or private deployment data is committed.
+
+## 1b round 4: pending-stop admission barrier and older-daemon negotiation
+
+This round adds commits after `de4b82c65a33baaa242eb4ec64f61239219c6af6`; history is not rewritten.
+The implementation/test commit is `89f9b5b48e9adcd47c5b3421514df4fd784d2d60`. The test-deadline refinement is
+`ee49d331464275dc7926423576d73be1303f5c63`; it changes only two Swift tests. The retirement correction is
+`da51c74c6ce870e58d62e0acb524adb3554f57a7`; the bounded-overlap refinement is
+`54ce8db21ca28d48798d909d8e17115479d6d0c2`. Its independent per-timeout test holds are finalized in
+`e1f900569cc349b4fb556a3695b6a2ca401c1aab`. Subsequent documentation changes
+have the same Swift/Python source checksums. No push, PR, installation, daemon replacement, upload, simulator
+run or physical-device proof is part of this round. The only GitHub command is `gh issue view 1212 --comments`.
+
+### Barrier and teardown
+
+`HostReplyDelivery.swift:53` registers a pending stop (unique id, connection, captured cutoff) while the connection
+is live, under the queue mutex that issues tickets and hands off audio. Capture after teardown returns nil without
+capturing or marking anything. Initial connection and outstanding-text target marks remain synchronous.
+
+`HostReplyDelivery.swift:175` suspends first-audio admission on a checked continuation whenever any pending cutoff
+covers its ticket. Registration and the pending recheck share the mutex; continuations resume outside it.
+`ReplyAudioQueue.enqueue` rechecks pending stops inside the final transport boundary. If acceptance raced routing,
+`publishQueuedAudio` (`:975`) retries admission asynchronously before redoing routing. Neither an actor nor a
+cooperative thread waits synchronously. Tickets above every pending cutoff bypass the barrier, including while
+an older admission is waiting.
+
+Resolution (`HostReplyDelivery.swift:157`) writes session-derived target marks at the captured cutoff even after
+`forget`/`peerEnded`; only the connection-specific write checks liveness. It clears the token under the same mutex,
+then wakes admissions to recheck their marks. A retired peer also raises that captured floor, while retaining any
+target marks that arrived: retirement may have dropped in-flight associations before the session could read them.
+`peerEnded` marks queue retirement before dropping the ledger entries (`WebSocketListener.swift:449`), so there is
+no gap in which an incomplete snapshot can still appear live. `markQueuedAudioStopped` (`:751`) refuses a closed session snapshot.
+Missing peer lookup and other early exits use a fail-closed defer at `WebSocketListener.swift:587` and
+`HostReplyDelivery.swift:1184`. An unresolved token also has a two-second asynchronous deadline. Failure raises
+the global floor to that token's cutoff before clearing it. Late or duplicate resolutions cannot undo the floor
+or mark newer tickets. Admission cancellation unregisters and resumes its own continuation.
+
+The three sources carry the accepted token: device `voice_stopped` (`WebSocketListener.swift:991`), RightyO's
+playback-scope dismissal (`:1695`), and unconditional privacy entry (`:2605`). A later privacy announcement still
+uses `markQueuedAudio: false`, so it cannot capture a second, newer cutoff.
+
+Deterministic coverage uses held snapshots, continuation registration signals, and completed socket barriers;
+there are no new settling sleeps:
+
+- `ReplyQueuedAudioBarrierTests.firstFrameWaitsForSnapshotAndSurvivesTeardown`: eight cases hold the session hop
+  across device stop, playback stop, the privacy hold boundary, and a target known only through an in-flight
+  record, with/without peer teardown. B's old job
+  attempts admission and registers a waiter. Its text is already delivered to B; a later ticket plays on B while
+  the snapshot is held. Resolution skips the old job and sends no old audio.
+- `ReplyQueuedAudioPrivacyBarrierTests.devicePrivacyEntryHoldsFirstFrameAcrossTeardown`: two cases run the actual
+  device privacy-entry switch, with/without teardown, while B's first frame waits and a later ticket plays.
+- `ReplyQueuedAudioRaceTests.pendingStopAcceptedAfterRoutingSuspendsFinalEnqueue`: acceptance happens after route
+  resolution. The synchronous final gate refuses transport, its caller waits asynchronously, and target resolution
+  skips the old frame.
+- `ReplyQueuedAudioTargetTests.lateStopAfterTeardownStillMarksAnotherTargetsQueuedJob` inverts the old escape
+  expectation. `ReplyQueuedAudioPendingTests.captureAfterTeardownMarksNothing` separately checks late capture.
+- `ReplyQueuedAudioBarrierTests.unresolvableSnapshotRaisesOnlyCapturedFloor`: four cases combine a missing peer
+  or closed session with playback/privacy resolution. An unrelated pre-stop ticket is also stopped globally,
+  while a later ticket plays.
+- `ReplyQueuedAudioPendingTests.boundedTimeoutRaisesFloorAndReleasesFirstFrame` drives the real timeout task using
+  a continuation instead of sleeping. It checks floor retention, a harmless late snapshot, and later admission.
+  Separate tests cover multiple covering pending stops, a failed stop ending an old admission while another stop
+  remains pending, and cancellation cleanup.
+
+### Exact version-skew signal
+
+The exact source inspections were:
+
+```sh
+git show f3f97bc7:Sources/HailDaemonKit/PushEndpoint/LocalReplyEndpoint.swift
+git show f3f97bc7:Sources/HailDaemonKit/PushEndpoint/LocalReplyEndpoint+Submission.swift
+git show cc36af90:Sources/HailDaemonKit/PushEndpoint/LocalReplyEndpoint.swift
+git show cc36af90:Sources/HailDaemonKit/PushEndpoint/LocalReplyEndpoint+Submission.swift
+```
+
+Both revisions recognize other local kinds but route `kind: "reply-audio"` to `submitReply` for **enqueue, check
+and publish**. The queue envelope lacks the top-level Frame shape. `decodeLocalReply` converts that failure to
+`.decodeFailure`, `submitReply` responds with its code/message, and the old response encoder has no `replyAudio` key:
+
+```json
+{"delivered":0,"code":"decodeFailure","error":"reply refused [decodeFailure]: frame decode failure"}
+```
+
+JSON key order is immaterial. This is source inspection plus an exact-response mock, not a claim that either old
+binary was launched. `ReplyCommand.swift:969` selects legacy behavior only on **initial enqueue**, with that exact
+code/message and an **absent** `replyAudio` field. The new endpoint includes `replyAudio` on every queue decode or
+publication refusal (`LocalReplyEndpoint+Submission.swift:381`), including when the code/message are identical.
+Its response decoder tracks field presence (`:120`, `:169`), so explicit null cannot masquerade as absence.
+Thus a valid queue request to the new daemon cannot produce the legacy signal.
+
+`ReplyQueuedAudioEndpointTests.socketDecodeRefusalAlwaysCarriesQueueSupport` proves the new daemon's exact decode
+refusals carry the marker for three malformed queue shapes. Its real-socket enqueue/check/publish coverage retains
+queue acknowledgements, and stale-ticket refusal coverage checks the marker too. The CLI's exact old-daemon mock
+succeeds with one legacy negotiation. Tests keep modern decode refusals, null reports, uncoded/inexact errors,
+malformed responses, connection loss and stale tickets fail closed. The exact old response at check or publish
+never downgrades; attempted audio remains ticketed.
+
+### Lock order
+
+`deviceVoiceStopped` takes the queue mutex while holding router state. Inspection found no production reverse
+edge. Queue mutation/continuation registration calls no router callbacks; waiters resume after releasing the
+mutex. The final enqueue's only production `send` chain is admission -> prepared transport lifecycle/permit ->
+prepared state -> `NWConnection.send` (`WebSocketPeer.swift:379`, `:409`). It does not wait for completion.
+
+The late-success callback does call `AmbientRightyoRouter.observeReply` (`WebSocketListener.swift:730`) and take
+router state. It is **not** on the queue-lock stack: `PreparedWebSocketReply.result()` is first invoked after
+`enqueue()` returns, so an inline completion cannot yet have an abandoned result and cannot call late-success.
+Network completion on another stack does not own the queue mutex. Inline error completion schedules transport
+retirement in a Task (`WebSocketPeer.swift:477`), rather than entering the router. Normal post-delivery observation
+also follows the completed enqueue. Therefore no router/queue inversion requires restructuring this acceptance
+boundary; comments preserve this invariant at the capture and send sites.
+
+### VM commands and diagnostic corrections
+
+The fresh `vw1212b5` clone uses Apple Swift 6.3.3 and was seeded entirely by host-local bundles and source deltas. The source/test tree was
+then synchronized to the final source commit using a local bundle, with all 21 changed Swift/Python files
+matching host SHA-256 checksums before required verification. No dependency fetch or synthetic load worker runs.
+Before each serial phase, the runner checks the shared build/test lane. Each phase has a 590-second process-group
+watchdog and signal/finally TERM/KILL cleanup. SwiftPM uses four jobs, each compiler one worker, automatic resolution
+disabled, and background priority. The separate wrapper starts with a fresh `vw1212b5-werr` build directory.
+
+Use the CLT `flags` array documented above. Each invocation below has its own capped phase:
+
+```bash
+taskpolicy -b swift build --build-tests "${flags[@]}" -Xswiftc -warnings-as-errors
+# Three invocations each:
+taskpolicy -b swift test --skip-build --no-parallel "${flags[@]}" --filter \
+  'ReplyQueuedAudio|DeviceVoiceStop|AmbientWiringStopConfirmation|HostPlaybackStop|AmbientWiringVoiceMute|LocalReplyEndpoint|LocalVoiceGuardsStatus'
+taskpolicy -b python3 -m unittest discover -s Tests/ReplyCLITests -p test_queued_reply_stop.py
+# Once:
+taskpolicy -b python3 -m unittest discover -s Tests/ReplyCLITests
+# One invocation per broad selection in the final results table:
+taskpolicy -b swift test --skip-build --no-parallel "${flags[@]}" --filter "$selection"
+/bin/zsh ~/codex-workspaces/vw-werr.sh vw1212b5
+```
+
+Initial VM diagnostics found a production local-variable collision with the new stop token, then a test helper
+shadowed by a Task variable. Those are corrected before the successful rebuild. The first focused Swift diagnostic
+passed 19 functions in six suites. One CLI diagnostic assertion incorrectly treated the mock's attempted-frame
+log as accepted delivery: the mock records an audio attempt before refusing it. The corrected test proves all
+attempts stay ticketed and no raw legacy retry follows. All 19 CLI diagnostic tests then passed. These diagnostic
+runs are additional evidence, separate from the required repetitions below.
+
+A determinism audit replaces the real two-second timer in the final-enqueue and cancellation waiting tests
+with held timeout continuations. This prevents deadline expiry from winning before the test's registration signal
+under an adverse scheduler. The subsequent retirement audit identifies that `LastInputLedger.forget` drops flight
+associations while the session itself can remain ready. The final correction orders queue retirement first and
+raises the captured floor for a retired snapshot in addition to retaining its target marks. An additional held-hop
+case uses a target known only through a flight, with its selection elsewhere and no text pin or request owner.
+The inverted teardown unit case now also verifies the global floor for a lost association and later-ticket safety.
+
+A complete verification pass restarts on this final source: the rebuild, three focused Swift/CLI repetitions,
+full CLI suite, all six daemon-family phases and a separate fresh wrapper. Earlier results are additional evidence,
+not the final counts below. The first fresh wrapper passed; the superseded intermediate wrapper is deliberately
+terminated through its owned process-group kill trap (exit 143) before final source synchronization. Its build
+directory is deleted before the final fresh wrapper. A further bounded-overlap audit makes an already definitive
+global floor short-circuit admission waits even while a newer covering stop remains pending. Its deterministic test
+holds that second stop unresolved while the old job skips and a later ticket plays. The final-enqueue test uses a
+distinct stopping connection so its asynchronous wait is independent of an already decisive connection mark.
+An intermediate daemon phase is likewise superseded through its owned kill trap. The complete pass is restarted
+on `e1f900569cc349b4fb556a3695b6a2ca401c1aab`, after assigning a separate continuation hold to each timeout
+task in the overlap fixture. The preceding runner exits at a phase boundary through its restart sentinel (exit 75).
+These are intentional supersessions, not test failures.
+
+### Final results on the completed source snapshot
+
+All rows below are from the complete final pass at `e1f900569cc349b4fb556a3695b6a2ca401c1aab`.
+Every runtime phase starts tests and exits 0. Swift function counts and parameterized case executions are distinct.
+
+| Selection / phase | Runs | Functions / suites | Case executions per run | Result / seconds |
+| --- | ---: | ---: | ---: | --- |
+| Final test rebuild, warnings as errors | 1 | — | — | pass; 17.77 |
+| Focused Swift selection above | 3 | 111 / 25 | 170 | pass; 52.749, 52.266, 50.806 |
+| Focused Python `QueuedReplyStopTests` | 3 | 19 Python tests | — | pass; 9.860, 9.965, 10.137 |
+| Full Reply CLI | 1 | 145 Python tests | — | pass; 243.905 |
+| `HailDaemonKitTests\.Ambient[A-M]` | 1 | 134 / 25 | 207 | pass; 101.656 |
+| `HailDaemonKitTests\.Ambient[N-S]` | 1 | 317 / 65 | 488 | pass; 342.881 |
+| `HailDaemonKitTests\.Ambient[T-Z]` | 1 | 214 / 49 | 395 | pass; 132.492 |
+| `HailDaemonKitTests\.Rightyo` | 1 | 186 / 17 | 228 | pass; 35.226 |
+| `HailDaemonKitTests\.(Listener\|WebSocket\|Host\|DeviceVoiceStop)` | 1 | 154 / 27 | 286 | pass; 31.369 |
+| `HailDaemonKitTests\.Reply` | 1 | 106 / 25 | 144 | pass with five intentional known issues; 68.176 |
+| Separate fresh warnings-as-errors wrapper | 1 | — | — | pass; 245.79 (247 including wrapper) |
+
+The six daemon families total **1,111 functions and 1,748 case executions**. The five known issues are the existing
+`ReplyRecipientHandoffWaitTests` missing-handoff timeout, two cancellation-registration cases, and the first
+waiter's timeout/cancellation while another survives. They are deliberate failure-reporting injections, not skips.
+No unexpected failure or skip occurs; the focused Swift and Python runs contain no known issues. There are no
+continuation-misuse diagnostics in the final focused or reply runs.
+
+The fresh wrapper reports **`werr build=0`** and exits 0. Its full build log contains **zero errors and 120 warnings**,
+all the existing CLT missing-ModuleCache debug-info linker warnings, with no other warning category. This is a
+successful Swift warnings-as-errors build; it does not claim warning-free linker debug-info output.
+
+Host strict SwiftLint and the independent 120-column awk check on all **19 changed Swift files** both exit 0 and
+print nothing: both logs are zero bytes, with no new suppressions. The exact commands use the PR base:
+
+```bash
+swift_files=( $(git diff --name-only cc36af90ccb4bfcc3dc6f282ad13f0bc6f8081a8 HEAD -- '*.swift') )
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swiftlint lint --strict --quiet "${swift_files[@]}"
+awk 'length($0)>120 {print FILENAME ":" FNR ":" length($0)}' "${swift_files[@]}"
+git diff --check cc36af90ccb4bfcc3dc6f282ad13f0bc6f8081a8
+```
+
+The offline source count uses `scripts/pr-shape.py`'s exact exclusions and both names for a rename; there are no
+renames. The count is **four production files**, both from the requested starting head and from the PR base:
+`HostReplyDelivery.swift`, `WebSocketListener.swift`, `LocalReplyEndpoint+Submission.swift`, and `ReplyCommand.swift`.
+No fifth production file, exception, online PR-shape check or independent-review approval is claimed.
+
+All **21 changed Swift/Python source and test files** match the host's SHA-256 checksums before final verification
+and after it. Cleanup checks those hashes again, deletes the workspace `.build`, separate `vw1212b5-werr` build
+directory and temporary compiler shim/directory, and confirms no owned build/test processes remain. The VM git
+worktree is clean. Logs, checksums, superseded-run evidence, lint, source count and cleanup evidence remain outside
+the repository under the task's `vw1212b5` names. No generated product or private deployment data is committed.
