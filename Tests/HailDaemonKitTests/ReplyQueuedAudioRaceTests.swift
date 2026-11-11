@@ -72,8 +72,8 @@ extension ReplyQueuedAudioRaceTests {
         defer { enqueue.release(); timeout.release() }
         do {
             let listener = rig.env.listener, queue = listener.replyAudioQueue
-            let peer = try #require(await listener.peers.values.first)
-            let connection = await peer.session.connectionID
+            let connection = UUID()
+            queue.register(connection) // Another connection's unresolved target set gates this socket's first frame.
             let frame = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
             let ticket = try #require(await listener.replyAudio(.init(action: "enqueue", frame: frame)).ticket)
             let publication = Task {

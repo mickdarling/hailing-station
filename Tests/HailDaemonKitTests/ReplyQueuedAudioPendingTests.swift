@@ -68,6 +68,27 @@ import Testing
         }
     }
 
+    @Test func failedStopBoundsAdmissionEvenWhileAnotherStopIsPending() async throws {
+        let queue = ReplyAudioQueue(), connection = UUID(), timeout = VoiceStopConfirmationHold()
+        queue.register(connection)
+        let old = try queue.ticket()
+        let stops = try ReplyAudioEnqueueTesting.$stopTimeout.withValue({ await timeout.wait() }, operation: {
+            try [#require(queue.captureStop(connection)), #require(queue.captureStop(connection))]
+        })
+        defer { queue.resolve(stops[1], targets: []); timeout.release() }
+        queue.resolve(stops[0], targets: nil)
+        // A floor is already definitive. New pending stops cannot keep an already-silent job waiting forever.
+        try await queue.waitForStops(old)
+        if case .stopped = queue.enqueue(old, connection: nil, target: "target", { true }) {} else {
+            Issue.record("a known floor must skip without awaiting another pending stop")
+        }
+        let later = try queue.ticket()
+        try await queue.waitForStops(later)
+        if case .sent(true) = queue.enqueue(later, connection: nil, target: "target", { true }) {} else {
+            Issue.record("post-cutoff ticket must still play with a pending stop")
+        }
+    }
+
     @Test func waitingAdmissionCanBeCancelled() async throws {
         let queue = ReplyAudioQueue(), connection = UUID(), waiting = VoiceStopConfirmationHold()
         let timeout = VoiceStopConfirmationHold()

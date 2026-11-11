@@ -134,13 +134,13 @@ final class ReplyAudioQueue: Sendable {
             guard ticket.epoch == state.epoch, ticket.position > 0,
                   ticket.position <= state.position else { return .sent(false) }
             let streaming = state.jobs.first { $0.position == ticket.position }?.streaming == true
-            if !streaming, state.pending.values.contains(where: { $0.position >= ticket.position }) {
-                return .pending
-            }
             guard ticket.position > state.floor,
                   ticket.position > (connection.flatMap { state.stops[$0] } ?? 0),
                   streaming || ticket.position > (state.targets.last { $0.key == target }?.position ?? 0) else {
                 return .stopped
+            }
+            if !streaming, state.pending.values.contains(where: { $0.position >= ticket.position }) {
+                return .pending
             }
             // Transport handoff only: Network never waits for completion or calls the router on this stack.
             let sent = send()
@@ -179,7 +179,7 @@ extension ReplyAudioQueue {
             await withTaskCancellationHandler {
                 await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                     let waiting = state.withLock { state in
-                        guard !Task.isCancelled,
+                        guard !Task.isCancelled, ticket.position > state.floor,
                               state.jobs.first(where: { $0.position == ticket.position })?.streaming != true,
                               state.pending.values.contains(where: { $0.position >= ticket.position }) else {
                             return false
@@ -194,7 +194,8 @@ extension ReplyAudioQueue {
                 waiter?.resume()
             }
             if state.withLock({ state in
-                state.jobs.first(where: { $0.position == ticket.position })?.streaming == true
+                ticket.position <= state.floor
+                    || state.jobs.first(where: { $0.position == ticket.position })?.streaming == true
                     || !state.pending.values.contains { $0.position >= ticket.position }
             }) { return }
         }
