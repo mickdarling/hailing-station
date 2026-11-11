@@ -69,13 +69,19 @@ import Testing
     }
 
     @Test func failedStopBoundsAdmissionEvenWhileAnotherStopIsPending() async throws {
-        let queue = ReplyAudioQueue(), connection = UUID(), timeout = VoiceStopConfirmationHold()
+        let queue = ReplyAudioQueue(), connection = UUID()
+        let timeouts = [VoiceStopConfirmationHold(), VoiceStopConfirmationHold()]
         queue.register(connection)
         let old = try queue.ticket()
-        let stops = try ReplyAudioEnqueueTesting.$stopTimeout.withValue({ await timeout.wait() }, operation: {
-            try [#require(queue.captureStop(connection)), #require(queue.captureStop(connection))]
-        })
-        defer { queue.resolve(stops[1], targets: []); timeout.release() }
+        let stops = try timeouts.map { timeout in
+            try ReplyAudioEnqueueTesting.$stopTimeout.withValue({ await timeout.wait() }, operation: {
+                try #require(queue.captureStop(connection))
+            })
+        }
+        defer {
+            queue.resolve(stops[1], targets: [])
+            for timeout in timeouts { timeout.release() }
+        }
         queue.resolve(stops[0], targets: nil)
         // A floor is already definitive. New pending stops cannot keep an already-silent job waiting forever.
         try await queue.waitForStops(old)
