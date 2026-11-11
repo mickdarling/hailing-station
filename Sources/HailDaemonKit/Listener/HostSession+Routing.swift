@@ -177,14 +177,16 @@ extension HostSession {
     /// handoff this connection's last input to the target (#370), recorded in the same actor turn that confirmed
     /// the captured selection. A refused, unconfirmed or ownerless handoff records nothing.
     func deliver(_ input: consuming AuthorizedInput, recordsLastInput: Bool = false) async -> HostDeliveryOutcome {
+        let ambient = Self.ambientInputDispatch
+        let origin: DeliveryOrigin = ambient ? .ambient : .ordinary
         let peer = Self.deliveryPeer
-        let recordsInput = recordsLastInput || Self.ambientInputDispatch
+        let recordsInput = recordsLastInput || ambient
         guard admitsInput(to: input.target) else {
             return .refused(.notAllowed, "select the destination before speaking")
         }
         // Local dispatch's final selection check relies on no suspension before this snapshot.
         let generation = selectionGeneration
-        let takesHolds = Self.ambientInputDispatch && peerCapabilities.contains(HeldRequests.capability)
+        let takesHolds = ambient && peerCapabilities.contains(HeldRequests.capability)
         let evidence = HeldReadBackEvidence()
         do {
             try await host.requireSendPreflight()
@@ -193,13 +195,12 @@ extension HostSession {
             let owner = try await replyOwnership(for: input, generation: generation)
             // Legacy generic input has no retained record, so the captured selection is checked here and
             // again after the handoff; a caller outside the peer's serialized receive loop can race `select`.
-            guard selects(input.target, generation: generation) else {
-                if let owner { dropUncommitted(owner.context.id) }
+            guard retainsDeliverySelection(input.target, owner: owner, generation: generation) else {
                 return .selectionChanged
             }
             let outcome = try await Self.$ambientHeldRequests.withValue(takesHolds) {
                 try await HeldReadBackEvidence.$current.withValue(evidence) {
-                    try await send(input, owner: owner)
+                    try await send(input, owner: owner, origin: origin)
                 }
             }
             switch outcome {
@@ -208,7 +209,7 @@ extension HostSession {
                                  recordsInput: recordsInput, peer: peer)
             case .needsConfirmation(let readBack):
                 if let owner { dropUncommitted(owner.context.id) }
-                guard Self.ambientInputDispatch else { return .confirmationRequired }
+                guard ambient else { return .confirmationRequired }
                 guard takesHolds else {
                     await host.cancel(readBack.hash)
                     return .confirmationRequired
@@ -219,6 +220,14 @@ extension HostSession {
             HeldSendScope.current?.failure.record(error)
             return deliveryRefusal(error)
         }
+    }
+
+    private func retainsDeliverySelection(_ target: String, owner: HostReplyOwnership?, generation: UUID) -> Bool {
+        guard selects(target, generation: generation) else {
+            if let owner { dropUncommitted(owner.context.id) }
+            return false
+        }
+        return true
     }
 
     /// A queued ambient request cannot acquire a replacement grant, even just to issue a read-back.
@@ -365,7 +374,9 @@ extension HostSession {
         replyEvent(WebSocketListenerEvent(event: "session_update_interaction", sessionID: connectionID))
     }
 
-    private func send(_ input: borrowing AuthorizedInput, owner: HostReplyOwnership?) async throws -> SendOutcome {
+    private func send(
+        _ input: borrowing AuthorizedInput, owner: HostReplyOwnership?, origin: DeliveryOrigin
+    ) async throws -> SendOutcome {
         let (text, device) = (input.text, input.device)
         let expectedBinding = owner?.context.binding.sessionID ?? input.expectedBinding
         let policyGeneration = input.policyGeneration
@@ -378,7 +389,8 @@ extension HostSession {
                     try await host.sendAuthorized(
                         text, policyGeneration: policyGeneration, from: device, expectedBinding: expectedBinding,
                         context: owner.flatMap { $0.contextual ? $0.context : nil },
-                        confirmedHash: HeldSendScope.current.flatMap { $0.renewOnly ? nil : $0.entry.readBack.hash }
+                        confirmedHash: HeldSendScope.current.flatMap { $0.renewOnly ? nil : $0.entry.readBack.hash },
+                        origin: origin
                     )
                 }
             }
