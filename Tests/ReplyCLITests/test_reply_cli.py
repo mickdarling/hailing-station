@@ -1059,46 +1059,17 @@ class ReplyCLITests(unittest.TestCase):
             self.assertEqual(payload["streamId"], payload["reply"]["audioStream"])
 
     def submit_frames(self, arguments, count, environment=None):
-        with tempfile.TemporaryDirectory(prefix="hail-reply-cli-") as scratch:
-            path = os.path.join(scratch, "reply.sock")
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
-                server.bind(path)
-                os.chmod(path, 0o600)
-                server.listen(count)
-                frames = []
-                errors = []
-
-                def answer():
-                    try:
-                        server.settimeout(SLOW)
-                        for _ in range(count):
-                            with server.accept()[0] as client:
-                                client.settimeout(SLOW)
-                                request = b""
-                                while not request.endswith(b"\n"):
-                                    chunk = client.recv(8192)
-                                    if not chunk:
-                                        raise AssertionError("CLI closed before sending a frame")
-                                    request += chunk
-                                frames.append(json.loads(request))
-                                client.sendall(b'{"delivered":1}\n')
-                    except Exception as error:
-                        errors.append(error)
-
-                worker = threading.Thread(target=answer, daemon=True)
-                worker.start()
-                result = self.track(subprocess.run(
-                    [str(HAILD), "reply", "tmux:test", "--host", "mac-test", *arguments, "--socket", path],
-                    cwd=REPO, capture_output=True, text=True, timeout=60, check=False, env=environment,
-                    start_new_session=True,
-                ))
-                worker.join(timeout=SLOW)
-                self.await_jobs()
-                self.assertFalse(worker.is_alive())
-                self.assertFalse(errors, errors)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(len(frames), count)
-                return frames
+        with self.reply_server(lambda index: {"delivered": 1}) as (path, recorded):
+            result = self.track(subprocess.run(
+                [str(HAILD), "reply", "tmux:test", "--host", "mac-test", *arguments, "--socket", path],
+                cwd=REPO, capture_output=True, text=True, timeout=60, check=False, env=environment,
+                start_new_session=True,
+            ))
+            self.wait_for(lambda: len(recorded) >= count, SLOW)
+            self.await_jobs()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(recorded), count)
+            return [frame for _, frame in recorded]
 
     def test_refusal_codes_are_printed_without_enum_wrappers(self):
         reasons = {
