@@ -339,3 +339,66 @@ external compiler shim paths. Cleanup confirmed that no job build/test processes
 product is committed. All requested VM phases passed under their individual caps. No simulator or physical-device
 proof, live captured-output round trip, online CI result, independent review, installation, upload, push, or PR
 update is claimed.
+
+## 1b: queued reply audio (synthetic evidence only)
+
+This local slice starts at PR #1214's unmerged head `ad25cb8c7ea339ac0455a191747e5caf997283c3`, on
+`feat/1212-queued-reply-stop`. No push, PR, install, upload or installed-build replacement is in scope. This is
+host-side synthetic evidence, not a device detector, physical hearing or live captured-output round trip.
+
+### Ordering, destination and retained text
+
+One daemon-owned counter issues queue tickets over the existing secured reply socket, only after a detached job
+finds `reply-audio.lock` busy. A ticket includes a daemon epoch; stale/invalid tickets fail closed. Accepted stops
+record the current position per connection. A job is skipped exactly when its position is at or below the mark
+of the connection ordinary routing resolves for it. The existing request owner or text/first-frame routing pin
+wins; otherwise current last-input/single-selector/ambient-owner resolution applies. No wall clock or time window
+compares jobs with stops. Ticket allocation after a stop always yields a greater position.
+
+The CLI checks after lock acquisition and carries its ticket on every audio publication. A shared synchronous
+lock linearizes stop marks and final transport enqueue, closing the admission-to-first-frame race. Probes send
+no audio to a device, mutate no request/flight state and mint no pin. Skips leave delivered text and Markdown
+intact, preserve the request, log `reply_audio_skipped reason=stopped request=<UUID|none> ticket=N`, and take a
+non-error CLI path with the stderr note `reply audio skipped after a stop`. The existing detached-job readiness
+policy redirects later stderr to `/dev/null`; use the daemon event to observe a job skipped after caller release.
+A job that never waited retains its existing behavior. Both stop sources mark; a voice mute does not.
+
+### Scope and deferred carried LOW
+
+(C) is implemented: a held confirmation resumed after real listener-wide teardown logs exactly
+`outcome=skipped reason=connection_closed`. `DeviceVoiceStopTeardownTests` exercises `listener.stop`, not only a
+router or gate teardown.
+
+(D) is deferred to a separate follow-up: session-update audio admission lives in
+`WebSocketListener+SessionUpdateAudio.swift` / `WebSocketListener+SessionUpdate.swift`; fixing its revision would
+require a fifth production file in this slice. Within one second of an accepted device stop, session-update speech
+can still leave a follow-up outbound `stop_playback` coalesced because that path does not advance
+`replyFlightRevision`. The device already halted locally; this bound is not a claim that session-update revision
+tracking is fixed. Proposed split: bump the revision at session-update audio admission with a dedicated regression.
+
+The checker exclusions and rename handling give four production files, relative to the specified PR 1a head:
+`HostReplyDelivery.swift`, `WebSocketListener.swift`, `LocalReplyEndpoint+Submission.swift`, `ReplyCommand.swift`.
+There are no renames. Listener edits make this `security:critical`; independent exact-head review remains pending.
+No review, GitHub check or PR-shape network validation is claimed.
+
+### Deterministic coverage
+
+- `ReplyQueuedAudioTests`: two pre-stop tickets skip, a strictly later ticket plays at an injected 100 ms;
+  text survives, exact content-free logs, both the actual RightyO dismissal and device frame paths; stop after
+  admission but before publication.
+- `ReplyQueuedAudioRoutingTests`: correlated ownership scopes a stop to its own connection, request-id logging,
+  retained request ownership, foreign/zero/future ticket refusal.
+- `ReplyQueuedAudioMuteTests`: actual spoken mute still permits queued audio publication.
+- `ReplyQueuedAudioRaceTests`: a continuation holds publication after recipient resolution; a completed stop
+  wins at final enqueue, with no stray frame after an awaited publication and ping/pong barrier. Coalesced device
+  reports still mark jobs enqueued since the previous stop.
+- `ReplyQueuedAudioEndpointTests`: real secured local socket issuance/check/publication, text retention, later
+  admission, malformed queue shapes. `DeviceVoiceStopTeardownTests` adds the real listener-teardown regression.
+- `QueuedReplyStopTests` in the full Python Reply CLI suite: actual waitable jobs behind a held kernel flock;
+  text and metadata precede waiting, stopped speech/PCM jobs exit 0 with no audio publications, admitted jobs use
+  their issued ticket on all audio; explicit rate/pending refusal retries, a stop at first publication, and legacy
+  daemon refusal. The existing shared mock transparently models the new queue contract for
+  prior CLI queue tests; ordinary frame assertions remain unchanged.
+
+All new negative assertions follow completed jobs/handlers or explicit continuation and socket barriers, without
+`settle()`-then-negative assertions, detached tasks with synchronous waits, or fixed settling delays.

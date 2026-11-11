@@ -5,6 +5,64 @@ import Synchronization
 // Correlated and single-terminal fallback publication share one admission-and-enqueue boundary.
 // swiftlint:disable file_length
 
+/// One daemon epoch, one global ordering. Stops and final transport enqueues take the same short lock.
+final class ReplyAudioQueue: Sendable {
+    private struct State {
+        let epoch = UUID()
+        var position: UInt64 = 0
+        var stops: [UUID: UInt64] = [:]
+    }
+    enum Outcome { case stopped, sent(Bool) }
+    private let state = Mutex(State())
+    func ticket() throws -> LocalReplyAudioTicket {
+        try state.withLock {
+            guard $0.position < .max else { throw LocalReplyRefusal.internalFailure }
+            $0.position += 1
+            return LocalReplyAudioTicket(epoch: $0.epoch, position: $0.position)
+        }
+    }
+    func stop(_ connection: UUID) { state.withLock { $0.stops[connection] = $0.position } }
+    func forget(_ connection: UUID) { state.withLock { $0.stops[connection] = nil } }
+    func valid(_ ticket: LocalReplyAudioTicket) -> Bool {
+        state.withLock { ticket.epoch == $0.epoch && ticket.position > 0 && ticket.position <= $0.position }
+    }
+    func enqueue(_ ticket: LocalReplyAudioTicket, connection: UUID, _ send: () -> Bool) -> Outcome {
+        state.withLock {
+            guard ticket.epoch == $0.epoch, ticket.position > 0,
+                  ticket.position <= $0.position else { return .sent(false) }
+            guard ticket.position > ($0.stops[connection] ?? 0) else { return .stopped }
+            return .sent(send())
+        }
+    }
+}
+
+private final class ReplyAudioAdmission: Sendable {
+    let queue: ReplyAudioQueue
+    let ticket: LocalReplyAudioTicket
+    let probe: Bool
+    let skipped = Mutex(false)
+    init(queue: ReplyAudioQueue, ticket: LocalReplyAudioTicket, probe: Bool) {
+        self.queue = queue; self.ticket = ticket; self.probe = probe
+    }
+    func enqueue(connection: UUID, _ send: () -> Bool) -> Bool {
+        switch queue.enqueue(ticket, connection: connection, send) {
+        case .stopped:
+            skipped.withLock { $0 = true }
+            return false
+        case .sent(let result): return result
+        }
+    }
+}
+/// A continuation barrier for deterministic final-enqueue tests; absent in production.
+enum ReplyAudioEnqueueTesting {
+    @TaskLocal static var beforeEnqueue: (@Sendable () async -> Void)?
+}
+
+private enum ReplyAudioScope {
+    @TaskLocal static var admission: ReplyAudioAdmission?
+}
+private enum ReplyAudioProbe: Error { case admitted, stopped }
+
 /// Revocable task lifetime only; it never replaces host policy or binding authority.
 final class TaskProgressOutputFence: Sendable {
     private let open = Mutex(true)
@@ -402,6 +460,7 @@ extension HostSession {
             noteReplyDelivered(frame)
             return true
         }) == true else {
+            if ReplyAudioScope.admission?.skipped.withLock({ $0 }) == true { return false }
             replyRequests[requestID] = nil
             return false
         }
@@ -584,6 +643,7 @@ extension WebSocketPeer {
     ) async -> ReplyFrameDelivery<Void> {
         let connection = session.connectionID
         let held = Mutex(false)
+        if ReplyAudioScope.admission != nil { await ReplyAudioEnqueueTesting.beforeEnqueue?() }
         guard !ended, await session.unleasedBindingIsCurrent(frame),
               let prepared = await prepareReplyPublication(frame, onLateSuccess: onLateSuccess),
               await session.enqueueHostReply(frame, enqueue: {
@@ -637,6 +697,7 @@ extension WebSocketPeer {
     ) async -> ReplyFrameDelivery<LastInputLedger.Entry> {
         let connection = session.connectionID
         let held = Mutex(false)
+        if ReplyAudioScope.admission != nil { await ReplyAudioEnqueueTesting.beforeEnqueue?() }
         guard !ended, let prepared = await prepareReplyPublication(frame, onLateSuccess: onLateSuccess),
               let delivered = await session.enqueueRoutedReply(
                 frame, lastInput: lastInput, enqueue: { Self.enqueue([prepared], unless: hold, connection, held: held) }
@@ -650,11 +711,15 @@ extension WebSocketPeer {
         _ prepared: [PreparedWebSocketReply], unless hold: PrivateReplyHold?, _ connection: UUID,
         held: borrowing Mutex<Bool>
     ) -> Bool {
-        guard let hold else { return prepared.allSatisfy { $0.enqueue() } }
+        let send = {
+            let enqueue = { prepared.allSatisfy { $0.enqueue() } }
+            return ReplyAudioScope.admission?.enqueue(connection: connection, enqueue) ?? enqueue()
+        }
+        guard let hold else { return send() }
         var attempted = false
         let enqueued = hold.unlessHeld(connection) {
             attempted = true
-            return prepared.allSatisfy { $0.enqueue() }
+            return send()
         }
         if !attempted { held.withLock { $0 = true } }
         return enqueued
@@ -670,6 +735,40 @@ extension WebSocketPeer {
 }
 
 extension WebSocketListener {
+    public func replyAudio(_ request: LocalReplyAudioRequest) async throws -> LocalReplyAudioReport {
+        guard !stopped, readyResult != nil else { throw LocalReplyRefusal.listenerNotReady }
+        guard request.kind == "reply-audio" else { throw LocalReplyRefusal.decodeFailure }
+        if request.action == "enqueue", request.ticket == nil, request.frame == nil {
+            return LocalReplyAudioReport(ticket: try replyAudioQueue.ticket())
+        }
+        guard ["check", "publish"].contains(request.action), let ticket = request.ticket,
+              replyAudioQueue.valid(ticket), let frame = request.frame,
+              case .audio = frame.payload else { throw LocalReplyRefusal.invalidReplyPayload }
+        let admission = ReplyAudioAdmission(queue: replyAudioQueue, ticket: ticket, probe: request.action == "check")
+        do {
+            _ = try await ReplyAudioScope.$admission.withValue(admission) { try await publish(frame) }
+        } catch ReplyAudioProbe.admitted {
+            return LocalReplyAudioReport()
+        } catch {
+            guard admission.skipped.withLock({ $0 }) else { throw error }
+            let requestID = if case .audio(let audio) = frame.payload { audio.reply?.requestID } else { nil as UUID? }
+            log(WebSocketListenerEvent(event: "reply_audio_skipped",
+                detail: "reason=stopped request=\(requestID?.uuidString ?? "none") ticket=\(ticket.position)"))
+            return LocalReplyAudioReport(skipped: true)
+        }
+        return LocalReplyAudioReport()
+    }
+
+    /// Uses the ordinary resolved route, including request ownership and an existing text pin. A probe changes
+    /// no flight/request/pin state; publication repeats this check inside the final transport enqueue as well.
+    private func queuedAudioDecision(on peer: WebSocketPeer) throws {
+        guard let admission = ReplyAudioScope.admission else { return }
+        guard admission.enqueue(connection: peer.session.connectionID, { true }) else {
+            throw ReplyAudioProbe.stopped
+        }
+        if admission.probe { throw ReplyAudioProbe.admitted }
+    }
+
     /// Forwards a provider turn's end (#430) to the session that owns its reply record, found by connection id.
     public func providerTurnEnded(_ context: ProviderTurnContext) async {
         for peer in peers.values where peer.session.connectionID == context.connectionID {
@@ -702,6 +801,7 @@ extension WebSocketListener {
         }
         // This refusal has made zero enqueue attempts. Only this code permits bounded same-frame retry.
         guard status == .ready else { throw LocalReplyRefusal.requestPending }
+        try queuedAudioDecision(on: peer)
         let late = await peer.session.answersLate(validated)
         // The snapshot may already be stale. Final synchronous gates decide; later send completion
         // failure is ambiguous and must never be treated as a safe pre-publication retry.
@@ -749,6 +849,7 @@ extension WebSocketListener {
         // as the only candidate; check again before handing the reply to it.
         if await isStopped(frame) { throw LocalReplyRefusal.replyStopped }
         guard let (peerID, candidate) = candidates.first else { throw LocalReplyRefusal.noRecipient }
+        try queuedAudioDecision(on: candidate)
         let delivered = try await requireDelivery(await candidate.deliverRoutedReply(
             frame, hold: replyHold, onLateSuccess: lateEchoObservation(frame)
         ), frame: frame, on: candidate)
@@ -773,6 +874,7 @@ extension WebSocketListener {
         try Task.checkCancellation()
         guard !stopped else { throw WebSocketListenerError.stoppedBeforeReady }
         if await isStopped(frame) { throw LocalReplyRefusal.replyStopped }
+        try queuedAudioDecision(on: peer)
         let delivered = try await requireDelivery(
             await peer.deliverRoutedReply(
                 frame, lastInput: route, hold: replyHold, onLateSuccess: lateEchoObservation(frame)

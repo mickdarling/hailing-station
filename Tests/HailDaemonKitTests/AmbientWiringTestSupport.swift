@@ -31,7 +31,8 @@ func ambientRig(
     childMade: (@Sendable (UUID) -> Void)? = nil,
     gapClock: (@Sendable () -> ContinuousClock.Instant)? = nil, privacy: PrivacyOffSettings = .init(),
     ambientWired: Bool = true, admissionBinding: String? = nil,
-    voiceStopClock: (@Sendable () -> ContinuousClock.Instant)? = nil
+    voiceStopClock: (@Sendable () -> ContinuousClock.Instant)? = nil,
+    onListenerEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make(guardPatterns: guardPatterns)
     let connected = ConnectedPeerIDs()
@@ -60,7 +61,8 @@ func ambientRig(
     let listener = try WebSocketListener(
         bindAddress: "127.0.0.1", port: 0, host: rig.host,
         authorizer: PersonalTerminalAuthorizer(ambientAudio: gate).naming(routes), hostName: "mac-test",
-        singleTerminalReplyFallback: true, ambient: ambientWired ? router : nil, log: { connected.record($0) }
+        singleTerminalReplyFallback: true, ambient: ambientWired ? router : nil,
+        log: { connected.record($0); onListenerEvent?($0) }
     )
     return AmbientWiringRig(rig: rig, listener: listener, router: router, gate: gate, connected: connected,
                             port: try await boundedAmbientListenerStart(listener))
@@ -80,7 +82,6 @@ func barrier(on socket: URLSessionWebSocketTask, step: String, within: Duration 
     let received = try await receiveFrame(on: socket, step: step, within: within).payload
     try #require(received == .control(.pong(nonce: nonce)), "Unexpected payload at \(step): \(received)")
 }
-
 /// The pair's waits with a bound (#636): `URLSessionWebSocketTask.receive()` ignores task cancellation, so a suite's
 /// time limit cannot end a wait for a frame that never comes. Each wait records an issue naming its step instead.
 extension FallbackSocketPair {
@@ -119,7 +120,6 @@ extension FallbackSocketPair {
         try await HailDaemonKitTests.barrier(on: sockets[index], step: "select \(target)")
     }
 }
-
 /// Waits, at most `within`, for every router run to return (#378); otherwise records an issue naming `step`, so a
 /// stuck run fails the test instead of hanging it.
 func settle(_ router: AmbientRightyoRouter, step: String, within: Duration = .seconds(30)) async {

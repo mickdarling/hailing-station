@@ -1,0 +1,122 @@
+"""#1212: real CLI jobs waiting on a held flock; owner-only socket replies are synthetic."""
+
+import contextlib
+import signal
+import fcntl
+import os
+import subprocess
+import tempfile
+import unittest
+import uuid
+from pathlib import Path
+
+import test_reply_cli as support
+
+
+class QueuedReplyStopTests(unittest.TestCase):
+    def setUp(self):
+        self.rig = support.ReplyCLITests()
+        self.rig.setUp()
+        self.addCleanup(self.rig.doCleanups)
+
+    def test_stopped_waiter_keeps_text_and_never_submits_audio(self):
+        self.exercise(skipped=True, pcm=False)
+
+    def test_pcm_waiter_skips_cleanly_too(self):
+        self.exercise(skipped=True, pcm=True)
+
+    def test_later_waiter_publishes_with_its_daemon_ticket(self):
+        self.exercise(skipped=False, pcm=False)
+
+    def test_queue_controls_retry_only_explicit_prepublication_refusals(self):
+        self.exercise(skipped=False, pcm=False, mode="retry")
+
+    def test_stop_between_admission_and_first_audio_exits_cleanly(self):
+        self.exercise(skipped=False, pcm=False, mode="publish_skip")
+
+    def test_legacy_daemon_cannot_silently_admit_unguarded_queued_audio(self):
+        self.exercise(skipped=False, pcm=False, mode="legacy")
+
+    def exercise(self, skipped, pcm, mode=None):
+        request = str(uuid.uuid4()).upper()
+        controls, attempts = [], {}
+
+        def queue_response(message, response):
+            action = message["action"]
+            attempts[action] = attempts.get(action, 0) + 1
+            if mode == "legacy" and action == "enqueue":
+                return {"delivered": 1}
+            if mode == "retry" and attempts[action] == 1:
+                if action == "enqueue":
+                    return {"delivered": 0, "error": "rate limited"}
+                if action == "check":
+                    return {"delivered": 0, "code": "requestPending"}
+            if action == "check":
+                return {"delivered": 0, "replyAudio": {"skipped": skipped}}
+            if mode == "publish_skip" and action == "publish":
+                return {"delivered": 0, "replyAudio": {"skipped": True}}
+            return response
+
+        with tempfile.TemporaryDirectory(prefix="hail-queue-stop-") as scratch:
+            with self.rig.reply_server(lambda index: {"delivered": 1}, audio_queue=queue_response,
+                                       queue_requests=controls) as (path, frames):
+                lock = Path(path).with_name("reply-audio.lock")
+                with lock.open("w+") as holder:
+                    fcntl.flock(holder, fcntl.LOCK_EX)
+                    environment = self.rig.speech_environment(1)
+                    renderer_pid = Path(scratch) / "renderer.pid"
+                    environment["REPLY_RENDERER_TEST_PIDFILE"] = str(renderer_pid)
+                    # Direct detached-job mode keeps the child owned and waitable by this test. No renderer is
+                    # spawned until admission, and the kernel lock is released only after observing its ticket.
+                    environment["HAILD_REPLY_BACKGROUND"] = str(os.getpid())
+                    arguments = [str(support.HAILD), "reply", "tmux:queue", "--host", "mac-test",
+                                 "--socket", path, "--request", request, "--metadata", "synthetic card"]
+                    if pcm:
+                        audio = Path(scratch) / "synthetic.pcm"
+                        audio.write_bytes(bytes(480))
+                        arguments += ["--text", "synthetic response", "--pcm16", str(audio)]
+                    else:
+                        arguments += ["--say", "synthetic response"]
+                    job = subprocess.Popen(arguments, cwd=support.REPO, env=environment,
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+                    self.addCleanup(self.finish_job, job)
+                    self.rig.wait_for(lambda: len(controls) == 1, 10)
+                    self.assertEqual(controls[0]["action"], "enqueue")
+                    self.assertEqual(frames[0][1]["payload"]["text"], "synthetic response")
+                    self.assertEqual(frames[0][1]["payload"]["metadata"], "synthetic card")
+                    fcntl.flock(holder, fcntl.LOCK_UN)
+                    stdout, stderr = job.communicate(timeout=15)
+                    self.assertEqual(job.returncode, 1 if mode == "legacy" else 0, stderr.decode())
+                    if mode == "legacy":
+                        self.assertIn(b"daemon does not support queued reply audio", stderr)
+                        self.assertEqual(len(frames), 1)
+                        return
+                    self.assertIn(b"reply audio queued behind another reply", stderr)
+                checks = [item for item in controls if item["action"] == "check"]
+                ticket = checks[-1]["ticket"]
+                self.assertGreater(ticket["position"], 0)
+                self.assertEqual(checks[-1]["frame"]["payload"]["reply"]["request"], request)
+                if mode == "publish_skip":
+                    self.assertEqual(len(frames), 2)
+                    self.assertFalse(frames[-1][1]["payload"]["final"])
+                    self.assertEqual(attempts["publish"], 1)
+                elif skipped:
+                    self.assertEqual([item["action"] for item in controls], ["enqueue", "check"])
+                    self.assertEqual(len(frames), 1)  # completed job, not a negative assertion after a delay
+                    self.assertFalse(renderer_pid.exists())
+                else:
+                    publications = [item for item in controls if item["action"] == "publish"]
+                    self.assertTrue(publications)
+                    self.assertTrue(all(item["ticket"] == ticket for item in publications))
+                    self.assertTrue(frames[-1][1]["payload"]["final"])
+                if mode == "retry":
+                    self.assertEqual(attempts["enqueue"], 2)
+                    self.assertEqual(attempts["check"], 2)
+                    self.assertEqual(checks[0], checks[1])
+
+    @staticmethod
+    def finish_job(job):
+        if job.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(job.pid, signal.SIGKILL)
+        job.communicate(timeout=10)

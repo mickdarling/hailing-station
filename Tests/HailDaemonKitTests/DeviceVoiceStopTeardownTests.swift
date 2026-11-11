@@ -91,6 +91,32 @@ import Testing
         await rig.finish()
     }
 
+    @Test func listenerTeardownNormalizesAHeldConfirmationOutcome() async throws {
+        let hold = VoiceStopConfirmationHold()
+        let rig = try await DeviceVoiceStopRig.make(hold: hold)
+        do {
+            try await rig.start()
+            let connection = try #require(rig.env.router.activeConnection())
+            let confirmation = Task {
+                await rig.env.router.confirmStop(
+                    receipt, playback: "stopped", on: connection, target: RecipientTestRig.target,
+                    listener: rig.env.listener
+                )
+            }
+            try #require(await eventually { hold.entered })
+            await rig.env.listener.stop(reason: "synthetic listener-wide teardown")
+            hold.release()
+            await confirmation.value
+            #expect(rig.details("ambient_stop_confirmed") == ["outcome=skipped reason=connection_closed"])
+            #expect(rig.env.router.state.withLock { $0.stopConfirmations[connection] == nil })
+        } catch {
+            hold.release()
+            await rig.finish()
+            throw error
+        }
+        await rig.finish()
+    }
+
     private var receipt: RightyoDismissReceipt {
         RightyoDismissReceipt(reason: "stop-phrase", scope: ["playback"], withdrawn: 0, alreadyDelivered: 0,
                               owner: true)

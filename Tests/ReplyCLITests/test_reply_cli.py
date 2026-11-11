@@ -390,7 +390,8 @@ class ReplyCLITests(unittest.TestCase):
             time.sleep(0.05)
 
     @contextlib.contextmanager
-    def reply_server(self, respond, caller_may_vanish=False, raw_requests=None):
+    def reply_server(self, respond, caller_may_vanish=False, raw_requests=None,
+                     audio_queue=None, queue_requests=None):
         """A private reply socket answering frame N with respond(N); yields (path, [(arrival, frame)]).
 
         With caller_may_vanish, a test that kills the caller on purpose lets an answer find the CLI gone: the
@@ -403,9 +404,11 @@ class ReplyCLITests(unittest.TestCase):
                 server.listen(16)
                 server.settimeout(0.1)
                 frames, errors = [], []
+                queue_position, queue_epoch = 0, str(uuid.uuid4())
                 finished = threading.Event()
 
                 def answer():
+                    nonlocal queue_position
                     try:
                         while not finished.is_set():
                             try:
@@ -422,10 +425,26 @@ class ReplyCLITests(unittest.TestCase):
                                     request += chunk
                                 if raw_requests is not None:
                                     raw_requests.append(request)
-                                index = len(frames)
-                                frames.append((time.monotonic(), json.loads(request)))
+                                decoded = json.loads(request)
+                                queued = decoded.get("kind") == "reply-audio"
+                                if queued and queue_requests is not None:
+                                    queue_requests.append(decoded)
+                                if queued and decoded["action"] == "enqueue":
+                                    queue_position += 1
+                                    response = {"delivered": 0, "replyAudio": {"skipped": False, "ticket": {
+                                        "epoch": queue_epoch, "position": queue_position}}}
+                                elif queued and decoded["action"] == "check":
+                                    response = {"delivered": 0, "replyAudio": {"skipped": False}}
+                                else:
+                                    index = len(frames)
+                                    frames.append((time.monotonic(), decoded["frame"] if queued else decoded))
+                                    response = respond(index)
+                                    if queued and not response.get("error"):
+                                        response = dict(response, replyAudio={"skipped": False})
+                                if queued and audio_queue is not None:
+                                    response = audio_queue(decoded, response)
                                 try:
-                                    client.sendall(json.dumps(respond(index)).encode() + b"\n")
+                                    client.sendall(json.dumps(response).encode() + b"\n")
                                 except (BrokenPipeError, ConnectionResetError):
                                     if not caller_may_vanish:
                                         raise

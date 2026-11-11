@@ -674,3 +674,46 @@ reply-ended notification.
 This slice adds the protocol and host handling only. Device detection, app wiring, physical latency/self-trigger
 proof, and clearing detached reply jobs waiting on the reply-audio lock remain later work. It does not enable a
 stop detector or change its default.
+
+## Queued CLI audio and stop ordering (#1212, PR 1b)
+
+This host implementation has synthetic coverage only. The owner-only reply socket now recognizes
+`kind: "reply-audio"`; the device WebSocket protocol is unchanged. Each transaction is one JSON line and one
+`LocalReplyResponse`. Queue requests retain the socket's ownership, size, connection and shared rate limits.
+Wrapped final audio retains the independent terminal-frame budget. Actual publication is audited before delivery.
+
+- `{"kind":"reply-audio","action":"enqueue"}` returns `delivered: 0` and
+  `replyAudio: {"skipped":false,"ticket":{"epoch":"<daemon UUID>","position":N}}`.
+  The daemon increments one global UInt64 counter; it refuses exhaustion rather than wrapping.
+- `action: "check"` additionally requires `ticket` and `frame`. The frame is a synthetic two-byte audio probe
+  carrying the job's ordinary reply descriptor, source and target. It is never published. Normal recipient
+  resolution and validation run, without advancing request/flight state or acquiring a routing pin. The response
+  has `delivered: 0` and `replyAudio: {"skipped":false}` or `{"skipped":true}`.
+- `action: "publish"` requires the same ticket and the actual audio `frame`. It uses ordinary reply routing,
+  policy, binding, transport, privacy and stop gates, plus the ticket check at final transport enqueue. Successful
+  publication returns `delivered: 1` and `replyAudio: {"skipped":false}`. A queue-stop skip returns
+  `delivered: 0`, no error/code, and `replyAudio: {"skipped":true}`. Other refusals retain the existing codes.
+- Unknown outer request/ticket keys, malformed shapes, foreign epochs, zero and unissued positions fail closed.
+  A ticket grants no recipient or policy authority. Daemon restarts invalidate tickets. A CLI cannot infer support
+  from an ordinary reply acknowledgement: missing `replyAudio` is a refusal, with no unguarded audio fallback.
+
+A detached job obtains a ticket on its first failed attempt to take `reply-audio.lock`, before reporting itself
+queued. Text and optional Markdown metadata have already been delivered. On lock acquisition it checks admission
+before reading/synthesizing audio, and wraps every later audio frame with its ticket. A job that acquires the lock
+immediately sends its existing frames without queue requests. Foreground publication also stays unchanged.
+
+Each accepted playback stop marks its connection with the current counter before retiring in-flight replies.
+Both a RightyO playback-scope dismissal and an accepted device `voice_stopped` mark the queue, including repeated
+reports whose outbound `stop_playback` is coalesced. Spoken mute keeps its existing in-flight retirement and never
+marks the queue. The ticket check and stop mark share a synchronous lock: no audio handoff can pass an older
+admission after the stop mark. No time window or cross-process wall clock is involved.
+
+The destination is resolved at each decision through the existing routing rules above: owned request first,
+otherwise the reply's existing text/first-frame pin, current last input, single selector or ambient owner. The
+stop mark is read only for that resolved connection; a stop on A cannot skip a reply destined for B. A ticket
+at or below that mark loses its audio; a later ticket is admitted even 100 ms after the stop. Text/cards already
+delivered remain intact and the request is not withdrawn. The daemon emits a content-free
+`reply_audio_skipped reason=stopped request=<UUID|none> ticket=N` event. The job handles the skip as success and
+writes `reply audio skipped after a stop` to stderr. As with other post-readiness diagnostics, a detached job's
+stderr follows its existing redirection to `/dev/null` after releasing its caller; the daemon event is the durable
+observable diagnostic. There is no terminal audio marker for a job whose audio never started.
