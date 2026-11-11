@@ -67,6 +67,7 @@ import Testing
             let audio = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
             let old = try #require(await listener.replyAudio(.init(action: "enqueue", frame: audio)).ticket)
             let unrelated = try await queuedAudioTicket(listener)
+            let newlySelected = try await queuedAudioTicket(listener)
             let connection = try #require(rig.env.router.activeConnection())
             stopping = holdBeforeSession(rig, connection: connection, holds: holds)
             await holds.entered.wait() // Accepted under the queue lock; no session stop hop has occurred.
@@ -82,6 +83,7 @@ import Testing
                 .payload == .control(.stopPlayback))
             // An unrelated target proves the floor, rather than only the original target mark, was raised.
             expectStopped(queue, ticket: unrelated, target: "unrelated:floor-proof")
+            expectStopped(queue, ticket: newlySelected, target: "recipient:other")
             #expect(try await listener.replyAudio(.init(action: "publish", ticket: old, frame: audio)).skipped)
             try await playFresh(on: other, listener: listener, ticket: postStop)
             try await other.boundedBarrier(step: "B pre-cutoff audio silent")
