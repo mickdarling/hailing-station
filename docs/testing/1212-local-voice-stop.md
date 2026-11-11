@@ -239,3 +239,38 @@ Final SHA-256 verification matched all 16 changed Swift files, the canonical sch
 fixtures between host and VM (22 files). The scoped cleanup removed the workspace `.build`, separate wrapper build
 and both compiler shim paths after verification; no job build/test processes remained. No generated build product
 is committed. No simulator, physical-device, captured-output round-trip or installation proof is claimed.
+
+
+## Round 3 fixes and deterministic coverage
+
+The router refreshes only the ten-second confirmation-suppression timestamp on every valid device report. Each
+report reaches the session's stop ledger, including a coalesced report. The session atomically compares a separate
+last-accepted stop timestamp and reply-ledger revision before retiring replies. The revision observes every ledger
+write, including admission of final-only audio. Only the outbound `stop_playback` frame and redundant dismissal log
+are coalesced, and only within one second of the last accepted stop with no intervening audio. A coalesced report
+retains the accepted timestamp, snapshotting the post-retirement revision so its own ledger write cannot slide or
+invalidate the window. The round-2 description of a sliding window above is historical and superseded here.
+
+Ignored-report log registration now checks live listener membership and transport retirement before touching the
+router map. Confirmation registration uses the same listener membership boundary and checks the router's closed and
+latest-stream state. Confirmation cleanup removes an empty token set. A confirmation retired by connection teardown
+uses `reason=connection_closed`, rather than attributing it to a device stop. The listener's unreachable ambient
+fallback is removed, the acknowledgement hold documents both callers, and the unnegotiated-session test injects its
+clock. These changes use only the PR's existing `HostSession.swift` and `WebSocketListener.swift` production files.
+
+- `DeviceVoiceStopCoalescingTests.audioSinceTheAcceptedStopRequiresAnotherStop`: an accepted stop at zero,
+  audio at 0.2 seconds and another stop at 0.5 seconds. Streaming audio's remaining frame is refused exactly as
+  `replyStopped`; streaming, completed and final-only audio each require a second outbound stop.
+- `DeviceVoiceStopCoalescingTests.coalescedReportsDoNotSlideTheAcceptedStopWindow`: six reports every 0.9 seconds
+  yield exactly three outbound stops, at 0, 1.8 and 3.6 seconds, with a ping/pong barrier after each completed report.
+  The existing `DeviceVoiceStopAdmissionTests.repeatedAcceptedStopsSendOneStopAndCoalesceTheirLog` still covers bursts.
+- `DeviceVoiceStopTeardownTests`: await real listener teardown, then a late report and a late dismissal; directly
+  assert no connection entry in the report-log, device-stop and confirmation maps. Also await a completed spoken
+  confirmation and assert its empty token set was removed, with exact text/audio assertions. Hold another confirmation
+  with a continuation, tear down its router connection, release and await completion; assert exactly
+  `outcome=skipped reason=connection_closed` and a ping/pong with no clip.
+
+All new tests use Swift Testing, an injected monotonic clock, awaited operations or continuation barriers, and exact
+state/frame assertions. No negative assertion follows `settle()` or a delay, and no cooperative thread is blocked.
+This remains synthetic host evidence; no simulator, device detector, physical-device, captured-output round trip,
+installation or upload is claimed. Only `gh issue view 1212` is used; no push, PR or GitHub metadata update is made.

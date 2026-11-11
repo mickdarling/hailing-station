@@ -31,7 +31,9 @@ import Testing
     @Test func anUnnegotiatedConnectionFailsClosedAndLogsNotReady() async throws {
         let rig = try await RecipientTestRig.make()
         let events = Mutex<[WebSocketListenerEvent]>([]), calls = Mutex(0)
-        let session = HostSession(host: rig.host, deviceVoiceStop: { _, _ in calls.withLock { $0 += 1 } })
+        let clock = Mutex(ContinuousClock.now)
+        let session = HostSession(host: rig.host, requestClock: { clock.withLock { $0 } },
+                                  deviceVoiceStop: { _, _ in calls.withLock { $0 += 1 } })
         await session.attachLastInput(LastInputLedger(), replyEvent: { event in events.withLock { $0.append(event) } })
         let frame = sessionFrame(payload: .control(.voiceStopped(latencyMs: 5)))
         let beforeHello = await session.receive(frame)

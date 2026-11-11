@@ -296,12 +296,7 @@ extension WebSocketListener {
     }
 
     private func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {
-        guard let ambient else {
-            emit(WebSocketListenerEvent(event: "ambient_voice_stop_ignored", sessionID: connection,
-                                         detail: "reason=no_active_stream"))
-            return
-        }
-        await ambient.deviceVoiceStopped(connection: connection, latencyMs: latencyMs)
+        await ambient?.deviceVoiceStopped(connection: connection, latencyMs: latencyMs)
     }
 
     private func emit(_ event: WebSocketListenerEvent) { log(event) }
@@ -584,18 +579,19 @@ extension WebSocketListener {
 
     /// Stops reply playback for the dismissing connection (#309) and returns a fixed outcome token:
     /// `stopped` (sent to the device), `cut` (frames refused only: an older device, or the send failed),
-    /// `idle` (nothing mid-stream and no device stop), or `no_connection`.
-    func stopReplyPlayback(connection: UUID) async -> String {
+    /// `idle` (nothing mid-stream and no device stop), `coalesced` (a redundant device report), or `no_connection`.
+    func stopReplyPlayback(connection: UUID, voiceStopAt: ContinuousClock.Instant? = nil) async -> String {
         guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
             return "no_connection"
         }
         let stop = UUID()
         stopsInFlight[stop] = peer.session
-        let (frame, cut) = await peer.session.stopReplyPlayback()
-        for id in cut { stoppedReplyIDs.record(id) }
+        let result = await peer.session.stopReplyPlayback(voiceStopAt: voiceStopAt)
+        for id in result.stopped { stoppedReplyIDs.record(id) }
         stopsInFlight[stop] = nil
-        if let frame, await peer.send(frame) { return "stopped" }
-        return cut.isEmpty ? "idle" : "cut"
+        if result.coalesced { return "coalesced" }
+        if let frame = result.frame, await peer.send(frame) { return "stopped" }
+        return result.stopped.isEmpty ? "idle" : "cut"
     }
 }
 
@@ -664,8 +660,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var now: @Sendable () -> Date = { Date() }
         /// Monotonic duplicate-stop window (#1212); injectable for deterministic boundary tests.
         var voiceStopClock: @Sendable () -> ContinuousClock.Instant = { .now }
-        /// Awaited by each acknowledgement before its clip is sent. Nil in the daemon, so nothing waits: tests only
-        /// set it, to hold an acknowledgement and show a not-sent notice waits for it (#894 review).
+        /// Awaited by each acknowledgement and stop confirmation before its clip is sent. Nil in the daemon;
+        /// tests hold clips to verify notice ordering (#894) and stop-confirmation retirement (#1212).
         var acknowledgementHold: (@Sendable () async -> Void)?
         /// Called with the connection once a "Nothing was sent." clip is queued on its privacy clip chain. Nil in the
         /// daemon: tests only set it, to change privacy at a known point between queuing and playing (#894 review).
@@ -993,22 +989,23 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
                 return "no_active_stream"
             }
             let now = configuration.voiceStopClock()
-            let previous = state.deviceVoiceStops.updateValue(now, forKey: connection)
+            state.deviceVoiceStops[connection] = now
             // Retire all pending clips, even if their async work resumes later.
             state.stopConfirmations[connection] = nil
-            if let previous, previous.duration(to: now) < .seconds(1) { return "coalesced" }
             return nil
         }
         if let reason {
-            let detail = state.withLock {
-                $0.voiceStopLogs[connection, default: VoiceStopLogWindow()]
-                    .detail(reason: reason, at: configuration.voiceStopClock())
-            }
-            if let detail { emit("ambient_voice_stop_ignored", connection: connection, detail: detail) }
+            await logVoiceStopIgnore(reason, connection: connection)
             return
         }
         let listener = state.withLock { $0.listener?.value }
-        let playback = await listener?.stopReplyPlayback(connection: connection) ?? "no_connection"
+        let playback = await listener?.stopReplyPlayback(
+            connection: connection, voiceStopAt: configuration.voiceStopClock()
+        ) ?? "no_connection"
+        if playback == "coalesced" {
+            await logVoiceStopIgnore("coalesced", connection: connection)
+            return
+        }
         let latency = latencyMs.map { " latency_ms=\($0)" } ?? ""
         emit("ambient_dismissed", detail: "reason=device-voice-stop scope=playback source=device"
              + " withdrawn=0 delivered=0 playback=\(playback)" + latency)
@@ -1747,22 +1744,19 @@ extension AmbientRightyoRouter {
     /// clips. A RightyO dismissal reaching this method before the report is recorded can already have enqueued
     /// bytes that cannot be recalled. PR 3 must mitigate this bound by dropping host stop-confirmation clips on the
     /// device shortly after its local stop; that device behavior is deferred. Logs tokens only.
-    private func confirmStop(
+    func confirmStop(
         _ receipt: RightyoDismissReceipt, playback: String, on connection: UUID, target: String,
         listener: WebSocketListener?
     ) async {
         let token = UUID()
-        let registered = state.withLock { state in
-            if let stopped = state.deviceVoiceStops[connection],
-               stopped.duration(to: configuration.voiceStopClock()) < .seconds(10) { return false }
-            state.stopConfirmations[connection, default: []].insert(token)
-            return true
-        }
-        guard registered else {
-            emit("ambient_stop_confirmed", detail: "outcome=skipped reason=device_stopped")
+        let refusal = await listener?.withLiveConnection(connection: connection) { [self] in
+            registerStopConfirmation(token, connection: connection)
+        } ?? "connection_closed"
+        if let refusal {
+            emit("ambient_stop_confirmed", detail: "outcome=skipped reason=\(refusal)")
             return
         }
-        defer { _ = state.withLock { $0.stopConfirmations[connection]?.remove(token) } }
+        defer { removeStopConfirmation(token, connection: connection) }
         guard let library = configuration.acknowledgements else { return }
         if let reason = AmbientStopConfirmation.skipReason(for: receipt, playback: playback) {
             emit("ambient_stop_confirmed", detail: "outcome=skipped reason=\(reason)")
@@ -1785,7 +1779,10 @@ extension AmbientRightyoRouter {
             }
         } ?? "no_connection"
         if outcome == "device_stopped" {
-            emit("ambient_stop_confirmed", detail: "outcome=skipped reason=device_stopped")
+            let reason = state.withLock {
+                $0.closed.contains(connection) || $0.latest[connection] == nil ? "connection_closed" : "device_stopped"
+            }
+            emit("ambient_stop_confirmed", detail: "outcome=skipped reason=\(reason)")
             return
         }
         hostPhrases.observe(pick.clip, outcome: outcome)
@@ -3112,5 +3109,79 @@ extension WebSocketListener {
             ambient?.observeReply(frame)
         }
         return "sent"
+    }
+}
+
+struct VoicePlaybackStopResult {
+    let frame: Frame?
+    let stopped: [UUID]
+    var coalesced = false
+}
+
+extension HostSession {
+    /// Retire on every report. Only the redundant outbound frame uses the last accepted stop's fixed window.
+    func stopReplyPlayback(
+        voiceStopAt now: ContinuousClock.Instant?
+    ) -> VoicePlaybackStopResult {
+        guard let now else {
+            let result = stopReplyPlayback()
+            return VoicePlaybackStopResult(frame: result.frame, stopped: result.stopped)
+        }
+        guard case .ready = state else { return VoicePlaybackStopResult(frame: nil, stopped: []) }
+        let previous = acceptedVoiceStop
+        let coalesced = previous.map {
+            $0.at.duration(to: now) < .seconds(1) && $0.revision == replyFlightRevision
+        } ?? false
+        let result = stopReplyPlayback()
+        // Retirement also writes the ledger; retain its new revision without sliding the accepted timestamp.
+        acceptedVoiceStop = (coalesced ? previous?.at ?? now : now, replyFlightRevision)
+        return VoicePlaybackStopResult(frame: coalesced ? nil : result.frame,
+                                       stopped: result.stopped, coalesced: coalesced)
+    }
+}
+
+extension WebSocketListener {
+    /// Membership and the synchronous state mutation share the listener's teardown actor boundary.
+    func withLiveConnection<Result: Sendable>(
+        connection: UUID, _ body: @Sendable () -> Result
+    ) -> Result? {
+        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }),
+              !peer.replyTransport.isRetired else { return nil }
+        return body()
+    }
+}
+
+extension AmbientRightyoRouter {
+    private func logVoiceStopIgnore(_ reason: String, connection: UUID) async {
+        let listener = state.withLock { $0.listener?.value }
+        let detail = await listener?.withLiveConnection(connection: connection) { [self] in
+            state.withLock { state -> String? in
+                guard !state.closed.contains(connection) else { return nil }
+                return state.voiceStopLogs[connection, default: VoiceStopLogWindow()]
+                    .detail(reason: reason, at: configuration.voiceStopClock())
+            }
+        }
+        if let detail, let detail { emit("ambient_voice_stop_ignored", connection: connection, detail: detail) }
+    }
+}
+
+extension AmbientRightyoRouter {
+    private func registerStopConfirmation(_ token: UUID, connection: UUID) -> String? {
+        state.withLock { state in
+            guard !state.closed.contains(connection), state.latest[connection] != nil else {
+                return "connection_closed"
+            }
+            if let stopped = state.deviceVoiceStops[connection],
+               stopped.duration(to: configuration.voiceStopClock()) < .seconds(10) { return "device_stopped" }
+            state.stopConfirmations[connection, default: []].insert(token)
+            return nil
+        }
+    }
+
+    private func removeStopConfirmation(_ token: UUID, connection: UUID) {
+        state.withLock { state in
+            state.stopConfirmations[connection]?.remove(token)
+            if state.stopConfirmations[connection]?.isEmpty == true { state.stopConfirmations[connection] = nil }
+        }
     }
 }

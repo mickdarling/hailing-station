@@ -217,9 +217,14 @@ public actor HostSession {
     var peerCapabilities: Set<String> = []
     /// The device class its hello gave (#366), already checked against `AmbientTakeOver.deviceKinds`; or nil.
     var peerDeviceKind: String?
-    /// Replies whose audio is reaching this connection and has not finished, oldest first, and replies stopped
-    /// mid-stream whose remaining frames are refused (#309). Both bounded, ids only.
-    var repliesInFlight: [UUID] = []
+    // Every ledger write includes an audio admission (even final-only audio) or a retirement. A stop snapshots
+    // the revision after its own retirement, so subsequent audio cannot hide inside the duplicate-stop window.
+    var replyFlightRevision: UInt64 = 0
+    var acceptedVoiceStop: (at: ContinuousClock.Instant, revision: UInt64)?
+    /// Replies whose audio is reaching this connection and has not finished, oldest first, bounded ids only.
+    var repliesInFlight: [UUID] = [] {
+        didSet { replyFlightRevision &+= 1 }
+    }
     var stoppedReplies: [UUID] = []
     /// Subset of in-flight replies with a segment boundary actually enqueued to this capable peer.
     var segmentedReplies: Set<UUID> = []

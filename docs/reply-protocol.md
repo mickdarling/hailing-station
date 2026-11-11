@@ -653,16 +653,21 @@ send an idempotent `stop_playback` back. The existing `ambient_dismissed` event 
 `latency_ms`. The hyphenated `reason=device-voice-stop` follows RightyO's `reason=stop-phrase` style.
 Playback tokens retain their existing meaning. No sentence or confirmation clip is sent for this report.
 
-For ten seconds after an accepted report, measured with a host monotonic clock, a RightyO playback-scope dismissal
+For ten seconds after a valid report, measured with a host monotonic clock, a RightyO playback-scope dismissal
 on the same connection still applies its usual dismissal and playback stop, but skips its spoken #418 confirmation
 and logs `ambient_stop_confirmed outcome=skipped reason=device_stopped`. At ten seconds and beyond, normal
-confirmation rules apply. Accepted reports retire pending confirmations; the suppression is rechecked atomically
+confirmation rules apply. Valid reports retire pending confirmations; the suppression is rechecked atomically
 with the final clip enqueue. Bytes enqueued before the report is recorded cannot be recalled. PR 3 will mitigate
 that ordering bound by having the device drop a host stop-confirmation clip arriving shortly after its local stop.
-Repeated accepted reports restart the window; reports less than one second apart send no second `stop_playback`.
-They log `ambient_voice_stop_ignored reason=coalesced`. Ignored/coalesced log lines are limited to one per reason per
+Every valid report retires that connection's in-flight replies and pending confirmations and refreshes the ten-second
+confirmation-suppression window. A separate last-accepted timestamp bounds outbound stop coalescing: within one second,
+only when no reply has entered flight on that connection since the last accepted stop, the redundant `stop_playback`
+and dismissal log are coalesced. Coalesced reports do not refresh the accepted timestamp. New audio, including audio
+that has already completed, requires another `stop_playback`. Coalesced reports log
+`ambient_voice_stop_ignored reason=coalesced`. Ignored/coalesced log lines are limited to one per reason per
 connection per ten seconds, with `suppressed=N` on the next line for that reason. Teardown removes these records
-and the device-stop window.
+and the device-stop window. Late reports and dismissals cannot recreate connection records; completed confirmation
+work removes its token set when empty. A held confirmation retired by teardown logs `reason=connection_closed`.
 Device playback diagnostics remain the source of actual playback-end reports to RightyO; the report adds no second
 reply-ended notification.
 
