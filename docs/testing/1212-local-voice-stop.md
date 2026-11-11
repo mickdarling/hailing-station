@@ -754,3 +754,145 @@ removed after verification; no job build/test processes remain. Runtime, build, 
 source-count and cleanup logs are retained outside the repository under the task's `vw1212b3` names. No generated
 product is committed. Only the authorized issue read is used; no push, PR, GitHub metadata update, online CI or
 independent-review claim is made.
+
+## 1b round 3: outstanding jobs and captured stop positions
+
+This round adds new commits after `dacdeb59befc4ff5c8e1eafa00544bb318d1d92c`, without rewriting history.
+Final Swift verification uses `853a07395263b7bbc071c627f7b54b1f7e7270d5`; the subsequent evidence commit changes
+documentation only. The three focused Python and three full CLI runs use `0fb8cd1eb303f5fec9a194d102536b9315d4542a`.
+All production files and Python fixtures are byte-identical at these two heads; the only difference is a stronger
+three-line Swift test assertion setup for consumed-job destination removal. The only GitHub operation is `gh issue view 1212 --comments`. No push, PR, metadata
+write, independent review, simulator/device proof, installation, upload or installed-build replacement is claimed.
+All tests use synthetic data; this is not hearing or live captured-output evidence.
+
+### Changes and deterministic coverage
+
+- `HostReplyDelivery.swift:11`: an independent 1024-entry outstanding-job record stores ticket position, reply id,
+  target, delivered-text connection and first-publication state. Enqueue accepts the audio probe before text;
+  `noteRoute` records successful text's actual connection before completing publication. Stops include outstanding
+  targets even when their 64-entry routing pins were evicted first. Successful final publication and stop-skips
+  remove the record. Abandoned records remain bounded. Evicting the oldest job raises the existing global floor
+  to its ticket position, so every job at or below it fails closed. Queue clients without an enqueue probe gain
+  first-publication tracking when their check/publish arrives, without reviving a ticket at or below the floor.
+  `ReplyQueuedAudioTargetTests.evictedTextPinCannotRerouteStoppedAudioToLastInputB` delivers text on A, changes A
+  to U, evicts T's pin with 64 U pins, asserts T is absent from current ledger associations, stops A, and only then
+  gives B the last input for T. Old check/publication skip, both sockets pass silence barriers, and a fresh T job
+  publishes on B. `outstandingJobEvictionRaisesFloorAndConsumptionRemovesRecord` covers the independent bound,
+  global fail-closed floor and record removal.
+- `WebSocketListener.swift:1001,1692,2603`: device reports, accepted RightyO playback dismissals and unconditional
+  privacy entry capture the position synchronously before actor hops, tasks or notices. `ReplyAudioQueue.mark`
+  applies `max(existing, captured)` to connections and targets. Privacy's pending drop carries the entry cutoff;
+  the delayed announcement never takes a new mark. Live registration/teardown also prevents late callbacks from
+  recreating connection marks. `ReplyQueuedAudioProbeTests.privacyDecisionBeforeExitCannotMarkPostExitTicket`
+  holds the real announcement immediately after `decideEntry` closes, exits privacy, waits for the hold's release,
+  issues a fresh ticket, resumes the delayed stop and then publishes that ticket. It uses a continuation gate,
+  completion logs and a ping/pong barrier. Target tests separately prove out-of-order marks cannot lower a newer
+  cutoff, and late marks after teardown do nothing. Existing privacy-entry cases cover both completed and withdrawn
+  entries, preserved text, privacy refusal, post-exit silence of old jobs and fresh text.
+- `HostReplyDelivery.swift:114`: target marks apply only until the first successful final transport enqueue;
+  connection marks and in-flight retirement retain the ordinary stop path. The streaming bit changes under the
+  same queue lock as the first enqueue, not during probes. `ReplyQueuedAudioAssociationTests.
+  targetStopLeavesOtherConnectionsStreamingReplyIntact` starts A's T stream, stops B for T, proves B's queued
+  pre-stop job skips, then receives A's exact final frame, verifies empty in-flight bookkeeping and checks no
+  `stop_playback` appeared on A. Existing final-enqueue race coverage remains active.
+- `ReplyCommand.swift:209` and `LocalReplyEndpoint+Submission.swift:332`: detached jobs request the ticket before
+  submitting text/card. A failed request is retained as a result until text has gone out, then audio fails closed.
+  The real socket regression exercises enqueue-with-probe. Python queue tests assert every enqueue/retry precedes
+  the first text frame, keep exact text and metadata on skips and ticket failures, and compare publish count with
+  the number of actual audio frames.
+- `ReplyCommand.swift:971,1010`: fallback occurs only on enqueue's explicit zero-delivery, no-code error exactly
+  `unknown action`, `unsupported request` or `unknown request kind`. It logs `reply_audio_queue unsupported` once,
+  keeps the existing lock and uses unticketed publication for that job. Missing acknowledgements, generic decode
+  refusals, connection failures, timeouts and stale tickets do not select fallback. Python tests cover both
+  unknown-action and unsupported-request signals, real socket EOF at ticket issuance, missing acknowledgements and
+  stale check refusals. They assert text/card retention and no audio for failure cases. `reply-protocol.md` records
+  the exact signal, compatibility limits, foreground jobs' absence of tickets and ignored `no_active_stream`
+  reports' absence of marks.
+- The target-floor test now identifies the oldest evicted mark and proves an unrelated ticket strictly above that
+  floor still plays. The uncontended CLI success test additionally asserts publish count equals audio frame count.
+
+No new test uses settle-then-negative assertions or blocks a Swift cooperative worker. Socket negatives follow
+completed jobs/handlers and exact ping/pong barriers; race gates use continuations.
+
+### Verification procedure
+
+The fresh Dev Work VM checkout is `vw1212b4`, cloned entirely from a host-local bundle with no dependency fetch.
+The shared build/test lane is checked before each phase. Every phase runs at background priority under its own
+590-second process-group watchdog, with signal/finally TERM/KILL cleanup. SwiftPM has four jobs, each compiler
+one worker, and automatic resolution is disabled. The separate fresh `vw1212b4-werr` wrapper uses the external
+Swift shim to enforce those same flags. No synthetic load worker is started.
+
+Use the round-1 CLT `flags` array above. Each invocation below is a separately capped phase:
+
+```bash
+taskpolicy -b swift build --build-tests "${flags[@]}" -Xswiftc -warnings-as-errors
+# Three invocations each:
+taskpolicy -b swift test --skip-build --no-parallel "${flags[@]}" --filter \
+  'ReplyQueuedAudio|DeviceVoiceStop|AmbientWiringStopConfirmation|HostPlaybackStop|AmbientWiringVoiceMute|LocalReplyEndpoint|LocalVoiceGuardsStatus'
+taskpolicy -b python3 -m unittest discover -s Tests/ReplyCLITests -p test_queued_reply_stop.py
+taskpolicy -b python3 -m unittest discover -s Tests/ReplyCLITests
+# One invocation per broad selection in the results table:
+taskpolicy -b swift test --skip-build --no-parallel "${flags[@]}" --filter "$selection"
+/bin/zsh ~/codex-workspaces/vw-werr.sh vw1212b4
+```
+
+Initial diagnostic evidence is retained separately: the first build found test-only isolated actor reads inside a
+synchronous assertion/search and an unnecessary await after making the queue nonisolated. A diagnostic Python run
+found its new ordering assertion had assumed one enqueue rather than allowing the explicit retry's two enqueues.
+Both fixtures are corrected with new commits. The diagnostic focused Swift pass is additional evidence, not one
+of the final three runs. Final verification restarts every required selection after those corrections. A subsequent test review makes
+consumed-job removal coverage independent: a distinct fresh reply has a recorded text destination before finish,
+so an unremoved record would fail the assertion. The runner is stopped between phases with its owned restart
+sentinel (exit 75, not a test failure), that test-only commit is synchronized, and all three focused Swift runs
+restart on the final head before the daemon families and fresh wrapper. The already-passing CLI runs remain
+applicable because their production/Python inputs are identical. Initial focused passes and the early Ambient
+A–M pass are additional evidence, not counted as the final repeated Swift/family runs.
+
+### Final results
+
+Every final runtime selection starts tests and exits 0. Swift functions and parameterized case executions are
+counted separately. The five known issues below are existing deliberate failure-reporting injections, not skips.
+
+| Selection / phase | Runs | Functions / suites | Case executions per run | Result / seconds |
+| --- | ---: | ---: | ---: | --- |
+| Final Swift test rebuild, warnings as errors | 1 | — | — | pass; 21.73 |
+| Focused Swift selection above | 3 | 102 / 22 | 150 | pass; 47.158, 46.230, 45.545 |
+| Focused Python `QueuedReplyStopTests` | 3 | 13 Python tests | — | pass; 8.397, 8.036, 8.133 |
+| Full Reply CLI | 3 | 139 Python tests | — | pass; 243.619, 241.595, 243.115 |
+| `HailDaemonKitTests\.Ambient[A-M]` | 1 | 134 / 25 | 207 | pass; 106.032 |
+| `HailDaemonKitTests\.Ambient[N-S]` | 1 | 317 / 65 | 488 | pass; 340.999 |
+| `HailDaemonKitTests\.Ambient[T-Z]` | 1 | 214 / 49 | 395 | pass; 130.735 |
+| `HailDaemonKitTests\.Rightyo` | 1 | 186 / 17 | 228 | pass; 33.424 |
+| `HailDaemonKitTests\.(Listener\|WebSocket\|Host\|DeviceVoiceStop)` | 1 | 154 / 27 | 286 | pass; 31.092 |
+| `HailDaemonKitTests\.Reply` | 1 | 97 / 22 | 124 | pass with five intentional known issues; 60.405 |
+| Separate fresh warnings-as-errors wrapper | 1 | — | — | pass; 249.72 (251 including wrapper) |
+
+The broad daemon families total **1,102 functions and 1,728 case executions**. The five known issues are the
+existing `ReplyRecipientHandoffWaitTests` missing-handoff timeout, two cancellation-registration cases, and the
+first waiter's timeout/cancellation while another survives. The focused Swift and all Python runs have no known
+issues or skips. The existing session-update `replyFlightRevision` deferral remains PR 1c work.
+
+The fresh wrapper reports **`werr build=0`** and exits 0. Its full build log contains **zero errors and 120 warnings**,
+all existing CLT missing-ModuleCache debug-file warnings, with no other warning category. This is a successful
+Swift warnings-as-errors build, not a claim of warning-free linker debug-info output.
+
+Host strict SwiftLint and the independent 120-column awk check on all **16 changed Swift files** both exit 0 and
+print nothing (zero-byte logs), without new suppressions. Exact commands use the PR base:
+
+```bash
+swift_files=( $(git diff --name-only cc36af90ccb4bfcc3dc6f282ad13f0bc6f8081a8 HEAD -- '*.swift') )
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swiftlint lint --strict --quiet "${swift_files[@]}"
+awk 'length($0)>120 {print FILENAME ":" FNR ":" length($0)}' "${swift_files[@]}"
+git diff --check cc36af90ccb4bfcc3dc6f282ad13f0bc6f8081a8
+```
+
+The offline count uses `scripts/pr-shape.py`'s exact exclusions and both names for a rename, as in round 2b.
+There are no renames. The count is **four production files**, from both the requested starting head and the PR
+base: `HostReplyDelivery.swift`, `WebSocketListener.swift`, `LocalReplyEndpoint+Submission.swift`, and
+`ReplyCommand.swift`. No fifth file, checker exception or online PR-shape run is needed or claimed.
+
+All **18 changed Swift/Python source and test files** match the host's SHA-256 checksums before final verification
+and after it. The workspace `.build`, separate `vw1212b4-werr` build directory, temporary compiler shim and its
+directory are deleted after verification. No owned build/test processes remain. Runtime/build logs, initial
+failures, checksums, lint, source count and cleanup evidence remain outside the repository under the task's
+`vw1212b4` names. No generated product or private deployment data is committed.
