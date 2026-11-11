@@ -446,8 +446,9 @@ extension WebSocketListener {
         peer.replyTransport.retire()
         transports[peer.session.connectionID] = nil
         heardTurns.removeValue(forKey: peer.session.connectionID)?.close()
-        lastInput.forget(connection: peer.session.connectionID)
+        // Mark retirement before dropping associations: a pending snapshot must fail closed if it loses them.
         replyAudioQueue.forget(peer.session.connectionID)
+        lastInput.forget(connection: peer.session.connectionID)
         await endAmbient(of: peer)
         await refreshTaskProgressEnvironment()
     }

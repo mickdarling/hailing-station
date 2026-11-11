@@ -159,7 +159,12 @@ extension ReplyAudioQueue {
             guard state.pending.removeValue(forKey: stop.id) != nil else { return [] }
             if let targets {
                 Self.mark(stop.connection, targets: targets, through: stop.position, in: &state)
-            } else { state.floor = max(state.floor, stop.position) }
+            }
+            // Retirement can remove in-flight ledger entries before the actor snapshots them. Retain any
+            // targets that did arrive, but fail closed at the accepted cutoff if the snapshot lost its peer.
+            if targets == nil || !state.connections.contains(stop.connection) {
+                state.floor = max(state.floor, stop.position)
+            }
             defer { state.waiters.removeAll() }
             return Array(state.waiters.values)
         }

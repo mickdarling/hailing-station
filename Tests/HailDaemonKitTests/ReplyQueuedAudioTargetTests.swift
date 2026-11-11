@@ -147,8 +147,14 @@ extension ReplyQueuedAudioTargetTests {
         queue.forget(connection)
         queue.resolve(captured, targets: ["late"])
         #expect(queue.captureStop(connection) == nil)
-        if case .stopped = queue.enqueue(ticket, connection: nil, target: "late", { true }) {} else {
-            Issue.record("an accepted stop must retain its targets after teardown")
+        for target in ["late", "retired-flight"] {
+            if case .stopped = queue.enqueue(ticket, connection: nil, target: target, { true }) {} else {
+                Issue.record("retired snapshot must retain its marks and fail closed for lost associations")
+            }
+        }
+        let later = try queue.ticket()
+        if case .sent(true) = queue.enqueue(later, connection: nil, target: "late", { true }) {} else {
+            Issue.record("retired snapshot cannot cover a post-stop ticket")
         }
     }
 

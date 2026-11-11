@@ -5,7 +5,7 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct ReplyQueuedAudioBarrierTests {
-    @Test(arguments: ["device", "playback", "privacy"], [false, true])
+    @Test(arguments: ["device", "playback", "privacy", "retired-flight"], [false, true])
     func firstFrameWaitsForSnapshotAndSurvivesTeardown(source: String, teardown: Bool) async throws {
         let rig = try await DeviceVoiceStopRig.make()
         let holds = QueuedStopSnapshotHolds()
@@ -25,6 +25,7 @@ import Testing
             let ticket = try #require(await listener.replyAudio(.init(action: "enqueue", frame: audio)).ticket)
             #expect(try await listener.publish(text) == 1)
             #expect(try await receiveFrame(on: other.sockets[0], step: "B keeps pre-stop text") == text)
+            if source == "retired-flight" { try await seedFlightOnlyTarget(connection, on: listener) }
             let stop = Task { await beginStop(source, rig: rig, connection: connection, holds: holds) }
             await holds.entered.wait()
             let publication = Task {
@@ -45,6 +46,15 @@ import Testing
             throw error
         }
         await rig.finish()
+    }
+
+    private func seedFlightOnlyTarget(_ connection: UUID, on listener: WebSocketListener) async throws {
+        let id = try await peerID(on: listener, connection: connection)
+        let peer = try #require(await listener.peers[id])
+        let reply = uncorrelatedDescriptor(audio: true), frame = recipientAudio(reply, sequence: 0)
+        let ledger = await listener.lastInput
+        ledger.trackFlights([reply.id], frame: frame, connection: connection)
+        await peer.session.seedRetiredQueueFlight(reply.id)
     }
 
     private func beginStop(
@@ -122,6 +132,12 @@ extension ReplyQueuedAudioBarrierTests {
             throw error
         }
         await rig.finish()
+    }
+}
+extension HostSession {
+    fileprivate func seedRetiredQueueFlight(_ reply: UUID) {
+        selectedTarget = "unrelated:selection"
+        repliesInFlight = [reply]
     }
 }
 private struct QueuedStopSnapshotHolds: Sendable {
