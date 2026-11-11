@@ -172,7 +172,8 @@ extension HostSession {
     }
 
     func enqueueSessionUpdate(
-        _ admission: SessionUpdateAdmission, lastInput: LastInputLedger.Entry?, enqueue: @Sendable () -> Bool
+        _ admission: SessionUpdateAdmission, lastInput: LastInputLedger.Entry?,
+        admittingAudio: Bool = false, enqueue: @Sendable () -> Bool
     ) async -> Bool {
         guard await host.refreshedPolicy() != nil else { return false }
         if admission.bindingLease == nil {
@@ -186,10 +187,16 @@ extension HostSession {
         guard !Task.isCancelled, admission.generation == selectionGeneration,
               let target = admission.frame.target,
               canReceiveSessionUpdate(target: target, lastInput: lastInput) else { return false }
+        let admitted: Bool
         if let authority = admission.taskAuthority {
-            return authority.perform { withSessionUpdatePermit(admission, enqueue: enqueue) }
+            admitted = authority.perform { withSessionUpdatePermit(admission, enqueue: enqueue) }
+        } else {
+            admitted = withSessionUpdatePermit(admission, enqueue: enqueue)
         }
-        return withSessionUpdatePermit(admission, enqueue: enqueue)
+        // Share the stop boundary's actor turn: new audio invalidates coalescing before any send-result await.
+        // Cards and renderer preflight do not admit audio, including when their enqueue succeeds.
+        if admitted && admittingAudio { replyFlightRevision &+= 1 }
+        return admitted
     }
 
     private func withSessionUpdatePermit(

@@ -12,6 +12,10 @@ private struct SyntheticSessionUpdateSpeech: SessionUpdateSpeechRendering {
     }
 }
 
+private struct PreflightOnlySessionUpdateSpeech: SessionUpdateSpeechRendering {
+    func render(_ text: String, publish: @Sendable (Data, Bool) async throws -> Void) async throws {}
+}
+
 @Suite(.serialized) struct SessionUpdateSpeechTests {
     private func request() -> LocalSessionUpdateRequest {
         .init(action: .submit, target: RecipientTestRig.target, priority: .action, text: "Synthetic finished")
@@ -20,6 +24,9 @@ private struct SyntheticSessionUpdateSpeech: SessionUpdateSpeechRendering {
     @Test func configuredSpeechStillRequiresTheSeparateDeviceCapability() async throws {
         let renders = Mutex(0)
         let rig = try await SessionUpdateListenerRig.make()
+        let now = ContinuousClock.now
+        #expect(await !rig.session.stopReplyPlayback(voiceStopAt: now).coalesced)
+        let revision = await rig.session.replyFlightRevision
         await rig.listener.configureSessionUpdateSpeech(SyntheticSessionUpdateSpeech {
             renders.withLock { $0 += 1 }
         })
@@ -27,6 +34,8 @@ private struct SyntheticSessionUpdateSpeech: SessionUpdateSpeechRendering {
         let fence = await rig.listener.sessionUpdateFence
         await fence.joinSpeech()
         #expect(renders.withLock { $0 } == 0)
+        #expect(await rig.session.replyFlightRevision == revision)
+        #expect(await rig.session.stopReplyPlayback(voiceStopAt: now + .milliseconds(200)).coalesced)
         await rig.listener.stop()
     }
 
@@ -35,6 +44,7 @@ private struct SyntheticSessionUpdateSpeech: SessionUpdateSpeechRendering {
         let rig = try await SessionUpdateListenerRig.make(audio: true, send: { complete in
             sends.withLock { $0 += 1 }; complete(nil)
         })
+        let revision = await rig.session.replyFlightRevision
         await rig.listener.configureSessionUpdateSpeech(SyntheticSessionUpdateSpeech {
             renders.withLock { $0 += 1 }
         })
@@ -42,6 +52,25 @@ private struct SyntheticSessionUpdateSpeech: SessionUpdateSpeechRendering {
         let fence = await rig.listener.sessionUpdateFence
         await fence.joinSpeech()
         #expect(sends.withLock { $0 } == 2 && renders.withLock { $0 } == 1)
+        #expect(await rig.session.replyFlightRevision == revision &+ 1)
+        await rig.listener.stop()
+    }
+
+    @Test func rendererPreflightWithoutAudioDoesNotInvalidateStopCoalescing() async throws {
+        let sends = Mutex(0)
+        let rig = try await SessionUpdateListenerRig.make(audio: true, send: { complete in
+            sends.withLock { $0 += 1 }; complete(nil)
+        })
+        let now = ContinuousClock.now
+        #expect(await !rig.session.stopReplyPlayback(voiceStopAt: now).coalesced)
+        let revision = await rig.session.replyFlightRevision
+        await rig.listener.configureSessionUpdateSpeech(PreflightOnlySessionUpdateSpeech())
+        #expect(await rig.listener.sessionUpdate(request()).outcome == .delivered)
+        let fence = await rig.listener.sessionUpdateFence
+        await fence.joinSpeech()
+        #expect(sends.withLock { $0 } == 1)
+        #expect(await rig.session.replyFlightRevision == revision)
+        #expect(await rig.session.stopReplyPlayback(voiceStopAt: now + .milliseconds(200)).coalesced)
         await rig.listener.stop()
     }
 
@@ -88,6 +117,9 @@ private struct SyntheticSessionUpdateSpeech: SessionUpdateSpeechRendering {
             sends.withLock { $0 += 1 }; complete(nil)
         })
         let hold = await rig.listener.replyHold
+        let now = ContinuousClock.now
+        #expect(await !rig.session.stopReplyPlayback(voiceStopAt: now).coalesced)
+        let revision = await rig.session.replyFlightRevision
         await rig.listener.configureSessionUpdateSpeech(SyntheticSessionUpdateSpeech {
             hold.set(true, connection: rig.connectionID)
             hold.set(false, connection: rig.connectionID)
@@ -96,6 +128,8 @@ private struct SyntheticSessionUpdateSpeech: SessionUpdateSpeechRendering {
         let fence = await rig.listener.sessionUpdateFence
         await fence.joinSpeech()
         #expect(sends.withLock { $0 } == 1, "the card completed before privacy; old audio did not enqueue")
+        #expect(await rig.session.replyFlightRevision == revision)
+        #expect(await rig.session.stopReplyPlayback(voiceStopAt: now + .milliseconds(200)).coalesced)
         await rig.listener.stop()
     }
 
