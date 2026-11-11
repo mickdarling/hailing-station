@@ -600,13 +600,20 @@ extension WebSocketListener {
         stopsInFlight[playbackStop] = nil
         // The first-frame barrier is already registered. Cut current playback before resolving targets.
         let outcome: String
-        if result.coalesced { outcome = "coalesced" } else if let frame = result.frame, await peer.send(frame) {
+        if result.coalesced { outcome = "coalesced" } else if let frame = result.frame,
+            await sendPlaybackStop(frame, on: peer) {
             outcome = "stopped"
         } else { outcome = result.stopped.isEmpty ? "idle" : "cut" }
         if let stop {
-            await peer.session.markQueuedAudioStopped(replyAudioQueue, stop: stop, retired: result.stopped)
+            await peer.session.markQueuedAudioStopped(replyAudioQueue, stop: stop, retired: result.targets)
         }
         return outcome
+    }
+
+    private func sendPlaybackStop(_ frame: Frame, on peer: WebSocketPeer) async -> Bool {
+        let sent = await peer.send(frame)
+        await ReplyAudioEnqueueTesting.afterStopSend?()
+        return sent
     }
 }
 
@@ -3149,6 +3156,7 @@ extension WebSocketListener {
 struct VoicePlaybackStopResult {
     let frame: Frame?
     let stopped: [UUID]
+    var targets: Set<String> = []
     var coalesced = false
 }
 
@@ -3157,10 +3165,7 @@ extension HostSession {
     func stopReplyPlayback(
         voiceStopAt now: ContinuousClock.Instant?
     ) -> VoicePlaybackStopResult {
-        guard let now else {
-            let result = stopReplyPlayback()
-            return VoicePlaybackStopResult(frame: result.frame, stopped: result.stopped)
-        }
+        guard let now else { return stopReplyPlayback() }
         guard case .ready = state else { return VoicePlaybackStopResult(frame: nil, stopped: []) }
         let previous = acceptedVoiceStop
         let coalesced = previous.map {
@@ -3170,7 +3175,7 @@ extension HostSession {
         // Retirement also writes the ledger; retain its new revision without sliding the accepted timestamp.
         acceptedVoiceStop = (coalesced ? previous?.at ?? now : now, replyFlightRevision)
         return VoicePlaybackStopResult(frame: coalesced ? nil : result.frame,
-                                       stopped: result.stopped, coalesced: coalesced)
+                                       stopped: result.stopped, targets: result.targets, coalesced: coalesced)
     }
 }
 

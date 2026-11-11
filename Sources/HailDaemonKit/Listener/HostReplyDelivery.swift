@@ -229,6 +229,7 @@ private final class ReplyAudioAdmission: Sendable {
 enum ReplyAudioEnqueueTesting {
     @TaskLocal static var afterPrivacyDecision: (@Sendable () async -> Void)?
     @TaskLocal static var waiting: (@Sendable () -> Void)?
+    @TaskLocal static var afterStopSend: (@Sendable () async -> Void)?
     @TaskLocal static var beforeStopSnapshot: (@Sendable () async -> Void)?
     @TaskLocal static var stopTimeout: (@Sendable () async -> Void)?
     @TaskLocal static var beforeEnqueue: (@Sendable () async -> Void)?
@@ -655,7 +656,8 @@ extension HostSession {
             noteReplyDelivered(frame)
             return true
         }) == true else {
-            if ReplyAudioScope.admission?.skipped.withLock({ $0 }) == true { return false }
+            if let admission = ReplyAudioScope.admission,
+               admission.skipped.withLock({ $0 }) || admission.pending.withLock({ $0 }) { return false }
             replyRequests[requestID] = nil
             return false
         }
@@ -748,11 +750,12 @@ extension HostSession {
         return .init(connection: connectionID, generation: selectionGeneration, at: requestClock())
     }
 
-    /// Include just-retired flights after the immediate playback cut. Names in Hello confer no identity.
-    func markQueuedAudioStopped(_ queue: ReplyAudioQueue, stop: ReplyAudioQueue.Stop, retired: [UUID] = []) async {
+    /// Retired targets were captured before traffic could prune their flights. Names in Hello confer no identity.
+    func markQueuedAudioStopped(_ queue: ReplyAudioQueue, stop: ReplyAudioQueue.Stop, retired: Set<String> = []) async {
         await stop.beforeSnapshot?()
         guard case .ready = state else { return queue.resolve(stop, targets: nil) }
-        var targets = lastInputLedger?.targets(on: connectionID, inFlight: repliesInFlight + retired) ?? []
+        var targets = lastInputLedger?.targets(on: connectionID, inFlight: repliesInFlight) ?? []
+        targets.formUnion(retired)
         if let selectedTarget { targets.insert(selectedTarget) }
         #if os(macOS)
         if let routes = authorizer.voiceRoutes {
@@ -825,15 +828,19 @@ extension HostSession {
     /// A `dismiss` asked to stop playback (#309). Every reply mid-stream on this connection is stopped: its
     /// remaining frames are refused, so the reply CLI retires its renderer. The `stop_playback` frame is
     /// returned only for a ready device that advertised it; an older device would refuse it as malformed.
-    func stopReplyPlayback() -> (frame: Frame?, stopped: [UUID]) {
-        guard case .ready(let version) = state else { return (nil, []) }
+    func stopReplyPlayback() -> VoicePlaybackStopResult {
+        guard case .ready(let version) = state else { return VoicePlaybackStopResult(frame: nil, stopped: []) }
         let stopped = repliesInFlight
+        let targets = lastInputLedger?.targets(on: connectionID, inFlight: stopped) ?? []
         stoppedReplies.append(contentsOf: repliesInFlight)
         stoppedReplies.removeFirst(max(0, stoppedReplies.count - Self.playbackStopLimit))
         repliesInFlight.removeAll()
         segmentedReplies.removeAll()
-        guard peerCapabilities.contains(PlaybackStop.capability) else { return (nil, stopped) }
-        return (response(.stopPlayback, version: version), stopped)
+        guard peerCapabilities.contains(PlaybackStop.capability) else {
+            return VoicePlaybackStopResult(frame: nil, stopped: stopped, targets: targets)
+        }
+        return VoicePlaybackStopResult(frame: response(.stopPlayback, version: version),
+                                       stopped: stopped, targets: targets)
     }
 }
 
