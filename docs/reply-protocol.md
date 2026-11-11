@@ -706,8 +706,9 @@ Each accepted playback stop marks its connection and every associated reply targ
 before retiring in-flight replies. The host association set includes selected/covered voice-route targets, targets
 of in-flight and pinned replies, and request owners on the connection. Hello names and device kinds are
 unauthenticated and are never identity keys. Target marks retain the 1024 most recently stopped targets (refreshing
-a target moves it to the end), outlive connection teardown and expire with the daemon epoch. Only host stop paths
-write marks; local socket enqueue/check/publish requests cannot create or refresh them. In-flight target bookkeeping
+a target moves it to the end), outlive connection teardown and expire with the daemon epoch. Only host stop and
+privacy-entry paths write marks; local socket enqueue/check/publish requests cannot create or refresh them.
+In-flight target bookkeeping
 is bounded by the existing 64 flights per connection; pins retain their existing global bound of 64.
 Evicting a target raises a daemon-wide floor to the maximum of its previous value and the evicted mark. Every
 admission and final enqueue skips tickets at or below that floor for every target. This may silence unrelated old
@@ -727,7 +728,8 @@ Ordinary routing still resolves request owner, existing text/first-frame pin, cu
 or ambient owner. Admission and final enqueue skip a ticket at or below the resolved connection's mark, the frame
 target's mark, or the global eviction floor. This prevents a pin eviction or reconnect from reviving pre-stop audio.
 A ticket greater than all three marks can play immediately, including after reconnect. A shared target stop covers replies owned
-by another connection for that target. Text/cards already delivered remain intact and the request is not withdrawn.
+by another connection for that target. Playback stops leave delivered text/cards intact and do not withdraw the
+request. Privacy retains its existing request drop and delivery hold.
 No extra original-destination record is retained: target marks close both gaps while preserving ordinary routing
 for post-stop jobs, without another per-job destination lifetime.
 

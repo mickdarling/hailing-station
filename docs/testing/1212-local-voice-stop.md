@@ -672,4 +672,85 @@ clock into the audit writer and history/summary reads. It still awaits real sock
 persisted records; no delay or eventual-count retry is used. Production audit behavior is unchanged. Final focused
 verification restarts all three runs after this test-only correction. Initial failure evidence is retained.
 
-Verification results will be recorded after the fresh `vw1212b3` phases finish.
+### Round 2b verification procedure
+
+The fresh Dev Work VM workspace `vw1212b3` is seeded from host-local bundles, with no dependency fetch. Its final
+source/test head is `3fff334f3815e92805a712f8faa9b2f89b3a9acb`; later changes record results only. All 18 Swift/Python
+source/test checksums match the host before the final run. The shared lane is checked before each phase. Each phase
+runs at background priority under a 590-second process-group watchdog, with signal/finally TERM/KILL cleanup.
+SwiftPM uses four jobs and each compiler one worker; automatic resolution is disabled. No synthetic load worker,
+simulator, installation or upload is used. The wrapper has a separate fresh `vw1212b3-werr` build directory and
+uses the external Swift shim from the prior rounds to enforce the same concurrency/resolution flags.
+
+Use the round-1 `flags` array above. Exact commands, each a separately capped phase:
+
+```bash
+taskpolicy -b swift build --build-tests "${flags[@]}" -Xswiftc -warnings-as-errors
+# Three invocations:
+taskpolicy -b swift test --skip-build --no-parallel "${flags[@]}" --filter \
+  'ReplyQueuedAudio|DeviceVoiceStop|AmbientWiringStopConfirmation|HostPlaybackStop|AmbientWiringVoiceMute|LocalReplyEndpoint|LocalVoiceGuardsStatus'
+# Three invocations:
+taskpolicy -b python3 -m unittest discover -s Tests/ReplyCLITests -p test_queued_reply_stop.py
+taskpolicy -b python3 -m unittest discover -s Tests/ReplyCLITests
+# One invocation for each broad daemon selection in the results table:
+taskpolicy -b swift test --skip-build --no-parallel "${flags[@]}" --filter "$selection"
+/bin/zsh ~/codex-workspaces/vw-werr.sh vw1212b3
+```
+
+The offline source-count command uses no GitHub API:
+
+```bash
+python3 - <<'PYCOUNT'
+import runpy
+import subprocess
+checker = runpy.run_path('scripts/pr-shape.py')
+rows = subprocess.check_output(
+    ['git', 'diff', '--name-status', '-M', 'cc36af90', 'HEAD'], text=True).splitlines()
+files = [name for row in rows for name in row.split('\t')[1:]]
+source = [f for f in files if not f.startswith(checker['EXCLUDED_PREFIXES'])
+          and not f.endswith(checker['EXCLUDED_SUFFIXES'])]
+print(len(source))
+print('\n'.join(source))
+PYCOUNT
+```
+
+### Round 2b results
+
+All final runtime phases start tests and exit 0. The initial fresh build took 239.13 seconds; after the test-only
+clock correction the final rebuild took 17.69 seconds. The separate wrapper below starts from a fresh build path.
+Swift Testing functions and parameterized case executions are counted separately:
+
+| Selection / phase | Runs | Functions / suites | Case executions per run | Result / seconds |
+| --- | ---: | ---: | ---: | --- |
+| Focused Swift selection above | 3 | 97 / 22 | 145 | pass; 45.041, 42.484, 43.986 |
+| Changed Python `QueuedReplyStopTests` | 3 | 9 Python tests | — | pass; 7.170, 6.999, 6.941 |
+| Full Reply CLI | 1 | 135 Python tests | — | pass; 241.621 |
+| `HailDaemonKitTests\.Ambient[A-M]` | 1 | 134 / 25 | 207 | pass; 106.206 |
+| `HailDaemonKitTests\.Ambient[N-S]` | 1 | 317 / 65 | 488 | pass; 336.220 |
+| `HailDaemonKitTests\.Ambient[T-Z]` | 1 | 214 / 49 | 395 | pass; 133.791 |
+| `HailDaemonKitTests\.Rightyo` | 1 | 186 / 17 | 228 | pass; 34.800 |
+| `HailDaemonKitTests\.(Listener\|WebSocket\|Host\|DeviceVoiceStop)` | 1 | 154 / 27 | 286 | pass; 30.849 |
+| `HailDaemonKitTests\.Reply` | 1 | 92 / 22 | 119 | pass with five intentional known issues; 59.353 |
+
+The broad daemon families total **1,097 functions and 1,723 case executions**. The five known issues are the
+existing `ReplyRecipientHandoffWaitTests` failure-reporting injections: one missing-handoff timeout, two
+cancellation registration cases, and timeout/cancellation of the first of two waiters. These are expected known
+issues, not skipped tests or new failures. The focused Swift suites and all Python runs have no known issues or
+skips. Case totals include the known-issue single test as well as parameterized executions.
+
+Host strict SwiftLint and the independent awk 120-column check on all **16 changed Swift files** both exit 0 and
+print nothing (zero-byte logs). No lint suppression is added. The exact commands are the round-2 host commands
+above against main `cc36af90ccb4bfcc3dc6f282ad13f0bc6f8081a8`; `git diff --check` also passes. The final offline
+PR-shape source count remains **4**, using the command and file list above, with no renames or checker exception.
+
+The separate fresh warnings-as-errors wrapper passes in **246.34 seconds** (248 seconds including the wrapper),
+reports **`werr build=0`**, and exits 0. Its full build log has **zero errors and 120 warnings**, all existing CLT
+missing-ModuleCache debug-file warnings, with no other warning category. This is a successful Swift
+warnings-as-errors build, not a claim of warning-free linker debug-info output.
+
+All **18 changed Swift/Python source and test files** match the host's SHA-256 checksums before and after the final
+verification. The workspace `.build`, separate `vw1212b3-werr` directory, and temporary compiler shim/directory are
+removed after verification; no job build/test processes remain. Runtime, build, initial failure, checksum, lint,
+source-count and cleanup logs are retained outside the repository under the task's `vw1212b3` names. No generated
+product is committed. Only the authorized issue read is used; no push, PR, GitHub metadata update, online CI or
+independent-review claim is made.
