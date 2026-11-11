@@ -86,7 +86,9 @@ import Testing
         }
         await rig.finish()
     }
+}
 
+extension ReplyQueuedAudioTargetTests {
     @Test func outstandingJobEvictionRaisesFloorAndConsumptionRemovesRecord() throws {
         let queue = ReplyAudioQueue(), connection = UUID()
         let reply = uncorrelatedDescriptor(audio: true), frame = recipientAudio(reply, sequence: 0)
@@ -108,8 +110,29 @@ import Testing
     private func evict(_ reply: ReplyDescriptor, on listener: WebSocketListener, connection: UUID) async {
         let ledger = await listener.lastInput
         let entry = LastInputLedger.Entry(connection: connection, generation: UUID(), at: .now)
-        for _ in 0..<LastInputLedger.pinLimit { ledger.pin(UUID(), target: RecipientTestRig.target, to: entry) }
+        for _ in 0..<LastInputLedger.pinLimit { ledger.pin(UUID(), target: "recipient:other", to: entry) }
         #expect(ledger.pinned(reply.id, target: RecipientTestRig.target) == nil)
+    }
+
+    @Test func delayedAcceptedMarkUsesCapturedPositionAndCannotLowerNewerMark() throws {
+        let queue = ReplyAudioQueue(), connection = UUID()
+        let old = try queue.ticket()
+        let accepted = queue.captureStop(connection)
+        let fresh = try queue.ticket()
+        queue.stop(connection, targets: ["target"], through: accepted)
+        for destination in [connection, UUID()] {
+            if case .sent(true) = queue.enqueue(fresh, connection: destination, target: "target", { true }) {} else {
+                Issue.record("a delayed stop cannot cover a fresh ticket")
+            }
+        }
+        let newer = queue.captureStop(connection)
+        queue.stop(connection, targets: ["target"], through: newer)
+        queue.stop(connection, targets: ["target"], through: accepted)
+        for ticket in [old, fresh] {
+            if case .stopped = queue.enqueue(ticket, connection: nil, target: "target", { true }) {} else {
+                Issue.record("an older delayed mark cannot lower a newer mark")
+            }
+        }
     }
 
     @Test func targetMarksAreBoundedAndOutliveConnectionMarks() throws {

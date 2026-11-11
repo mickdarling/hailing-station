@@ -205,9 +205,9 @@ private func streamReplyAudio(_ options: ReplyOptions, rendererRoot: URL, pacing
                 sequence: 0, streamID: stream, isFinal: false, bytes: Data([0, 0]), reply: descriptor)))
     }
     // Ordering precedes text; a failed ticket still leaves the text/card delivered before audio fails closed.
+    RequestKeepAlive.begin(requestBound: options.requestID != nil)
     let entry = await ReplyBackground.requestAudioTicket(probe: probe, socket: options.socket)
     var frames = 0, deliveries = 0
-    RequestKeepAlive.begin(requestBound: options.requestID != nil)
     if let frame = textFrame(options, descriptor: descriptor) {
         try await admit(audioBytes: 0, sampleRate: options.sampleRate, pacing: pacing)
         deliveries += try await ReplyBackground.submit(frame, socketURL: options.socket)
