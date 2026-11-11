@@ -305,7 +305,7 @@ public enum Schema {
             "command": .object(["enum": .array(
                 [
                     "hello", "list_targets", "targets", "select", "subscribe", "unsubscribe", "escape", "ping", "pong",
-                    "error", "diagnostic", "stop_playback", "ambient_moved_here", "ambient_heard",
+                    "error", "diagnostic", "stop_playback", "voice_stopped", "ambient_moved_here", "ambient_heard",
                     "ambient_overheard", "overheard_scope", "set_reply_mute", "owner_voice", "ambient_input",
                     "session_update", "session_update_cancel", "health", "health_report", "media_mode",
                     "duck_mode", "set_privacy", "reply_yield", "request_held", "held_decision", "held_resolution"
@@ -368,6 +368,13 @@ public enum Schema {
             commandRule("set_privacy", requires: ["on"]),
             diagnosticPayloadRule,
             stopPlaybackPayloadRule,
+            .object([
+                "if": .object(["properties": .object(["command": .object(["const": .string("voice_stopped")])])]),
+                "then": .object([
+                    "additionalProperties": .bool(false),
+                    "properties": .object(["command": .object([:]), "latency_ms": integer(DeviceVoiceStop.latencyMs)])
+                ])
+            ]),
             replyYieldPayloadRule,
             ambientMovedHerePayloadRule,
             ambientHeardPayloadRule,

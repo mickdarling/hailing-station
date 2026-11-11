@@ -253,6 +253,8 @@ extension WebSocketListener {
             ambient?.modeSnapshot(connection: $0) ?? [.duckMode(on: false), .mediaMode(on: false)]
         }, snapshotPrivacyOff: { [weak self] in
             await self?.privacyOffFromSnapshot(connection: $0) ?? .refused
+        }, deviceVoiceStop: { [weak self] connection, latency in
+            await self?.deviceVoiceStopped(connection: connection, latencyMs: latency)
         })
         await session.attachLastInput(lastInput, recordStoppedReply: { [stoppedReplyIDs] id in
             stoppedReplyIDs.record(id)
@@ -287,6 +289,15 @@ extension WebSocketListener {
     private func privacyOffFromSnapshot(connection: UUID) -> ModeSnapshotPrivacyOff {
         guard !stopped, peers.values.contains(where: { $0.session.connectionID == connection }) else { return .refused }
         return ambient?.privacyOffFromSnapshot(connection: connection) ?? .refused
+    }
+
+    private func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {
+        guard let ambient else {
+            emit(WebSocketListenerEvent(event: "ambient_voice_stop_ignored", sessionID: connection,
+                                         detail: "reason=no_active_stream"))
+            return
+        }
+        await ambient.deviceVoiceStopped(connection: connection, latencyMs: latencyMs)
     }
 
     private func emit(_ event: WebSocketListenerEvent) { log(event) }
@@ -337,6 +348,8 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     /// The connection whose ambient stream feeds the active child, or nil (#230): the device the user is listening on,
     /// the recipient of last resort for a reply with no request reference. The default has none.
     func activeConnection() -> UUID?
+    /// Content-free device report; only the reporting connection's active stream may stop playback.
+    func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async
     /// Whether the owner's spoken media mode (#551) is on for `connection`. The default has none.
     func mediaMode(connection: UUID) -> Bool
     /// Synchronous final enqueue gate for proactive updates. Unknown wiring fails closed. No callback may wait
@@ -353,6 +366,7 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
 
 extension AmbientListenerWiring {
     public func observe(_ diagnostics: DiagnosticLog) async {}
+    public func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {}
     public func stop(connection: UUID, device: AmbientPeerDevice?) { stop(connection: connection) }
 }
 
@@ -645,6 +659,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var onMeetingChange: (@Sendable (MeetingChange) -> Void)?
         /// The wall clock that meeting and media expiries are fixed and restored on (MM-E). Tests only change it.
         var now: @Sendable () -> Date = { Date() }
+        /// Monotonic duplicate-stop window (#1212); injectable for deterministic boundary tests.
+        var voiceStopClock: @Sendable () -> ContinuousClock.Instant = { .now }
         /// Awaited by each acknowledgement before its clip is sent. Nil in the daemon, so nothing waits: tests only
         /// set it, to hold an acknowledgement and show a not-sent notice waits for it (#894 review).
         var acknowledgementHold: (@Sendable () async -> Void)?
@@ -738,6 +754,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// Each live connection's most recent started stream (one entry per connection, dropped when it ends),
         /// so a normally ended stream's late failure is still reported until the connection starts another.
         var latest: [UUID: UUID] = [:]
+        /// One timestamp per reporting live connection, removed at teardown; never persisted.
+        var deviceVoiceStops: [UUID: ContinuousClock.Instant] = [:]
         /// Each connection's last child-admitted destination, for bookkeeping only; clips use session selection.
         /// Removed at teardown, like `inputRoutes`. A refused start never writes this snapshot.
         var streamTargets: [UUID: String] = [:]
@@ -958,6 +976,32 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         }
     }
 
+    /// Same playback stop as a RightyO dismissal; no withdrawal, mode change, or spoken confirmation.
+    public func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {
+        let reason = state.withLock { state -> String? in
+            if state.duck[connection] != nil { return "private" }
+            guard !state.shuttingDown, !state.closed.contains(connection),
+                  let active = state.active, state.latest[connection] == active.stream,
+                  state.runs[active.run]?.connection == connection,
+                  Self.ambientOwner(stream: active.stream, connection: connection,
+                                    newestStart: state.newestStart, queued: state.queue) == connection else {
+                return "no_active_stream"
+            }
+            state.deviceVoiceStops[connection] = configuration.voiceStopClock()
+            return nil
+        }
+        if let reason {
+            emit("ambient_voice_stop_ignored", detail: "reason=\(reason)")
+            return
+        }
+        let listener = state.withLock { $0.listener?.value }
+        let playback = await listener?.stopReplyPlayback(connection: connection) ?? "no_connection"
+        let latency = latencyMs.map { " latency_ms=\($0)" } ?? ""
+        emit("ambient_dismissed", detail: "reason=device-voice-stop scope=playback source=device"
+             + " withdrawn=0 delivered=0 playback=\(playback)" + latency)
+        // Device playback diagnostics already report the actual end to RightyO; do not synthesize another end.
+    }
+
     public func stop(connection: UUID) { stop(connection: connection, device: nil) }
 
     /// Teardown parks a meeting or media mode still on (MM-E), or privacy (#941), before removing it, for next start
@@ -965,6 +1009,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     public func stop(connection: UUID, device: AmbientPeerDevice?) {
         let streams = state.withLock { state -> [UUID] in
             (state.latest[connection], state.inputRoutes[connection], state.streamTargets[connection]) = (nil, nil, nil)
+            state.deviceVoiceStops[connection] = nil
             park(connection: connection, device: device, in: &state)
             state.media.removeValue(forKey: connection)?.timer.cancel()
             endMeeting(connection: connection, reason: "connection", in: &state)
@@ -1688,6 +1733,14 @@ extension AmbientRightyoRouter {
         _ receipt: RightyoDismissReceipt, playback: String, on connection: UUID, target: String,
         listener: WebSocketListener?
     ) async {
+        let deviceStopped = state.withLock { state in
+            guard let stopped = state.deviceVoiceStops[connection] else { return false }
+            return stopped.duration(to: configuration.voiceStopClock()) < .seconds(10)
+        }
+        if deviceStopped {
+            emit("ambient_stop_confirmed", detail: "outcome=skipped reason=device_stopped")
+            return
+        }
         guard let library = configuration.acknowledgements else { return }
         if let reason = AmbientStopConfirmation.skipReason(for: receipt, playback: playback) {
             emit("ambient_stop_confirmed", detail: "outcome=skipped reason=\(reason)")

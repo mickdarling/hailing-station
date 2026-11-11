@@ -100,7 +100,7 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
             switch control {
             case .hello, .ping, .listTargets, .select, .escape, .replyYield: .allow
             case .diagnostic: diagnostics == nil ? .deny : .allow
-            case .overheardScope, .ambientInput, .setPrivacy: ambientAudio == nil ? .deny : .allow
+            case .overheardScope, .ambientInput, .setPrivacy, .voiceStopped: ambientAudio == nil ? .deny : .allow
             case .health: health == nil ? .deny : .allow
             default: .deny
             }
@@ -198,6 +198,7 @@ public actor HostSession {
     /// Listener-owned state readers; absent for callers without ambient wiring. The off callback checks the
     /// live peer before clearing parks, so teardown and shutdown cannot authorize a late snapshot switch.
     let snapshot: @Sendable (UUID) -> [ControlPayload]
+    let deviceVoiceStop: (@Sendable (UUID, Int?) async -> Void)?
     let snapshotOff: (@Sendable (UUID) async -> ModeSnapshotPrivacyOff)?
     let host: HailHost
     let authorizer: any HostSessionAuthorizing
@@ -250,8 +251,10 @@ public actor HostSession {
         modeSnapshot: @escaping @Sendable (UUID) -> [ControlPayload] = { _ in
             [.duckMode(on: false), .mediaMode(on: false)]
         },
-        snapshotPrivacyOff: (@Sendable (UUID) async -> ModeSnapshotPrivacyOff)? = nil
+        snapshotPrivacyOff: (@Sendable (UUID) async -> ModeSnapshotPrivacyOff)? = nil,
+        deviceVoiceStop: (@Sendable (UUID, Int?) async -> Void)? = nil
     ) {
+        self.deviceVoiceStop = deviceVoiceStop
         snapshot = modeSnapshot
         snapshotOff = snapshotPrivacyOff
         self.host = host
@@ -273,28 +276,6 @@ public actor HostSession {
     func receiveDecoded(_ frame: Frame?) async -> HostSessionResult {
         guard let frame else { return failure(.malformed, "malformed or oversized frame", close: true) }
         return await receive(frame)
-    }
-
-    public func receive(_ frame: Frame) async -> HostSessionResult {
-        switch state {
-        case .closed:
-            return HostSessionResult(frames: [], disposition: .close)
-        case .awaitingHello:
-            return await negotiate(frame)
-        case .ready(let version):
-            guard frame.version == version else {
-                return failure(.protocolVersion, "frame version does not match the session", close: true)
-            }
-            // A named route (#636) is chosen before authorization, so the authorizer sees the frame delivered.
-            switch await voiceRoute(frame) {
-            case .refused(let code, let message):
-                return failure(code, message, close: false, version: version)
-            case .deliver(let frame, let routed):
-                return await Self.$voiceRouted.withValue(routed) {
-                    await receiveReady(frame, version: version)
-                }
-            }
-        }
     }
 
     /// The admitting authorizer call for `frame`. An allowed final targeted text frame becomes the only
@@ -371,6 +352,53 @@ public actor HostSession {
 }
 
 extension HostSession {
+    public func receive(_ frame: Frame) async -> HostSessionResult {
+        if case .control(.voiceStopped) = frame.payload, !isReadyForVoiceStop {
+            replyEvent(WebSocketListenerEvent(event: "ambient_voice_stop_ignored", sessionID: connectionID,
+                                               detail: "reason=not_ready"))
+            return HostSessionResult(frames: [], disposition: state == .closed ? .close : .keepOpen)
+        }
+        switch state {
+        case .closed:
+            return HostSessionResult(frames: [], disposition: .close)
+        case .awaitingHello:
+            return await negotiate(frame)
+        case .ready(let version):
+            guard frame.version == version else {
+                return failure(.protocolVersion, "frame version does not match the session", close: true)
+            }
+            if case .control(.voiceStopped(let latency)) = frame.payload {
+                return await receiveVoiceStop(frame, latency: latency)
+            }
+            // A named route (#636) is chosen before authorization, so the authorizer sees the frame delivered.
+            switch await voiceRoute(frame) {
+            case .refused(let code, let message):
+                return failure(code, message, close: false, version: version)
+            case .deliver(let frame, let routed):
+                return await Self.$voiceRouted.withValue(routed) {
+                    await receiveReady(frame, version: version)
+                }
+            }
+        }
+    }
+
+    private func receiveVoiceStop(_ frame: Frame, latency: Int?) async -> HostSessionResult {
+        let authorized = await authorizer.authorize(frame) == .allow
+        guard authorized, let deviceVoiceStop else {
+            let reason = !authorized && authorizer.ambientAudio != nil ? "unauthorized" : "no_active_stream"
+            replyEvent(WebSocketListenerEvent(event: "ambient_voice_stop_ignored", sessionID: connectionID,
+                                               detail: "reason=\(reason)"))
+            return HostSessionResult(frames: [])
+        }
+        await deviceVoiceStop(connectionID, latency)
+        return HostSessionResult(frames: [])
+    }
+
+    private var isReadyForVoiceStop: Bool {
+        if case .ready = state { return true }
+        return false
+    }
+
     private func negotiate(_ frame: Frame) async -> HostSessionResult {
         guard case .control(.hello(let hello)) = frame.payload else {
             return failure(.malformed, "first frame must be hello", close: true)
@@ -389,7 +417,8 @@ extension HostSession {
         let info = HelloInfo(
             versions: VersionNegotiation.supported,
             capabilities: authorizer.capabilities + [ReplySegments.capability, ModeSnapshot.capability]
-                + (sessionUpdatesEnabled ? [SessionUpdateCard.capability, SessionUpdateCard.audioCapability] : []),
+                + (sessionUpdatesEnabled ? [SessionUpdateCard.capability, SessionUpdateCard.audioCapability] : [])
+                + (deviceVoiceStop != nil && authorizer.ambientAudio != nil ? [DeviceVoiceStop.capability] : []),
             deviceName: hostName
         )
         // WebSocketPeer sends this whole batch before processing the next frame. Reading the snapshot is

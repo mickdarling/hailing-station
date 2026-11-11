@@ -626,3 +626,39 @@ The device shows privacy as on only once a `duck_mode` notice says so on a live 
 switch, connecting, a stale or lost connection, an older host) it shows not private. An older host does not advertise
 the capability, so a device never sends the command there (an older host would refuse it). The decoder and the schema
 refuse any other key, and the decoder refuses a missing or non-boolean `on`.
+
+## Device local voice-stop report (#1212, host slice)
+
+`voice_stopped` is a device-to-host control report that playback has already stopped locally. Its only optional
+field is `latency_ms`, an integer from 0 through 60,000 measured on the device from the end of the spoken word.
+Omit it when unavailable. Explicit null, other types, out-of-range values, and all other payload keys are refused.
+It carries no words, audio, identity, target, or withdrawal authority.
+
+```json
+{"command":"voice_stopped","latency_ms":123}
+```
+
+The **host** advertises `device_voice_stop` in its negotiated hello only when its ambient gate and report handler
+are wired. A device must send this command only after seeing that capability; older hosts reject unknown commands.
+`DeviceVoiceStop.report(latencyMs:hostCapabilities:)` returns no report without that capability or for invalid
+latency. The caller must additionally enforce privacy and stop local playback before reporting. This is a compatible
+v1 extension (`protocol:compatible` for a future PR); existing frames and capability directions are unchanged.
+
+The host accepts the report only on its negotiated, ready connection with that connection's active ambient stream
+and privacy off. It ignores other reports with `ambient_voice_stop_ignored reason=not_ready`, `reason=private`, or
+`reason=no_active_stream`; an ambient-capable authorizer can also refuse with `reason=unauthorized`. It uses the
+existing playback stop to retire that connection's in-flight replies and may
+send an idempotent `stop_playback` back. The existing `ambient_dismissed` event records
+`reason=device-voice-stop scope=playback source=device withdrawn=0 delivered=0 playback=<token>` and optional
+`latency_ms`. Playback tokens retain their existing meaning. No sentence or confirmation clip is sent for this report.
+
+For ten seconds after an accepted report, measured with a host monotonic clock, a RightyO playback-scope dismissal
+on the same connection still applies its usual dismissal and playback stop, but skips its spoken #418 confirmation
+and logs `ambient_stop_confirmed outcome=skipped reason=device_stopped`. At ten seconds and beyond, normal
+confirmation rules apply. Repeated accepted reports restart the window; connection teardown removes it.
+Device playback diagnostics remain the source of actual playback-end reports to RightyO; the report adds no second
+reply-ended notification.
+
+This slice adds the protocol and host handling only. Device detection, app wiring, physical latency/self-trigger
+proof, and clearing detached reply jobs waiting on the reply-audio lock remain later work. It does not enable a
+stop detector or change its default.

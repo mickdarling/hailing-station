@@ -30,7 +30,7 @@ func ambientRig(
     onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil,
     childMade: (@Sendable (UUID) -> Void)? = nil,
     gapClock: (@Sendable () -> ContinuousClock.Instant)? = nil, privacy: PrivacyOffSettings = .init(),
-    admissionBinding: String? = nil
+    admissionBinding: String? = nil, voiceStopClock: (@Sendable () -> ContinuousClock.Instant)? = nil
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make(guardPatterns: guardPatterns)
     let connected = ConnectedPeerIDs()
@@ -48,7 +48,8 @@ func ambientRig(
     if let notSentQueued { configuration.notSentQueued = { notSentQueued.note($0) } }
     (configuration.notSentPlaying, configuration.childMade) = (notSentPlaying?.wait, childMade)
     (configuration.privacyProbeTimeout, configuration.offScoping) = (privacy.probeTimeout, privacy.offScoping)
-    if let gapClock { configuration.gapClock = gapClock }
+    configuration.gapClock = gapClock ?? { .now }
+    configuration.voiceStopClock = voiceStopClock ?? { .now }
     configuration.notes.shortcuts = shortcuts
     let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
     let sink = GuardClockAmbientSink(router: router, admissionBinding: admissionBinding,
@@ -167,7 +168,6 @@ func audio(_ stream: UUID, _ sequence: Int, final: Bool = false) -> Frame {
     sessionFrame(target: RecipientTestRig.target,
                  payload: .audio(ambientSegment(stream: stream, sequence: sequence, isFinal: final)))
 }
-
 func eventually(_ condition: @Sendable () async -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + .seconds(15)
     while !Task.isCancelled, ContinuousClock.now < deadline {
