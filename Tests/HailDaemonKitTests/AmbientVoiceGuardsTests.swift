@@ -30,16 +30,20 @@ import Testing
         router.ambientAudio(.segment(stream: stream, sequence: 0, bytes: Data(count: 3_200)))
         router.ambientAudio(.ended(stream: stream, reason: .final))
         await boundedSettle(router)
-        let deliveries = await adapter.deliveries
+        // Observe the branch's outcome before checking its side effects.
         if setting == .off {
+            try #require(await eventually { await adapter.deliveries.count == 1 })
+            let deliveries = await adapter.deliveries
             #expect(deliveries.count == 1)
             #expect(deliveries.first?.contains(VoiceGuardsRoute.words) == true)
             #expect(route.log.lines.count == 1)
             #expect(try route.log.object()["rules"] as? [String] == [VoiceGuardsRoute.rule.name])
         } else {
-            #expect(deliveries.isEmpty)
+            try #require(await eventually {
+                events.details("ambient_request_refused").contains { $0.contains("confirmation_required") }
+            })
+            #expect(await adapter.deliveries.isEmpty)
             #expect(route.log.lines.isEmpty)
-            #expect(events.details("ambient_request_refused").contains { $0.contains("confirmation_required") })
         }
         await router.shutdown()
         await route.listener.stop()
