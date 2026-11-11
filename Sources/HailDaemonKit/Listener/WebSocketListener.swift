@@ -671,6 +671,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// How long a child launched start-private (#735 S-2b) has to emit `started` before it is killed.
         public var startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline
         var gapClock: @Sendable () -> ContinuousClock.Instant = { .now }
+        /// Production keeps the fixed notice bound; synthetic tests can control their wait independently.
+        var sessionChangeNoticeTimeout: TimeInterval = AmbientRightyoRouter.sessionChangeNoticeDeadline
         /// How long each child has to ack a `{"duck":true}` (#735 S-8). Not configurable: tests only shorten it.
         var ackDeadline: TimeInterval = RightyoAmbientPipeline.ackDeadline
         /// The bound on a privacy entry's announcement (#735 S-8 HS-C), nil for start + ack + margin (round 3: never a
@@ -717,6 +719,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     /// Runs at once, including those whose child is reaped but whose dispatch is still typing. A run stuck in a
     /// dispatch therefore blocks new starts only once this many are stuck.
     public static let maxRuns = 4
+    /// A fixed safety notice must never retain a run indefinitely behind a stalled acknowledgement.
+    static let sessionChangeNoticeDeadline: TimeInterval = 2
     /// A retired child forced out to make room for a new device's stream (#366) gets this long after EOF, then this
     /// long after SIGTERM, before SIGKILL: about a second, then it is reaped.
     public static let forcedStopGrace: TimeInterval = 0.5
@@ -890,8 +894,14 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             // would still be dead.
             case .started(let stream, let connection, _):
                 state.latest[connection] = stream
-            // Taken over (#366): the old stream's late failure is not reported to its device as a stop.
-            case .ended(let stream, .superseded): state.latest = state.latest.filter { $0.value != stream }
+            // These ends already report a refusal, supersede the stream or tear down its peer. Revoke before
+            // queueing: a held notice must not outlive an ending even while the worker is making room.
+            case .ended(let stream, let reason) where reason != .final && reason != .idle:
+                state.latest = state.latest.filter { $0.value != stream }
+                for (id, run) in state.runs where run.stream == stream {
+                    state.runs[id]?.failureReported = true
+                    run.sessionChange?.finish()
+                }
             default: break
             }
             if case .started(let stream, _, _) = event { state.newestStart = stream }
@@ -972,7 +982,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             Self.pruneClosed(in: &state)
             return streams
         }
-        streams.forEach { retire($0) }
+        for id in streams {
+            state.withLock { $0.runs[id]?.sessionChange }?.finish()
+            retire(id)
+        }
         taskProgressOwnerChanged()
     }
 
@@ -988,6 +1001,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             state.active = nil
             state.latest = [:]
             state.streamTargets = [:]
+            for run in state.runs.values { run.sessionChange?.finish() }
             return state.runs.values.map(\.pipeline)
         }
         taskProgressOwnerChanged()
@@ -1091,6 +1105,8 @@ extension AmbientRightyoRouter {
         var replaced = false
         /// Its child has ended and its end is being logged; a reload no longer replaces it (#405).
         var ending = false
+        var sessionChange: AmbientSessionChangeWait?
+        var failureReported = false
         /// Order of retirement (EOF sent), so the oldest retired child is the one forced out (#366).
         var retiredAt: Int?
         var forced = false
@@ -1173,7 +1189,11 @@ extension AmbientRightyoRouter {
 
     /// The sequence stays beside its PCM until the same ordered child enqueue accepts both.
     private func forward(stream: UUID, sequence: Int, bytes: Data) {
-        let pipeline = state.withLock { $0.active?.stream == stream ? $0.active?.pipeline : nil }
+        let pipeline = state.withLock { state -> RightyoAmbientPipeline? in
+            guard let active = state.active, active.stream == stream,
+                  state.runs[active.run]?.ending == false else { return nil }
+            return active.pipeline
+        }
         guard let pipeline else { return }
         let result = pipeline.send(audio: bytes, sequence: sequence)
         // Refused input means the child is gone; overload still drops oldest audio without blocking the gate.
@@ -1300,8 +1320,10 @@ extension AmbientRightyoRouter {
     func inputClosed(_ stream: UUID, pipeline: RightyoAmbientPipeline) {
         let closed = state.withLock { state -> (run: UUID, connection: UUID)? in
             guard let active = state.active, active.stream == stream, active.pipeline === pipeline,
+                  state.runs[active.run]?.ending == false,
                   let connection = state.runs[active.run]?.connection else { return nil }
             state.active = nil
+            state.runs[active.run]?.failureReported = true
             return (active.run, connection)
         }
         guard let (run, connection) = closed else { return }
@@ -1413,13 +1435,48 @@ extension AmbientRightyoRouter {
         settings.routing = voiceRouting(listener)
         settings.onVoiceRouteRefused = voiceRouteRefused(on: connection, target: target,
                                                         listener: listener, notices: notices)
-        let dispatcher = AmbientListenerDispatcher(listener: listener, audit: configuration.audit, selection: selection,
-                                                   streamTarget: target, refusalNotices: notices,
-                                                   binding: destination.binding,
-                                                   policyGeneration: destination.policyGeneration)
+        let dispatcher = dispatcher(for: destination, connection: connection, selection: selection,
+                                    listener: listener, notices: notices, mark: mark)
         let pipeline = try RightyoAmbientPipeline(configuration: settings, dispatcher: dispatcher)
         mark.set(pipeline.privacyControl)
+        mark.pipeline = pipeline
         return pipeline
+    }
+
+    // swiftlint:disable:next function_parameter_count
+    private func dispatcher(
+        for destination: Destination, connection: UUID, selection: UUID?, listener: WebSocketListener,
+        notices: AmbientRefusalNotices, mark: AmbientRunMark
+    ) -> AmbientListenerDispatcher {
+        let refused = deliveryRefused(on: connection, target: destination.target, listener: listener, notices: notices)
+        let bindingChanged: @Sendable () async -> Void = { [weak self] in
+            let notice = AmbientSessionChangeWait(timeout: self?.configuration.sessionChangeNoticeTimeout
+                ?? AmbientRightyoRouter.sessionChangeNoticeDeadline)
+            // Claim the exact child before suspending. Input closure, microphone audio and reload now defer.
+            let claimed = self?.state.withLock { state -> UUID? in
+                guard let pipeline = mark.pipeline,
+                      let id = state.runs.first(where: { $0.value.pipeline === pipeline })?.key,
+                      state.runs[id]?.replaced == false, state.runs[id]?.ending == false,
+                      state.runs[id]?.failureReported == false else { return nil }
+                state.runs[id]?.ending = true
+                state.runs[id]?.sessionChange = notice
+                return id
+            }
+            guard let id = claimed else { return }
+            self?.retire(id)
+            await AmbientSessionChangeWait.$current.withValue(notice) {
+                let task = refused(nil, .bindingMismatch)
+                await notice.wait()
+                // Cancellation starts PreparedWebSocketReply's abandoned-send watchdog as well.
+                task.cancel()
+                notices.acknowledgement?.cancel()
+            }
+        }
+        let configured = destination.target == configuration.target
+        return AmbientListenerDispatcher(listener: listener, audit: configuration.audit, selection: selection,
+                                         streamTarget: destination.target, refusalNotices: notices,
+                                         binding: destination.binding, policyGeneration: destination.policyGeneration,
+                                         bindingChanged: configured ? bindingChanged : nil)
     }
 
     private func voiceRouting(_ listener: WebSocketListener) -> RightyoVoiceRouting? {
@@ -1529,7 +1586,7 @@ extension AmbientRightyoRouter {
         return AmbientHeardRequests(show: { [weak listener] request, text in
             await listener?.showAmbientHeard(connection: connection, target: target, text: text, request: request)
         }, finish: { [weak listener] request, refusal in
-            if let refusal { refused(request, refusal) } else if let request {
+            if let refusal { _ = refused(request, refusal) } else if let request {
                 await listener?.finishHeardRequest(request, connection: connection)
             }
         })
@@ -1647,7 +1704,9 @@ extension AmbientRightyoRouter {
         emit("ambient_stop_confirmed", detail: "clip=\(pick.persona)/\(pick.index) outcome=\(outcome)")
     }
 
-    private func run(_ pipeline: RightyoAmbientPipeline, id: UUID, stream: UUID, connection: UUID) async {
+    private func run(
+        _ pipeline: RightyoAmbientPipeline, id: UUID, stream: UUID, connection: UUID
+    ) async {
         var failure: String?
         let detail: String
         do {
@@ -1676,24 +1735,26 @@ extension AmbientRightyoRouter {
             return state.runs[id]?.replaced == true
         }
         emit("ambient_ended", detail: (replacedNow ? "replaced " : "") + detail)
-        let (stillActive, replaced, listener, waiters) = state.withLock { state in
-            let replaced = state.runs.removeValue(forKey: id)?.replaced ?? false
+        let (stillActive, replaced, reported, sessionChanged, listener, waiters) = state.withLock { state in
+            let run = state.runs.removeValue(forKey: id)
+            let replaced = run?.replaced ?? false
             Self.pruneClosed(in: &state)
             // By identity, not stream: after a reload (#405) the stream is the same but the active run is not.
             let active = state.active?.run == id
             if active { state.active = nil }
             let waiters = state.runs.isEmpty ? Array(state.drainWaiters.values) : []
             if state.runs.isEmpty { state.drainWaiters = [:] }
-            return (active, replaced, state.shuttingDown ? nil : state.listener?.value, waiters)
+            return (active, replaced, run?.failureReported == true, run?.sessionChange != nil,
+                    state.shuttingDown ? nil : state.listener?.value, waiters)
         }
         waiters.forEach { $0.resume() }
         if stillActive { taskProgressOwnerChanged() }
         // A clean run whose stream already ended is the normal path; anything else ends the stream and tells
         // the phone, even a refusal after the stream ended (for example confirmation required). A run a reload
         // replaced is only logged above: its stream lives on in the new child, so even a non-zero exit stays here.
-        guard !replaced, failure != nil || stillActive, let listener else { return }
-        await listener.ambientFailed(stream: stream, connection: connection,
-                                     message: "ambient stopped: \(failure ?? "listener exited")")
+        guard !replaced, !reported, failure != nil || stillActive, let listener else { return }
+        let message = sessionChanged ? AmbientSessionChange.stopped : "ambient stopped: \(failure ?? "listener exited")"
+        await listener.ambientFailed(stream: stream, connection: connection, message: message)
     }
 
     private func refuse(_ stream: UUID, connection: UUID, target: String, reason: String) {
@@ -1834,13 +1895,15 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     let refusalNotices: AmbientRefusalNotices?
     let binding: String?
     let policyGeneration: TargetPolicyGeneration?
+    let bindingChanged: (@Sendable () async -> Void)?
 
     init(listener: WebSocketListener, audit: AuditLog?, selection: UUID? = nil, streamTarget: String? = nil,
          refusalNotices: AmbientRefusalNotices? = nil, binding: String? = nil,
-         policyGeneration: TargetPolicyGeneration? = nil) {
+         policyGeneration: TargetPolicyGeneration? = nil, bindingChanged: (@Sendable () async -> Void)? = nil) {
         (self.listener, self.audit, self.selection) = (listener, audit, selection)
         (self.streamTarget, self.refusalNotices) = (streamTarget, refusalNotices)
         (self.binding, self.policyGeneration) = (binding, policyGeneration)
+        self.bindingChanged = bindingChanged
     }
 
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
@@ -1854,20 +1917,27 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     func dispatch(_ request: LocalDispatchRequest, routed: Bool) async throws -> UUID? {
         let (prepared, reference) = await listener.referenceAmbient(request)
         let from = streamTarget.flatMap { routed && $0 != prepared.target ? $0 : nil }
-        if from == nil, let binding, prepared.binding != binding { throw LocalDispatchRefusal.bindingMismatch }
+        if from == nil, let binding, prepared.binding != binding {
+            await bindingChanged?()
+            throw LocalDispatchRefusal.bindingMismatch
+        }
         if let audit {
             do {
                 _ = try await audit.record(.pushed(tool: from == nil ? "ambient-dispatch" : "ambient-dispatch-routed",
                                                    target: prepared.target, bytes: prepared.text.utf8.count))
             } catch { throw LocalReplyRefusal.auditFailure }
         }
+        let change = AmbientBindingChange()
         do {
             let retained = RetainedDeliveryStages(generation: from == nil ? policyGeneration : nil)
-            return try await HostSession.$ambientDeliveryStages.withValue(retained) {
-                try await listener.dispatchAmbient(prepared, reference: reference, selection: selection,
-                                                   routedFrom: from)
+            return try await AmbientBindingChange.$current.withValue(change) {
+                try await HostSession.$ambientDeliveryStages.withValue(retained) {
+                    try await listener.dispatchAmbient(prepared, reference: reference, selection: selection,
+                                                       routedFrom: from)
+                }
             }
         } catch let refusal as LocalDispatchRefusal {
+            if refusal == .bindingMismatch, from == nil, change.isLiveChange { await bindingChanged?() }
             if case .blockedByDialog = refusal {
                 let name: String
                 if let routedName = listener.authorizer.voiceRoutes?.route(for: prepared.target)?.name {
@@ -2019,9 +2089,9 @@ extension AmbientRightyoRouter {
 
     /// Per-request delivery refusals, through the existing heard-turn and ordered, privacy-held notice path.
     /// Capture sanitized rule tokens before the next request resets the per-run evidence. Never log text or turn ids.
-    fileprivate func deliveryRefused(
+    func deliveryRefused(
         on connection: UUID, target: String, listener: WebSocketListener, notices: AmbientRefusalNotices
-    ) -> @Sendable (UUID?, LocalDispatchRefusal) -> Void {
+    ) -> @Sendable (UUID?, LocalDispatchRefusal) -> Task<Void, Never> {
         return { [weak self, weak listener] request, refusal in
             let acknowledged = notices.acknowledgement
             let line: String, persona: String, event: String, token: String
@@ -2034,32 +2104,38 @@ extension AmbientRightyoRouter {
                 event = "ambient_delivery_refused"
                 token = "reason=\(refusal.rawValue)"
             } else {
-                playNotSent = true
-                switch refusal {
-                case .confirmationRequired:
-                    line = "request requires confirmation at the Mac; nothing was sent"
-                    persona = AmbientStopConfirmation.needsConfirmation
-                    event = "ambient_request_refused"
-                    token = "reason=confirmation_required rules=\(RightyoGuardRefusal.current?.ruleTokens ?? "none")"
-                case .capacityExceeded:
-                    line = "request capacity reached; nothing was sent"
-                    persona = AmbientStopConfirmation.notSent
-                    event = "ambient_request_refused"
-                    token = "reason=capacity_exceeded rules=none"
-                default:
-                    line = HostDeliveryOutcome.inputPendingReason
-                    persona = AmbientStopConfirmation.notSent
-                    event = "ambient_delivery_refused"
-                    token = "reason=\(refusal.rawValue)"
-                }
+                playNotSent = refusal != .bindingMismatch
+                ((line, persona), (event, token)) = Self.deliveryRefusalMessage(refusal)
             }
-            notices.chain.enqueue { [weak self, weak listener] in
+            return notices.chain.queued { [weak self, weak listener] in
+                defer { AmbientSessionChangeWait.current?.finish() }
                 guard let self else { return }
                 let (shown, confirm) = await tellNotSent((line, target), after: acknowledged, on: connection,
                                                        listener: listener,
                                                        request: request, persona: persona, playNotSent: playNotSent)
                 emit(event, connection: connection, detail: "\(token) shown=\(shown) confirm=\(confirm)")
             }
+        }
+    }
+
+    private static func deliveryRefusalMessage(
+        _ refusal: LocalDispatchRefusal
+    ) -> ((String, String), (String, String)) {
+        switch refusal {
+        case .bindingMismatch:
+            return ((AmbientSessionChange.notice, AmbientStopConfirmation.notSent),
+                    ("ambient_delivery_refused", "reason=bindingMismatch"))
+        case .confirmationRequired:
+            return (("request requires confirmation at the Mac; nothing was sent",
+                     AmbientStopConfirmation.needsConfirmation),
+                    ("ambient_request_refused",
+                     "reason=confirmation_required rules=\(RightyoGuardRefusal.current?.ruleTokens ?? "none")"))
+        case .capacityExceeded:
+            return (("request capacity reached; nothing was sent", AmbientStopConfirmation.notSent),
+                    ("ambient_request_refused", "reason=capacity_exceeded rules=none"))
+        default:
+            return ((HostDeliveryOutcome.inputPendingReason, AmbientStopConfirmation.notSent),
+                    ("ambient_delivery_refused", "reason=\(refusal.rawValue)"))
         }
     }
 
@@ -2074,6 +2150,7 @@ extension AmbientRightyoRouter {
     ) async -> (shown: String, confirm: String) {
         let (line, target) = notice
         await acknowledgement?.value
+        guard AmbientSessionChangeWait.current?.isOpen != false else { return ("expired", "suppressed_effects") }
         let shown = await listener?.showRouteRefusal(line, target: target, connection: connection,
                                                       request: request)
             ?? "no_connection"
@@ -2680,9 +2757,68 @@ private struct DuckChange {
 /// and the state holds no pipeline, so nothing is kept alive.
 final class AmbientRunMark: Sendable {
     private let held = Mutex<AmbientDuckControl?>(nil)
+    private struct Child: Sendable { weak var pipeline: RightyoAmbientPipeline? }
+    private let child = Mutex(Child())
+    var pipeline: RightyoAmbientPipeline? {
+        get { child.withLock { $0.pipeline } }
+        set { child.withLock { $0.pipeline = newValue } }
+    }
 
     func set(_ duck: AmbientDuckControl) { held.withLock { $0 = duck } }
     var duck: AmbientDuckControl? { held.withLock { $0 } }
+}
+
+/// Per-dispatch evidence preserves the prior terminal refusal for unavailable targets.
+final class AmbientBindingChange: Sendable {
+    @TaskLocal static var current: AmbientBindingChange?
+    private let live = Mutex(true)
+    var isLiveChange: Bool { live.withLock { $0 } }
+    func unavailable() { live.withLock { $0 = false } }
+}
+
+/// One bounded notice attempt. Expiry revokes submission under the same lock used by peer.post, so a
+/// chain still waiting on an external acknowledgement cannot post a late notice after the ending.
+final class AmbientSessionChangeWait: Sendable {
+    @TaskLocal static var current: AmbientSessionChangeWait?
+    private struct State {
+        var open = true
+        var waiter: CheckedContinuation<Void, Never>?
+    }
+    private let state = Mutex(State())
+    private static let deadlines = DispatchQueue(label: "hail.ambient.session-change-deadline")
+    private let timeout: TimeInterval
+
+    init(timeout: TimeInterval = AmbientRightyoRouter.sessionChangeNoticeDeadline) { self.timeout = timeout }
+    var isOpen: Bool { state.withLock { $0.open } }
+
+    func submit(_ work: () -> Bool) -> Bool {
+        state.withLock { $0.open ? work() : false }
+    }
+
+    func wait() async {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let ended = state.withLock { state in
+                    guard state.open else { return true }
+                    state.waiter = continuation
+                    return false
+                }
+                if ended { continuation.resume() }
+                Self.deadlines.asyncAfter(deadline: .now() + timeout) {
+                    self.finish()
+                }
+            }
+        } onCancel: { self.finish() }
+    }
+
+    func finish() {
+        let waiter = state.withLock { state in
+            state.open = false
+            defer { state.waiter = nil }
+            return state.waiter
+        }
+        waiter?.resume()
+    }
 }
 
 /// One child's request refusals share one chain, so they are told in the order said. Each waits for the latest

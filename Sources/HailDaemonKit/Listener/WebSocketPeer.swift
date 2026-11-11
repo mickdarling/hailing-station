@@ -258,12 +258,15 @@ extension WebSocketPeer {
               let permit = replyTransport.issuePermit() else { return false }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "hail.frame", metadata: [metadata])
-        return permit.performIfCurrent {
-            connection.send(
-                content: data, contentContext: context, isComplete: true, completion: .contentProcessed { _ in }
-            )
-            return true
-        } ?? false
+        let submit = {
+            permit.performIfCurrent {
+                self.connection.send(
+                    content: data, contentContext: context, isComplete: true, completion: .contentProcessed { _ in }
+                )
+                return true
+            } ?? false
+        }
+        return AmbientSessionChangeWait.current.map { $0.submit(submit) } ?? submit()
     }
 }
 
