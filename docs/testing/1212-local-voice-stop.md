@@ -1,8 +1,9 @@
 # Local voice stop: protocol and host evidence
 
-Part of #1212, within #1211. This is PR 1a's protocol and haild slice. All fixtures and evidence here are synthetic;
-there is no detector, app change, simulator or physical-device proof, live captured-output round trip, installation,
-or upload. The remaining device and queue requirements of #1212 are deferred explicitly below.
+Part of #1212, within #1211. This records PR 1a's protocol/host slice and PR 1b's queued-audio slice below.
+All fixtures and evidence here are synthetic; there is no detector, app change, simulator or physical-device proof,
+live captured-output round trip, installation or upload. PR 1a's records and deferrals are historical; the current
+1b section records queue behavior and the remaining device requirements stay deferred.
 
 ## Implemented boundary
 
@@ -373,8 +374,8 @@ router or gate teardown.
 `WebSocketListener+SessionUpdateAudio.swift` / `WebSocketListener+SessionUpdate.swift`; fixing its revision would
 require a fifth production file in this slice. Within one second of an accepted device stop, session-update speech
 can still leave a follow-up outbound `stop_playback` coalesced because that path does not advance
-`replyFlightRevision`. The device already halted locally; this bound is not a claim that session-update revision
-tracking is fixed. Proposed split: bump the revision at session-update audio admission with a dedicated regression.
+`replyFlightRevision`. A device report is defined to follow its local halt; this bound is not a claim that
+session-update revision tracking is fixed. Proposed split: bump the revision at session-update audio admission with a dedicated regression.
 
 The checker exclusions and rename handling give four production files, relative to the specified PR 1a head:
 `HostReplyDelivery.swift`, `WebSocketListener.swift`, `LocalReplyEndpoint+Submission.swift`, `ReplyCommand.swift`.
@@ -402,3 +403,78 @@ No review, GitHub check or PR-shape network validation is claimed.
 
 All new negative assertions follow completed jobs/handlers or explicit continuation and socket barriers, without
 `settle()`-then-negative assertions, detached tasks with synchronous waits, or fixed settling delays.
+
+
+### 1b verification commands and load controls
+
+Verification uses the fresh Dev Work VM checkout `vw1212b`, seeded entirely from local git bundles at the requested
+PR 1a base, then synchronized to source/test commit `5221aebe7d98cd5eaa999a8295719ca5651fb7e3`. Subsequent changes
+record results in documentation only. All phases run sequentially after the shared lane is idle, at background
+priority, with an outer 590-second process-group deadline and signal/finally TERM/KILL cleanup. SwiftPM uses four
+jobs and each compiler one worker; automatic resolution is disabled. No dependency fetch, synthetic load workers,
+installation or upload occurs. The separate wrapper build starts fresh in `vw1212b-werr`.
+
+Use the round-1 `flags` array above (the same CLT Testing framework/plugin/linker flags) with these exact commands;
+each build, test selection, CLI run and wrapper is a separate capped phase:
+
+```bash
+taskpolicy -b swift build --build-tests "${flags[@]}" -Xswiftc -warnings-as-errors
+# Run this selection three times:
+taskpolicy -b swift test --skip-build --no-parallel "${flags[@]}" --filter \
+  'ReplyQueuedAudio|DeviceVoiceStop|AmbientWiringStopConfirmation|HostPlaybackStop|AmbientWiringVoiceMute|LocalReplyEndpoint|LocalVoiceGuardsStatus'
+taskpolicy -b python3 -m unittest discover -s Tests/ReplyCLITests
+# One invocation per selection below:
+taskpolicy -b swift test --skip-build --no-parallel "${flags[@]}" --filter "$selection"
+# With the external Swift shim appending -Xswiftc -j1 --disable-automatic-resolution:
+/bin/zsh ~/codex-workspaces/vw-werr.sh vw1212b
+```
+
+The selections exactly cover `HailDaemonKitTests` Ambient, Rightyo, Listener, WebSocket, HostSession, Host, Reply
+and DeviceVoiceStop families; the `Host` prefix includes all `HostSession` suites. The focused selection also
+covers the changed endpoint path and all device-stop/protocol suites. The wrapper's build log and actual
+`werr build=0` marker are checked separately from its shell exit status.
+
+
+The final source/test build with warnings-as-errors passed in **19.12 seconds**. Initial iterations corrected a
+missing explicit Swift optional type, actor-isolated test inspection, socket path lengths, and a test helper that
+captured router events but not listener events. A local bundle-ref typo interrupted one launch before final
+verification; the listed runs use the confirmed committed head and matching host/VM source checksums.
+
+| Selection / phase | Runs | Functions / suites | Case executions per run | Result / seconds |
+| --- | ---: | ---: | ---: | --- |
+| Focused selection above | 3 | 88 / 19 | 133 | pass; 37.003, 36.790, 37.737 |
+| Full Reply CLI | 1 | 132 Python tests | — | pass; 239.768 |
+| `HailDaemonKitTests\.Ambient[A-M]` | 1 | 134 / 25 | 207 | pass; 106.682 |
+| `HailDaemonKitTests\.Ambient[N-S]` | 1 | 317 / 65 | 488 | pass; 339.992 |
+| `HailDaemonKitTests\.Ambient[T-Z]` | 1 | 214 / 49 | 395 | pass; 134.558 |
+| `HailDaemonKitTests\.Rightyo` | 1 | 186 / 17 | 228 | pass; 33.560 |
+| `HailDaemonKitTests\.(Listener\|WebSocket\|Host\|DeviceVoiceStop)` | 1 | 154 / 27 | 286 | pass; 31.915 |
+| `HailDaemonKitTests\.Reply` | 1 | 83 / 19 | 107 | pass with five intentional known issues; 53.388 |
+
+Every selection started tests and exited 0. The broad daemon selections comprise **1,088 functions and 1,711 case
+executions**, including all required families. The five known issues are expected `withKnownIssue` injections in
+`ReplyRecipientHandoffWaitTests`: one missing-handoff timeout, two cancellation cases, and the timeout/cancellation
+cases checking that a second waiter survives. They are existing assertions of the failure-reporting contract,
+not new failures, skips or unresolved queue-stop findings. The new and changed focused suites have no known issues.
+
+The separate fresh warnings-as-errors wrapper passed in **237.87 seconds**, reported **`werr build=0`**, and exited
+0. Its full build log has **zero errors**, 120 CLT missing-module-cache debug-file warning lines, and no other
+warning category. This is a successful Swift warnings-as-errors build with the existing linker debug-info
+limitation recorded, not a claim of warning-free linker output.
+
+Host strict SwiftLint and the 120-column check on **all 12 changed Swift files** both exited 0 and produced empty
+logs (zero bytes). No lint suppression was added. The exact host commands, relative to this slice's base, are:
+
+```bash
+swift_files=( $(git diff --name-only ad25cb8c7ea339ac0455a191747e5caf997283c3 HEAD -- '*.swift') )
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swiftlint lint --strict --quiet "${swift_files[@]}"
+awk 'length($0)>120 {print FILENAME ":" FNR ":" length($0)}' "${swift_files[@]}"
+git diff --check ad25cb8c7ea339ac0455a191747e5caf997283c3 HEAD
+```
+
+SHA-256 comparison matched all **14 changed Swift/Python source and test files** between host and VM before and
+after verification. The workspace `.build`, the separate `vw1212b-werr` build directory, and the temporary compiler
+shim/directory were removed after verification; no job build/test processes remained. Build, runtime, wrapper,
+checksum and cleanup logs are retained outside the repository under the task's `vw1212b` log names. No generated
+build product is committed. Only the authorized `gh issue view 1212 --comments` and `gh pr view 1214` calls were
+made; there was no push, PR, GitHub metadata change, online PR-shape/CI check or independent-review claim.
