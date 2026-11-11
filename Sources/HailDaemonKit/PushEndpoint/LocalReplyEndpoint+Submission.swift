@@ -116,6 +116,8 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
     public var progress: LocalTaskProgressReport?
     public var voiceGuards: LocalVoiceGuardsReport?
     public var replyAudio: LocalReplyAudioReport?
+    /// Presence matters for version negotiation: an explicit null is not an older daemon response.
+    public private(set) var isReplyAudio = false
 
     public init(delivered: Int, error: String? = nil, code: LocalReplyRefusal? = nil) {
         self.delivered = delivered
@@ -164,6 +166,7 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         update = try container.decodeIfPresent(LocalSessionUpdateReport.self, forKey: .update)
         progress = try container.decodeIfPresent(LocalTaskProgressReport.self, forKey: .progress)
         voiceGuards = try container.decodeIfPresent(LocalVoiceGuardsReport.self, forKey: .voiceGuards)
+        isReplyAudio = container.contains(.replyAudio)
         replyAudio = try container.decodeIfPresent(LocalReplyAudioReport.self, forKey: .replyAudio)
     }
 
@@ -375,7 +378,10 @@ extension LocalReplyEndpoint {
                     target: refusedTarget ?? "unknown", device: "local-reply", reason: reason.rawValue
                 ))
             }
-            await respond(.init(delivered: 0, error: reason.message, code: reason), to: client)
+            // Queue support is explicit on refusals too, so malformed requests never select legacy audio.
+            var response = LocalReplyResponse(delivered: 0, error: reason.message, code: reason)
+            response.replyAudio = LocalReplyAudioReport()
+            await respond(response, to: client)
         }
     }
 

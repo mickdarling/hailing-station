@@ -63,4 +63,41 @@ import Testing
         await rig.finish()
     }
 }
+
+extension ReplyQueuedAudioRaceTests {
+    @Test func pendingStopAcceptedAfterRoutingSuspendsFinalEnqueue() async throws {
+        let rig = try await DeviceVoiceStopRig.make()
+        let enqueue = VoiceStopConfirmationHold(), routed = VoiceStopConfirmationHold()
+        let waiting = VoiceStopConfirmationHold()
+        defer { enqueue.release() }
+        do {
+            let listener = rig.env.listener, queue = listener.replyAudioQueue
+            let peer = try #require(await listener.peers.values.first)
+            let connection = await peer.session.connectionID
+            let frame = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
+            let ticket = try #require(await listener.replyAudio(.init(action: "enqueue", frame: frame)).ticket)
+            let publication = Task {
+                try await ReplyAudioEnqueueTesting.$waiting.withValue({ waiting.release() }, operation: {
+                    try await ReplyAudioEnqueueTesting.$beforeEnqueue.withValue({
+                        routed.release(); await enqueue.wait()
+                    }, operation: {
+                        try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: frame))
+                    })
+                })
+            }
+            await routed.wait()
+            let stop = try #require(queue.captureStop(connection))
+            enqueue.release()
+            await waiting.wait() // The final synchronous gate refused; its caller retried asynchronously.
+            queue.resolve(stop, targets: [RecipientTestRig.target])
+            #expect(try await publication.value == LocalReplyAudioReport(skipped: true))
+            try await rig.pair.boundedBarrier(step: "pending final gate sends no audio")
+        } catch {
+            enqueue.release()
+            await rig.finish()
+            throw error
+        }
+        await rig.finish()
+    }
+}
 #endif

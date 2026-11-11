@@ -121,17 +121,17 @@ extension ReplyQueuedAudioTargetTests {
         let queue = ReplyAudioQueue(), connection = UUID()
         queue.register(connection)
         let old = try queue.ticket()
-        let accepted = queue.captureStop(connection)
+        let accepted = try #require(queue.captureStop(connection))
         let fresh = try queue.ticket()
-        queue.stop(connection, targets: ["target"], through: accepted)
+        queue.resolve(accepted, targets: ["target"])
         for destination in [connection, UUID()] {
             if case .sent(true) = queue.enqueue(fresh, connection: destination, target: "target", { true }) {} else {
                 Issue.record("a delayed stop cannot cover a fresh ticket")
             }
         }
-        let newer = queue.captureStop(connection)
-        queue.stop(connection, targets: ["target"], through: newer)
-        queue.stop(connection, targets: ["target"], through: accepted)
+        let newer = try #require(queue.captureStop(connection))
+        queue.resolve(newer, targets: ["target"])
+        queue.resolve(accepted, targets: ["target"])
         for ticket in [old, fresh] {
             if case .stopped = queue.enqueue(ticket, connection: nil, target: "target", { true }) {} else {
                 Issue.record("an older delayed mark cannot lower a newer mark")
@@ -139,16 +139,16 @@ extension ReplyQueuedAudioTargetTests {
         }
     }
 
-    @Test func lateStopAfterTeardownCannotMarkAnotherTargetsQueuedJob() throws {
+    @Test func lateStopAfterTeardownStillMarksAnotherTargetsQueuedJob() throws {
         let queue = ReplyAudioQueue(), connection = UUID()
         queue.register(connection)
         let ticket = try queue.ticket()
-        let captured = queue.captureStop(connection)
+        let captured = try #require(queue.captureStop(connection))
         queue.forget(connection)
-        queue.stop(connection, targets: ["late"], through: captured)
-        queue.captureStop(connection)
-        if case .sent(true) = queue.enqueue(ticket, connection: nil, target: "late", { true }) {} else {
-            Issue.record("late callbacks cannot recreate a torn-down connection's target marks")
+        queue.resolve(captured, targets: ["late"])
+        #expect(queue.captureStop(connection) == nil)
+        if case .stopped = queue.enqueue(ticket, connection: nil, target: "late", { true }) {} else {
+            Issue.record("an accepted stop must retain its targets after teardown")
         }
     }
 

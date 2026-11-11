@@ -966,9 +966,10 @@ extension ReplyBackground {
                 try await waitForAudioQueueBudget()
                 continue
             }
-            if request.action == "enqueue", response.delivered == 0, response.code == nil,
-               let error = response.error,
-               ["unknown action", "unsupported request", "unknown request kind"].contains(error) {
+            // Pre-queue daemons decode this unknown kind as a Frame. Queue-aware daemons always
+            // include replyAudio, even on decode refusals; its absence is the older-daemon indicator.
+            if request.action == "enqueue", response.delivered == 0, response.code == .decodeFailure,
+               response.error == "reply refused [decodeFailure]: frame decode failure", !response.isReplyAudio {
                 throw ReplyAudioUnsupported()
             }
             if let error = response.error { throw ReplyClientError.refused(error) }

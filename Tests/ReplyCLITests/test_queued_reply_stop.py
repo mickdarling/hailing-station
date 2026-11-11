@@ -37,11 +37,29 @@ class QueuedReplyStopTests(unittest.TestCase):
     def test_legacy_daemon_cannot_silently_admit_unguarded_queued_audio(self):
         self.exercise(skipped=False, pcm=False, mode="legacy")
 
-    def test_explicit_unsupported_request_uses_legacy_audio_once(self):
-        self.exercise(skipped=False, pcm=False, mode="unsupported", contended=False)
+    def test_exact_old_daemon_decode_refusal_uses_legacy_audio_once(self):
+        self.exercise(skipped=False, pcm=False, mode="old", contended=False)
 
-    def test_explicit_unknown_action_uses_legacy_audio_once(self):
-        self.exercise(skipped=False, pcm=False, mode="unsupported_action", contended=False)
+    def test_new_daemon_decode_refusal_fails_closed(self):
+        self.exercise(skipped=False, pcm=False, mode="new_decode", contended=False)
+
+    def test_uncoded_decode_refusal_fails_closed(self):
+        self.exercise(skipped=False, pcm=False, mode="uncoded", contended=False)
+
+    def test_inexact_old_daemon_error_fails_closed(self):
+        self.exercise(skipped=False, pcm=False, mode="wrong_error", contended=False)
+
+    def test_explicit_null_queue_report_fails_closed(self):
+        self.exercise(skipped=False, pcm=False, mode="null_report", contended=False)
+
+    def test_exact_old_signal_at_check_never_downgrades(self):
+        self.exercise(skipped=False, pcm=False, mode="old_check", contended=False)
+
+    def test_exact_old_signal_at_publish_never_downgrades(self):
+        self.exercise(skipped=False, pcm=False, mode="old_publish", contended=False)
+
+    def test_malformed_ticket_response_fails_closed(self):
+        self.exercise(skipped=False, pcm=False, mode="malformed", contended=False)
 
     def test_connection_loss_at_ticket_keeps_text_and_fails_closed(self):
         self.exercise(skipped=False, pcm=False, mode="connection", contended=False)
@@ -70,9 +88,23 @@ class QueuedReplyStopTests(unittest.TestCase):
             action = message["action"]
             attempts[action] = attempts.get(action, 0) + 1
             wire_order.append(action)
-            if mode in ("unsupported", "unsupported_action") and action == "enqueue":
-                return {"delivered": 0, "error": "unknown action" if mode == "unsupported_action"
-                        else "unsupported request"}
+            if mode == "malformed" and action == "enqueue":
+                return {"delivered": "zero"}
+            if (mode in ("old", "new_decode", "uncoded", "wrong_error", "null_report") and action == "enqueue"
+                    or mode == "old_check" and action == "check"
+                    or mode == "old_publish" and action == "publish"):
+                # Exact response from f3f97bc7 and cc36af90: unknown kind falls through to submitReply.
+                refusal = {"delivered": 0, "code": "decodeFailure",
+                           "error": "reply refused [decodeFailure]: frame decode failure"}
+                if mode == "new_decode":
+                    refusal["replyAudio"] = {"skipped": False}
+                elif mode == "null_report":
+                    refusal["replyAudio"] = None
+                elif mode == "uncoded":
+                    del refusal["code"]
+                elif mode == "wrong_error":
+                    refusal["error"] = "frame decode failure"
+                return refusal
             if mode == "connection" and action == "enqueue":
                 return None
             if mode == "legacy" and action == "enqueue":
@@ -124,21 +156,32 @@ class QueuedReplyStopTests(unittest.TestCase):
                     self.assertEqual(wire_order[:wire_order.index("frame")], ["enqueue"] * attempts["enqueue"])
                     self.assertEqual(frames[0][1]["payload"]["text"], "synthetic response")
                     self.assertEqual(frames[0][1]["payload"]["metadata"], "synthetic card")
-                    if contended and mode not in ("legacy", "connection"):
+                    if contended and mode not in ("legacy", "connection", "new_decode", "uncoded", "wrong_error"):
                         self.rig.wait_for(lambda: self.waiter_registered(lock.with_name("reply-audio.waiters")), 10)
                     fcntl.flock(holder, fcntl.LOCK_UN)
                     stdout, stderr = job.communicate(timeout=15)
-                    self.assertEqual(job.returncode, 1 if mode in ("legacy", "stale", "connection") else 0, stderr.decode())
-                    if mode in ("unsupported", "unsupported_action"):
+                    self.assertEqual(job.returncode, 1 if mode in ("legacy", "stale", "connection", "new_decode",
+                                                                    "uncoded", "wrong_error", "old_check",
+                                                                    "old_publish", "malformed", "null_report") else 0, stderr.decode())
+                    if mode == "old":
                         self.assertEqual(stderr.count(b"reply_audio_queue unsupported"), 1)
                         self.assertEqual([item["action"] for item in controls], ["enqueue"])
                         self.assertGreater(len(frames), 1)
                         self.assertTrue(frames[-1][1]["payload"]["final"])
                         return
-                    if mode == "connection":
+                    if mode in ("connection", "new_decode", "uncoded", "wrong_error", "malformed", "null_report"):
                         self.assertNotIn(b"reply_audio_queue unsupported", stderr)
                         self.assertEqual(len(frames), 1)
                         self.assertEqual([item["action"] for item in controls], ["enqueue"])
+                        return
+                    if mode in ("old_check", "old_publish"):
+                        self.assertNotIn(b"reply_audio_queue unsupported", stderr)
+                        audio_frames = [frame for _, frame in frames if frame["type"] == "audio"]
+                        # The mock records attempted frames before refusing them. Every attempt stays ticketed;
+                        # no legacy raw frame may follow a check/publish refusal.
+                        self.assertEqual(len(audio_frames), attempts.get("publish", 0))
+                        self.assertTrue(all(item.get("ticket") for item in controls if item["action"] == "publish"))
+                        self.assertEqual(controls[-1]["action"], mode.removeprefix("old_"))
                         return
                     if mode == "legacy":
                         self.assertIn(b"daemon does not support queued reply audio", stderr)

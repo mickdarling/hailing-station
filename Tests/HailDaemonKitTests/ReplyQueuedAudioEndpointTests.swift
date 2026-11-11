@@ -50,7 +50,7 @@ import Testing
         #"{"kind":"reply-audio","action":"enqueue","ticket":null}"#,
         #"{"kind":"reply-audio","action":"check"}"#
     ])
-    func socketRejectsMalformedQueueRequests(line: String) async throws {
+    func socketDecodeRefusalAlwaysCarriesQueueSupport(line: String) async throws {
         let rig = try await DeviceVoiceStopRig.make()
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("hs-qs-\(UUID().uuidString.prefix(8))")
@@ -61,7 +61,9 @@ import Testing
         try await endpoint.start()
         do {
             let refused = try await submit(Data(line.utf8), socket: socket.path)
-            #expect(refused.code == .decodeFailure && refused.delivered == 0 && refused.replyAudio == nil)
+            #expect(refused.code == .decodeFailure && refused.delivered == 0)
+            #expect(refused.replyAudio == LocalReplyAudioReport())
+            #expect(refused.error == "reply refused [decodeFailure]: frame decode failure")
             try await barrier(on: rig.socket, step: "invalid queue shape sends nothing")
         } catch {
             await endpoint.stop()
@@ -100,6 +102,7 @@ import Testing
             frame = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
             let refused = try await exchange(.init(action: "publish", ticket: foreign, frame: frame), socket: socket)
             #expect(refused.code == .invalidReplyPayload && refused.delivered == 0)
+            #expect(refused.replyAudio == LocalReplyAudioReport())
             let updated = try RefusalSummary.read(from: AuditHistory(directory: auditDirectory), now: now)
             #expect(Set(updated.counts.map(\.reason)) == ["replyTargetMissing", "invalidReplyPayload"])
             #expect(updated.counts.allSatisfy { $0.last15Minutes == 1 && $0.lastHour == 1 })

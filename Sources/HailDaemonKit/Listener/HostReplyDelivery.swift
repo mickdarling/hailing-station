@@ -9,6 +9,12 @@ import Synchronization
 final class ReplyAudioQueue: Sendable {
     static let targetLimit = 1024
     static let jobLimit = 1024
+    struct Stop: Sendable {
+        let id = UUID()
+        let connection: UUID
+        let position: UInt64
+        let beforeSnapshot: (@Sendable () async -> Void)?
+    }
     private struct Job {
         let position: UInt64
         let reply: UUID
@@ -25,8 +31,10 @@ final class ReplyAudioQueue: Sendable {
         var jobs: [Job] = []
         var floor: UInt64 = 0
         var skipped: [UInt64] = []
+        var pending: [UUID: Stop] = [:]
+        var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     }
-    enum Outcome { case stopped, sent(Bool) }
+    enum Outcome { case pending, stopped, sent(Bool) }
     private let state = Mutex(State())
     func ticket(frame: Frame? = nil) throws -> LocalReplyAudioTicket {
         try state.withLock {
@@ -41,23 +49,37 @@ final class ReplyAudioQueue: Sendable {
             return LocalReplyAudioTicket(epoch: $0.epoch, position: $0.position)
         }
     }
-    /// Captured synchronously by the accepting stop source, before any actor hop or scheduled work.
-    @discardableResult func captureStop(_ connection: UUID) -> UInt64 {
-        state.withLock { state in
-            Self.mark(connection, targets: [], through: state.position, in: &state)
-            return state.position
+    /// Acceptance and the cutoff share the final-enqueue lock. A vanished connection accepts nothing.
+    @discardableResult func captureStop(_ connection: UUID) -> Stop? {
+        let stop = state.withLock { state -> Stop? in
+            guard state.connections.contains(connection) else { return nil }
+            let stop = Stop(connection: connection, position: state.position,
+                            beforeSnapshot: ReplyAudioEnqueueTesting.beforeStopSnapshot)
+            state.pending[stop.id] = stop
+            Self.mark(connection, targets: [], through: stop.position, in: &state)
+            return stop
         }
+        if let stop {
+            let timeout = ReplyAudioEnqueueTesting.stopTimeout
+            Task { [weak self] in
+                if let timeout { await timeout() } else { try? await Task.sleep(for: .seconds(2)) }
+                self?.resolve(stop, targets: nil)
+            }
+        }
+        return stop
     }
     /// Host stop associations only; delayed snapshots can never advance the accepted cutoff.
     func stop(_ connection: UUID, targets: Set<String>, through position: UInt64? = nil) {
         state.withLock { state in
+            guard state.connections.contains(connection) else { return }
             Self.mark(connection, targets: targets, through: position ?? state.position, in: &state)
         }
     }
     private static func mark(_ connection: UUID, targets: Set<String>, through position: UInt64,
                              in state: inout State) {
-        guard state.connections.contains(connection) else { return }
-        state.stops[connection] = max(state.stops[connection] ?? 0, position)
+        if state.connections.contains(connection) {
+            state.stops[connection] = max(state.stops[connection] ?? 0, position)
+        }
         let outstanding = state.jobs.filter { $0.destination == connection }.map(\.target)
         for target in targets.union(outstanding).sorted() {
             let previous = state.targets.last { $0.key == target }?.position ?? 0
@@ -112,16 +134,64 @@ final class ReplyAudioQueue: Sendable {
             guard ticket.epoch == state.epoch, ticket.position > 0,
                   ticket.position <= state.position else { return .sent(false) }
             let streaming = state.jobs.first { $0.position == ticket.position }?.streaming == true
+            if !streaming, state.pending.values.contains(where: { $0.position >= ticket.position }) {
+                return .pending
+            }
             guard ticket.position > state.floor,
                   ticket.position > (connection.flatMap { state.stops[$0] } ?? 0),
                   streaming || ticket.position > (state.targets.last { $0.key == target }?.position ?? 0) else {
                 return .stopped
             }
+            // Transport handoff only: Network never waits for completion or calls the router on this stack.
             let sent = send()
             if publishing, sent, let index = state.jobs.firstIndex(where: { $0.position == ticket.position }) {
                 state.jobs[index].streaming = true
             }
             return .sent(sent)
+        }
+    }
+}
+
+extension ReplyAudioQueue {
+    /// nil means the snapshot failed. Retain its cutoff globally before opening the first-frame barrier.
+    func resolve(_ stop: Stop, targets: Set<String>?) {
+        let waiters = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+            guard state.pending.removeValue(forKey: stop.id) != nil else { return [] }
+            if let targets {
+                Self.mark(stop.connection, targets: targets, through: stop.position, in: &state)
+            } else { state.floor = max(state.floor, stop.position) }
+            defer { state.waiters.removeAll() }
+            return Array(state.waiters.values)
+        }
+        for waiter in waiters { waiter.resume() }
+    }
+
+    /// No actor or cooperative thread is blocked. Register and recheck under the acceptance lock.
+    func waitForStops(_ ticket: LocalReplyAudioTicket) async throws {
+        while true {
+            try Task.checkCancellation()
+            let id = UUID()
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    let waiting = state.withLock { state in
+                        guard !Task.isCancelled,
+                              state.jobs.first(where: { $0.position == ticket.position })?.streaming != true,
+                              state.pending.values.contains(where: { $0.position >= ticket.position }) else {
+                            return false
+                        }
+                        state.waiters[id] = continuation
+                        return true
+                    }
+                    if waiting { ReplyAudioEnqueueTesting.waiting?() } else { continuation.resume() }
+                }
+            } onCancel: {
+                let waiter = self.state.withLock { $0.waiters.removeValue(forKey: id) }
+                waiter?.resume()
+            }
+            if state.withLock({ state in
+                state.jobs.first(where: { $0.position == ticket.position })?.streaming == true
+                    || !state.pending.values.contains { $0.position >= ticket.position }
+            }) { return }
         }
     }
 }
@@ -132,11 +202,15 @@ private final class ReplyAudioAdmission: Sendable {
     let probe: Bool
     let target: String
     let skipped = Mutex(false)
+    let pending = Mutex(false)
     init(queue: ReplyAudioQueue, ticket: LocalReplyAudioTicket, probe: Bool, target: String) {
         self.queue = queue; self.ticket = ticket; self.probe = probe; self.target = target
     }
     func enqueue(connection: UUID?, publishing: Bool = false, _ send: () -> Bool) -> Bool {
         switch queue.enqueue(ticket, connection: connection, target: target, publishing: publishing, send) {
+        case .pending:
+            pending.withLock { $0 = true }
+            return false
         case .stopped:
             skipped.withLock { $0 = true }
             return false
@@ -147,6 +221,9 @@ private final class ReplyAudioAdmission: Sendable {
 /// A continuation barrier for deterministic final-enqueue tests; absent in production.
 enum ReplyAudioEnqueueTesting {
     @TaskLocal static var afterPrivacyDecision: (@Sendable () async -> Void)?
+    @TaskLocal static var waiting: (@Sendable () -> Void)?
+    @TaskLocal static var beforeStopSnapshot: (@Sendable () async -> Void)?
+    @TaskLocal static var stopTimeout: (@Sendable () async -> Void)?
     @TaskLocal static var beforeEnqueue: (@Sendable () async -> Void)?
 }
 
@@ -665,7 +742,9 @@ extension HostSession {
     }
 
     /// Snapshot all host-known associations before retiring playback. Names in Hello confer no identity.
-    func markQueuedAudioStopped(_ queue: ReplyAudioQueue, through position: UInt64) {
+    func markQueuedAudioStopped(_ queue: ReplyAudioQueue, stop: ReplyAudioQueue.Stop) async {
+        await stop.beforeSnapshot?()
+        guard case .ready = state else { return queue.resolve(stop, targets: nil) }
         var targets = lastInputLedger?.targets(on: connectionID, inFlight: repliesInFlight) ?? []
         if let selectedTarget { targets.insert(selectedTarget) }
         #if os(macOS)
@@ -674,7 +753,7 @@ extension HostSession {
         }
         #endif
         targets.formUnion(replyRequests.values.map { $0.context.binding.targetID })
-        queue.stop(connectionID, targets: targets, through: position)
+        queue.resolve(stop, targets: targets)
     }
 
     /// Tracks which replies' audio is mid-stream on this connection, so a stop knows what to cut (#309).
@@ -867,9 +946,7 @@ extension WebSocketListener {
         let (admission, frame) = try queuedAudioFrame(request)
         let ticket = admission.ticket
         do {
-            _ = try validatedReply(frame)
-            guard admission.enqueue(connection: nil, { true }) else { throw ReplyAudioProbe.stopped }
-            _ = try await ReplyAudioScope.$admission.withValue(admission) { try await publish(frame) }
+            try await publishQueuedAudio(admission, frame: frame)
         } catch ReplyAudioProbe.admitted {
             return LocalReplyAudioReport()
         } catch {
@@ -887,6 +964,22 @@ extension WebSocketListener {
             replyAudioQueue.finish(ticket)
         }
         return LocalReplyAudioReport()
+    }
+
+    private func publishQueuedAudio(_ admission: ReplyAudioAdmission, frame: Frame) async throws {
+        _ = try validatedReply(frame)
+        while true {
+            try await replyAudioQueue.waitForStops(admission.ticket)
+            admission.pending.withLock { $0 = false }
+            do {
+                guard admission.enqueue(connection: nil, { true }) else { throw ReplyAudioProbe.stopped }
+                _ = try await ReplyAudioScope.$admission.withValue(admission) { try await publish(frame) }
+                return
+            } catch {
+                // Acceptance can race any routing await. Retry only if the final lock refused a pending stop.
+                guard admission.pending.withLock({ $0 }) else { throw error }
+            }
+        }
     }
 
     private func queuedAudioFrame(_ request: LocalReplyAudioRequest) throws -> (ReplyAudioAdmission, Frame) {
@@ -1082,13 +1175,14 @@ extension WebSocketListener {
     /// Privacy taken on `connection` (#735 S-2c): every reply record its session holds is dropped, committed or
     /// pending, so no answer to a request made before the entry plays later, during privacy or after it. Returns how
     /// many were dropped (a count only).
-    func dropPrivateReplies(connection: UUID, through position: UInt64) async -> Int {
+    func dropPrivateReplies(connection: UUID, stop: ReplyAudioQueue.Stop?) async -> Int {
+        defer { if let stop { replyAudioQueue.resolve(stop, targets: nil) } }
         guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
             return 0
         }
         // Runs for every privacy entry, even when its later announcement has no clip. The serial
         // notice queue completes this mark before releasing the hold on a fast entry then exit.
-        await peer.session.markQueuedAudioStopped(replyAudioQueue, through: position)
+        if let stop { await peer.session.markQueuedAudioStopped(replyAudioQueue, stop: stop) }
         return await peer.session.dropRepliesForPrivacy()
     }
 
