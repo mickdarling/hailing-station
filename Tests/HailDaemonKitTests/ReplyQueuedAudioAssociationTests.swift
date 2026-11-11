@@ -34,7 +34,7 @@ import Testing
                 == "stopped")
             #expect(try await receiveFrame(on: pair.sockets[0], step: "association stop")
                 .payload == .control(.stopPlayback))
-            let queue = await listener.replyAudioQueue
+            let queue = listener.replyAudioQueue
             expectAssociations(queue, ticket: ticket)
             try await pair.boundedBarrier(step: "association snapshot complete")
         } catch {
@@ -80,10 +80,9 @@ import Testing
             #expect(try await listener.replyAudio(.init(action: "publish", ticket: streaming, frame: final))
                 == LocalReplyAudioReport())
             #expect(try await receiveFrame(on: other.sockets[0], step: "A terminates cleanly") == final)
-            let peer = try #require(await listener.peers.values.first {
-                $0.session.connectionID == context.connectionID
-            })
-            #expect(await peer.session.repliesInFlight.isEmpty)
+            for peer in await listener.peers.values {
+                #expect(await peer.session.repliesInFlight.isEmpty)
+            }
             try await other.boundedBarrier(step: "A received no stop playback")
             try await rig.pair.boundedBarrier(step: "B queued audio silent")
         } catch {
