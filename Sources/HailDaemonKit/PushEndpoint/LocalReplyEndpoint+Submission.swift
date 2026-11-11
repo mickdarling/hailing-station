@@ -323,7 +323,7 @@ extension LocalReplyEndpoint {
     }
 
     private static func decodeReplyAudio(_ data: Data) throws -> LocalReplyAudioRequest {
-        guard let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard let fields = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             throw LocalReplyRefusal.decodeFailure
         }
         let keys: Set<String> = fields["action"] as? String == "enqueue"
@@ -332,7 +332,12 @@ extension LocalReplyEndpoint {
         if let ticket = fields["ticket"] as? [String: Any], Set(ticket.keys) != ["epoch", "position"] {
             throw LocalReplyRefusal.decodeFailure
         }
-        return try JSONDecoder().decode(LocalReplyAudioRequest.self, from: data)
+        // Check the envelope before Frame's provenance decoder can reject an absent target generically.
+        if fields["action"] as? String == "publish", let frame = fields["frame"] as? [String: Any],
+           frame["target"] == nil || frame["target"] is NSNull { throw LocalReplyRefusal.replyTargetMissing }
+        do { return try JSONDecoder().decode(LocalReplyAudioRequest.self, from: data) } catch {
+            throw LocalReplyRefusal.decodeFailure
+        }
     }
 
     private func submitReplyAudio(_ data: Data, from client: LocalReplyConnection) async {

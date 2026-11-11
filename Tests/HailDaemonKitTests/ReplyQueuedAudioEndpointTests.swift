@@ -92,6 +92,17 @@ import Testing
             #expect(history.allSatisfy { !$0.contains("\"kind\":\"pushed\"") })
             let summary = try RefusalSummary.read(from: AuditHistory(directory: auditDirectory))
             #expect(summary.counts == [.init(reason: "replyTargetMissing", last15Minutes: 1, lastHour: 1)])
+            let fresh = ReplyAudioQueue()
+            let foreign = try fresh.ticket()
+            frame = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
+            let refused = try await exchange(.init(action: "publish", ticket: foreign, frame: frame), socket: socket)
+            #expect(refused.code == .invalidReplyPayload && refused.delivered == 0)
+            let updated = try RefusalSummary.read(from: AuditHistory(directory: auditDirectory))
+            #expect(Set(updated.counts.map(\.reason)) == ["replyTargetMissing", "invalidReplyPayload"])
+            #expect(updated.counts.allSatisfy { $0.last15Minutes == 1 && $0.lastHour == 1 })
+            let pushed = try AuditHistory(directory: auditDirectory).today()
+                .filter { $0.contains("\"kind\":\"pushed\"") }
+            #expect(pushed.count == 1 && pushed[0].contains(RecipientTestRig.target))
             try await barrier(on: rig.socket, step: "refused queued publish sends nothing")
         } catch {
             await endpoint.stop()
