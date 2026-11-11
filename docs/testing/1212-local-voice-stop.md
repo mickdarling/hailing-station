@@ -14,7 +14,7 @@ or upload. The remaining device and queue requirements of #1212 are deferred exp
 - The handler reuses `WebSocketListener.stopReplyPlayback(connection:)`, including the existing in-flight reply
   retirement and stopped-reply ledger. No request is withdrawn. No confirmation is played for a device report.
 - A per-connection monotonic timestamp suppresses only the #418 confirmation of a later RightyO playback dismissal
-  for less than ten seconds. The timestamp is replaced on repeated accepted reports and removed at teardown.
+  for less than ten seconds. The timestamp is replaced on every valid report and removed at teardown.
   Dismissal effects, guard holds, target policy, confirmation tier, mute/unmute and reply queueing are unchanged.
 - `AmbientRightyoRouter.replyPlayback(_:connection:)` already forwards admitted `reply_playback_end` and playback-error
   diagnostics to RightyO as ended. Local `ReplyPlaybackController.stopPlayback` clears active playback;
@@ -274,3 +274,68 @@ All new tests use Swift Testing, an injected monotonic clock, awaited operations
 state/frame assertions. No negative assertion follows `settle()` or a delay, and no cooperative thread is blocked.
 This remains synthetic host evidence; no simulator, device detector, physical-device, captured-output round trip,
 installation or upload is claimed. Only `gh issue view 1212` is used; no push, PR or GitHub metadata update is made.
+
+
+## Round 3 verification
+
+The fresh Dev Work VM workspace `vw1212a3` was cloned from a local bundle at the requested starting revision
+`15accec68bf2f719acdeb1a6089e97373797ec03`, then received the local delta without a push. The verified production
+and test source commit is `446807a75c31e2c93bef201a578832228f3cbad3`; the subsequent verification record changes
+only documentation. Apple Swift 6.3.3 targets `arm64-apple-macosx26.0`. Phases are sequential, wait for the shared
+lane to be idle, run at background priority and have the round-1 590-second process-group cap with signal/finally
+TERM/KILL cleanup. SwiftPM uses four jobs, each compiler one worker; automatic resolution is disabled. No dependency
+fetch, synthetic load, installation or upload is used. The wrapper's separate `vw1212a3-werr` build path starts fresh.
+
+The exact flags and commands are the round-1 prefix and phase commands above, with the round-2 focused selection
+unchanged (the `DeviceVoiceStop` prefix includes the new coalescing and teardown suites). In particular:
+
+```bash
+taskpolicy -b swift build --build-tests "${flags[@]}" -Xswiftc -warnings-as-errors
+taskpolicy -b swift test --skip-build --no-parallel "${flags[@]}" --filter "$selection"
+# The same command with each broad filter below, as a separate capped phase.
+taskpolicy -b python3 -m unittest discover -s Tests/ReplyCLITests
+taskpolicy -b swift run --skip-build hail-protocol-gen
+taskpolicy -b python3 scripts/check_schema.py
+taskpolicy -b python3 -m unittest scripts/tests/test_check_schema.py
+# Separate capped phase, with the external one-worker/disabled-resolution Swift shim:
+/bin/zsh ~/codex-workspaces/vw-werr.sh vw1212a3
+```
+
+An initial build exposed an invalid `Frame.kind` assertion in the new teardown test. It was replaced with exact
+text/audio payload assertions before final verification. The corrected warnings-as-errors test build passed in
+**64.77 seconds**. Every reported runtime selection started tests and passed:
+
+| Selection | Runs | Functions / suites | Case executions per run | Result / seconds |
+| --- | ---: | ---: | ---: | --- |
+| Round-2 focused selection, including new suites | 3 | 72 / 16 | 133 | pass; 19.675, 20.853, 20.476 |
+| `HailProtocolTests` | 1 | 167 / 31 | 578 | pass; 0.140 |
+| `HailDaemonKitTests\.Ambient[A-M]` | 1 | 134 / 25 | 207 | pass; 107.753 |
+| `HailDaemonKitTests\.Ambient[N-S]` | 1 | 317 / 65 | 488 | pass; 344.520 |
+| `HailDaemonKitTests\.Ambient[T-Z]` | 1 | 214 / 49 | 395 | pass; 133.806 |
+| `HailDaemonKitTests\.Rightyo` | 1 | 186 / 17 | 228 | pass; 34.355 |
+| Round-1 listener partition | 1 | 22 / 5 | 67 | pass; 0.662 |
+
+The requested round-1 daemon families total **873 functions and 1,385 cases**. The listener partition's exact filter
+is `HailDaemonKitTests\.(WebSocketListener|WebSocketPeer|Listener|HostReply|Dismiss|StopConfirm)`.
+
+The full Reply CLI suite passed **126 tests in 232.053 seconds**, exit 0. The VM generator regenerated **57 canonical
+fixtures** and the v1 schema with no fixture/schema drift. The VM schema check passed **57 valid fixtures,
+126 negatives rejected, zero failures**; all **11 checker unit tests** passed in 0.003 seconds.
+
+The separate warnings-as-errors wrapper completed in **233.68 seconds**, reported **`werr build=0`**, and exited 0.
+Inspection of its full build log found **zero errors** and **120 warnings**, all in the existing CLT
+missing-module-cache debug-symbol category; there were no other warning categories. This is a passing Swift
+warnings-as-errors build, rather than a claim of warning-free linker output.
+
+Host strict SwiftLint used `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`; it and the awk 120-column check
+exited 0 and printed nothing for **all 18 Swift files changed by the PR**. Their captured output files are empty.
+Whitespace validation also passed. The checker's exact production-file exclusions still yield **four production
+files**: `Control.swift`, `Schema.swift`, `HostSession.swift`, and `WebSocketListener.swift`, with no renames.
+Round 3 touches only the latter two production files; no fifth file was needed and no lint suppression was added.
+
+A final SHA-256 comparison matched **24 files**: all 18 changed Swift files, the canonical schema, and the five
+negative fixtures. Scoped cleanup deleted the workspace `.build`, the separate wrapper build directory, and both
+external compiler shim paths. Cleanup confirmed that no job build/test processes remained. No generated build
+product is committed. All requested VM phases passed under their individual caps. No simulator or physical-device
+proof, live captured-output round trip, online CI result, independent review, installation, upload, push, or PR
+update is claimed.
