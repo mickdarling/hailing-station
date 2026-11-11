@@ -28,21 +28,24 @@ import Testing
         }
     }
 
-    @Test func anUnnegotiatedOrClosedConnectionIgnoresAndLogsNotReady() async throws {
+    @Test func anUnnegotiatedConnectionFailsClosedAndLogsNotReady() async throws {
         let rig = try await RecipientTestRig.make()
         let events = Mutex<[WebSocketListenerEvent]>([]), calls = Mutex(0)
         let session = HostSession(host: rig.host, deviceVoiceStop: { _, _ in calls.withLock { $0 += 1 } })
         await session.attachLastInput(LastInputLedger(), replyEvent: { event in events.withLock { $0.append(event) } })
         let frame = sessionFrame(payload: .control(.voiceStopped(latencyMs: 5)))
         let beforeHello = await session.receive(frame)
-        #expect(beforeHello.frames.isEmpty)
-        #expect(beforeHello.disposition == .keepOpen)
+        #expect(beforeHello.frames.count == 1)
+        #expect(beforeHello.frames.first?.payload == .control(.error(
+            code: .malformed, message: "first frame must be hello"
+        )))
+        #expect(beforeHello.disposition == .close)
         // A non-hello closes negotiation; the next stop still has no side effect.
         _ = await session.receive(sessionFrame(payload: .control(.ping(nonce: "synthetic"))))
         let afterClose = await session.receive(frame)
         #expect(afterClose.frames.isEmpty)
         #expect(afterClose.disposition == .close)
-        #expect(events.withLock { $0.map(\.detail) } == ["reason=not_ready", "reason=not_ready"])
+        #expect(events.withLock { $0.map(\.detail) } == ["reason=not_ready"])
         #expect(calls.withLock { $0 } == 0)
     }
 
@@ -85,6 +88,25 @@ import Testing
         _ = await denied.receive(helloFrame())
         let refusal = await denied.receive(sessionFrame(payload: .control(.voiceStopped(latencyMs: nil))))
         #expect(refusal.frames.isEmpty)
-        #expect(ignored.withLock { $0 } == ["reason=no_active_stream"])
+        #expect(ignored.withLock { $0 } == ["reason=unauthorized"])
+    }
+
+    @Test func repeatedUnauthorizedReportsAreBoundedAndCountSuppressedLines() async throws {
+        let rig = try await RecipientTestRig.make()
+        let clock = Mutex(ContinuousClock.now), ignored = Mutex<[String?]>([])
+        let session = HostSession(host: rig.host, requestClock: { clock.withLock { $0 } })
+        await session.attachLastInput(LastInputLedger(), replyEvent: { event in
+            ignored.withLock { $0.append(event.detail) }
+        })
+        _ = await session.receive(helloFrame())
+        let frame = sessionFrame(payload: .control(.voiceStopped(latencyMs: nil)))
+        for _ in 0..<5 { _ = await session.receive(frame) }
+        #expect(ignored.withLock { $0 } == ["reason=unauthorized"])
+        clock.withLock { $0 = $0.advanced(by: .seconds(9)) }
+        _ = await session.receive(frame)
+        #expect(ignored.withLock { $0 } == ["reason=unauthorized"])
+        clock.withLock { $0 = $0.advanced(by: .seconds(1)) }
+        _ = await session.receive(frame)
+        #expect(ignored.withLock { $0 } == ["reason=unauthorized", "reason=unauthorized suppressed=5"])
     }
 }

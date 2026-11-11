@@ -210,6 +210,7 @@ public actor HostSession {
     let providerTurnEndsReported: Bool
     /// Explicit listener opt-in; merely selecting a target never enables unsolicited output negotiation.
     let sessionUpdatesEnabled: Bool
+    var voiceStopLogs = VoiceStopLogWindow()
     var state = State.awaitingHello
     var peerName = "terminal"
     /// What the device said it can do in its hello (#309), bounded; it gates host-sent `stop_playback`.
@@ -354,9 +355,9 @@ public actor HostSession {
 extension HostSession {
     public func receive(_ frame: Frame) async -> HostSessionResult {
         if case .control(.voiceStopped) = frame.payload, !isReadyForVoiceStop {
-            replyEvent(WebSocketListenerEvent(event: "ambient_voice_stop_ignored", sessionID: connectionID,
-                                               detail: "reason=not_ready"))
-            return HostSessionResult(frames: [], disposition: state == .closed ? .close : .keepOpen)
+            logVoiceStopIgnored("not_ready")
+            if state == .closed { return HostSessionResult(frames: [], disposition: .close) }
+            return failure(.malformed, "first frame must be hello", close: true)
         }
         switch state {
         case .closed:
@@ -385,13 +386,16 @@ extension HostSession {
     private func receiveVoiceStop(_ frame: Frame, latency: Int?) async -> HostSessionResult {
         let authorized = await authorizer.authorize(frame) == .allow
         guard authorized, let deviceVoiceStop else {
-            let reason = !authorized && authorizer.ambientAudio != nil ? "unauthorized" : "no_active_stream"
-            replyEvent(WebSocketListenerEvent(event: "ambient_voice_stop_ignored", sessionID: connectionID,
-                                               detail: "reason=\(reason)"))
+            logVoiceStopIgnored(authorized ? "no_active_stream" : "unauthorized")
             return HostSessionResult(frames: [])
         }
         await deviceVoiceStop(connectionID, latency)
         return HostSessionResult(frames: [])
+    }
+
+    private func logVoiceStopIgnored(_ reason: String) {
+        guard let detail = voiceStopLogs.detail(reason: reason, at: requestClock()) else { return }
+        replyEvent(WebSocketListenerEvent(event: "ambient_voice_stop_ignored", sessionID: connectionID, detail: detail))
     }
 
     private var isReadyForVoiceStop: Bool {
@@ -484,5 +488,20 @@ extension HostSession {
             return HostSessionResult(frames: [response(.healthReport(await health()), version: version)])
         }
         return await route(admitted, version: version)
+    }
+}
+
+/// Fixed reason tokens only; one record per reason in a live connection, with no report content retained.
+struct VoiceStopLogWindow {
+    private var reasons: [String: (at: ContinuousClock.Instant, suppressed: Int)] = [:]
+
+    mutating func detail(reason: String, at now: ContinuousClock.Instant) -> String? {
+        let prior = reasons[reason]
+        if let prior, prior.at.duration(to: now) < .seconds(10) {
+            reasons[reason] = (prior.at, min(prior.suppressed + 1, Int.max - 1))
+            return nil
+        }
+        reasons[reason] = (now, 0)
+        return "reason=\(reason)" + (prior.map { " suppressed=\($0.suppressed)" } ?? "")
     }
 }

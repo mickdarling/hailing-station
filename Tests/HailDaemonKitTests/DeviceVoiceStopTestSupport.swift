@@ -15,7 +15,10 @@ struct DeviceVoiceStopRig {
 
     var socket: URLSessionWebSocketTask { pair.sockets[0] }
 
-    static func make(capabilities: [String] = [PlaybackStop.capability]) async throws -> Self {
+    static func make(
+        capabilities: [String] = [PlaybackStop.capability], hold: VoiceStopConfirmationHold? = nil,
+        ambientWired: Bool = true
+    ) async throws -> Self {
         let owned = AmbientWiringStopConfirmationTests.fixture(dismiss: "owner", turn: "owner")
         let rest = owned.replacingOccurrences(of: "-e '$d'", with: "-e '1d;$d'")
         let script = """
@@ -34,7 +37,9 @@ struct DeviceVoiceStopRig {
             ])
             let env = try await ambientRig(fake, timing: .init(eofGrace: 2, termGrace: 2),
                                            acknowledgements: clips,
+                                           acknowledgementHold: hold.map { barrier in .init { await barrier.wait() } },
                                            onEvent: { event in observation.events.withLock { $0.append(event) } },
+                                           ambientWired: ambientWired,
                                            voiceStopClock: { observation.clock.withLock { $0 } })
             do {
                 let pair = try await FallbackSocketPair.boundedConnect(
@@ -60,8 +65,15 @@ struct DeviceVoiceStopRig {
     }
 
     func start() async throws {
+        try await start(on: socket)
+    }
+
+    func start(on socket: URLSessionWebSocketTask, replacing previous: UUID? = nil) async throws {
         try await recipientSocketSend(audio(UUID(), 0), on: socket)
-        try #require(await eventually { env.router.activeConnection() != nil })
+        try #require(await eventually {
+            guard let current = env.router.activeConnection() else { return false }
+            return current != previous
+        })
     }
 
     func report(latency: Int? = 42) async throws {
@@ -82,5 +94,35 @@ struct DeviceVoiceStopRig {
 final class DeviceVoiceStopObservation: Sendable {
     let events = Mutex<[WebSocketListenerEvent]>([])
     let clock = Mutex(ContinuousClock.now)
+}
+
+/// Continuation-based delivery barrier; release also works before entry and cleanup never blocks a Swift worker.
+final class VoiceStopConfirmationHold: Sendable {
+    private struct State {
+        var waiting: CheckedContinuation<Void, Never>?
+        var entered = false
+        var released = false
+    }
+    private let state = Mutex(State())
+    var entered: Bool { state.withLock { $0.entered } }
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let resume = state.withLock { state in
+                state.entered = true
+                if state.released { return true }
+                state.waiting = continuation
+                return false
+            }
+            if resume { continuation.resume() }
+        }
+    }
+    func release() {
+        let waiting = state.withLock { state in
+            state.released = true
+            defer { state.waiting = nil }
+            return state.waiting
+        }
+        waiting?.resume()
+    }
 }
 #endif

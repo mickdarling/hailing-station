@@ -101,6 +101,10 @@ import Testing
         let rig = try await DeviceVoiceStopRig.make()
         do {
             try await rig.start()
+            let reply = uncorrelatedDescriptor(audio: true)
+            let first = recipientAudio(reply, sequence: 0)
+            #expect(try await rig.env.listener.publish(first) == 1)
+            #expect(try await receiveFrame(on: rig.socket, step: "active reply starts") == first)
             let other = try await FallbackSocketPair.boundedConnect(
                 port: rig.env.port, selecting: [RecipientTestRig.target], capabilities: [PlaybackStop.capability]
             )
@@ -112,6 +116,9 @@ import Testing
             try await other.boundedBarrier(step: "other device ignored")
             try await barrier(on: rig.socket, step: "active device untouched")
             #expect(rig.details("ambient_dismissed").isEmpty)
+            let final = recipientAudio(reply, sequence: 1, final: true)
+            #expect(try await rig.env.listener.publish(final) == 1)
+            #expect(try await receiveFrame(on: rig.socket, step: "active reply remains publishable") == final)
         } catch {
             await rig.finish()
             throw error

@@ -642,20 +642,27 @@ The **host** advertises `device_voice_stop` in its negotiated hello only when it
 are wired. A device must send this command only after seeing that capability; older hosts reject unknown commands.
 `DeviceVoiceStop.report(latencyMs:hostCapabilities:)` returns no report without that capability or for invalid
 latency. The caller must additionally enforce privacy and stop local playback before reporting. This is a compatible
-v1 extension (`protocol:compatible` for a future PR); existing frames and capability directions are unchanged.
+v1 extension; this PR carries `protocol:compatible` and `security:critical`. Existing capability directions are unchanged.
 
 The host accepts the report only on its negotiated, ready connection with that connection's active ambient stream
-and privacy off. It ignores other reports with `ambient_voice_stop_ignored reason=not_ready`, `reason=private`, or
-`reason=no_active_stream`; an ambient-capable authorizer can also refuse with `reason=unauthorized`. It uses the
+and privacy off. A report before hello fails closed as malformed; a closed session ignores further reports. It logs `ambient_voice_stop_ignored reason=not_ready`, `reason=private`, or
+`reason=no_active_stream`; every authorization denial uses `reason=unauthorized`, including read-only probes. It uses the
 existing playback stop to retire that connection's in-flight replies and may
 send an idempotent `stop_playback` back. The existing `ambient_dismissed` event records
 `reason=device-voice-stop scope=playback source=device withdrawn=0 delivered=0 playback=<token>` and optional
-`latency_ms`. Playback tokens retain their existing meaning. No sentence or confirmation clip is sent for this report.
+`latency_ms`. The hyphenated `reason=device-voice-stop` follows RightyO's `reason=stop-phrase` style.
+Playback tokens retain their existing meaning. No sentence or confirmation clip is sent for this report.
 
 For ten seconds after an accepted report, measured with a host monotonic clock, a RightyO playback-scope dismissal
 on the same connection still applies its usual dismissal and playback stop, but skips its spoken #418 confirmation
 and logs `ambient_stop_confirmed outcome=skipped reason=device_stopped`. At ten seconds and beyond, normal
-confirmation rules apply. Repeated accepted reports restart the window; connection teardown removes it.
+confirmation rules apply. Accepted reports retire pending confirmations; the suppression is rechecked atomically
+with the final clip enqueue. Bytes enqueued before the report is recorded cannot be recalled. PR 3 will mitigate
+that ordering bound by having the device drop a host stop-confirmation clip arriving shortly after its local stop.
+Repeated accepted reports restart the window; reports less than one second apart send no second `stop_playback`.
+They log `ambient_voice_stop_ignored reason=coalesced`. Ignored/coalesced log lines are limited to one per reason per
+connection per ten seconds, with `suppressed=N` on the next line for that reason. Teardown removes these records
+and the device-stop window.
 Device playback diagnostics remain the source of actual playback-end reports to RightyO; the report adds no second
 reply-ended notification.
 

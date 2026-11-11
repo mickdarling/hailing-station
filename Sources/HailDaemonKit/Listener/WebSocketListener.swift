@@ -247,15 +247,19 @@ extension WebSocketListener {
 
     private func accept(_ connection: NWConnection) async {
         // Attached before the admission checks, so no suspension separates them from the insertion below (#370).
+        var deviceStop: (@Sendable (UUID, Int?) async -> Void)?
+        if ambient != nil {
+            deviceStop = { [weak self] connection, latency in
+                await self?.deviceVoiceStopped(connection: connection, latencyMs: latency)
+            }
+        }
         let session = HostSession(host: host, authorizer: authorizer, hostName: hostName,
                                   sessionUpdatesEnabled: sessionUpdates.policy.enabled,
                                   modeSnapshot: { [ambient] in
             ambient?.modeSnapshot(connection: $0) ?? [.duckMode(on: false), .mediaMode(on: false)]
         }, snapshotPrivacyOff: { [weak self] in
             await self?.privacyOffFromSnapshot(connection: $0) ?? .refused
-        }, deviceVoiceStop: { [weak self] connection, latency in
-            await self?.deviceVoiceStopped(connection: connection, latencyMs: latency)
-        })
+        }, deviceVoiceStop: deviceStop)
         await session.attachLastInput(lastInput, recordStoppedReply: { [stoppedReplyIDs] id in
             stoppedReplyIDs.record(id)
         }, replyEvent: { [weak self, log] event in
@@ -366,7 +370,6 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
 
 extension AmbientListenerWiring {
     public func observe(_ diagnostics: DiagnosticLog) async {}
-    public func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {}
     public func stop(connection: UUID, device: AmbientPeerDevice?) { stop(connection: connection) }
 }
 
@@ -756,6 +759,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         var latest: [UUID: UUID] = [:]
         /// One timestamp per reporting live connection, removed at teardown; never persisted.
         var deviceVoiceStops: [UUID: ContinuousClock.Instant] = [:]
+        var stopConfirmations: [UUID: Set<UUID>] = [:]
+        var voiceStopLogs: [UUID: VoiceStopLogWindow] = [:]
         /// Each connection's last child-admitted destination, for bookkeeping only; clips use session selection.
         /// Removed at teardown, like `inputRoutes`. A refused start never writes this snapshot.
         var streamTargets: [UUID: String] = [:]
@@ -980,18 +985,26 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     public func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {
         let reason = state.withLock { state -> String? in
             if state.duck[connection] != nil { return "private" }
-            guard !state.shuttingDown, !state.closed.contains(connection),
+            guard !state.shuttingDown, !state.reloading, !state.closed.contains(connection),
                   let active = state.active, state.latest[connection] == active.stream,
                   state.runs[active.run]?.connection == connection,
                   Self.ambientOwner(stream: active.stream, connection: connection,
                                     newestStart: state.newestStart, queued: state.queue) == connection else {
                 return "no_active_stream"
             }
-            state.deviceVoiceStops[connection] = configuration.voiceStopClock()
+            let now = configuration.voiceStopClock()
+            let previous = state.deviceVoiceStops.updateValue(now, forKey: connection)
+            // Retire all pending clips, even if their async work resumes later.
+            state.stopConfirmations[connection] = nil
+            if let previous, previous.duration(to: now) < .seconds(1) { return "coalesced" }
             return nil
         }
         if let reason {
-            emit("ambient_voice_stop_ignored", detail: "reason=\(reason)")
+            let detail = state.withLock {
+                $0.voiceStopLogs[connection, default: VoiceStopLogWindow()]
+                    .detail(reason: reason, at: configuration.voiceStopClock())
+            }
+            if let detail { emit("ambient_voice_stop_ignored", connection: connection, detail: detail) }
             return
         }
         let listener = state.withLock { $0.listener?.value }
@@ -1010,6 +1023,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         let streams = state.withLock { state -> [UUID] in
             (state.latest[connection], state.inputRoutes[connection], state.streamTargets[connection]) = (nil, nil, nil)
             state.deviceVoiceStops[connection] = nil
+            state.stopConfirmations[connection] = nil
+            state.voiceStopLogs[connection] = nil
             park(connection: connection, device: device, in: &state)
             state.media.removeValue(forKey: connection)?.timer.cancel()
             endMeeting(connection: connection, reason: "connection", in: &state)
@@ -1728,19 +1743,26 @@ extension AmbientRightyoRouter {
     /// Plays the stop confirmation clip (#418) on the connection that said stop, through the same guarded path as an
     /// acknowledgement: only that connection, never the Mac, never the agent session. Once sent, its words are held
     /// as a host phrase, so hearing them back, however short, is echo rather than a request or an overheard turn; an
-    /// undelivered clip is never held. Logs tokens only.
+    /// undelivered clip is never held. Final enqueue shares the device-stop lock; accepted reports retire pending
+    /// clips. A RightyO dismissal reaching this method before the report is recorded can already have enqueued
+    /// bytes that cannot be recalled. PR 3 must mitigate this bound by dropping host stop-confirmation clips on the
+    /// device shortly after its local stop; that device behavior is deferred. Logs tokens only.
     private func confirmStop(
         _ receipt: RightyoDismissReceipt, playback: String, on connection: UUID, target: String,
         listener: WebSocketListener?
     ) async {
-        let deviceStopped = state.withLock { state in
-            guard let stopped = state.deviceVoiceStops[connection] else { return false }
-            return stopped.duration(to: configuration.voiceStopClock()) < .seconds(10)
+        let token = UUID()
+        let registered = state.withLock { state in
+            if let stopped = state.deviceVoiceStops[connection],
+               stopped.duration(to: configuration.voiceStopClock()) < .seconds(10) { return false }
+            state.stopConfirmations[connection, default: []].insert(token)
+            return true
         }
-        if deviceStopped {
+        guard registered else {
             emit("ambient_stop_confirmed", detail: "outcome=skipped reason=device_stopped")
             return
         }
+        defer { _ = state.withLock { $0.stopConfirmations[connection]?.remove(token) } }
         guard let library = configuration.acknowledgements else { return }
         if let reason = AmbientStopConfirmation.skipReason(for: receipt, playback: playback) {
             emit("ambient_stop_confirmed", detail: "outcome=skipped reason=\(reason)")
@@ -1751,8 +1773,21 @@ extension AmbientRightyoRouter {
             emit("ambient_stop_confirmed", detail: "outcome=skipped reason=no_clips")
             return
         }
-        let outcome = await listener?.acknowledgeAmbient(connection: connection, target: target,
-                                                         clip: pick.clip) ?? "no_connection"
+        await configuration.acknowledgementHold?()
+        let outcome = await listener?.confirmAmbientStop(
+            connection: connection, target: target, clip: pick.clip
+        ) { [self] enqueue in
+            state.withLock { state in
+                guard state.stopConfirmations[connection]?.contains(token) == true else { return false }
+                if let stopped = state.deviceVoiceStops[connection],
+                   stopped.duration(to: configuration.voiceStopClock()) < .seconds(10) { return false }
+                return enqueue()
+            }
+        } ?? "no_connection"
+        if outcome == "device_stopped" {
+            emit("ambient_stop_confirmed", detail: "outcome=skipped reason=device_stopped")
+            return
+        }
         hostPhrases.observe(pick.clip, outcome: outcome)
         emit("ambient_stop_confirmed", detail: "clip=\(pick.persona)/\(pick.index) outcome=\(outcome)")
     }
@@ -3040,3 +3075,42 @@ final class ProbeAnswer: Sendable {
     }
 }
 #endif
+
+extension WebSocketListener {
+    /// Prepare the whole confirmation off the router lock, then recheck device-stop authority at the final enqueue.
+    func confirmAmbientStop(
+        connection: UUID, target: String, clip: AmbientAckClip,
+        admit: @Sendable (@Sendable () -> Bool) -> Bool
+    ) async -> String {
+        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
+            return "no_connection"
+        }
+        guard let frames = await peer.session.acknowledgementFrames(clip, target: target) else { return "not_ready" }
+        var tickets: [PreparedWebSocketReply] = []
+        for frame in frames {
+            guard let ticket = await peer.prepareReplyPublication(
+                frame, onLateSuccess: lateEchoObservation(frame)
+            ) else {
+                return "refused"
+            }
+            tickets.append(ticket)
+        }
+        let prepared = tickets
+        let suppressed = Mutex(false)
+        guard await peer.session.enqueueRequestlessClip(frames, enqueue: {
+            let checked = Mutex(false)
+            let result = admit {
+                checked.withLock { $0 = true }
+                return prepared.allSatisfy { $0.enqueue() }
+            }
+            if !checked.withLock({ $0 }) { suppressed.withLock { $0 = true } }
+            return result
+        }) else { return suppressed.withLock { $0 } ? "device_stopped" : "refused" }
+        for (ticket, frame) in zip(prepared, frames) {
+            let result = await ticket.result()
+            guard await peer.replySendSucceeded(result) else { return "refused" }
+            ambient?.observeReply(frame)
+        }
+        return "sent"
+    }
+}
