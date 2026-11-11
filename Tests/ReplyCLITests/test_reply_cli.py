@@ -953,9 +953,12 @@ class ReplyCLITests(unittest.TestCase):
                 server.listen(16)
                 server.settimeout(0.1)
                 requests, errors = [], []
+                queue_epoch = str(uuid.uuid4()).upper()
+                queue_position = 0
                 finished = threading.Event()
 
                 def answer():
+                    nonlocal queue_position
                     try:
                         while not finished.is_set():
                             try:
@@ -970,11 +973,26 @@ class ReplyCLITests(unittest.TestCase):
                                     if not chunk:
                                         raise AssertionError("CLI closed before sending a frame")
                                     request += chunk
-                                requests.append(request)
-                                index = len(requests) - 1
-                                response = responses[index] if index < len(responses) else {
-                                    "delivered": 0, "error": "unexpected retry",
-                                }
+                                decoded = json.loads(request)
+                                queued = decoded.get("kind") == "reply-audio"
+                                if queued and decoded["action"] == "enqueue":
+                                    queue_position += 1
+                                    response = {"delivered": 0, "replyAudio": {"skipped": False, "ticket": {
+                                        "epoch": queue_epoch, "position": queue_position}}}
+                                elif queued and decoded["action"] == "check":
+                                    response = {"delivered": 0, "replyAudio": {"skipped": False}}
+                                else:
+                                    # Preserve this helper's frame-only assertions and response indexing while
+                                    # modelling the ticket controls now used by every detached audio job.
+                                    if queued:
+                                        request = json.dumps(decoded["frame"]).encode() + b"\n"
+                                    requests.append(request)
+                                    index = len(requests) - 1
+                                    response = responses[index] if index < len(responses) else {
+                                        "delivered": 0, "error": "unexpected retry",
+                                    }
+                                    if queued and response is not None and not response.get("error"):
+                                        response = dict(response, replyAudio={"skipped": False})
                                 if response is not None:
                                     client.sendall(json.dumps(response).encode() + b"\n")
                     except Exception as error:
