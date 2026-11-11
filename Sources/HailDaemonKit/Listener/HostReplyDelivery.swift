@@ -58,11 +58,12 @@ final class ReplyAudioQueue: Sendable {
         let stop = state.withLock { state -> Stop? in
             guard state.connections.contains(connection) else { return nil }
             let selection = state.selections[connection]
-            let targets = Set(selection?.target.map { [$0] } ?? [])
+            let destinations = Self.destinationTargets(connection, in: state)
+            let targets = Set(selection?.target.map { [$0] } ?? []).union(destinations)
             let stop = Stop(connection: connection, position: state.position, selection: selection, targets: targets,
                             beforeSnapshot: ReplyAudioEnqueueTesting.beforeStopSnapshot)
             state.pending[stop.id] = stop
-            Self.mark(connection, targets: [], through: stop.position, in: &state)
+            Self.mark(connection, targets: destinations, through: stop.position, in: &state)
             return stop
         }
         if let stop {
@@ -78,7 +79,8 @@ final class ReplyAudioQueue: Sendable {
     func stop(_ connection: UUID, targets: Set<String>, through position: UInt64? = nil) {
         state.withLock { state in
             guard state.connections.contains(connection) else { return }
-            Self.mark(connection, targets: targets, through: position ?? state.position, in: &state)
+            Self.mark(connection, targets: targets.union(Self.destinationTargets(connection, in: state)),
+                      through: position ?? state.position, in: &state)
         }
     }
     private static func mark(_ connection: UUID, targets: Set<String>, through position: UInt64,
@@ -86,8 +88,7 @@ final class ReplyAudioQueue: Sendable {
         if state.connections.contains(connection) {
             state.stops[connection] = max(state.stops[connection] ?? 0, position)
         }
-        let outstanding = state.jobs.filter { $0.destination == connection }.map(\.target)
-        for target in targets.union(outstanding).sorted() {
+        for target in targets.sorted() {
             let previous = state.targets.last { $0.key == target }?.position ?? 0
             state.targets.removeAll { $0.key == target }
             state.targets.append((target, max(previous, position)))
@@ -161,6 +162,9 @@ final class ReplyAudioQueue: Sendable {
 }
 
 extension ReplyAudioQueue {
+    private static func destinationTargets(_ connection: UUID, in state: State) -> Set<String> {
+        Set(state.jobs.filter { $0.destination == connection }.map(\.target))
+    }
     /// Mirrored by the router under its admission lock, before privacy callbacks can capture a stop.
     func admittedSelection(_ selection: AmbientSelection, connection: UUID) {
         state.withLock { state in

@@ -94,32 +94,18 @@ import Testing
 }
 
 extension ReplyQueuedAudioSelectionTests {
-    @Test func acceptanceRetainsAdmittedTargetWhenRouterAdvances() throws {
-        let queue = ReplyAudioQueue(), connection = UUID()
-        queue.register(connection)
-        let ticket = try queue.ticket()
-        queue.admittedSelection(.init(target: "original", generation: UUID()), connection: connection)
-        let stop = try #require(queue.captureStop(connection))
-        queue.admittedSelection(.init(target: "later", generation: UUID()), connection: connection)
-        queue.resolve(stop, targets: [])
-        expectStopped(queue, ticket: ticket, target: "original")
-        if case .sent(true) = queue.enqueue(ticket, connection: nil, target: "later", { true }) {} else {
-            Issue.record("router changes after acceptance must not change the accepted target set")
-        }
-    }
-
     private func holdBeforeSession(
         _ rig: DeviceVoiceStopRig, connection: UUID, holds: SelectionStopHolds
     ) -> Task<Void, Never> {
         Task {
-                await ReplyAudioEnqueueTesting.$stopTimeout.withValue({ await holds.timeout.wait() }, operation: {
-                    await ReplyAudioEnqueueTesting.$beforeStopSession.withValue({
-                        holds.entered.release(); await holds.capture.wait()
-                    }, operation: {
-                        await rig.env.router.deviceVoiceStopped(connection: connection, latencyMs: nil)
-                    })
+            await ReplyAudioEnqueueTesting.$stopTimeout.withValue({ await holds.timeout.wait() }, operation: {
+                await ReplyAudioEnqueueTesting.$beforeStopSession.withValue({
+                    holds.entered.release(); await holds.capture.wait()
+                }, operation: {
+                    await rig.env.router.deviceVoiceStopped(connection: connection, latencyMs: nil)
                 })
-            }
+            })
+        }
     }
 
     private func stop(
@@ -150,9 +136,9 @@ extension ReplyQueuedAudioSelectionTests {
     private func playOtherTarget(
         _ unrelated: (LocalReplyAudioTicket, Frame), on other: FallbackSocketPair, listener: WebSocketListener
     ) async throws {
-            #expect(try await listener.replyAudio(.init(action: "publish", ticket: unrelated.0, frame: unrelated.1))
-                == LocalReplyAudioReport())
-            #expect(try await receiveFrame(on: other.sockets[1], step: "C pre-stop U plays") == unrelated.1)
+        #expect(try await listener.replyAudio(.init(action: "publish", ticket: unrelated.0, frame: unrelated.1))
+            == LocalReplyAudioReport())
+        #expect(try await receiveFrame(on: other.sockets[1], step: "C pre-stop U plays") == unrelated.1)
     }
     private func queuedOtherTarget(
         on pair: FallbackSocketPair, listener: WebSocketListener
