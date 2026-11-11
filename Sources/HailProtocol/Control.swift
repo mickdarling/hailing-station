@@ -132,6 +132,9 @@ public enum ControlPayload: Sendable, Equatable {
     /// Host to device (#309): stop reply playback now and drop queued reply audio, sent only to a device that
     /// advertises `PlaybackStop.capability`. It carries nothing else and grants no authority.
     case stopPlayback
+    /// Device to host (#1212): playback already stopped locally; only bounded latency, never content.
+    /// Sent only to a host advertising `DeviceVoiceStop.capability`; grants playback scope only.
+    case voiceStopped(latencyMs: Int?)
     /// Device to host (#932): yield this reply after playing `segment` ends. Requires `ReplySegments.capability`.
     case replyYield(reply: UUID, segment: Int)
     /// Host to device (#366): this connection's new ambient stream took listening over from another device of
@@ -198,7 +201,7 @@ extension ControlPayload: Codable {
     private enum CodingKeys: String, CodingKey {
         case command, hello, targets, targetID = "target", nonce, code, message, events, from, text, speaker, scope
         case muted, name, state, route, update, session, priority, card, on, reason, expires, report, turn
-        case reply, segment
+        case reply, segment, latencyMs = "latency_ms"
     }
 
     private enum Command: String, Codable {
@@ -206,6 +209,7 @@ extension ControlPayload: Codable {
         case diagnostic, stopPlayback = "stop_playback", ambientMovedHere = "ambient_moved_here"
         case ambientHeard = "ambient_heard", ambientOverheard = "ambient_overheard", overheardScope = "overheard_scope"
         case setReplyMute = "set_reply_mute", ownerVoice = "owner_voice", ambientInput = "ambient_input"
+        case voiceStopped = "voice_stopped"
         case replyYield = "reply_yield", sessionUpdate = "session_update"
         case sessionUpdateCancel = "session_update_cancel"
         case requestHeld = "request_held", heldDecision = "held_decision", heldResolution = "held_resolution"
@@ -237,10 +241,8 @@ extension ControlPayload: Codable {
             }
             self = .error(code: try container.decode(ErrorCode.self, forKey: .code), message: message, turn: turn)
         case .diagnostic: self = try Self.diagnostic(from: decoder)
-        case .stopPlayback:
-            // Strict, like `diagnostic`: only `command`, so nothing rides along on a stop.
-            try Self.requireOnly(["command"], "stop_playback", decoder)
-            self = .stopPlayback
+        case .stopPlayback: self = try Self.stopPlayback(from: decoder)
+        case .voiceStopped: self = try Self.voiceStopped(from: decoder)
         case .replyYield: self = try Self.replyYield(from: decoder)
         case .ambientMovedHere: self = try Self.ambientMovedHere(from: decoder)
         case .ambientHeard: self = try Self.ambientHeard(from: decoder, turn: turn)
@@ -266,6 +268,19 @@ extension ControlPayload: Codable {
         let events = try container.decode([DiagnosticEvent].self, forKey: .events)
         try requireRange(events.count, in: 1...DiagnosticLimits.maxEventsPerBatch, "events", decoder)
         return .diagnostic(events: events)
+    }
+
+    private static func stopPlayback(from decoder: any Decoder) throws -> ControlPayload {
+        try requireOnly(["command"], "stop_playback", decoder)
+        return .stopPlayback
+    }
+
+    private static func voiceStopped(from decoder: any Decoder) throws -> ControlPayload {
+        try requireOnly(["command", "latency_ms"], "voice_stopped", decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let latency = container.contains(.latencyMs) ? try container.decode(Int.self, forKey: .latencyMs) : nil
+        if let latency { try requireRange(latency, in: DeviceVoiceStop.latencyMs, "latency_ms", decoder) }
+        return .voiceStopped(latencyMs: latency)
     }
 
     private static func replyYield(from decoder: any Decoder) throws -> ControlPayload {
@@ -437,7 +452,8 @@ extension ControlPayload: Codable {
         return .ambientHeard(targetID: target, text: text, turn: turn)
     }
 
-    /// #923: absent keeps legacy decoding; present must be a UUID on a heard-turn frame (#1120 also permits request_held).
+    /// #923: absent keeps legacy decoding; present must be a UUID on a heard-turn frame.
+    /// #1120 also permits request_held.
     private static func heardTurn(from decoder: any Decoder) throws -> UUID? {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         guard container.contains(.turn) else { return nil }
@@ -516,6 +532,13 @@ extension ControlPayload: Codable {
             try container.encode(Command.diagnostic, forKey: .command)
             try container.encode(events, forKey: .events)
         case .stopPlayback: try container.encode(Command.stopPlayback, forKey: .command)
+        case .voiceStopped(let latency):
+            if let latency, !DeviceVoiceStop.latencyMs.contains(latency) {
+                throw EncodingError.invalidValue(latency, .init(codingPath: encoder.codingPath,
+                                                                debugDescription: "latency_ms out of range"))
+            }
+            try container.encode(Command.voiceStopped, forKey: .command)
+            try container.encodeIfPresent(latency, forKey: .latencyMs)
         case .replyYield(let reply, let segment):
             guard (1...ReplySegments.maxSegmentEnds).contains(segment) else {
                 throw EncodingError.invalidValue(segment, .init(codingPath: encoder.codingPath,
@@ -633,6 +656,20 @@ public enum PlaybackStop {
     public static let capability = "stop_playback"
 }
 
+/// Content-free local voice-stop report (#1212). The HOST advertises support; older hosts reject unknown commands.
+/// Latency is measured on the device from the end of the word, in milliseconds; absence means unavailable.
+public enum DeviceVoiceStop {
+    public static let capability = "device_voice_stop"
+    public static let latencyMs = 0...60_000
+
+    /// A future device sender must also enforce its privacy and local-playback gates before calling this helper.
+    public static func report(latencyMs: Int?, hostCapabilities: [String]) -> ControlPayload? {
+        guard hostCapabilities.contains(capability),
+              latencyMs.map({ Self.latencyMs.contains($0) }) ?? true else { return nil }
+        return .voiceStopped(latencyMs: latencyMs)
+    }
+}
+
 /// Reply mute (#404): the owner's spoken "mute" or "unmute", carried out on the device that heard it. The device
 /// advertises the capability in its `hello`; a host never sends `set_reply_mute` to a device without it, because an
 /// older device refuses an unknown command as malformed. `muted` is the device's own reply mute: later reply audio
@@ -741,8 +778,8 @@ public enum ReplySegments {
 
 /// Overheard remarks in the thread (#398): turns the ambient stream heard but did not send. Both sides advertise
 /// `capability` in their `hello`. A device sends `overheard_scope` only to a host that advertised it (an older host
-/// refuses the command), and a host sends `ambient_overheard` only to a device that advertised it. The host starts every
-/// connection at `off`, so nothing is sent until the device asks.
+/// refuses the command), and a host sends `ambient_overheard` only to a device that advertised it. The host starts
+/// every connection at `off`, so nothing is sent until the device asks.
 public enum AmbientOverheard {
     public static let capability = "ambient_overheard"
     public static let scopes = ["off", "owner", "everyone"]

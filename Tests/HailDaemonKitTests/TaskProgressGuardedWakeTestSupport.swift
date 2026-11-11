@@ -7,6 +7,9 @@ import Testing
 @testable import HailDaemonKit
 
 final class TaskProgressGuardedWiring: AmbientListenerWiring {
+    func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {
+        Issue.record("unexpected device voice stop in unrelated wiring fixture")
+    }
     private struct State { var audience: TaskProgressAmbientAudience?; var media = false }
     private let state = Mutex(State())
     func attach(_ listener: WebSocketListener) {}

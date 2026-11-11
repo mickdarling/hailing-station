@@ -30,7 +30,8 @@ func ambientRig(
     onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil,
     childMade: (@Sendable (UUID) -> Void)? = nil,
     gapClock: (@Sendable () -> ContinuousClock.Instant)? = nil, privacy: PrivacyOffSettings = .init(),
-    admissionBinding: String? = nil
+    ambientWired: Bool = true, admissionBinding: String? = nil,
+    voiceStopClock: (@Sendable () -> ContinuousClock.Instant)? = nil
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make(guardPatterns: guardPatterns)
     let connected = ConnectedPeerIDs()
@@ -48,7 +49,8 @@ func ambientRig(
     if let notSentQueued { configuration.notSentQueued = { notSentQueued.note($0) } }
     (configuration.notSentPlaying, configuration.childMade) = (notSentPlaying?.wait, childMade)
     (configuration.privacyProbeTimeout, configuration.offScoping) = (privacy.probeTimeout, privacy.offScoping)
-    if let gapClock { configuration.gapClock = gapClock }
+    configuration.gapClock = gapClock ?? { .now }
+    configuration.voiceStopClock = voiceStopClock ?? { .now }
     configuration.notes.shortcuts = shortcuts
     let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
     let sink = GuardClockAmbientSink(router: router, admissionBinding: admissionBinding,
@@ -58,7 +60,7 @@ func ambientRig(
     let listener = try WebSocketListener(
         bindAddress: "127.0.0.1", port: 0, host: rig.host,
         authorizer: PersonalTerminalAuthorizer(ambientAudio: gate).naming(routes), hostName: "mac-test",
-        singleTerminalReplyFallback: true, ambient: router, log: { connected.record($0) }
+        singleTerminalReplyFallback: true, ambient: ambientWired ? router : nil, log: { connected.record($0) }
     )
     return AmbientWiringRig(rig: rig, listener: listener, router: router, gate: gate, connected: connected,
                             port: try await boundedAmbientListenerStart(listener))
@@ -155,7 +157,6 @@ final class BoundedWaitFlag: Sendable {
     var isSet: Bool { flag.withLock { $0 } }
     func set() { flag.withLock { $0 = true } }
 }
-
 /// Every listener event name, in emission order.
 final class AmbientEventNames: Sendable {
     private let names = Mutex<[String]>([])
@@ -167,7 +168,6 @@ func audio(_ stream: UUID, _ sequence: Int, final: Bool = false) -> Frame {
     sessionFrame(target: RecipientTestRig.target,
                  payload: .audio(ambientSegment(stream: stream, sequence: sequence, isFinal: final)))
 }
-
 func eventually(_ condition: @Sendable () async -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + .seconds(15)
     while !Task.isCancelled, ContinuousClock.now < deadline {

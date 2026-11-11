@@ -100,7 +100,7 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
             switch control {
             case .hello, .ping, .listTargets, .select, .escape, .replyYield: .allow
             case .diagnostic: diagnostics == nil ? .deny : .allow
-            case .overheardScope, .ambientInput, .setPrivacy: ambientAudio == nil ? .deny : .allow
+            case .overheardScope, .ambientInput, .setPrivacy, .voiceStopped: ambientAudio == nil ? .deny : .allow
             case .health: health == nil ? .deny : .allow
             default: .deny
             }
@@ -198,6 +198,7 @@ public actor HostSession {
     /// Listener-owned state readers; absent for callers without ambient wiring. The off callback checks the
     /// live peer before clearing parks, so teardown and shutdown cannot authorize a late snapshot switch.
     let snapshot: @Sendable (UUID) -> [ControlPayload]
+    let deviceVoiceStop: (@Sendable (UUID, Int?) async -> Void)?
     let snapshotOff: (@Sendable (UUID) async -> ModeSnapshotPrivacyOff)?
     let host: HailHost
     let authorizer: any HostSessionAuthorizing
@@ -209,15 +210,21 @@ public actor HostSession {
     let providerTurnEndsReported: Bool
     /// Explicit listener opt-in; merely selecting a target never enables unsolicited output negotiation.
     let sessionUpdatesEnabled: Bool
+    var voiceStopLogs = VoiceStopLogWindow()
     var state = State.awaitingHello
     var peerName = "terminal"
     /// What the device said it can do in its hello (#309), bounded; it gates host-sent `stop_playback`.
     var peerCapabilities: Set<String> = []
     /// The device class its hello gave (#366), already checked against `AmbientTakeOver.deviceKinds`; or nil.
     var peerDeviceKind: String?
-    /// Replies whose audio is reaching this connection and has not finished, oldest first, and replies stopped
-    /// mid-stream whose remaining frames are refused (#309). Both bounded, ids only.
-    var repliesInFlight: [UUID] = []
+    // Every ledger write includes an audio admission (even final-only audio) or a retirement. A stop snapshots
+    // the revision after its own retirement, so subsequent audio cannot hide inside the duplicate-stop window.
+    var replyFlightRevision: UInt64 = 0
+    var acceptedVoiceStop: (at: ContinuousClock.Instant, revision: UInt64)?
+    /// Replies whose audio is reaching this connection and has not finished, oldest first, bounded ids only.
+    var repliesInFlight: [UUID] = [] {
+        didSet { replyFlightRevision &+= 1 }
+    }
     var stoppedReplies: [UUID] = []
     /// Subset of in-flight replies with a segment boundary actually enqueued to this capable peer.
     var segmentedReplies: Set<UUID> = []
@@ -250,8 +257,10 @@ public actor HostSession {
         modeSnapshot: @escaping @Sendable (UUID) -> [ControlPayload] = { _ in
             [.duckMode(on: false), .mediaMode(on: false)]
         },
-        snapshotPrivacyOff: (@Sendable (UUID) async -> ModeSnapshotPrivacyOff)? = nil
+        snapshotPrivacyOff: (@Sendable (UUID) async -> ModeSnapshotPrivacyOff)? = nil,
+        deviceVoiceStop: (@Sendable (UUID, Int?) async -> Void)? = nil
     ) {
+        self.deviceVoiceStop = deviceVoiceStop
         snapshot = modeSnapshot
         snapshotOff = snapshotPrivacyOff
         self.host = host
@@ -273,28 +282,6 @@ public actor HostSession {
     func receiveDecoded(_ frame: Frame?) async -> HostSessionResult {
         guard let frame else { return failure(.malformed, "malformed or oversized frame", close: true) }
         return await receive(frame)
-    }
-
-    public func receive(_ frame: Frame) async -> HostSessionResult {
-        switch state {
-        case .closed:
-            return HostSessionResult(frames: [], disposition: .close)
-        case .awaitingHello:
-            return await negotiate(frame)
-        case .ready(let version):
-            guard frame.version == version else {
-                return failure(.protocolVersion, "frame version does not match the session", close: true)
-            }
-            // A named route (#636) is chosen before authorization, so the authorizer sees the frame delivered.
-            switch await voiceRoute(frame) {
-            case .refused(let code, let message):
-                return failure(code, message, close: false, version: version)
-            case .deliver(let frame, let routed):
-                return await Self.$voiceRouted.withValue(routed) {
-                    await receiveReady(frame, version: version)
-                }
-            }
-        }
     }
 
     /// The admitting authorizer call for `frame`. An allowed final targeted text frame becomes the only
@@ -371,6 +358,56 @@ public actor HostSession {
 }
 
 extension HostSession {
+    public func receive(_ frame: Frame) async -> HostSessionResult {
+        if case .control(.voiceStopped) = frame.payload, !isReadyForVoiceStop {
+            logVoiceStopIgnored("not_ready")
+            if state == .closed { return HostSessionResult(frames: [], disposition: .close) }
+            return failure(.malformed, "first frame must be hello", close: true)
+        }
+        switch state {
+        case .closed:
+            return HostSessionResult(frames: [], disposition: .close)
+        case .awaitingHello:
+            return await negotiate(frame)
+        case .ready(let version):
+            guard frame.version == version else {
+                return failure(.protocolVersion, "frame version does not match the session", close: true)
+            }
+            if case .control(.voiceStopped(let latency)) = frame.payload {
+                return await receiveVoiceStop(frame, latency: latency)
+            }
+            // A named route (#636) is chosen before authorization, so the authorizer sees the frame delivered.
+            switch await voiceRoute(frame) {
+            case .refused(let code, let message):
+                return failure(code, message, close: false, version: version)
+            case .deliver(let frame, let routed):
+                return await Self.$voiceRouted.withValue(routed) {
+                    await receiveReady(frame, version: version)
+                }
+            }
+        }
+    }
+
+    private func receiveVoiceStop(_ frame: Frame, latency: Int?) async -> HostSessionResult {
+        let authorized = await authorizer.authorize(frame) == .allow
+        guard authorized, let deviceVoiceStop else {
+            logVoiceStopIgnored(authorized ? "no_active_stream" : "unauthorized")
+            return HostSessionResult(frames: [])
+        }
+        await deviceVoiceStop(connectionID, latency)
+        return HostSessionResult(frames: [])
+    }
+
+    private func logVoiceStopIgnored(_ reason: String) {
+        guard let detail = voiceStopLogs.detail(reason: reason, at: requestClock()) else { return }
+        replyEvent(WebSocketListenerEvent(event: "ambient_voice_stop_ignored", sessionID: connectionID, detail: detail))
+    }
+
+    private var isReadyForVoiceStop: Bool {
+        if case .ready = state { return true }
+        return false
+    }
+
     private func negotiate(_ frame: Frame) async -> HostSessionResult {
         guard case .control(.hello(let hello)) = frame.payload else {
             return failure(.malformed, "first frame must be hello", close: true)
@@ -389,7 +426,8 @@ extension HostSession {
         let info = HelloInfo(
             versions: VersionNegotiation.supported,
             capabilities: authorizer.capabilities + [ReplySegments.capability, ModeSnapshot.capability]
-                + (sessionUpdatesEnabled ? [SessionUpdateCard.capability, SessionUpdateCard.audioCapability] : []),
+                + (sessionUpdatesEnabled ? [SessionUpdateCard.capability, SessionUpdateCard.audioCapability] : [])
+                + (deviceVoiceStop != nil && authorizer.ambientAudio != nil ? [DeviceVoiceStop.capability] : []),
             deviceName: hostName
         )
         // WebSocketPeer sends this whole batch before processing the next frame. Reading the snapshot is
@@ -455,5 +493,20 @@ extension HostSession {
             return HostSessionResult(frames: [response(.healthReport(await health()), version: version)])
         }
         return await route(admitted, version: version)
+    }
+}
+
+/// Fixed reason tokens only; one record per reason in a live connection, with no report content retained.
+struct VoiceStopLogWindow {
+    private var reasons: [String: (at: ContinuousClock.Instant, suppressed: Int)] = [:]
+
+    mutating func detail(reason: String, at now: ContinuousClock.Instant) -> String? {
+        let prior = reasons[reason]
+        if let prior, prior.at.duration(to: now) < .seconds(10) {
+            reasons[reason] = (prior.at, min(prior.suppressed + 1, Int.max - 1))
+            return nil
+        }
+        reasons[reason] = (now, 0)
+        return "reason=\(reason)" + (prior.map { " suppressed=\($0.suppressed)" } ?? "")
     }
 }

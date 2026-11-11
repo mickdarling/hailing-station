@@ -13,6 +13,9 @@ final class ReplyEchoClock904: Sendable {
 
 /// Keeps synthetic ambient listening active and exercises the real own-voice filter, without a child or device.
 final class ReplyEchoWiring904: AmbientListenerWiring {
+    func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {
+        Issue.record("unexpected device voice stop in unrelated wiring fixture")
+    }
     let owner: UUID
     let spoken: RecentSpokenReplies
     let observed = Mutex<[UUID]>([])

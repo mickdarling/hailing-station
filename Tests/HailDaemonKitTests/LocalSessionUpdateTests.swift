@@ -10,6 +10,9 @@ import Testing
 @Suite struct LocalSessionUpdateTests {
     /// A listening device and its media mode, as the ambient router would report them.
     final class ListeningWiring: AmbientListenerWiring {
+        func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {
+            Issue.record("unexpected device voice stop in unrelated wiring fixture")
+        }
         let listening = Mutex<UUID?>(nil)
         let media = Mutex(false)
         func attach(_ listener: WebSocketListener) {}

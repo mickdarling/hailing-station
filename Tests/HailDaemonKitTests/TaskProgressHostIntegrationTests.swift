@@ -139,6 +139,9 @@ import Testing
 
 extension TaskProgressHostIntegrationTests {
     final class Wiring: AmbientListenerWiring {
+        func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {
+            Issue.record("unexpected device voice stop in unrelated wiring fixture")
+        }
         let owner = Mutex<UUID?>(nil)
         let stream = UUID()
         func attach(_ listener: WebSocketListener) {}
