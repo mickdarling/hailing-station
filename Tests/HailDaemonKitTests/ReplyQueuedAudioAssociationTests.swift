@@ -18,7 +18,8 @@ import Testing
                 selecting: [RecipientTestRig.target], capabilities: [PlaybackStop.capability])
             defer { pair.close() }
             let context = try await pair.submitInput(on: 0, rig: rig)
-            let session = try #require(await listener.peers.values.first?.session)
+            let peer = try #require(await listener.peers.values.first)
+            let session = await peer.session
             let ledger = await listener.lastInput
             let flight = UUID()
             let entry = LastInputLedger.Entry(connection: context.connectionID, generation: UUID(), at: .now)

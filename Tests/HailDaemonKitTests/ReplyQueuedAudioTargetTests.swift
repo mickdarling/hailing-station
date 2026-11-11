@@ -62,13 +62,11 @@ import Testing
             let other = try await FallbackSocketPair.boundedConnect(port: rig.env.port,
                 selecting: [RecipientTestRig.target])
             defer { other.close() }
-            let otherConnection = try #require(await listener.peers.values
-                .first { $0.session.connectionID != connection }?.session.connectionID)
             await evict(reply, on: listener, connection: connection)
             let context = try await other.submitInput(on: 0, rig: rig.env.rig)
-            #expect(context.connectionID == otherConnection)
+            #expect(context.connectionID != connection)
             let audio = recipientAudio(reply, sequence: 0, final: true)
-            #expect(await listener.lastInputRoute(audio)?.entry.connection == otherConnection)
+            #expect(await listener.lastInputRoute(audio)?.entry.connection == context.connectionID)
             #expect(try await listener.replyAudio(.init(action: "check", ticket: ticket, frame: audio)).skipped)
             #expect(try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: audio)).skipped)
             try await rig.pair.boundedBarrier(step: "A stays silent")

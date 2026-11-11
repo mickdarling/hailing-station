@@ -15,7 +15,8 @@ import Testing
             let context = try await pair.submitInput(on: 0, rig: rig)
             let reply = recipientDescriptor(context, audio: true)
             let frame = recipientAudio(reply, sequence: 0, final: true)
-            let session = try #require(await listener.peers.values.first?.session)
+            let peer = try #require(await listener.peers.values.first)
+            let session = await peer.session
             let before = try #require(await session.replyRequests[context.id])
             let ticket = try await queuedAudioTicket(listener)
             for _ in 0..<2 {
