@@ -9,6 +9,7 @@ import Synchronization
 final class ReplyAudioQueue: Sendable {
     static let targetLimit = 1024
     static let jobLimit = 1024
+    static let stopResolutionDeadline: Duration = .milliseconds(250)
     struct Stop: Sendable {
         let id = UUID()
         let connection: UUID
@@ -62,7 +63,7 @@ final class ReplyAudioQueue: Sendable {
         if let stop {
             let timeout = ReplyAudioEnqueueTesting.stopTimeout
             Task { [weak self] in
-                if let timeout { await timeout() } else { try? await Task.sleep(for: .seconds(2)) }
+                if let timeout { await timeout() } else { try? await Task.sleep(for: Self.stopResolutionDeadline) }
                 self?.resolve(stop, targets: nil)
             }
         }
@@ -747,11 +748,11 @@ extension HostSession {
         return .init(connection: connectionID, generation: selectionGeneration, at: requestClock())
     }
 
-    /// Snapshot all host-known associations before retiring playback. Names in Hello confer no identity.
-    func markQueuedAudioStopped(_ queue: ReplyAudioQueue, stop: ReplyAudioQueue.Stop) async {
+    /// Include just-retired flights after the immediate playback cut. Names in Hello confer no identity.
+    func markQueuedAudioStopped(_ queue: ReplyAudioQueue, stop: ReplyAudioQueue.Stop, retired: [UUID] = []) async {
         await stop.beforeSnapshot?()
         guard case .ready = state else { return queue.resolve(stop, targets: nil) }
-        var targets = lastInputLedger?.targets(on: connectionID, inFlight: repliesInFlight) ?? []
+        var targets = lastInputLedger?.targets(on: connectionID, inFlight: repliesInFlight + retired) ?? []
         if let selectedTarget { targets.insert(selectedTarget) }
         #if os(macOS)
         if let routes = authorizer.voiceRoutes {

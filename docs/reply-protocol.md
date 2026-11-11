@@ -735,7 +735,10 @@ in-flight and request-owner targets writes their marks at the captured cutoff ev
 then removes the pending stop and resumes admissions outside the lock. Only the connection mark needs liveness.
 Queue retirement is recorded before in-flight ledger entries are dropped. A retired peer snapshot also raises
 the floor while retaining its arriving target marks, because its association set may now be incomplete.
-If the connection lookup or session snapshot fails, or its two-second asynchronous deadline expires, resolution
+Current in-flight retirement and the `stop_playback` send precede target resolution; neither waits on this
+first-audio barrier or the session snapshot. The snapshot includes the just-retired flight IDs.
+If the connection lookup or session snapshot fails, or the **250 ms** asynchronous deadline
+(`ReplyAudioQueue.stopResolutionDeadline`) expires, resolution
 raises the global floor to the captured cutoff before releasing the barrier. A late snapshot cannot undo that
 floor or mark later tickets. A definitive global floor ends admission waiting immediately, even if a newer stop
 is still pending; overlapping stops cannot keep an already-silent job waiting indefinitely. Admissions recheck

@@ -593,15 +593,20 @@ extension WebSocketListener {
         guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
             return "no_connection"
         }
-        if let stop { await peer.session.markQueuedAudioStopped(replyAudioQueue, stop: stop) }
         let playbackStop = UUID()
         stopsInFlight[playbackStop] = peer.session
         let result = await peer.session.stopReplyPlayback(voiceStopAt: voiceStopAt)
         for id in result.stopped { stoppedReplyIDs.record(id) }
         stopsInFlight[playbackStop] = nil
-        if result.coalesced { return "coalesced" }
-        if let frame = result.frame, await peer.send(frame) { return "stopped" }
-        return result.stopped.isEmpty ? "idle" : "cut"
+        // The first-frame barrier is already registered. Cut current playback before resolving targets.
+        let outcome: String
+        if result.coalesced { outcome = "coalesced" } else if let frame = result.frame, await peer.send(frame) {
+            outcome = "stopped"
+        } else { outcome = result.stopped.isEmpty ? "idle" : "cut" }
+        if let stop {
+            await peer.session.markQueuedAudioStopped(replyAudioQueue, stop: stop, retired: result.stopped)
+        }
+        return outcome
     }
 }
 

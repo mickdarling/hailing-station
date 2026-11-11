@@ -18,6 +18,7 @@ import Testing
     }
 
     @Test func boundedTimeoutRaisesFloorAndReleasesFirstFrame() async throws {
+        #expect(ReplyAudioQueue.stopResolutionDeadline == .milliseconds(250))
         let queue = ReplyAudioQueue(), connection = UUID()
         let timeout = VoiceStopConfirmationHold(), waiting = VoiceStopConfirmationHold()
         defer { timeout.release() }
