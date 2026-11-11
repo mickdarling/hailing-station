@@ -13,7 +13,7 @@ import Testing
             try #require(await listener.publish(first) == 1)
             #expect(try await recipientSocketReceive(on: socket) == first)
 
-            #expect(await listener.stopReplyPlayback(connection: connection) == "stopped")
+            #expect(await listener.stopReplyPlayback(connection: connection, markQueuedAudio: true) == "stopped")
             #expect(try await recipientSocketReceive(on: socket).payload == .control(.stopPlayback))
             await #expect(throws: LocalReplyRefusal.replyStopped) {
                 try await listener.publish(recipientAudio(reply, sequence: 1, final: true))
@@ -32,7 +32,7 @@ import Testing
             try #require(await listener.publish(first) == 1)
             #expect(try await recipientSocketReceive(on: socket) == first)
 
-            #expect(await listener.stopReplyPlayback(connection: connection) == "cut")
+            #expect(await listener.stopReplyPlayback(connection: connection, markQueuedAudio: true) == "cut")
             try await recipientSocketBarrier(on: socket) // No stop frame: the next frame is the pong.
             await #expect(throws: LocalReplyRefusal.replyStopped) {
                 try await listener.publish(recipientAudio(reply, sequence: 1, final: true))
@@ -45,8 +45,8 @@ import Testing
             let done = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
             try #require(await listener.publish(done) == 1)
             #expect(try await recipientSocketReceive(on: socket) == done)
-            #expect(await listener.stopReplyPlayback(connection: connection) == "idle")
-            #expect(await listener.stopReplyPlayback(connection: UUID()) == "no_connection")
+            #expect(await listener.stopReplyPlayback(connection: connection, markQueuedAudio: true) == "idle")
+            #expect(await listener.stopReplyPlayback(connection: UUID(), markQueuedAudio: true) == "no_connection")
         }
     }
 
@@ -58,7 +58,7 @@ import Testing
             #expect(try await recipientSocketReceive(on: socket) == first)
             let (session, other) = try await device(port: port, capabilities: ["probe"])
             defer { session.invalidateAndCancel() }
-            #expect(await listener.stopReplyPlayback(connection: connection) == "cut")
+            #expect(await listener.stopReplyPlayback(connection: connection, markQueuedAudio: true) == "cut")
             await #expect(throws: LocalReplyRefusal.replyStopped) {
                 try await listener.publish(recipientAudio(reply, sequence: 1, final: true))
             }
@@ -72,7 +72,7 @@ import Testing
             let first = recipientAudio(reply, sequence: 0)
             try #require(await listener.publish(first) == 1)
             #expect(try await recipientSocketReceive(on: socket) == first)
-            #expect(await listener.stopReplyPlayback(connection: connection) == "cut")
+            #expect(await listener.stopReplyPlayback(connection: connection, markQueuedAudio: true) == "cut")
             socket.cancel(with: .normalClosure, reason: nil)
             #expect(await eventually { await listener.peerCount() == 0 })
             let (session, other) = try await device(port: port, capabilities: ["probe"])
@@ -111,7 +111,7 @@ import Testing
             let live = uncorrelatedDescriptor(audio: true)
             try #require(await listener.publish(recipientAudio(live, sequence: 0)) == 1)
             _ = try await recipientSocketReceive(on: socket)
-            #expect(await listener.stopReplyPlayback(connection: connection) == "cut")
+            #expect(await listener.stopReplyPlayback(connection: connection, markQueuedAudio: true) == "cut")
             await #expect(throws: LocalReplyRefusal.replyStopped) {
                 try await listener.publish(recipientAudio(live, sequence: 1, final: true))
             }

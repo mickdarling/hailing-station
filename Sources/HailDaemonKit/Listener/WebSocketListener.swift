@@ -103,6 +103,7 @@ public actor WebSocketListener {
     /// until then, so its stop is seen even if its peer ends during the await.
     var stopped = false, stopsInFlight: [UUID: HostSession] = [:]
     let stoppedReplyIDs = ReplyStopLedger()
+    nonisolated let replyAudioQueue = ReplyAudioQueue()
     /// Opt-in ambient listening (#203): the sink of the authorizer's `AmbientAudioGate`. Nil by default.
     let ambient: (any AmbientListenerWiring)?
     /// Per target, the connection that most recently sent it admitted input (#370). Host-side only.
@@ -285,6 +286,7 @@ extension WebSocketListener {
             Task { await self?.peerEnded(endedID) }
         }
         (peers[id], transports[session.connectionID]) = (peer, connection)
+        replyAudioQueue.register(session.connectionID)
         await peer.start()
     }
 
@@ -444,6 +446,8 @@ extension WebSocketListener {
         peer.replyTransport.retire()
         transports[peer.session.connectionID] = nil
         heardTurns.removeValue(forKey: peer.session.connectionID)?.close()
+        // Mark retirement before dropping associations: a pending snapshot must fail closed if it loses them.
+        replyAudioQueue.forget(peer.session.connectionID)
         lastInput.forget(connection: peer.session.connectionID)
         await endAmbient(of: peer)
         await refreshTaskProgressEnvironment()
@@ -580,18 +584,37 @@ extension WebSocketListener {
     /// Stops reply playback for the dismissing connection (#309) and returns a fixed outcome token:
     /// `stopped` (sent to the device), `cut` (frames refused only: an older device, or the send failed),
     /// `idle` (nothing mid-stream and no device stop), `coalesced` (a redundant device report), or `no_connection`.
-    func stopReplyPlayback(connection: UUID, voiceStopAt: ContinuousClock.Instant? = nil) async -> String {
+    func stopReplyPlayback(
+        connection: UUID, voiceStopAt: ContinuousClock.Instant? = nil, markQueuedAudio: Bool,
+        queueStop: ReplyAudioQueue.Stop? = nil
+    ) async -> String {
+        let stop = markQueuedAudio ? (queueStop ?? replyAudioQueue.captureStop(connection)) : nil
+        defer { if let stop { replyAudioQueue.resolve(stop, targets: nil) } }
         guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
             return "no_connection"
         }
-        let stop = UUID()
-        stopsInFlight[stop] = peer.session
-        let result = await peer.session.stopReplyPlayback(voiceStopAt: voiceStopAt)
+        let playbackStop = UUID()
+        stopsInFlight[playbackStop] = peer.session
+        await ReplyAudioEnqueueTesting.beforeStopSession?()
+        let result = await peer.session.stopReplyPlayback(voiceStopAt: voiceStopAt, queue: replyAudioQueue, stop: stop)
         for id in result.stopped { stoppedReplyIDs.record(id) }
-        stopsInFlight[stop] = nil
-        if result.coalesced { return "coalesced" }
-        if let frame = result.frame, await peer.send(frame) { return "stopped" }
-        return result.stopped.isEmpty ? "idle" : "cut"
+        stopsInFlight[playbackStop] = nil
+        // The first-frame barrier is already registered. Cut current playback before resolving targets.
+        let outcome: String
+        if result.coalesced { outcome = "coalesced" } else if let frame = result.frame,
+            await sendPlaybackStop(frame, on: peer) {
+            outcome = "stopped"
+        } else { outcome = result.stopped.isEmpty ? "idle" : "cut" }
+        if let stop {
+            await peer.session.markQueuedAudioStopped(replyAudioQueue, stop: stop, targets: result.targets)
+        }
+        return outcome
+    }
+
+    private func sendPlaybackStop(_ frame: Frame, on peer: WebSocketPeer) async -> Bool {
+        let sent = await peer.send(frame)
+        await ReplyAudioEnqueueTesting.afterStopSend?()
+        return sent
     }
 }
 
@@ -979,6 +1002,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     /// Same playback stop as a RightyO dismissal; no withdrawal, mode change, or spoken confirmation.
     public func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {
+        var queueStop: ReplyAudioQueue.Stop?
         let reason = state.withLock { state -> String? in
             if state.duck[connection] != nil { return "private" }
             guard !state.shuttingDown, !state.reloading, !state.closed.contains(connection),
@@ -989,6 +1013,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
                 return "no_active_stream"
             }
             let now = configuration.voiceStopClock()
+            // Queue handoffs cannot acquire this router lock; transport completion runs outside that stack.
+            queueStop = state.listener?.value?.replyAudioQueue.captureStop(connection)
             state.deviceVoiceStops[connection] = now
             // Retire all pending clips, even if their async work resumes later.
             state.stopConfirmations[connection] = nil
@@ -1000,7 +1026,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         }
         let listener = state.withLock { $0.listener?.value }
         let playback = await listener?.stopReplyPlayback(
-            connection: connection, voiceStopAt: configuration.voiceStopClock()
+            connection: connection, voiceStopAt: configuration.voiceStopClock(), markQueuedAudio: true,
+            queueStop: queueStop
         ) ?? "no_connection"
         if playback == "coalesced" {
             await logVoiceStopIgnore("coalesced", connection: connection)
@@ -1436,7 +1463,8 @@ extension AmbientRightyoRouter {
             if state.shuttingDown { return "stopping" }
             // Fail closed (#941): a child that may have been made public while privacy is parked never hears audio.
             if !Self.admitsPrivacy(connection, in: state) { return "private" }
-            let id = register(pipeline, stream: stream, connection: connection, target: destination.target, in: &state)
+            let id = register(pipeline, stream: stream, connection: connection, target: destination.target,
+                              selection: selection, in: &state)
             state.active = Active(stream: stream, run: id, pipeline: pipeline, since: Date(),
                                   selection: selection, target: destination.target, binding: destination.binding,
                                   policyGeneration: destination.policyGeneration)
@@ -1558,11 +1586,18 @@ extension AmbientRightyoRouter {
     /// leave its failure, not the reload, as the last event. A child whose connection was torn down while it was made
     /// is registered like any other: `closed`, recorded by `stop(connection:)`, refuses its mode entries (#735).
     func register(_ pipeline: RightyoAmbientPipeline, stream: UUID, connection: UUID, target: String,
-                  reload: Bool = false,
+                  reload: Bool = false, selection: UUID? = nil,
                   in state: inout State) -> UUID {
         let id = UUID()
         state.runs[id] = Run(stream: stream, connection: connection, pipeline: pipeline)
-        if !state.shuttingDown, !state.closed.contains(connection) { state.streamTargets[connection] = target }
+        if !state.shuttingDown, !state.closed.contains(connection) {
+            state.streamTargets[connection] = target
+            // Mirror the router's admitted stream/selection under the queue lock. All stop sources, including
+            // privacy restore/pre-arm callbacks already under this router lock, capture it with their cutoff.
+            state.listener?.value?.replyAudioQueue.admittedSelection(
+                .init(target: target, generation: selection), connection: connection
+            )
+        }
         // A new or reloaded child starts with media mode off (#551). Told under the same lock `setMedia` changes it
         // under, so it can never miss a change made while it was starting.
         if state.media[connection] != nil || state.meeting[connection] != nil {
@@ -1678,8 +1713,11 @@ extension AmbientRightyoRouter {
                 self?.emit("ambient_dismissed", detail: Self.describe(receipt, playback: "none"))
                 return
             }
+            let position = listener?.replyAudioQueue.captureStop(connection)
             Task { [weak self] in
-                let playback = await listener?.stopReplyPlayback(connection: connection) ?? "no_connection"
+                let playback = await listener?.stopReplyPlayback(
+                    connection: connection, markQueuedAudio: true, queueStop: position
+                ) ?? "no_connection"
                 self?.emit("ambient_dismissed", detail: Self.describe(receipt, playback: playback))
                 await self?.confirmStop(receipt, playback: playback, on: connection, target: target, listener: listener)
             }
@@ -1712,7 +1750,9 @@ extension AmbientRightyoRouter {
         let supported = await listener?.acceptsReplyMute(connection: connection) ?? false
         var mute = supported ? "pending" : "unsupported"
         if !muted, supported { mute = await listener?.setReplyMute(false, connection: connection) ?? "" }
-        let playback = muted ? await listener?.stopReplyPlayback(connection: connection) ?? "no_connection" : "none"
+        let playback = muted ? await listener?.stopReplyPlayback(
+            connection: connection, markQueuedAudio: false
+        ) ?? "no_connection" : "none"
         let persona = supported ? (muted ? AmbientStopConfirmation.muted : AmbientStopConfirmation.unmuted)
             : (muted ? AmbientStopConfirmation.stopped : nil)
         var confirm = "none"
@@ -1778,15 +1818,20 @@ extension AmbientRightyoRouter {
                 return enqueue()
             }
         } ?? "no_connection"
-        if outcome == "device_stopped" {
-            let reason = state.withLock {
-                $0.closed.contains(connection) || $0.latest[connection] == nil ? "connection_closed" : "device_stopped"
-            }
+        if let reason = stopConfirmationSkip(outcome, connection: connection) {
             emit("ambient_stop_confirmed", detail: "outcome=skipped reason=\(reason)")
             return
         }
         hostPhrases.observe(pick.clip, outcome: outcome)
         emit("ambient_stop_confirmed", detail: "clip=\(pick.persona)/\(pick.index) outcome=\(outcome)")
+    }
+
+    private func stopConfirmationSkip(_ outcome: String, connection: UUID) -> String? {
+        if outcome == "no_connection" { return "connection_closed" }
+        guard outcome == "device_stopped" else { return nil }
+        return state.withLock {
+            $0.closed.contains(connection) || $0.latest[connection] == nil ? "connection_closed" : "device_stopped"
+        }
     }
 
     private func run(
@@ -1942,7 +1987,7 @@ extension AmbientRightyoRouter {
             state.retirements += 1
             state.runs[old.run]?.retiredAt = state.retirements
             let id = register(pipeline, stream: old.stream, connection: connection, target: old.target,
-                              reload: true, in: &state)
+                              reload: true, selection: old.selection, in: &state)
             state.active = Active(stream: old.stream, run: id, pipeline: pipeline, since: old.since,
                                   selection: old.selection, target: old.target, binding: old.binding,
                                   policyGeneration: old.policyGeneration)
@@ -2579,9 +2624,10 @@ extension AmbientRightyoRouter {
     /// From now on the agent's replies to `connection` are refused (S-2c), then its pending ones dropped, under the
     /// caller's lock: a privacy entry's, or a restore's (#941).
     func holdReplies(_ connection: UUID, listener: WebSocketListener?) {
+        let stop = listener?.replyAudioQueue.captureStop(connection)
         listener?.replyHold.set(true, connection: connection)
         mediaNotices.enqueue { [weak self, weak listener] in
-            let dropped = await listener?.dropPrivateReplies(connection: connection) ?? 0
+            let dropped = await listener?.dropPrivateReplies(connection: connection, stop: stop) ?? 0
             self?.emit("ambient_privacy_replies", connection: connection, detail: "dropped=\(dropped)")
         }
     }
@@ -2745,9 +2791,13 @@ extension AmbientRightyoRouter {
                        listener: WebSocketListener?) async -> (String?, String) {
         guard let number = entry.entry else { return (nil, " withdrawn") }
         let decision = await decideEntry(number, connection: connection, target: target)
+        await ReplyAudioEnqueueTesting.afterPrivacyDecision?()
         for pipeline in decision.refused { await pipeline.killRefused() }
         guard let clip = decision.clip else { return (nil, decision.tokens) }
-        let playback = await listener?.stopReplyPlayback(connection: connection) ?? "no_connection"
+        // Entry already captured and marked the queue synchronously. A delayed announcement cannot mark again.
+        let playback = await listener?.stopReplyPlayback(
+            connection: connection, markQueuedAudio: false
+        ) ?? "no_connection"
         return (clip, decision.tokens + " playback=\(playback)")
     }
 
@@ -3115,28 +3165,26 @@ extension WebSocketListener {
 struct VoicePlaybackStopResult {
     let frame: Frame?
     let stopped: [UUID]
+    var targets: Set<String>?
     var coalesced = false
 }
 
 extension HostSession {
     /// Retire on every report. Only the redundant outbound frame uses the last accepted stop's fixed window.
     func stopReplyPlayback(
-        voiceStopAt now: ContinuousClock.Instant?
+        voiceStopAt now: ContinuousClock.Instant?, queue: ReplyAudioQueue? = nil, stop: ReplyAudioQueue.Stop? = nil
     ) -> VoicePlaybackStopResult {
-        guard let now else {
-            let result = stopReplyPlayback()
-            return VoicePlaybackStopResult(frame: result.frame, stopped: result.stopped)
-        }
+        guard let now else { return stopReplyPlayback(queue: queue, stop: stop) }
         guard case .ready = state else { return VoicePlaybackStopResult(frame: nil, stopped: []) }
         let previous = acceptedVoiceStop
         let coalesced = previous.map {
             $0.at.duration(to: now) < .seconds(1) && $0.revision == replyFlightRevision
         } ?? false
-        let result = stopReplyPlayback()
+        let result = stopReplyPlayback(queue: queue, stop: stop)
         // Retirement also writes the ledger; retain its new revision without sliding the accepted timestamp.
         acceptedVoiceStop = (coalesced ? previous?.at ?? now : now, replyFlightRevision)
         return VoicePlaybackStopResult(frame: coalesced ? nil : result.frame,
-                                       stopped: result.stopped, coalesced: coalesced)
+                                       stopped: result.stopped, targets: result.targets, coalesced: coalesced)
     }
 }
 

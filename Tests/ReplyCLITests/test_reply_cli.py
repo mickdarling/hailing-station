@@ -390,7 +390,8 @@ class ReplyCLITests(unittest.TestCase):
             time.sleep(0.05)
 
     @contextlib.contextmanager
-    def reply_server(self, respond, caller_may_vanish=False, raw_requests=None):
+    def reply_server(self, respond, caller_may_vanish=False, raw_requests=None,
+                     audio_queue=None, queue_requests=None):
         """A private reply socket answering frame N with respond(N); yields (path, [(arrival, frame)]).
 
         With caller_may_vanish, a test that kills the caller on purpose lets an answer find the CLI gone: the
@@ -403,9 +404,11 @@ class ReplyCLITests(unittest.TestCase):
                 server.listen(16)
                 server.settimeout(0.1)
                 frames, errors = [], []
+                queue_position, queue_epoch = 0, str(uuid.uuid4())
                 finished = threading.Event()
 
                 def answer():
+                    nonlocal queue_position
                     try:
                         while not finished.is_set():
                             try:
@@ -422,10 +425,28 @@ class ReplyCLITests(unittest.TestCase):
                                     request += chunk
                                 if raw_requests is not None:
                                     raw_requests.append(request)
-                                index = len(frames)
-                                frames.append((time.monotonic(), json.loads(request)))
+                                decoded = json.loads(request)
+                                queued = decoded.get("kind") == "reply-audio"
+                                if queued and queue_requests is not None:
+                                    queue_requests.append(decoded)
+                                if queued and decoded["action"] == "enqueue":
+                                    queue_position += 1
+                                    response = {"delivered": 0, "replyAudio": {"skipped": False, "ticket": {
+                                        "epoch": queue_epoch, "position": queue_position}}}
+                                elif queued and decoded["action"] == "check":
+                                    response = {"delivered": 0, "replyAudio": {"skipped": False}}
+                                else:
+                                    index = len(frames)
+                                    frames.append((time.monotonic(), decoded["frame"] if queued else decoded))
+                                    response = respond(index)
+                                    if queued and not response.get("error"):
+                                        response = dict(response, replyAudio={"skipped": False})
+                                if queued and audio_queue is not None:
+                                    response = audio_queue(decoded, response)
+                                    if response is None:
+                                        continue  # explicit synthetic connection loss, with no acknowledgement
                                 try:
-                                    client.sendall(json.dumps(respond(index)).encode() + b"\n")
+                                    client.sendall(json.dumps(response).encode() + b"\n")
                                 except (BrokenPipeError, ConnectionResetError):
                                     if not caller_may_vanish:
                                         raise
@@ -934,9 +955,12 @@ class ReplyCLITests(unittest.TestCase):
                 server.listen(16)
                 server.settimeout(0.1)
                 requests, errors = [], []
+                queue_epoch = str(uuid.uuid4()).upper()
+                queue_position = 0
                 finished = threading.Event()
 
                 def answer():
+                    nonlocal queue_position
                     try:
                         while not finished.is_set():
                             try:
@@ -951,11 +975,26 @@ class ReplyCLITests(unittest.TestCase):
                                     if not chunk:
                                         raise AssertionError("CLI closed before sending a frame")
                                     request += chunk
-                                requests.append(request)
-                                index = len(requests) - 1
-                                response = responses[index] if index < len(responses) else {
-                                    "delivered": 0, "error": "unexpected retry",
-                                }
+                                decoded = json.loads(request)
+                                queued = decoded.get("kind") == "reply-audio"
+                                if queued and decoded["action"] == "enqueue":
+                                    queue_position += 1
+                                    response = {"delivered": 0, "replyAudio": {"skipped": False, "ticket": {
+                                        "epoch": queue_epoch, "position": queue_position}}}
+                                elif queued and decoded["action"] == "check":
+                                    response = {"delivered": 0, "replyAudio": {"skipped": False}}
+                                else:
+                                    # Preserve this helper's frame-only assertions and response indexing while
+                                    # modelling the ticket controls now used by every detached audio job.
+                                    if queued:
+                                        request = json.dumps(decoded["frame"]).encode() + b"\n"
+                                    requests.append(request)
+                                    index = len(requests) - 1
+                                    response = responses[index] if index < len(responses) else {
+                                        "delivered": 0, "error": "unexpected retry",
+                                    }
+                                    if queued and response is not None and not response.get("error"):
+                                        response = dict(response, replyAudio={"skipped": False})
                                 if response is not None:
                                     client.sendall(json.dumps(response).encode() + b"\n")
                     except Exception as error:
@@ -1022,46 +1061,17 @@ class ReplyCLITests(unittest.TestCase):
             self.assertEqual(payload["streamId"], payload["reply"]["audioStream"])
 
     def submit_frames(self, arguments, count, environment=None):
-        with tempfile.TemporaryDirectory(prefix="hail-reply-cli-") as scratch:
-            path = os.path.join(scratch, "reply.sock")
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
-                server.bind(path)
-                os.chmod(path, 0o600)
-                server.listen(count)
-                frames = []
-                errors = []
-
-                def answer():
-                    try:
-                        server.settimeout(SLOW)
-                        for _ in range(count):
-                            with server.accept()[0] as client:
-                                client.settimeout(SLOW)
-                                request = b""
-                                while not request.endswith(b"\n"):
-                                    chunk = client.recv(8192)
-                                    if not chunk:
-                                        raise AssertionError("CLI closed before sending a frame")
-                                    request += chunk
-                                frames.append(json.loads(request))
-                                client.sendall(b'{"delivered":1}\n')
-                    except Exception as error:
-                        errors.append(error)
-
-                worker = threading.Thread(target=answer, daemon=True)
-                worker.start()
-                result = self.track(subprocess.run(
-                    [str(HAILD), "reply", "tmux:test", "--host", "mac-test", *arguments, "--socket", path],
-                    cwd=REPO, capture_output=True, text=True, timeout=60, check=False, env=environment,
-                    start_new_session=True,
-                ))
-                worker.join(timeout=SLOW)
-                self.await_jobs()
-                self.assertFalse(worker.is_alive())
-                self.assertFalse(errors, errors)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(len(frames), count)
-                return frames
+        with self.reply_server(lambda index: {"delivered": 1}) as (path, recorded):
+            result = self.track(subprocess.run(
+                [str(HAILD), "reply", "tmux:test", "--host", "mac-test", *arguments, "--socket", path],
+                cwd=REPO, capture_output=True, text=True, timeout=60, check=False, env=environment,
+                start_new_session=True,
+            ))
+            self.wait_for(lambda: len(recorded) >= count, SLOW)
+            self.await_jobs()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(recorded), count)
+            return [frame for _, frame in recorded]
 
     def test_refusal_codes_are_printed_without_enum_wrappers(self):
         reasons = {

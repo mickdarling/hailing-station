@@ -40,7 +40,10 @@ struct DeviceVoiceStopRig {
                                            acknowledgementHold: hold.map { barrier in .init { await barrier.wait() } },
                                            onEvent: { event in observation.events.withLock { $0.append(event) } },
                                            ambientWired: ambientWired,
-                                           voiceStopClock: { observation.clock.withLock { $0 } })
+                                           voiceStopClock: { observation.clock.withLock { $0 } },
+                                           onListenerEvent: { event in
+                                               observation.events.withLock { $0.append(event) }
+                                           })
             do {
                 let pair = try await FallbackSocketPair.boundedConnect(
                     port: env.port, selecting: [RecipientTestRig.target], capabilities: capabilities
