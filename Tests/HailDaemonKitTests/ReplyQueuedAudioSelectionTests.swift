@@ -29,6 +29,7 @@ import Testing
             let unrelated = try await queuedOtherTarget(on: other, listener: listener)
             stopping = Task { await stop(source, rig: rig, connection: connection, holds: holds) }
             await holds.entered.wait()
+            let postStop = try await queuedAudioTicket(listener)
             if source != "privacy" {
                 #expect(try await receiveFrame(on: rig.socket, step: "A stop before selection")
                     .payload == .control(.stopPlayback))
@@ -39,7 +40,7 @@ import Testing
             #expect(try await listener.replyAudio(.init(action: "publish", ticket: old, frame: audio)).skipped)
             // U's pre-stop audio really plays on C; the new selection neither marks U nor raises the floor.
             try await playOtherTarget(unrelated, on: other, listener: listener)
-            try await playFresh(on: other, listener: listener)
+            try await playFresh(on: other, listener: listener, ticket: postStop)
             try await other.boundedBarrier(step: "B retains text without pre-stop audio")
         } catch {
             holds.release()
@@ -69,6 +70,7 @@ import Testing
             let connection = try #require(rig.env.router.activeConnection())
             stopping = holdBeforeSession(rig, connection: connection, holds: holds)
             await holds.entered.wait() // Accepted under the queue lock; no session stop hop has occurred.
+            let postStop = try await queuedAudioTicket(listener)
             if case .pending = queue.enqueue(old, connection: nil, target: RecipientTestRig.target, { true }) {} else {
                 Issue.record("accepted stop must hold the first-frame barrier before the session hop")
             }
@@ -81,7 +83,7 @@ import Testing
             // An unrelated target proves the floor, rather than only the original target mark, was raised.
             expectStopped(queue, ticket: unrelated, target: "unrelated:floor-proof")
             #expect(try await listener.replyAudio(.init(action: "publish", ticket: old, frame: audio)).skipped)
-            try await playFresh(on: other, listener: listener)
+            try await playFresh(on: other, listener: listener, ticket: postStop)
             try await other.boundedBarrier(step: "B pre-cutoff audio silent")
         } catch {
             holds.release()
@@ -156,9 +158,10 @@ extension ReplyQueuedAudioSelectionTests {
             Issue.record("pre-cutoff target must be silent")
         }
     }
-    private func playFresh(on pair: FallbackSocketPair, listener: WebSocketListener) async throws {
+    private func playFresh(
+        on pair: FallbackSocketPair, listener: WebSocketListener, ticket: LocalReplyAudioTicket
+    ) async throws {
         let audio = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
-        let ticket = try #require(await listener.replyAudio(.init(action: "enqueue", frame: audio)).ticket)
         #expect(try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: audio))
             == LocalReplyAudioReport())
         #expect(try await receiveFrame(on: pair.sockets[0], step: "B post-stop T plays") == audio)
