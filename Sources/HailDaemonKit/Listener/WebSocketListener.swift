@@ -286,6 +286,7 @@ extension WebSocketListener {
             Task { await self?.peerEnded(endedID) }
         }
         (peers[id], transports[session.connectionID]) = (peer, connection)
+        replyAudioQueue.register(session.connectionID)
         await peer.start()
     }
 

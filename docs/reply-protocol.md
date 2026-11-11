@@ -706,7 +706,8 @@ lock without waiting, covering the preceding reply's device playout tail. Foregr
 Each accepted playback stop marks its connection and every associated reply target with the current counter
 before retiring in-flight replies. Every stop source captures its position synchronously when accepted, before
 scheduling work or awaiting another actor. Delayed connection/target marks use `max(existing, captured)`; they
-never read a newer counter. Privacy entry marks unconditionally at entry; its delayed announcement does not
+never read a newer counter. Only live registered connections can apply marks, so late work cannot recreate
+connection state after teardown. Privacy entry marks unconditionally at entry; its delayed announcement does not
 mark again. The host association set includes selected/covered voice-route targets, targets
 of in-flight and pinned replies, and request owners on the connection. Hello names and device kinds are
 unauthenticated and are never identity keys. Target marks retain the 1024 most recently stopped targets (refreshing

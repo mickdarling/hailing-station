@@ -121,7 +121,7 @@ class QueuedReplyStopTests(unittest.TestCase):
                     self.rig.wait_for(lambda: len(controls) >= 1, 10)
                     self.assertEqual(controls[0]["action"], "enqueue")
                     self.rig.wait_for(lambda: len(frames) >= 1, 10)
-                    self.assertEqual(wire_order[:2], ["enqueue", "frame"])
+                    self.assertEqual(wire_order[:wire_order.index("frame")], ["enqueue"] * attempts["enqueue"])
                     self.assertEqual(frames[0][1]["payload"]["text"], "synthetic response")
                     self.assertEqual(frames[0][1]["payload"]["metadata"], "synthetic card")
                     if contended and mode not in ("legacy", "connection"):

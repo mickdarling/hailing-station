@@ -19,6 +19,7 @@ final class ReplyAudioQueue: Sendable {
     private struct State {
         let epoch = UUID()
         var position: UInt64 = 0
+        var connections: Set<UUID> = []
         var stops: [UUID: UInt64] = [:]
         var targets: [(key: String, position: UInt64)] = []
         var jobs: [Job] = []
@@ -55,6 +56,7 @@ final class ReplyAudioQueue: Sendable {
     }
     private static func mark(_ connection: UUID, targets: Set<String>, through position: UInt64,
                              in state: inout State) {
+        guard state.connections.contains(connection) else { return }
         state.stops[connection] = max(state.stops[connection] ?? 0, position)
         let outstanding = state.jobs.filter { $0.destination == connection }.map(\.target)
         for target in targets.union(outstanding).sorted() {
@@ -97,7 +99,10 @@ final class ReplyAudioQueue: Sendable {
             return true
         }
     }
-    func forget(_ connection: UUID) { state.withLock { $0.stops[connection] = nil } }
+    func register(_ connection: UUID) { state.withLock { _ = $0.connections.insert(connection) } }
+    func forget(_ connection: UUID) {
+        state.withLock { $0.stops[connection] = nil; $0.connections.remove(connection) }
+    }
     func valid(_ ticket: LocalReplyAudioTicket) -> Bool {
         state.withLock { ticket.epoch == $0.epoch && ticket.position > 0 && ticket.position <= $0.position }
     }
