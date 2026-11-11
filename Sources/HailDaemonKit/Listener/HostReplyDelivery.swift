@@ -62,7 +62,7 @@ final class ReplyAudioQueue: Sendable {
             let stop = Stop(connection: connection, position: state.position, selection: selection, targets: targets,
                             beforeSnapshot: ReplyAudioEnqueueTesting.beforeStopSnapshot)
             state.pending[stop.id] = stop
-            Self.mark(connection, targets: targets, through: stop.position, in: &state)
+            Self.mark(connection, targets: [], through: stop.position, in: &state)
             return stop
         }
         if let stop {

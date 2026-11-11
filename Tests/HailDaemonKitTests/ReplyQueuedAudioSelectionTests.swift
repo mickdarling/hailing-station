@@ -69,7 +69,9 @@ import Testing
             let connection = try #require(rig.env.router.activeConnection())
             stopping = holdBeforeSession(rig, connection: connection, holds: holds)
             await holds.entered.wait() // Accepted under the queue lock; no session stop hop has occurred.
-            expectStopped(queue, ticket: old, target: RecipientTestRig.target)
+            if case .pending = queue.enqueue(old, connection: nil, target: RecipientTestRig.target, { true }) {} else {
+                Issue.record("accepted stop must hold the first-frame barrier before the session hop")
+            }
             try await rig.pair.select("recipient:other", on: 0)
             if returnToOriginal { try await rig.pair.select(RecipientTestRig.target, on: 0) }
             holds.capture.release()
@@ -92,6 +94,20 @@ import Testing
 }
 
 extension ReplyQueuedAudioSelectionTests {
+    @Test func acceptanceRetainsAdmittedTargetWhenRouterAdvances() throws {
+        let queue = ReplyAudioQueue(), connection = UUID()
+        queue.register(connection)
+        let ticket = try queue.ticket()
+        queue.admittedSelection(.init(target: "original", generation: UUID()), connection: connection)
+        let stop = try #require(queue.captureStop(connection))
+        queue.admittedSelection(.init(target: "later", generation: UUID()), connection: connection)
+        queue.resolve(stop, targets: [])
+        expectStopped(queue, ticket: ticket, target: "original")
+        if case .sent(true) = queue.enqueue(ticket, connection: nil, target: "later", { true }) {} else {
+            Issue.record("router changes after acceptance must not change the accepted target set")
+        }
+    }
+
     private func holdBeforeSession(
         _ rig: DeviceVoiceStopRig, connection: UUID, holds: SelectionStopHolds
     ) -> Task<Void, Never> {
