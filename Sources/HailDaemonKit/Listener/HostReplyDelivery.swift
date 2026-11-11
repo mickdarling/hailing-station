@@ -7,11 +7,13 @@ import Synchronization
 
 /// One daemon epoch, one global ordering. Stops and final transport enqueues take the same short lock.
 final class ReplyAudioQueue: Sendable {
+    static let targetLimit = 1024
     private struct State {
         let epoch = UUID()
         var position: UInt64 = 0
         var stops: [UUID: UInt64] = [:]
         var targets: [(key: String, position: UInt64)] = []
+        var floor: UInt64 = 0
         var skipped: [UInt64] = []
     }
     enum Outcome { case stopped, sent(Bool) }
@@ -31,7 +33,10 @@ final class ReplyAudioQueue: Sendable {
                 state.targets.removeAll { $0.key == target }
                 state.targets.append((target, state.position))
             }
-            state.targets.removeFirst(max(0, state.targets.count - 256))
+            let overflow = max(0, state.targets.count - Self.targetLimit)
+            // Eviction may silence old jobs for other targets, but must never revive stopped audio.
+            for entry in state.targets.prefix(overflow) { state.floor = max(state.floor, entry.position) }
+            state.targets.removeFirst(overflow)
         }
     }
     func firstSkip(_ ticket: LocalReplyAudioTicket) -> Bool {
@@ -50,7 +55,8 @@ final class ReplyAudioQueue: Sendable {
         state.withLock { state in
             guard ticket.epoch == state.epoch, ticket.position > 0,
                   ticket.position <= state.position else { return .sent(false) }
-            guard ticket.position > (connection.flatMap { state.stops[$0] } ?? 0),
+            guard ticket.position > state.floor,
+                  ticket.position > (connection.flatMap { state.stops[$0] } ?? 0),
                   ticket.position > (state.targets.last { $0.key == target }?.position ?? 0) else { return .stopped }
             return .sent(send())
         }
@@ -996,6 +1002,9 @@ extension WebSocketListener {
         guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
             return 0
         }
+        // Runs for every privacy entry, even when its later announcement has no clip. The serial
+        // notice queue completes this mark before releasing the hold on a fast entry then exit.
+        await peer.session.markQueuedAudioStopped(replyAudioQueue)
         return await peer.session.dropRepliesForPrivacy()
     }
 

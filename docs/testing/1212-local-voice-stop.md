@@ -490,7 +490,7 @@ This round starts at `13ce1b808b3455f9a9cbdf1ca97411123ababe53`, based on main
 `gh issue view 1212 --comments`. No push, PR, installation, upload or installed-build replacement is performed.
 All tests are synthetic host/CLI checks; no simulator, physical hearing or captured-output round trip is claimed.
 
-### Fixes and design
+### Fixes and design (historical; round 2b supersedes privacy and eviction below)
 
 - `HostReplyDelivery.swift`: stops snapshot the connection's selected target, all covered configured voice-route
   targets, pinned reply targets, in-flight reply targets and request-owner targets. A separate in-flight map follows
@@ -631,3 +631,38 @@ and directory were deleted after verification; no job build/test processes remai
 failure evidence are retained outside the repository under the task's `vw1212b2` names. No generated product is
 committed. Only the authorized issue read was used; no push, PR, GitHub metadata write, online CI check,
 independent-review claim, simulator/device proof, installation or upload is made.
+
+
+## 1b round 2b: privacy entry and fail-safe target eviction
+
+This round adds new commits on the round-2 head `ca1ba1b6`; it does not rewrite history or publish anything.
+The only GitHub call is `gh issue view 1212 --comments`. This is synthetic host/CLI verification, not simulator,
+physical-device, hearing or live captured-output evidence.
+
+Privacy's `announceEntry` stop explicitly passes `markQueuedAudio: true`. The unconditional `dropPrivateReplies`
+path also marks the queue before dropping requests: every privacy entry (and restore) reaches that path, even
+when an entry is withdrawn or superseded and has no announcement clip. The serial notice queue completes the
+mark before an exit releases the existing privacy delivery hold. Text and Markdown remain governed by that hold.
+`ReplyQueuedAudioProbeTests.queuedAudioStaysSilentAfterPrivacyEntry` covers both a completed entry clip and a real
+entry withdrawn before its acknowledgement (no entry clip), retained pre-entry text, text refusal during privacy,
+check and publication skips after exit, a ping/pong silence barrier, and fresh text delivery after exit. Spoken
+mute keeps its explicit false choice and its existing publication regression.
+
+`ReplyAudioQueue` retains at most 1024 target marks, ordered by host stops only. Eviction raises a global floor to
+`max(previous floor, evicted mark)`. Admission and final enqueue share the same locked comparison against that
+floor plus the connection and target marks. Every target skips a ticket at or below the floor, so forgetting an
+individual mark cannot revive its audio. Reaching the generous bound can over-silence unrelated old jobs; tickets
+issued after those stops remain playable. The floor lives for the daemon epoch; stale tickets still fail closed.
+`ReplyQueuedAudioTargetTests.targetMarksAreBoundedAndOutliveConnectionMarks` fills exactly to the bound, evicts,
+forgets the connection mark, proves old audio stays silent for the evicted, unrelated and newest targets, and
+proves a fresh post-stop ticket plays for all three. Existing association and race suites cover the same queue's
+admission/final-enqueue boundary.
+
+Offline PR-shape counting imports the checker's exact exclusions and parses `git diff --name-status -M cc36af90`,
+counting both names of a rename. There are no renames. The count is **4 production files**:
+`Sources/HailDaemonKit/Listener/HostReplyDelivery.swift`, `Sources/HailDaemonKit/Listener/WebSocketListener.swift`,
+`Sources/HailDaemonKit/PushEndpoint/LocalReplyEndpoint+Submission.swift`, and `Sources/haild/ReplyCommand.swift`.
+LOW-3 doctor/audit parity stays in this slice because the count is within the limit. Item D's session-update
+revision work remains deferred to PR 1c. No online PR-shape or independent review is claimed.
+
+Verification results will be recorded after the fresh `vw1212b3` phases finish.

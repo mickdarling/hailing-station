@@ -71,24 +71,43 @@ import Testing
         await rig.finish()
     }
 
-    @Test func privacyEntryLeavesAnEarlierTicketAdmissibleAfterExit() async throws {
+    @Test(arguments: [false, true])
+    func queuedAudioStaysSilentAfterPrivacyEntry(withEntryClip: Bool) async throws {
         let rig = try await DuckRig(script: AmbientPrivacyConfirmAfterAckTests.heldSwitch(),
             clips: AmbientDuckModeTests.clips, capabilities: [DuckMode.capability, PlaybackStop.capability])
         defer { rig.close() }
         do {
             try #require(await eventually { rig.details("ambient_duck_confirmed").count == 1 })
-            let ticket = try await queuedAudioTicket(rig.env.listener)
+            let listener = rig.env.listener
+            let reply = uncorrelatedDescriptor(audio: true), text = recipientText(reply)
+            #expect(try await listener.publish(text) == 1)
+            #expect(try await receiveFrame(on: rig.socket, step: "text before privacy") == text)
+            let ticket = try await queuedAudioTicket(listener)
             let connection = try #require(rig.connection())
             rig.env.router.ambientPrivacy(true, connection: connection)
-            AmbientPrivacyAckGateTests.go(rig.fake)
-            try #require(await eventually { rig.details("ambient_duck_confirmed").count == 2 })
+            try #require(await eventually { rig.details("ambient_privacy_replies").contains("dropped=0") })
+            await #expect(throws: LocalReplyRefusal.privacyHeld) {
+                try await listener.publish(recipientText(uncorrelatedDescriptor()))
+            }
+            if withEntryClip {
+                AmbientPrivacyAckGateTests.go(rig.fake)
+                try #require(await eventually { rig.details("ambient_duck_confirmed").count == 2 })
+            }
+            // With no entry clip, withdraw before the child ack: announceEntry returns clip=nil.
             rig.env.router.ambientPrivacy(false, connection: connection)
+            AmbientPrivacyAckGateTests.go(rig.fake)
             try #require(await eventually { rig.details("ambient_duck_confirmed").count == 3 })
-            // The completed entry traversed announceEntry and its stop; queue state is directly observable
-            // without draining unrelated privacy confirmation frames or relying on a settling delay.
-            let frame = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
-            #expect(try await rig.env.listener.replyAudio(.init(action: "check", ticket: ticket, frame: frame))
-                == LocalReplyAudioReport())
+            if !withEntryClip { #expect(rig.details("ambient_duck_confirmed")[1].contains("withdrawn")) }
+            try #require(await eventually { await !listener.replyHold.holds(connection) })
+            _ = try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "privacy confirmations complete")
+            let frame = recipientAudio(reply, sequence: 0, final: true)
+            #expect(try await listener.replyAudio(.init(action: "check", ticket: ticket, frame: frame)).skipped)
+            #expect(try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: frame)).skipped)
+            let after = try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "queued audio stays silent")
+            #expect(after.isEmpty)
+            let laterText = recipientText(uncorrelatedDescriptor())
+            #expect(try await listener.publish(laterText) == 1)
+            #expect(try await receiveFrame(on: rig.socket, step: "text after privacy") == laterText)
         } catch {
             await rig.finish()
             throw error

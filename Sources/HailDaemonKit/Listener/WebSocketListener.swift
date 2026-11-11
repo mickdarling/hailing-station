@@ -2761,9 +2761,9 @@ extension AmbientRightyoRouter {
         let decision = await decideEntry(number, connection: connection, target: target)
         for pipeline in decision.refused { await pipeline.killRefused() }
         guard let clip = decision.clip else { return (nil, decision.tokens) }
-        // Privacy retires playback under its own delivery hold; it is not a voice stop of queued jobs.
+        // Privacy also silences queued audio; the entry drop marks even when no clip is announced.
         let playback = await listener?.stopReplyPlayback(
-            connection: connection, markQueuedAudio: false
+            connection: connection, markQueuedAudio: true
         ) ?? "no_connection"
         return (clip, decision.tokens + " playback=\(playback)")
     }

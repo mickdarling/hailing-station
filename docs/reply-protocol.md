@@ -705,22 +705,28 @@ lock without waiting, covering the preceding reply's device playout tail. Foregr
 Each accepted playback stop marks its connection and every associated reply target with the current counter
 before retiring in-flight replies. The host association set includes selected/covered voice-route targets, targets
 of in-flight and pinned replies, and request owners on the connection. Hello names and device kinds are
-unauthenticated and are never identity keys. Target marks retain the 256 most recently stopped targets (refreshing
+unauthenticated and are never identity keys. Target marks retain the 1024 most recently stopped targets (refreshing
 a target moves it to the end), outlive connection teardown and expire with the daemon epoch. Only host stop paths
 write marks; local socket enqueue/check/publish requests cannot create or refresh them. In-flight target bookkeeping
 is bounded by the existing 64 flights per connection; pins retain their existing global bound of 64.
+Evicting a target raises a daemon-wide floor to the maximum of its previous value and the evicted mark. Every
+admission and final enqueue skips tickets at or below that floor for every target. This may silence unrelated old
+jobs if 1024 targets are stopped, but eviction can never make stopped audio playable. The floor resets only with
+the daemon epoch; newer tickets remain playable.
 
 Both a RightyO playback-scope dismissal and an accepted device `voice_stopped` mark the queue, including repeated
-reports whose outbound `stop_playback` is coalesced. Spoken mute and privacy entry explicitly do not mark it.
-Privacy's separate delivery hold still prevents publication while private. The ticket check and stop mark share
+reports whose outbound `stop_playback` is coalesced. Privacy entry also marks the queue: its unconditional pending
+reply drop marks before any exit releases the hold, even if no entry clip is announced. Its announcement stop
+explicitly marks as well. Spoken mute explicitly does not mark the queue. Privacy's separate delivery hold still
+prevents text and audio publication while private. The ticket check and stop mark share
 a synchronous lock: no audio handoff can pass an older admission after the stop mark. No time window or
 cross-process wall clock is involved.
 
 The target is checked before routing, so a disconnected text pin cannot turn a stop skip into a routing refusal.
 Ordinary routing still resolves request owner, existing text/first-frame pin, current last input, single selector
 or ambient owner. Admission and final enqueue skip a ticket at or below either the resolved connection's mark or
-the frame target's mark. This prevents a pin eviction or reconnect from reviving pre-stop audio. A ticket greater
-than both marks can play immediately, including after reconnect. A shared target stop also covers replies owned
+the frame target's mark, or the global eviction floor. This prevents a pin eviction or reconnect from reviving pre-stop audio. A ticket greater
+than all three marks can play immediately, including after reconnect. A shared target stop also covers replies owned
 by another connection for that target. Text/cards already delivered remain intact and the request is not withdrawn.
 No extra original-destination record is retained: target marks close both gaps while preserving ordinary routing
 for post-stop jobs, without another per-job destination lifetime.

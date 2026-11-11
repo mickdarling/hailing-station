@@ -97,12 +97,22 @@ import Testing
         if case .sent(true) = queue.enqueue(after, connection: UUID(), target: "retained", { true }) {} else {
             Issue.record("a later ticket must play")
         }
-        for index in 0..<256 { queue.stop(connection, targets: ["target-\(index)"]) }
-        if case .sent(true) = queue.enqueue(before, connection: UUID(), target: "retained", { true }) {} else {
-            Issue.record("the oldest target mark must be evicted at capacity")
+        // Fill exactly to the bound, then evict the first target at a newer counter position.
+        for index in 0..<(ReplyAudioQueue.targetLimit - 1) {
+            queue.stop(connection, targets: ["target-\(index)"])
         }
-        if case .stopped = queue.enqueue(after, connection: UUID(), target: "target-255", { true }) {} else {
-            Issue.record("the newest target mark must remain")
+        queue.stop(connection, targets: ["overflow"])
+        queue.forget(connection)
+        for target in ["retained", "unrelated", "overflow"] {
+            if case .stopped = queue.enqueue(before, connection: nil, target: target, { false }) {} else {
+                Issue.record("eviction must leave pre-stop audio silent for \(target)")
+            }
+        }
+        let later = try queue.ticket()
+        for target in ["retained", "unrelated", "overflow"] {
+            if case .sent(true) = queue.enqueue(later, connection: nil, target: target, { true }) {} else {
+                Issue.record("a post-stop ticket must play for \(target)")
+            }
         }
     }
 }
