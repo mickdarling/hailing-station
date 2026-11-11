@@ -537,3 +537,97 @@ All tests are synthetic host/CLI checks; no simulator, physical hearing or captu
 
 Negative assertions follow awaited handlers/jobs, explicit continuation gates or socket ping/pong barriers.
 There are no settle-then-negative assertions or blocked Swift cooperative threads in the new coverage.
+
+### Round 2 verification commands and load controls
+
+The fresh Dev Work VM workspace is `vw1212b2`, seeded from a host-local bundle without fetching dependencies.
+Final Swift source/test verification uses `3198672311f1496a26d0cf8097d4084b0487e339`; the later Python fixture-only
+commits culminate in `cce4021a884f42545455bb46bc071ad65ccaea1c`, synchronized before the final full CLI and broad
+daemon phases. The Swift files are identical at these heads. Subsequent commits record evidence only. The shared lane is checked
+before each phase. Each phase runs at background priority under its own 590-second process-group watchdog,
+with signal/finally TERM/KILL cleanup. SwiftPM uses four jobs, each compiler one worker, and automatic resolution
+is disabled. The wrapper's separate `vw1212b2-werr` build starts fresh under the same outer cap and external shim.
+No synthetic load worker, dependency fetch, simulator, installation or upload runs.
+
+The CLT framework/plugin/linker `flags` array is the same as round 1 above. Exact commands, each a separate phase:
+
+```bash
+taskpolicy -b swift build --build-tests "${flags[@]}" -Xswiftc -warnings-as-errors
+# Three invocations of the focused Swift selection:
+taskpolicy -b swift test --skip-build --no-parallel "${flags[@]}" --filter \
+  'ReplyQueuedAudio|DeviceVoiceStop|AmbientWiringStopConfirmation|HostPlaybackStop|AmbientWiringVoiceMute|LocalReplyEndpoint|LocalVoiceGuardsStatus'
+# Three invocations of the changed Python suite:
+taskpolicy -b python3 -m unittest discover -s Tests/ReplyCLITests -p test_queued_reply_stop.py
+taskpolicy -b python3 -m unittest discover -s Tests/ReplyCLITests
+# One invocation per broad daemon selection listed below:
+taskpolicy -b swift test --skip-build --no-parallel "${flags[@]}" --filter "$selection"
+# With the external Swift shim appending -Xswiftc -j1 --disable-automatic-resolution:
+/bin/zsh ~/codex-workspaces/vw-werr.sh vw1212b2
+```
+
+Initial verification caught test-only actor reads inside assertion expansions, then a genuine missing-target
+classification gap (Frame provenance decoding preceded the target guard). The final source fixes that gap before
+frame decoding and normalizes malformed queue decoding to `decodeFailure`. A Python iteration caught a fixture
+that released contention at ticket issuance, now earlier than lock acquisition; it now waits for the job's shared
+waiter flock. The stale-job error was also incorrectly expected on stderr after readiness; the fixture now checks
+its error exit, retained text/metadata, no audio and no skip. Existing post-readiness stderr redirection is retained.
+These initial failures are preserved in logs; they are not counted as final passing runs.
+
+The first full CLI attempt exposed two additional synthetic-server assumptions: its outcome server and frame
+collector treated enqueue/check controls as ordinary reply frames. The outcome fixture now models controls without
+consuming frame-response slots, and the collector reuses the existing queue-aware shared server. The known-failed
+phase was stopped with TERM/KILL cleanup of its two owned processes before restarting; no other lane was touched.
+The full CLI suite is repeated three times after these shared-fixture changes, covering the changed suite as well
+as the full requested regression selection.
+
+The carried session-update `replyFlightRevision` LOW (D) remains deferred as described in round 1; this round
+does not edit the separate session-update admission files or claim that coalescing bound is fixed. The round-2
+fixes require only the four allowed production files.
+
+All final runtime phases passed. Swift Testing functions and parameterized executions are counted separately:
+
+| Selection / phase | Runs | Functions / suites | Case executions per run | Result / seconds |
+| --- | ---: | ---: | ---: | --- |
+| Final source/test build, warnings as errors | 1 | — | — | pass; 18.72 |
+| Focused Swift selection above | 3 | 97 / 22 | 144 | pass; 43.909, 42.472, 42.856 |
+| Changed Python `QueuedReplyStopTests` | 3 | 9 Python tests | — | pass; 6.704, 6.861, 6.971 |
+| Full Reply CLI | 3 | 135 Python tests | — | pass; 241.855, 240.340, 240.424 |
+| `HailDaemonKitTests\.Ambient[A-M]` | 1 | 134 / 25 | 207 | pass; 103.796 |
+| `HailDaemonKitTests\.Ambient[N-S]` | 1 | 317 / 65 | 488 | pass; 337.479 |
+| `HailDaemonKitTests\.Ambient[T-Z]` | 1 | 214 / 49 | 395 | pass; 135.010 |
+| `HailDaemonKitTests\.Rightyo` | 1 | 186 / 17 | 228 | pass; 34.541 |
+| `HailDaemonKitTests\.(Listener\|WebSocket\|Host\|DeviceVoiceStop)` | 1 | 154 / 27 | 286 | pass; 30.934 |
+| `HailDaemonKitTests\.Reply` | 1 | 92 / 22 | 118 | pass with five intentional known issues; 57.561 |
+
+The broad daemon families comprise **1,097 functions and 1,722 case executions**. Every selection starts tests
+and exits 0. The five known issues are the existing `ReplyRecipientHandoffWaitTests` injected missing-handoff
+and cancellation reports: one timeout, two cancellation registration cases, and timeout/cancellation of the first
+of two waiters. They assert failure-reporting behavior, not new failures or unresolved stop findings. The focused
+new/changed Swift suites and all CLI runs have no known issues or skips.
+
+The separate fresh warnings-as-errors wrapper passed in **246.77 seconds** (248 seconds including its wrapper),
+reported **`werr build=0`**, and exited 0. Inspection of its full build log found **zero errors and 120 warnings**,
+all CLT missing-ModuleCache debug-file warnings, with no other warning category. This is a successful Swift
+warnings-as-errors build; it is not a claim of warning-free linker debug-info output.
+
+Host strict SwiftLint and the independent 120-column awk check on **all 16 changed Swift files** both exit 0
+and print nothing (zero-byte logs), without new lint suppressions. Exact commands relative to the requested main:
+
+```bash
+swift_files=( $(git diff --name-only cc36af90ccb4bfcc3dc6f282ad13f0bc6f8081a8 HEAD -- '*.swift') )
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swiftlint lint --strict --quiet "${swift_files[@]}"
+awk 'length($0)>120 {print FILENAME ":" FNR ":" length($0)}' "${swift_files[@]}"
+git diff --check cc36af90ccb4bfcc3dc6f282ad13f0bc6f8081a8
+```
+
+Offline source counting uses `scripts/pr-shape.py`'s exact excluded prefixes/suffixes and both names for a rename.
+There are **four production files**, both from the round-2 starting head and from main: `HostReplyDelivery.swift`,
+`WebSocketListener.swift`, `LocalReplyEndpoint+Submission.swift`, and `ReplyCommand.swift`. There are no renames
+and no fifth production file or checker exception is needed. No network PR-shape run is claimed.
+
+SHA-256 comparison matches all **18 changed Swift/Python source and test files** between host and VM before and
+after verification. The VM workspace `.build`, separate `vw1212b2-werr` directory, and temporary compiler shim
+and directory were deleted after verification; no job build/test processes remain. Logs, checksums and initial
+failure evidence are retained outside the repository under the task's `vw1212b2` names. No generated product is
+committed. Only the authorized issue read was used; no push, PR, GitHub metadata write, online CI check,
+independent-review claim, simulator/device proof, installation or upload is made.
