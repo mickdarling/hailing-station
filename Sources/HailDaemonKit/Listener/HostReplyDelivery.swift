@@ -66,6 +66,19 @@ final class ReplyAudioQueue: Sendable {
         for entry in state.targets.prefix(overflow) { state.floor = max(state.floor, entry.position) }
         state.targets.removeFirst(overflow)
     }
+    /// Older queue clients omit the enqueue probe. Track first publication too, without reviving evicted tickets.
+    func associate(_ ticket: LocalReplyAudioTicket, frame: Frame) {
+        state.withLock { state in
+            guard ticket.epoch == state.epoch, ticket.position > state.floor,
+                  ticket.position <= state.position, !state.jobs.contains(where: { $0.position == ticket.position }),
+                  let reply = HostSession.replyID(frame), let target = frame.target else { return }
+            state.jobs.append(Job(position: ticket.position, reply: reply, target: target))
+            state.jobs.sort { $0.position < $1.position }
+            if state.jobs.count > Self.jobLimit {
+                state.floor = max(state.floor, state.jobs.removeFirst().position)
+            }
+        }
+    }
     func deliveredText(_ reply: UUID, to connection: UUID) {
         state.withLock { state in
             for index in state.jobs.indices where state.jobs[index].reply == reply {
@@ -846,13 +859,8 @@ extension WebSocketListener {
         guard !stopped, readyResult != nil else { throw LocalReplyRefusal.listenerNotReady }
         guard request.kind == "reply-audio" else { throw LocalReplyRefusal.decodeFailure }
         if request.action == "enqueue" { return try enqueueAudioJob(request) }
-        guard ["check", "publish"].contains(request.action), let ticket = request.ticket,
-              replyAudioQueue.valid(ticket), let frame = request.frame,
-              case .audio = frame.payload, let target = frame.target else {
-            throw LocalReplyRefusal.invalidReplyPayload
-        }
-        let admission = ReplyAudioAdmission(queue: replyAudioQueue, ticket: ticket,
-                                            probe: request.action == "check", target: target)
+        let (admission, frame) = try queuedAudioFrame(request)
+        let ticket = admission.ticket
         do {
             _ = try validatedReply(frame)
             guard admission.enqueue(connection: nil, { true }) else { throw ReplyAudioProbe.stopped }
@@ -874,6 +882,17 @@ extension WebSocketListener {
             replyAudioQueue.finish(ticket)
         }
         return LocalReplyAudioReport()
+    }
+
+    private func queuedAudioFrame(_ request: LocalReplyAudioRequest) throws -> (ReplyAudioAdmission, Frame) {
+        guard ["check", "publish"].contains(request.action), let ticket = request.ticket,
+              replyAudioQueue.valid(ticket), let frame = request.frame,
+              case .audio = frame.payload, let target = frame.target else {
+            throw LocalReplyRefusal.invalidReplyPayload
+        }
+        replyAudioQueue.associate(ticket, frame: frame)
+        return (ReplyAudioAdmission(queue: replyAudioQueue, ticket: ticket,
+                                    probe: request.action == "check", target: target), frame)
     }
 
     private func enqueueAudioJob(_ request: LocalReplyAudioRequest) throws -> LocalReplyAudioReport {

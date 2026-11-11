@@ -40,6 +40,9 @@ class QueuedReplyStopTests(unittest.TestCase):
     def test_explicit_unsupported_request_uses_legacy_audio_once(self):
         self.exercise(skipped=False, pcm=False, mode="unsupported", contended=False)
 
+    def test_explicit_unknown_action_uses_legacy_audio_once(self):
+        self.exercise(skipped=False, pcm=False, mode="unsupported_action", contended=False)
+
     def test_connection_loss_at_ticket_keeps_text_and_fails_closed(self):
         self.exercise(skipped=False, pcm=False, mode="connection", contended=False)
 
@@ -67,8 +70,9 @@ class QueuedReplyStopTests(unittest.TestCase):
             action = message["action"]
             attempts[action] = attempts.get(action, 0) + 1
             wire_order.append(action)
-            if mode == "unsupported" and action == "enqueue":
-                return {"delivered": 0, "error": "unsupported request"}
+            if mode in ("unsupported", "unsupported_action") and action == "enqueue":
+                return {"delivered": 0, "error": "unknown action" if mode == "unsupported_action"
+                        else "unsupported request"}
             if mode == "connection" and action == "enqueue":
                 return None
             if mode == "legacy" and action == "enqueue":
@@ -125,7 +129,7 @@ class QueuedReplyStopTests(unittest.TestCase):
                     fcntl.flock(holder, fcntl.LOCK_UN)
                     stdout, stderr = job.communicate(timeout=15)
                     self.assertEqual(job.returncode, 1 if mode in ("legacy", "stale", "connection") else 0, stderr.decode())
-                    if mode == "unsupported":
+                    if mode in ("unsupported", "unsupported_action"):
                         self.assertEqual(stderr.count(b"reply_audio_queue unsupported"), 1)
                         self.assertEqual([item["action"] for item in controls], ["enqueue"])
                         self.assertGreater(len(frames), 1)
