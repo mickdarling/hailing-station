@@ -36,10 +36,18 @@ private struct CancelTestRenderer: SessionUpdateSpeechRendering {
     @Test func rendererCompletionDoesNotForgetDeviceBufferedAudio() async {
         let fence = SessionUpdateFence(), delivered = receipt()
         fence.configure(CancelTestRenderer())
-        fence.startSpeech { _ in _ = fence.remember(delivered) }
+        fence.startSpeech(connection: UUID()) { _ in _ = fence.remember(delivered) }
         await fence.joinSpeech()
         #expect(!fence.speechBusy)
         #expect(fence.cancelProactive().map(\.update) == [delivered.update])
+    }
+
+    @Test func scopedCancellationKeepsOtherConnectionsBufferedAudio() {
+        let fence = SessionUpdateFence(), first = receipt(), other = receipt()
+        #expect(fence.remember(first) && fence.remember(other))
+        #expect(fence.cancelProactive(connection: first.connection).map(\.update) == [first.update])
+        #expect(fence.cancelProactive(connection: first.connection).map(\.update) == [])
+        #expect(fence.cancelProactive().map(\.update) == [other.update])
     }
 
     @Test func boundedReceiptStoreDeclinesNewSpeechInsteadOfForgettingQueuedAudio() {
@@ -51,6 +59,27 @@ private struct CancelTestRenderer: SessionUpdateSpeechRendering {
         #expect(fence.cancelProactive().count == 128)
         #expect(fence.remember(receipt()))
         #expect(fence.speechStatus == "device_attention_gated")
+    }
+
+    @Test func ownerIsRecordedBeforeReceiptAndRevocationGuardsUncooperativeEnqueue() async {
+        let fence = SessionUpdateFence(), owner = UUID(), other = UUID()
+        let entered = VoiceStopConfirmationHold(), release = VoiceStopConfirmationHold()
+        let admitted = Mutex<[Bool]>([])
+        fence.configure(CancelTestRenderer())
+        fence.startSpeech(connection: owner) { _ in
+            entered.release()
+            await release.wait()
+            admitted.withLock { $0.append(fence.enqueue { true }) }
+        }
+        await entered.wait()
+        #expect(fence.cancelProactive(connection: other).isEmpty)
+        #expect(fence.cancelProactive(connection: owner).isEmpty)
+        release.release()
+        await fence.joinSpeech()
+        #expect(admitted.withLock { $0 } == [false])
+        fence.startSpeech(connection: owner) { _ in admitted.withLock { $0.append(fence.enqueue { true }) } }
+        await fence.joinSpeech()
+        #expect(admitted.withLock { $0 } == [false, true])
     }
 
     @Test func privacyObserverPublishesEntryRevisionsOutsideTheHoldLock() {

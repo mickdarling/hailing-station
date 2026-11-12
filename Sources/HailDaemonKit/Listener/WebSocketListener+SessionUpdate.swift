@@ -238,7 +238,7 @@ extension WebSocketPeer {
               }) else { return false }
         guard replySendSucceeded(await prepared.result()) else { return false }
         if await session.peerCapabilities.contains(SessionUpdateCard.audioCapability) {
-            fence.startSpeech { renderer in
+            fence.startSpeech(connection: session.connectionID, privacyRevision: privacyRevision) { renderer in
                 let delivery = SessionUpdateSpeechDelivery(admission: admission, lastInput: lastInput,
                     privacyRevision: privacyRevision, hold: hold, ambient: ambient, fence: fence)
                 await self.speakSessionUpdate(update, delivery: delivery, renderer: renderer)

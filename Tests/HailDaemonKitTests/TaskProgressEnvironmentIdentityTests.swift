@@ -17,7 +17,7 @@ private struct UnusedProgressRenderer: SessionUpdateSpeechRendering {
         let release = AsyncStream<Void>.makeStream()
         await listener.configureSessionUpdateSpeech(UnusedProgressRenderer())
         let fence = await listener.sessionUpdateFence
-        fence.startSpeech { _ in for await _ in release.stream { break } }
+        fence.startSpeech(connection: UUID()) { _ in for await _ in release.stream { break } }
         return (fence, release.continuation)
     }
 
