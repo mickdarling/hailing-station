@@ -36,7 +36,9 @@ private struct CancelTestRenderer: SessionUpdateSpeechRendering {
     @Test func rendererCompletionDoesNotForgetDeviceBufferedAudio() async {
         let fence = SessionUpdateFence(), delivered = receipt()
         fence.configure(CancelTestRenderer())
-        fence.startSpeech(connection: UUID()) { _ in _ = fence.remember(delivered) }
+        fence.startSpeech(connection: UUID(), privacyRevision: 0, stopGeneration: 0) { _ in
+            _ = fence.remember(delivered)
+        }
         await fence.joinSpeech()
         #expect(!fence.speechBusy)
         #expect(fence.cancelProactive().map(\.update) == [delivered.update])
@@ -66,7 +68,7 @@ private struct CancelTestRenderer: SessionUpdateSpeechRendering {
         let entered = VoiceStopConfirmationHold(), release = VoiceStopConfirmationHold()
         let admitted = Mutex<[Bool]>([])
         fence.configure(CancelTestRenderer())
-        fence.startSpeech(connection: owner) { _ in
+        fence.startSpeech(connection: owner, privacyRevision: 0, stopGeneration: 0) { _ in
             entered.release()
             await release.wait()
             admitted.withLock { $0.append(fence.enqueue { true }) }
@@ -77,9 +79,29 @@ private struct CancelTestRenderer: SessionUpdateSpeechRendering {
         release.release()
         await fence.joinSpeech()
         #expect(admitted.withLock { $0 } == [false])
-        fence.startSpeech(connection: owner) { _ in admitted.withLock { $0.append(fence.enqueue { true }) } }
+        fence.startSpeech(connection: owner, privacyRevision: 0, stopGeneration: 1) { _ in
+            admitted.withLock { $0.append(fence.enqueue { true }) }
+        }
         await fence.joinSpeech()
         #expect(admitted.withLock { $0 } == [false, true])
+    }
+
+    @Test func scopedStopLogsJobRevocationOnceEvenWithoutAnyReceipt() async {
+        let fence = SessionUpdateFence(), owner = UUID()
+        let entered = VoiceStopConfirmationHold(), release = VoiceStopConfirmationHold()
+        let reasons = Mutex<[String]>([])
+        fence.configure(CancelTestRenderer())
+        fence.startSpeech(connection: owner, privacyRevision: 0, stopGeneration: 0,
+            onStopped: { reason in reasons.withLock { $0.append(reason) } }, { _ in
+                entered.release()
+                await release.wait()
+            })
+        await entered.wait()
+        #expect(fence.cancelProactive(connection: owner).isEmpty)
+        #expect(fence.cancelProactive(connection: owner).isEmpty)
+        release.release()
+        await fence.joinSpeech()
+        #expect(reasons.withLock { $0 } == ["stopped_running"])
     }
 
     @Test func privacyObserverPublishesEntryRevisionsOutsideTheHoldLock() {

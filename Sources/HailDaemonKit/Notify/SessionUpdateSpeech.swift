@@ -72,9 +72,16 @@ public struct OwnedSessionUpdateSpeechRenderer: SessionUpdateSpeechRendering {
         await renderer.waitForCancellationSignals()
     }
 }
+// Registration, revocation and final enqueue share this ownership boundary.
+// swiftlint:disable file_length
 /// Listener lifetime and quiet changes participate in the final synchronous enqueue after asynchronous policy
 /// lookup. This gate never waits for the transport completion.
 final class SessionUpdateFence: Sendable {
+    private struct Cancellation {
+        let receipts: [SessionUpdateCancellationReceipt]
+        let task: Task<Void, Never>?
+        let onStop: (@Sendable () -> Void)?
+    }
     @TaskLocal private static var currentSpeech: UUID?
     private struct State {
         var allowed = true
@@ -82,6 +89,8 @@ final class SessionUpdateFence: Sendable {
         var speechID: UUID?
         var speechConnection: UUID?
         var speechCancelled = false
+        var stopGenerations: [UUID: UInt64] = [:]
+        var speechOnStop: (@Sendable () -> Void)?
         var speech: Task<Void, Never>?
         var speechTaskID: UUID?
         var speechPrivacyRevision: UInt64?
@@ -100,6 +109,12 @@ final class SessionUpdateFence: Sendable {
     }
     func enqueue(_ operation: () -> Bool) -> Bool {
         state.withLock { $0.allowed && Self.permitsSpeech($0) && operation() }
+    }
+    /// The sample belongs to the successful card enqueue, under the same lock as an accepted stop.
+    func enqueue(connection: UUID, _ operation: (UInt64) -> Bool) -> Bool {
+        state.withLock { value in
+            value.allowed && Self.permitsSpeech(value) && operation(value.stopGenerations[connection, default: 0])
+        }
     }
     func configure(_ renderer: any SessionUpdateSpeechRendering, onIdle: (@Sendable () async -> Void)? = nil) {
         state.withLock { $0.renderer = renderer; $0.onIdle = onIdle }
@@ -129,7 +144,8 @@ final class SessionUpdateFence: Sendable {
     func cancelProactive(
         connection: UUID? = nil, olderThan revision: UInt64? = nil
     ) -> [SessionUpdateCancellationReceipt] {
-        let result = state.withLock { value -> ([SessionUpdateCancellationReceipt], Task<Void, Never>?) in
+        let result = state.withLock { value -> Cancellation in
+            if let connection { value.stopGenerations[connection, default: 0] &+= 1 }
             let old: (SessionUpdateCancellationReceipt) -> Bool = {
                 guard connection == nil || $0.connection == connection else { return false }
                 guard let revision else { return true }
@@ -140,26 +156,31 @@ final class SessionUpdateFence: Sendable {
             let owned = connection == nil || value.speechConnection == connection
             let stale = revision.map { boundary in value.speechPrivacyRevision.map { $0 < boundary } == true } ?? true
             let cancel = owned && stale
+            let onStop = connection != nil && cancel && !value.speechCancelled ? value.speechOnStop : nil
             if cancel { value.speechCancelled = true }
-            return (receipts, cancel ? value.speech : nil)
+            return Cancellation(receipts: receipts, task: cancel ? value.speech : nil, onStop: onStop)
         }
-        result.1?.cancel()
-        return result.0
+        result.onStop?()
+        result.task?.cancel()
+        return result.receipts
     }
 
     /// A single owned renderer at a time. Busy updates still have their cards; no background model or render storm.
     func startSpeech(
-        connection: UUID, privacyRevision: UInt64 = 0,
+        connection: UUID, privacyRevision: UInt64, stopGeneration: UInt64,
+        onStopped: @escaping @Sendable (String) -> Void = { _ in },
         _ operation: @escaping @Sendable (any SessionUpdateSpeechRendering) async -> Void
     ) {
         let id = UUID()
         let start = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        let task = state.withLock { value -> Task<Void, Never>? in
-            guard value.allowed, value.speechID == nil, let renderer = value.renderer else { return nil }
+        let result = state.withLock { value -> (Task<Void, Never>?, Bool) in
+            guard value.stopGenerations[connection, default: 0] == stopGeneration else { return (nil, true) }
+            guard value.allowed, value.speechID == nil, let renderer = value.renderer else { return (nil, false) }
             value.speechID = id
             value.speechConnection = connection
             value.speechPrivacyRevision = privacyRevision
             value.speechCancelled = false
+            value.speechOnStop = { onStopped("stopped_running") }
             value.speechTaskID = id
             let task = Task {
                 for await _ in start.stream {
@@ -171,6 +192,7 @@ final class SessionUpdateFence: Sendable {
                 let idle = self.state.withLock { value -> (@Sendable () async -> Void)? in
                     guard value.speechID == id else { return nil }
                     value.speechID = nil; value.speechPrivacyRevision = nil; value.speechConnection = nil
+                    value.speechOnStop = nil
                     return value.onIdle
                 }
                 // The renderer operation has joined retirement. Observe availability outside the lock, after
@@ -181,9 +203,10 @@ final class SessionUpdateFence: Sendable {
                 }
             }
             value.speech = task
-            return task
+            return (task, false)
         }
-        guard task != nil else { start.continuation.finish(); return }
+        if result.1 { onStopped("stopped_before_start") }
+        guard result.0 != nil else { start.continuation.finish(); return }
         start.continuation.yield(())
         start.continuation.finish()
         // One programmatic deadline, not a poller. A quiet/stop or timeout cancels the retained exact-child job.
