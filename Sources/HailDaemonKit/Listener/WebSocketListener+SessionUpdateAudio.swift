@@ -91,7 +91,7 @@ extension WebSocketPeer {
         let privacyRevision = delivery.privacyRevision
         guard !Task.isCancelled, !ended,
               let prepared = await prepareReplyPublication(frame, onLateSuccess: { ambient?.observeReply(frame) }),
-              await session.enqueueSessionUpdate(admission, lastInput: lastInput, enqueue: {
+              await session.enqueueSessionUpdate(admission, lastInput: lastInput, admittingAudio: true, enqueue: {
                   fence.enqueue {
                       let enqueue: @Sendable () -> Bool = {
                           hold.unlessAnyHeld(expectedRevision: privacyRevision) { prepared.enqueue() }

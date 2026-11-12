@@ -151,6 +151,13 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         return response
     }
 
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.delivered == rhs.delivered && lhs.error == rhs.error && lhs.code == rhs.code
+            && lhs.request == rhs.request && lhs.isDispatch == rhs.isDispatch && lhs.ambient == rhs.ambient
+            && lhs.update == rhs.update && lhs.progress == rhs.progress && lhs.voiceGuards == rhs.voiceGuards
+            && lhs.replyAudio == rhs.replyAudio
+    }
+
     private enum CodingKeys: String, CodingKey {
         case delivered, error, code, request, ambient, update, progress, voiceGuards, replyAudio
     }
