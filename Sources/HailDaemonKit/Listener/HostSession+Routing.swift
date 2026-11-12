@@ -567,7 +567,9 @@ extension HostSession {
                 return failure(.notAllowed, "target is unavailable or not allowed", close: false, version: version)
             }
             if selectedTarget != targetID {
-                selectionGeneration = UUID()
+                let nextGeneration = UUID()
+                selectionWillChange?(connectionID, queuedAudioStopTargets() ?? [], targetID, nextGeneration)
+                selectionGeneration = nextGeneration
                 host.heldRequests.select(selectionGeneration, connection: connectionID)
                 replyRequests.removeAll()
                 evictedForHandoff.removeAll() // The old selection's evictions can never be restored (#723).

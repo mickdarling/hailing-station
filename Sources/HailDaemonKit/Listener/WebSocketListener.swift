@@ -246,7 +246,7 @@ extension WebSocketListener {
         }
     }
 
-    private func accept(_ connection: NWConnection) async {
+    private func makeSession() -> HostSession {
         // Attached before the admission checks, so no suspension separates them from the insertion below (#370).
         var deviceStop: (@Sendable (UUID, Int?) async -> Void)?
         if ambient != nil {
@@ -254,13 +254,21 @@ extension WebSocketListener {
                 await self?.deviceVoiceStopped(connection: connection, latencyMs: latency)
             }
         }
-        let session = HostSession(host: host, authorizer: authorizer, hostName: hostName,
+        return HostSession(host: host, authorizer: authorizer, hostName: hostName,
                                   sessionUpdatesEnabled: sessionUpdates.policy.enabled,
                                   modeSnapshot: { [ambient] in
             ambient?.modeSnapshot(connection: $0) ?? [.duckMode(on: false), .mediaMode(on: false)]
         }, snapshotPrivacyOff: { [weak self] in
             await self?.privacyOffFromSnapshot(connection: $0) ?? .refused
-        }, deviceVoiceStop: deviceStop)
+        }, deviceVoiceStop: deviceStop,
+        selectionWillChange: { [replyAudioQueue] connection, retiring, target, generation in
+            replyAudioQueue.selectionWillChange(connection, retiring: retiring,
+                to: .init(target: target, generation: generation))
+        })
+    }
+
+    private func accept(_ connection: NWConnection) async {
+        let session = makeSession()
         await session.attachLastInput(lastInput, recordStoppedReply: { [stoppedReplyIDs] id in
             stoppedReplyIDs.record(id)
         }, replyEvent: { [weak self, log] event in
@@ -1592,11 +1600,8 @@ extension AmbientRightyoRouter {
         state.runs[id] = Run(stream: stream, connection: connection, pipeline: pipeline)
         if !state.shuttingDown, !state.closed.contains(connection) {
             state.streamTargets[connection] = target
-            // Mirror the router's admitted stream/selection under the queue lock. All stop sources, including
-            // privacy restore/pre-arm callbacks already under this router lock, capture it with their cutoff.
-            state.listener?.value?.replyAudioQueue.admittedSelection(
-                .init(target: target, generation: selection), connection: connection
-            )
+            // The session owns the current-selection mirror. A long-lived stream can carry an older
+            // opening generation and must never overwrite that mirror here.
         }
         // A new or reloaded child starts with media mode off (#551). Told under the same lock `setMedia` changes it
         // under, so it can never miss a change made while it was starting.

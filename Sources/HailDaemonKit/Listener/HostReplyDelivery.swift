@@ -14,8 +14,8 @@ final class ReplyAudioQueue: Sendable {
         let id = UUID()
         let connection: UUID
         let position: UInt64
-        let selection: AmbientSelection?
-        let targets: Set<String>
+        var targets: Set<String>
+        var associationsCaptured = false
         let beforeSnapshot: (@Sendable () async -> Void)?
     }
     private struct Job {
@@ -34,6 +34,7 @@ final class ReplyAudioQueue: Sendable {
         var targets: [(key: String, position: UInt64)] = []
         var jobs: [Job] = []
         var floor: UInt64 = 0
+        var unpublishedFloor: UInt64 = 0
         var skipped: [UInt64] = []
         var pending: [UUID: Stop] = [:]
         var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
@@ -60,7 +61,7 @@ final class ReplyAudioQueue: Sendable {
             let selection = state.selections[connection]
             let destinations = Self.destinationTargets(connection, in: state)
             let targets = Set(selection?.target.map { [$0] } ?? []).union(destinations)
-            let stop = Stop(connection: connection, position: state.position, selection: selection, targets: targets,
+            let stop = Stop(connection: connection, position: state.position, targets: targets,
                             beforeSnapshot: ReplyAudioEnqueueTesting.beforeStopSnapshot)
             state.pending[stop.id] = stop
             Self.mark(connection, targets: destinations, through: stop.position, in: &state)
@@ -145,7 +146,8 @@ final class ReplyAudioQueue: Sendable {
             let streaming = state.jobs.first { $0.position == ticket.position }?.streaming == true
             guard ticket.position > state.floor,
                   ticket.position > (connection.flatMap { state.stops[$0] } ?? 0),
-                  streaming || ticket.position > (state.targets.last { $0.key == target }?.position ?? 0) else {
+                  streaming || ticket.position > state.unpublishedFloor
+                    && ticket.position > (state.targets.last { $0.key == target }?.position ?? 0) else {
                 return .stopped
             }
             if !streaming, state.pending.values.contains(where: { $0.position >= ticket.position }) {
@@ -165,29 +167,46 @@ extension ReplyAudioQueue {
     private static func destinationTargets(_ connection: UUID, in state: State) -> Set<String> {
         Set(state.jobs.filter { $0.destination == connection }.map(\.target))
     }
-    /// Mirrored by the router under its admission lock, before privacy callbacks can capture a stop.
-    func admittedSelection(_ selection: AmbientSelection, connection: UUID) {
+    /// Freeze the first session association snapshot, including one taken just before selection retirement.
+    /// Later selections cannot widen an already captured stop to their unrelated targets.
+    func captureTargets(_ targets: Set<String>, through stop: Stop) -> Set<String> {
+        state.withLock { state in
+            guard var pending = state.pending[stop.id] else { return stop.targets }
+            if !pending.associationsCaptured {
+                pending.targets.formUnion(targets)
+                pending.associationsCaptured = true
+                state.pending[stop.id] = pending
+            }
+            return pending.targets
+        }
+    }
+
+    /// Called synchronously before the session clears request owners or changes its selection generation.
+    /// Each pending acceptance keeps its own cutoff and its first retiring association snapshot.
+    func selectionWillChange(_ connection: UUID, retiring targets: Set<String>, to selection: AmbientSelection) {
         state.withLock { state in
             guard state.connections.contains(connection) else { return }
+            for id in Array(state.pending.keys) {
+                guard var stop = state.pending[id], stop.connection == connection else { continue }
+                if !stop.associationsCaptured {
+                    stop.targets.formUnion(targets)
+                    stop.associationsCaptured = true
+                    state.pending[id] = stop
+                }
+                Self.mark(connection, targets: stop.targets, through: stop.position, in: &state)
+            }
             state.selections[connection] = selection
         }
     }
-    /// A changed generation can hide earlier covered targets. Only pre-cutoff tickets fail closed.
-    func raiseFloor(through stop: Stop) {
-        state.withLock { $0.floor = max($0.floor, stop.position) }
-    }
 
-    /// nil means the snapshot failed. Retain its cutoff globally before opening the first-frame barrier.
+    /// A failed snapshot cuts known associations and unpublished jobs only. Other devices' streams keep flowing.
     func resolve(_ stop: Stop, targets: Set<String>?) {
         let waiters = state.withLock { state -> [CheckedContinuation<Void, Never>] in
-            guard state.pending.removeValue(forKey: stop.id) != nil else { return [] }
-            if let targets {
-                Self.mark(stop.connection, targets: targets.union(stop.targets), through: stop.position, in: &state)
-            }
-            // Retirement can remove in-flight ledger entries before the actor snapshots them. Retain any
-            // targets that did arrive, but fail closed at the accepted cutoff if the snapshot lost its peer.
-            if targets == nil || !state.connections.contains(stop.connection) {
-                state.floor = max(state.floor, stop.position)
+            guard let pending = state.pending.removeValue(forKey: stop.id) else { return [] }
+            let known = pending.targets.union(pending.associationsCaptured ? [] : (targets ?? []))
+            Self.mark(pending.connection, targets: known, through: pending.position, in: &state)
+            if targets == nil || !state.connections.contains(pending.connection) {
+                state.unpublishedFloor = max(state.unpublishedFloor, pending.position)
             }
             defer { state.waiters.removeAll() }
             return Array(state.waiters.values)
@@ -777,11 +796,6 @@ extension HostSession {
     /// One actor step captures every association before retirement, a send, or a privacy drop can erase it.
     func queuedAudioStopTargets(_ queue: ReplyAudioQueue? = nil, stop: ReplyAudioQueue.Stop? = nil) -> Set<String>? {
         guard case .ready = state else { return nil }
-        if let stop, let accepted = stop.selection {
-            let changed = accepted.generation.map { $0 != selectionGeneration }
-                ?? (accepted.target != selectedTarget)
-            if changed { queue?.raiseFloor(through: stop) }
-        }
         var targets = lastInputLedger?.targets(on: connectionID, inFlight: repliesInFlight) ?? []
         if let selectedTarget { targets.insert(selectedTarget) }
         #if os(macOS)
@@ -790,6 +804,7 @@ extension HostSession {
         }
         #endif
         targets.formUnion(replyRequests.values.map { $0.context.binding.targetID })
+        if let queue, let stop { return queue.captureTargets(targets, through: stop) }
         return targets
     }
 
