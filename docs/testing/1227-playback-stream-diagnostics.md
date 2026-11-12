@@ -12,8 +12,8 @@ adds these content-free fields, captured synchronously before retiring the strea
 | `last_sequence` | Sequence of the last accepted audio arrival, not necessarily the highest sequence. |
 | `expected_sequence` | First sequence missing from the contiguous received prefix, starting at zero. |
 | `gap` | A higher sequence was received beyond that missing sequence; this is a current gap, not historical. |
-| `received_frames` | Unique accepted audio sequence numbers, including empty final markers. |
-| `scheduled_frames` | Contiguous frames successfully handed to `ReplyAudioPlaying.schedule`, including markers. |
+| `received_frames` | Unique accepted audio sequence numbers. A zero-byte PCM16 frame is refused as undecodable before this bookkeeping, so it is never counted. |
+| `scheduled_frames` | Contiguous accepted frames successfully handed to `ReplyAudioPlaying.schedule`. |
 | `terminal` | An accepted audio frame had `isFinal`, even if a gap prevented scheduling it. |
 | `last_frame_ms` | Monotonic elapsed milliseconds since this stream's last accepted audio arrival. |
 
