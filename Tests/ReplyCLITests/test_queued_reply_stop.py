@@ -267,7 +267,7 @@ class QueuedReplyStopTests(unittest.TestCase):
                 self.assertEqual(checks[-1]["frame"]["payload"]["reply"]["request"], request)
                 if mode == "publish_skip":
                     self.assertEqual(len(frames), 2)
-                    self.assertFalse(frames[-1][1]["payload"]["final"])
+                    self.assertEqual(frames[-1][1]["payload"]["final"], pcm)
                     self.assertEqual(attempts["publish"], 1)
                 elif skipped:
                     self.assertEqual([item["action"] for item in controls if item["action"] != "release"], ["enqueue", "check"])
