@@ -122,9 +122,8 @@ extension ReplyQueuedAudioBarrierTests {
             }
             #expect(try await listener.replyAudio(.init(action: "publish", ticket: old, frame: frame)).skipped)
             // Unknown queued jobs fail closed, but this is not a cutoff for already-published streams.
-            if case .stopped = queue.enqueue(old, connection: nil, target: "unrelated", { true }) {} else {
-                Issue.record("missing fail-closed unpublished cutoff")
-            }
+            #expect(!queue.valid(old))
+            #expect(queue.enqueue(old, connection: nil, target: "unrelated", { true }) == .sent(false))
             try await playPostStop(on: other, listener: listener)
             try await other.boundedBarrier(step: "unresolvable stop sends no old audio")
         } catch {

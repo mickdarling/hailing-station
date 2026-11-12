@@ -133,9 +133,10 @@ import Testing
             _ = try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "privacy confirmations complete")
             let frame = recipientAudio(reply, sequence: 0, final: true)
             #expect(try await listener.replyAudio(.init(action: "check", ticket: ticket, frame: frame)).skipped)
-            #expect(try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: frame)).skipped)
-            let after = try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "queued audio stays silent")
-            #expect(after.isEmpty)
+            await #expect(throws: LocalReplyRefusal.invalidReplyPayload) {
+                try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: frame))
+            }
+            #expect(try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "queued audio silent").isEmpty)
             let laterText = recipientText(uncorrelatedDescriptor())
             #expect(try await listener.publish(laterText) == 1)
             #expect(try await receiveFrame(on: rig.socket, step: "text after privacy") == laterText)

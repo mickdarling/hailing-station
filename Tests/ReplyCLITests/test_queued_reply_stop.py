@@ -76,6 +76,12 @@ class QueuedReplyStopTests(unittest.TestCase):
     def test_daemon_restart_refuses_stale_waiter_without_audio_skip(self):
         self.exercise(skipped=False, pcm=False, mode="stale")
 
+    def test_capacity_refusal_keeps_speech_text_and_card_without_rendering(self):
+        self.exercise(skipped=False, pcm=False, mode="capacity", contended=False)
+
+    def test_capacity_refusal_keeps_pcm_text_and_card_without_audio(self):
+        self.exercise(skipped=False, pcm=True, mode="capacity", contended=False)
+
     def exercise(self, skipped, pcm, mode=None, contended=True):
         request = str(uuid.uuid4()).upper()
         controls, attempts, wire_order = [], {}, []
@@ -88,6 +94,9 @@ class QueuedReplyStopTests(unittest.TestCase):
             action = message["action"]
             attempts[action] = attempts.get(action, 0) + 1
             wire_order.append(action)
+            if mode == "capacity" and action == "enqueue":
+                return {"delivered": 0, "code": "publicationFailed", "replyAudio": {"skipped": False},
+                        "error": "reply refused [publicationFailed]: publication failed; outcome is not retryable"}
             if mode == "malformed" and action == "enqueue":
                 return {"delivered": "zero"}
             if (mode in ("old", "new_decode", "uncoded", "wrong_error", "null_report") and action == "enqueue"
@@ -162,14 +171,15 @@ class QueuedReplyStopTests(unittest.TestCase):
                     stdout, stderr = job.communicate(timeout=15)
                     self.assertEqual(job.returncode, 1 if mode in ("legacy", "stale", "connection", "new_decode",
                                                                     "uncoded", "wrong_error", "old_check",
-                                                                    "old_publish", "malformed", "null_report") else 0, stderr.decode())
+                                                                    "old_publish", "malformed", "null_report", "capacity") else 0, stderr.decode())
                     if mode == "old":
                         self.assertEqual(stderr.count(b"reply_audio_queue unsupported"), 1)
                         self.assertEqual([item["action"] for item in controls], ["enqueue"])
                         self.assertGreater(len(frames), 1)
                         self.assertTrue(frames[-1][1]["payload"]["final"])
                         return
-                    if mode in ("connection", "new_decode", "uncoded", "wrong_error", "malformed", "null_report"):
+                    if mode in ("connection", "new_decode", "uncoded", "wrong_error", "malformed", "null_report", "capacity"):
+                        self.assertFalse(renderer_pid.exists())
                         self.assertNotIn(b"reply_audio_queue unsupported", stderr)
                         self.assertEqual(len(frames), 1)
                         self.assertEqual([item["action"] for item in controls], ["enqueue"])
