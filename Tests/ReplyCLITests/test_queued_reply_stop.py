@@ -83,16 +83,16 @@ class QueuedReplyStopTests(unittest.TestCase):
         self.exercise(skipped=False, pcm=True, mode="capacity", contended=False)
 
     def test_expired_check_has_distinct_note(self):
-        self.exercise(skipped=True, pcm=True, skip_reason="expired")
+        self.exercise(skipped=True, pcm=True, contended=False, skip_reason="expired")
 
     def test_wait_budget_check_has_distinct_note(self):
-        self.exercise(skipped=True, pcm=True, skip_reason="wait_budget")
+        self.exercise(skipped=True, pcm=True, contended=False, skip_reason="wait_budget")
 
     def test_expired_publish_has_distinct_note(self):
-        self.exercise(skipped=False, pcm=True, mode="publish_skip", skip_reason="expired")
+        self.exercise(skipped=False, pcm=True, mode="publish_skip", contended=False, skip_reason="expired")
 
     def test_wait_budget_publish_has_distinct_note(self):
-        self.exercise(skipped=False, pcm=True, mode="publish_skip", skip_reason="wait_budget")
+        self.exercise(skipped=False, pcm=True, mode="publish_skip", contended=False, skip_reason="wait_budget")
 
     def test_capacity_without_actual_text_delivery_is_refused(self):
         self.exercise(skipped=False, pcm=True, mode="capacity", contended=False, text_deliveries=0)
@@ -215,13 +215,17 @@ class QueuedReplyStopTests(unittest.TestCase):
                     if mode == "capacity":
                         expected = b"haild: reply audio dropped: capacity"
                         if text_deliveries == 0:
-                            expected += b"; no text or card delivered"
+                            expected = b"haild: reply requires exactly one recipient"
                         self.assertEqual(stderr, expected + b"\n")
                     if skipped or mode == "publish_skip":
                         expected = {"stopped": b"reply audio skipped after a stop", "expired": b"reply audio expired",
                                     "wait_budget": b"reply audio skipped: stop wait budget"}[skip_reason]
-                        notes = [line for line in stderr.splitlines() if line != b"haild: reply audio queued behind another reply"]
-                        self.assertEqual(notes, [b"haild: " + expected])
+                        if contended:
+                            # Queue readiness releases stderr; later outcomes stay in the daemon's audit/events.
+                            self.assertEqual(stderr, b"haild: reply audio queued behind another reply\n"
+                                             b"haild: reply streaming in the background\n")
+                        else:
+                            self.assertEqual(stderr, b"haild: " + expected + b"\n")
                     if mode == "old":
                         self.assertEqual(stderr.count(b"reply_audio_queue unsupported"), 1)
                         self.assertEqual([item["action"] for item in controls if item["action"] != "release"], ["enqueue"])
