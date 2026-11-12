@@ -2,8 +2,7 @@ public import Foundation
 
 /// Reply refusals by reason over the last 15 minutes and the last hour, from the audit log's
 /// `delivery_refused` records (#247). Reasons are `LocalReplyRefusal` codes or `replyAudioCapacity`; others are
-/// `other`,
-/// so the report never repeats text from the log.
+/// `other`, so the report never repeats text from the log.
 public struct RefusalSummary: Codable, Sendable, Equatable {
     public struct Count: Codable, Sendable, Equatable {
         public var reason: String

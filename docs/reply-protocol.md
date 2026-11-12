@@ -797,6 +797,8 @@ marks and in-flight retirement retain the existing `stop_playback` behavior.
 
 The daemon emits the content-free event
 `reply_audio_skipped reason=<stopped|wait_budget|expired> request=<UUID|none> ticket=N`.
+The response carries the skip reason. CLI notes are `reply audio skipped after a stop`,
+`reply audio skipped: stop wait budget`, and `reply audio expired`, respectively.
 Capacity logs `reply_audio_refused reason=capacity request=<UUID|none>`. Other queued-audio errors log
 `reply_audio_refused reason=<refusal code|publication_failed|cancelled> request=<UUID|none> ticket=<N|none>`,
 including pending and malformed-ticket refusals. Every audio skip/refusal keeps text/cards. A bounded cache of 256 skipped ticket positions

@@ -80,7 +80,8 @@ extension ReplyQueuedAudioExpiryTests {
             let listener = rig.env.listener, queue = listener.replyAudioQueue, unrelated = UUID()
             queue.register(unrelated)
             let context = try await rig.pair.submitInput(on: 0, rig: rig.env.rig)
-            let session = try #require(await listener.peers.values.first).session
+            let peer = try #require(await listener.peers.values.first)
+            let session = await peer.session
             await session.queueTestCommit(context.id, committed: false)
             let audio = recipientAudio(recipientDescriptor(context, audio: true), sequence: 0, final: true)
             let ticket = try await queuedAudioTicket(listener)
