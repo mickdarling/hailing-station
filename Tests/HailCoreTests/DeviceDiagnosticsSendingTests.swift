@@ -60,8 +60,8 @@ import Testing
 
     /// #469: an abandoned reply stream is reported as `stream_abandoned` only to a host that advertises it; an
     /// older collecting host gets `other`, which it can decode (an unknown token would close its connection).
-    @Test(arguments: [false, true])
-    func streamAbandonedGoesOnlyToAHostThatAcceptsIt(accepts: Bool) async throws {
+    @Test(arguments: [false, true], [false, true])
+    func streamAbandonedGoesOnlyToAHostThatAcceptsIt(accepts: Bool, streamFields: Bool) async throws {
         defer { defaults.removePersistentDomain(forName: suite) }
         let host = try endpoint()
         let socket = ScriptedSocket()
@@ -70,21 +70,35 @@ import Testing
         let store = HostConnectionStore(connector: connector, sleep: { _ in }, jitter: { 0 })
         let log = enabledLog()
         store.diagnostics = log
-        let playback = ReplyPlaybackController(player: IdlePlayer())
-        log.watch(playback)
+        let rig = IdleRig()
+        log.watch(rig.controller)
         await store.upsert(host)
         await store.connect(host.id)
         try await waitUntil { try await socket.sentFrames().count == 1 }
         let capabilities = ["ping", DiagnosticLimits.capability]
             + (accepts ? [DiagnosticLimits.streamAbandonedCapability] : [])
+            + (streamFields ? [DiagnosticLimits.playbackStreamCapability] : [])
         try await socket.push(.hello(HelloInfo(versions: [ProtocolVersion.current], capabilities: capabilities,
                                                deviceName: "Mac")))
         try await waitUntil { await MainActor.run { store.snapshots[host.id]?.state == .ready } }
-        playback.onStreamAbandoned?()
+        let reply = idleReply()
+        rig.controller.ingest(idleAudio(reply, sequence: 0, final: false, byte: 7))
+        rig.controller.ingest(idleAudio(reply, sequence: 2, final: true, byte: 8))
+        rig.advance(by: .seconds(22))
         try await waitUntil { try await Self.diagnostics(socket).contains { $0.name == .replyPlaybackError } }
         let event = try #require(try await Self.diagnostics(socket).first { $0.name == .replyPlaybackError })
         #expect(event.fields[.code] == .token(accepts ? "stream_abandoned" : "other"))
         #expect(event.fields[.ms] == .integer(20_000))
+        let details = event.fields.filter { DiagnosticLimits.playbackStreamFields.contains($0.key) }
+        #expect(Set(details.keys) == (streamFields ? DiagnosticLimits.playbackStreamFields : []))
+        if streamFields {
+            #expect(details[.lastSequence] == .integer(2))
+            #expect(details[.expectedSequence] == .integer(1))
+            #expect(details[.gap] == .boolean(true))
+            #expect(details[.terminal] == .boolean(true))
+            #expect(details[.receivedFrames] == .integer(2))
+            #expect(details[.scheduledFrames] == .integer(1))
+        }
         await store.disconnect(host.id)
     }
 

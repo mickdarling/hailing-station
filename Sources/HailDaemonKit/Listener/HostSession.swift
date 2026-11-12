@@ -76,7 +76,8 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
                         PastedText.capability]
             + (ambientAudio == nil ? [] : ["stream_audio", AmbientOverheard.capability, AmbientInput.capability,
                                            DuckMode.privacySwitchCapability])
-            + (diagnostics == nil ? [] : [DiagnosticLimits.capability, DiagnosticLimits.streamAbandonedCapability])
+            + (diagnostics == nil ? [] : [DiagnosticLimits.capability, DiagnosticLimits.streamAbandonedCapability,
+                                          DiagnosticLimits.playbackStreamCapability])
             + (health == nil ? [] : [HostHealth.capability])
     }
 

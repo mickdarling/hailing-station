@@ -1,6 +1,8 @@
 import Foundation
 public import HailProtocol
 public import Observation
+// Receipt bookkeeping stays beside ingest and scheduling so the two counts share one boundary (#1227).
+// swiftlint:disable file_length
 @MainActor
 public protocol ReplyAudioPlaying: AnyObject {
     func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) throws
@@ -47,7 +49,9 @@ public final class ReplyPlaybackController {
     public internal(set) var isCaptureSuppressed = false
     public internal(set) var status = "No replies yet"
     let player: any ReplyAudioPlaying
-    var streams: [ReplyStreamKey: ReplyStreamState] = [:]
+    var streams: [ReplyStreamKey: ReplyStreamState] = [:] { didSet { pruneStreamReceipts() } }
+    @ObservationIgnored var receiptStreamCount = 0
+    @ObservationIgnored var streamReceipts: [ReplyStreamKey: (sequence: Int, at: ContinuousClock.Instant)] = [:]
     var queue: [ReplyStreamKey] = []
     var completed: Set<ReplyStreamKey> = []
     var lastAudio: [AudioPayload] = []
@@ -127,6 +131,7 @@ public final class ReplyPlaybackController {
         stream.segments[audio.sequence] = audio
         enqueueStreamIfNeeded(key, descriptor: descriptor)
         streams[key] = stream
+        streamReceipts[key] = (audio.sequence, idleNow())
         let presentationID = upsertPresentation(event, descriptor: descriptor)
         presentationStatuses[presentationID] = nil
         drain(noting: key)
@@ -190,6 +195,31 @@ public final class ReplyPlaybackController {
     }
 }
 extension ReplyPlaybackController {
+    func pruneStreamReceipts() {
+        // Cache only the count: retaining oldValue here would force dictionary copies on every frame.
+        defer { receiptStreamCount = streams.count }
+        if streams.count < receiptStreamCount { streamReceipts = streamReceipts.filter { streams[$0.key] != nil } }
+    }
+    /// Called synchronously by the abandonment hook, before the head is removed. The same hook also reports
+    /// first-audio timeouts: those must never borrow an unrelated head's counters (#1227).
+    func abandonedStreamDiagnostics() -> [DiagnosticField: DiagnosticValue] {
+        guard let key = queue.first, undeliveredLosses.contains(key),
+              let stream = streams[key], let receipt = streamReceipts[key] else { return [:] }
+        var expected = 0
+        for sequence in stream.segments.keys.sorted() {
+            guard sequence == expected else { break }
+            expected += 1
+        }
+        func integer(_ value: Int) -> DiagnosticValue { .integer(Int64(Int32(clamping: value))) }
+        let elapsed = max(.zero, receipt.at.duration(to: idleNow())) / .milliseconds(1)
+        return [
+            .lastSequence: integer(receipt.sequence), .expectedSequence: integer(expected),
+            .gap: .boolean(stream.segments.keys.contains { $0 > expected }),
+            .receivedFrames: integer(stream.segments.count), .scheduledFrames: integer(stream.nextSequence),
+            .terminal: .boolean(stream.segments.values.contains { $0.isFinal }),
+            .lastFrameMs: .integer(Int64(min(Double(Int32.max), elapsed)))
+        ]
+    }
     func descriptor(in frame: Frame) -> ReplyDescriptor? {
         switch frame.payload {
         case .text(let text): text.reply

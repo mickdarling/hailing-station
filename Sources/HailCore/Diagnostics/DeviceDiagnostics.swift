@@ -170,7 +170,11 @@ extension HostConnection {
     public func sendDiagnostics(_ events: [DiagnosticEvent]) async throws {
         try requireReady(capability: DiagnosticLimits.capability)
         let accepted = snapshot.capabilities.contains(DiagnosticLimits.streamAbandonedCapability)
-        let sendable = accepted ? events : events.map(DeviceDiagnostics.withoutStreamAbandoned)
+        let streamFields = snapshot.capabilities.contains(DiagnosticLimits.playbackStreamCapability)
+        let sendable = events.map { event in
+            let compatible = streamFields ? event : DeviceDiagnostics.withoutPlaybackStreamFields(event)
+            return accepted ? compatible : DeviceDiagnostics.withoutStreamAbandoned(compatible)
+        }
         try await send(.diagnostic(events: sendable), generation: generation)
     }
 }
@@ -239,6 +243,12 @@ extension DeviceDiagnostics {
         return (try? DiagnosticEvent(event.name, timestamp: event.timestamp, fields: fields)) ?? event
     }
 
+    nonisolated static func withoutPlaybackStreamFields(_ event: DiagnosticEvent) -> DiagnosticEvent {
+        let fields = event.fields.filter { !DiagnosticLimits.playbackStreamFields.contains($0.key) }
+        // Removing validated fields cannot invalidate the event.
+        return (try? DiagnosticEvent(event.name, timestamp: event.timestamp, fields: fields)) ?? event
+    }
+
     nonisolated static func playbackFailure(_ status: String) -> String? {
         [
             ReplyPlaybackController.playbackFailed: "playback_failed", "Playback could not resume": "resume_failed",
@@ -266,9 +276,8 @@ extension DeviceDiagnostics {
         // A stream ended for want of its terminal marker (#469) is recorded when it happens, not from its status,
         // which a presentation trim can drop before this observer runs. Its own code, `stream_abandoned`, goes
         // only to a host that advertises it (#476); `sendDiagnostics` sends `other` to any other host.
-        playback.onStreamAbandoned = { [weak self] in
-            let timeout = Int64(ReplyPlaybackController.streamIdleTimeout / .milliseconds(1))
-            self?.record(.replyPlaybackError, [.code: .token(Self.streamAbandoned), .ms: .integer(timeout)])
+        playback.onStreamAbandoned = { [weak self, weak playback] in
+            self?.recordStreamAbandoned(playback)
         }
         let (busy, failures) = withObservationTracking {
             (playback.isReplyAudioOutputBusy, Set(playback.presentationStatuses.compactMap { id, status in
@@ -307,6 +316,13 @@ extension DeviceDiagnostics {
             record(.replyPlaybackError, fields)
         }
         lastPlayback = (busy, failures)
+    }
+
+    private func recordStreamAbandoned(_ playback: ReplyPlaybackController?) {
+        var fields = playback?.abandonedStreamDiagnostics() ?? [:]
+        fields[.code] = .token(Self.streamAbandoned)
+        fields[.ms] = .integer(Int64(ReplyPlaybackController.streamIdleTimeout / .milliseconds(1)))
+        record(.replyPlaybackError, fields)
     }
 
     static let backgroundNotification = Notification.Name("UIApplicationDidEnterBackgroundNotification")
