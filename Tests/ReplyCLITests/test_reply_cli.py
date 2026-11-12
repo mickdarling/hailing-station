@@ -433,7 +433,7 @@ class ReplyCLITests(unittest.TestCase):
                                     queue_position += 1
                                     response = {"delivered": 0, "replyAudio": {"skipped": False, "ticket": {
                                         "epoch": queue_epoch, "position": queue_position}}}
-                                elif queued and decoded["action"] == "check":
+                                elif queued and decoded["action"] in ("check", "release"):
                                     response = {"delivered": 0, "replyAudio": {"skipped": False}}
                                 else:
                                     index = len(frames)
@@ -981,7 +981,7 @@ class ReplyCLITests(unittest.TestCase):
                                     queue_position += 1
                                     response = {"delivered": 0, "replyAudio": {"skipped": False, "ticket": {
                                         "epoch": queue_epoch, "position": queue_position}}}
-                                elif queued and decoded["action"] == "check":
+                                elif queued and decoded["action"] in ("check", "release"):
                                     response = {"delivered": 0, "replyAudio": {"skipped": False}}
                                 else:
                                     # Preserve this helper's frame-only assertions and response indexing while

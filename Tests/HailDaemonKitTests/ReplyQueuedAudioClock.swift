@@ -13,7 +13,8 @@ final class QueuedAudioClock: Sendable {
     let origin = ContinuousClock.now
     private let offset = Mutex<Duration>(.zero)
     let deadline = Mutex<ContinuousClock.Instant?>(nil)
-    let sleepEntered = VoiceStopConfirmationHold(), timer = VoiceStopConfirmationHold()
+    let sleepEntered = VoiceStopConfirmationHold()
+    let timer = QueuedAudioGate()
     var now: ContinuousClock.Instant { origin.advanced(by: offset.withLock { $0 }) }
     func advance(_ duration: Duration) { offset.withLock { $0 += duration } }
     func release() { timer.release() }

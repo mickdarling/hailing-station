@@ -63,7 +63,8 @@ extension ReplyQueuedAudioBudgetRoutingTests {
         clock.advance(.milliseconds(125))
         clock.release() // Wakes the existing waiter even though the second successful stop is still unresolved.
         // Resolution at the exact deadline cannot admit an unpublished job either.
-        queue.resolve(second, targets: ["unrelated"])
+        // The second unknown stop remains pending through the refusal.
+        _ = second
     }
     private func capture(
         _ queue: ReplyAudioQueue, _ connection: UUID, _ timeout: QueuedAudioGate

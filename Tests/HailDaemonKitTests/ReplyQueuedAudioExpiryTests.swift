@@ -28,13 +28,13 @@ import Testing
             queue.finish(fresh)
         case "association": queue.associate(abandoned, frame: frame)
         case "validation": #expect(!queue.valid(superseded))
-        default: #expect(queue.enqueue(superseded, connection: nil, target: "U", { true }) == .sent(false))
+        default: #expect(queue.enqueue(superseded, connection: nil, target: "U", { true }) == .expired)
         }
         #expect(queue.outstandingCount == 0)
         for ticket in [abandoned, superseded, streaming] {
             queue.associate(ticket, frame: frame)
             #expect(!queue.valid(ticket))
-            #expect(queue.enqueue(ticket, connection: nil, target: "U", { true }) == .sent(false))
+            #expect(queue.enqueue(ticket, connection: nil, target: "U", { true }) == .expired)
         }
         #expect(queue.outstandingCount == 0)
     }
@@ -58,9 +58,7 @@ import Testing
             for ticket in [finished, refused] {
                 queue.associate(ticket, frame: audio)
                 #expect(!queue.valid(ticket))
-                await #expect(throws: LocalReplyRefusal.invalidReplyPayload) {
-                    try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: audio))
-                }
+                #expect(try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: audio)).skipped)
             }
             #expect(queue.outstandingCount == 0)
             try await rig.pair.boundedBarrier(step: "terminal tickets stay invalid")

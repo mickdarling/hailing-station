@@ -28,7 +28,7 @@ import Testing
             defer { fresh.close() }
             #expect(try await listener.replyAudio(.init(action: "check", ticket: old, frame: audio)).skipped)
             let audioOnly = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
-            await assertRetired(old, frames: [audio, audioOnly], listener: listener)
+            try await assertRetired(old, frames: [audio, audioOnly], listener: listener)
             #expect(rig.details("reply_audio_skipped") == ["reason=stopped request=none ticket=\(old.position)"])
             try await fresh.boundedBarrier(step: "old ticket sends nothing after reconnect")
             let later = try await queuedAudioTicket(listener)
@@ -71,9 +71,7 @@ import Testing
             #expect(context.connectionID != connection)
             #expect(await listener.lastInputRoute(audio)?.entry.connection == context.connectionID)
             #expect(try await listener.replyAudio(.init(action: "check", ticket: ticket, frame: audio)).skipped)
-            await #expect(throws: LocalReplyRefusal.invalidReplyPayload) {
-                try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: audio))
-            }
+            #expect(try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: audio)).skipped)
             try await rig.pair.boundedBarrier(step: "A stays silent")
             try await other.boundedBarrier(step: "B gets no stopped audio")
             let fresh = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
@@ -101,15 +99,13 @@ extension ReplyQueuedAudioTargetTests {
         #expect(!queue.valid(old))
         let fresh = try queue.ticket()
         #expect(fresh.position == UInt64(ReplyAudioQueue.jobLimit + 1))
-        #expect(queue.enqueue(old, connection: nil, target: "unrelated", { true }) == .sent(false))
+        #expect(queue.enqueue(old, connection: nil, target: "unrelated", { true }) == .expired)
     }
     private func assertRetired(
         _ ticket: LocalReplyAudioTicket, frames: [Frame], listener: WebSocketListener
-    ) async {
+    ) async throws {
         for frame in frames {
-            await #expect(throws: LocalReplyRefusal.invalidReplyPayload) {
-                try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: frame))
-            }
+            #expect(try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: frame)).skipped)
         }
     }
 

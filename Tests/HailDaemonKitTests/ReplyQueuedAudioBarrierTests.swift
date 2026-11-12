@@ -110,6 +110,7 @@ extension ReplyQueuedAudioBarrierTests {
             let original = try #require(await listener.peers[originalID])
             let connection = await original.session.connectionID
             let old = try #require(await listener.replyAudio(.init(action: "enqueue", frame: frame)).ticket)
+            let unrelated = try queue.ticket()
             let stop = try #require(queue.captureStop(connection))
             if closedSession {
                 _ = await original.session.failure(.malformed, "synthetic closure", close: true)
@@ -123,7 +124,8 @@ extension ReplyQueuedAudioBarrierTests {
             #expect(try await listener.replyAudio(.init(action: "publish", ticket: old, frame: frame)).skipped)
             // Unknown queued jobs fail closed, but this is not a cutoff for already-published streams.
             #expect(!queue.valid(old))
-            #expect(queue.enqueue(old, connection: nil, target: "unrelated", { true }) == .sent(false))
+            #expect(queue.valid(unrelated))
+            #expect(queue.enqueue(unrelated, connection: nil, target: "unrelated", { true }) == .stopped)
             try await playPostStop(on: other, listener: listener)
             try await other.boundedBarrier(step: "unresolvable stop sends no old audio")
         } catch {

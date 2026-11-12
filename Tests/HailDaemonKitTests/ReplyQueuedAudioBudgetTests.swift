@@ -44,7 +44,7 @@ import Testing
         try await task.value
         assertBudgetSkip(queue, ticket: old)
         queue.resolve(third, targets: ["T"])
-        assertBudgetSkip(queue, ticket: old)
+        #expect(queue.enqueue(old, connection: nil, target: "U", { true }) == .sent(true))
         queue.finish(old)
     }
 

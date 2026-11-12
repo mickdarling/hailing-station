@@ -1386,3 +1386,56 @@ shim paths, then confirms no owned build/test processes remain. Logs, checksums,
 outside version control under `vw1212b8` names, including the original failed-family log. No generated product,
 private configuration, identity, endpoint, recording or transcript is committed. No push, online CI/PR-shape result,
 independent approval, simulator or physical-device proof, installation or upload is claimed.
+
+## PR 1c-3, round 2: bounded queue lifetime and admission
+
+Part of #1212. This section describes synthetic package/socket/CLI evidence only. It adds no simulator,
+physical-device, microphone, live captured-output round trip, installation, upload or TestFlight claim.
+
+The queue's first barrier owns a shared 250 ms budget across unresolved covering stops and routing retries.
+An admitted check clears the deadline, expired flag and timer under the queue lock. Marks/floors precede budget
+refusals; an uncovered job plays after resolution or a captured timeout even if its old deadline elapsed.
+A timeout without any captured associations retains the unpublished-only floor. Capacity refuses new tickets
+without eviction; access prunes 26-hour reservations without raising a floor. Pruning and cancellation detach
+continuations independently of job-record existence and resume them outside the lock.
+
+Expiry, including disappearance at final enqueue, logs exactly
+`reply_audio_skipped reason=expired request=<UUID|none> ticket=N`, preserves request ownership and leaves delivered
+text/cards intact. Capability-authenticated, content-free `release` cleans only its issuing reservation, including
+when the publication rate bucket is exhausted. Unknown, expired, finished and already released tickets are no-ops;
+released tickets cannot be associated again. SIGKILL and lost cleanup transactions rely on expiry.
+
+A transient mid-stream enqueue refusal preserves the request and a terminal-only reservation. Only that reply's
+own two-byte final marker can pass normal routing/policy checks; resumed data logs `terminal_only`. Capacity
+returns an explicit non-retryable audio outcome: text remains delivered, the CLI prints `reply audio dropped:
+capacity` and exits 0, and Doctor records `replyAudioCapacity` separately from `publicationFailed`.
+
+Discriminating tests:
+
+- `ReplyQueuedAudioRoundTwoTests`: injected-clock delayed first publication after admitted check (with and without
+  a new stop); captured timeout with U already waiting and a covered T that never waited; expiry-pruned waiters
+  with/without cancellation and exactly one completion; full-capacity release and wrong-key isolation; a second
+  same-target ticket proving `finish` removed destination association; expiry at check, publish and final routing
+  with exact request-id logs, delivered card and retained request; own-marker identity and terminal-only queue checks.
+- `ReplyQueuedAudioCapturedTimeoutTests`: exact `stopped` tokens for covered T without any barrier encounter;
+  uncovered U plays only when associations were captured. `ReplyQueuedAudioBudgetTests` preserves the original
+  shared deadline while a covering stop is pending and proves uncovered admission after resolution.
+- `ReplyQueuedAudioBarrierTests`: a separate live pre-cutoff unrelated ticket proves the unresolved-snapshot floor,
+  independent of the retired ticket's expiry disposition. `ReplyQueuedAudioRetirementTests` holds the session hop
+  before scope capture to prove the actual pending-final-enqueue retry and complete correlated delivery.
+- `ReplyQueuedAudioRecoveryTests`: an injected transport enqueue failure preserves the request; more data is
+  refused with the exact request-id token, then the own terminal marker reaches the WebSocket exactly once.
+- `ReplyQueuedAudioReleaseTests`: real owner-only socket decoding, wrong-key isolation, release after rate-budget
+  exhaustion, no-op unknown/expired/finished/repeated release, and no resurrection or content publication.
+- `ReplyQueuedAudioCapacityTests` and `RefusalSummaryTests`: capacity retains text/card and existing streams and
+  produces the distinct Doctor audit count. Expiry/probe/target tests assert explicit audio skips for vanished
+  issued tickets while retaining generic refusals for malformed, foreign or unissued tickets.
+- `test_reply_ticket_release.py`: real waitable CLI cleanup after refused text, eight exhausted check retries,
+  request-bound queue give-up, SIGTERM cancellation and the audio-duration bound. `test_queued_reply_stop.py`
+  asserts capacity's exit 0 and exact note for speech and PCM while retaining text/card without rendering/audio.
+  Wall-clock cancellation uses the same cancelled stream cleanup path as SIGTERM; its full production-duration
+  deadline is not shortened for testing. SIGKILL is covered by the reservation-expiry backstop, not a release claim.
+
+Verification runs in fresh `vw1212c3b` on the Dev Work VM. Every phase waits for the shared lane, uses four package
+workers / one compiler worker, closes SSH stdin, and runs under the external 590-second process-group/descendant
+kill trap. The warnings-as-errors wrapper also runs under that cap. Build products are removed after verification.

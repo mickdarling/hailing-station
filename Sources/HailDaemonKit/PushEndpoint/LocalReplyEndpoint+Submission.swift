@@ -40,7 +40,10 @@ public struct LocalVoiceGuardsReport: Codable, Equatable, Sendable {
 public struct LocalReplyAudioTicket: Codable, Equatable, Sendable {
     public let epoch: UUID
     public let position: UInt64
-    public init(epoch: UUID, position: UInt64) { self.epoch = epoch; self.position = position }
+    public let releaseKey: UUID?
+    public init(epoch: UUID, position: UInt64, releaseKey: UUID? = nil) {
+        self.epoch = epoch; self.position = position; self.releaseKey = releaseKey
+    }
 }
 
 public struct LocalReplyAudioRequest: Codable, Sendable {
@@ -57,8 +60,9 @@ public struct LocalReplyAudioRequest: Codable, Sendable {
 public struct LocalReplyAudioReport: Codable, Equatable, Sendable {
     public var ticket: LocalReplyAudioTicket?
     public var skipped: Bool
-    public init(ticket: LocalReplyAudioTicket? = nil, skipped: Bool = false) {
-        self.ticket = ticket; self.skipped = skipped
+    public var reason: String?
+    public init(ticket: LocalReplyAudioTicket? = nil, skipped: Bool = false, reason: String? = nil) {
+        self.ticket = ticket; self.skipped = skipped; self.reason = reason
     }
 }
 
@@ -313,6 +317,10 @@ extension LocalReplyEndpoint {
         guard isDispatch || data.count <= PayloadLimits.defaultMaxFrameBytes else {
             return await respond(.init(delivered: 0, error: "frame too large"), to: client)
         }
+        // Content-free capability cleanup must still work after the shared publication bucket fills.
+        if kind == "reply-audio", (try? Self.decodeReplyAudio(data))?.action == "release" {
+            return await submitReplyAudio(data, from: client)
+        }
         let now = clock.now
         let terminal = kind == nil && TerminalProbe.isTerminalAudio(data)
             || kind == "reply-audio" && QueuedTerminalProbe.isTerminalAudio(data)
@@ -336,11 +344,13 @@ extension LocalReplyEndpoint {
         guard let fields = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             throw LocalReplyRefusal.decodeFailure
         }
-        let keys: Set<String> = fields["action"] as? String == "enqueue"
+        let action = fields["action"] as? String
+        let keys: Set<String> = action == "release" ? ["kind", "action", "ticket"] : action == "enqueue"
             ? ["kind", "action"] : ["kind", "action", "ticket", "frame"]
         guard Set(fields.keys) == keys || fields["action"] as? String == "enqueue"
                 && Set(fields.keys) == keys.union(["frame"]) else { throw LocalReplyRefusal.decodeFailure }
-        if let ticket = fields["ticket"] as? [String: Any], Set(ticket.keys) != ["epoch", "position"] {
+        if let ticket = fields["ticket"] as? [String: Any],
+           !Set(ticket.keys).isSubset(of: ["epoch", "position", "releaseKey"]) {
             throw LocalReplyRefusal.decodeFailure
         }
         // Check the envelope before Frame's provenance decoder can reject an absent target generically.
@@ -369,6 +379,10 @@ extension LocalReplyEndpoint {
             try Task.checkCancellation()
             guard !stopped, connections[client.id] != nil else { throw CancellationError() }
             let report = try await destination.replyAudio(request)
+            if report.reason == "capacity" {
+                _ = try? await audit.record(.deliveryRefused(target: request.frame?.target ?? "unknown",
+                    device: "local-reply", reason: "replyAudioCapacity"))
+            }
             guard !Task.isCancelled, !stopped, connections[client.id] != nil else { throw CancellationError() }
             var response = LocalReplyResponse(delivered: request.action == "publish" && !report.skipped ? 1 : 0)
             response.replyAudio = report

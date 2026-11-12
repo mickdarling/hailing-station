@@ -23,11 +23,14 @@ final class ReplyAudioQueue: Sendable {
     }
     private struct Job {
         let position: UInt64
+        let releaseKey = UUID()
         let expires: ContinuousClock.Instant
         var reply: UUID?
         var target: String?
+        var stream: UUID?
         var destination: UUID?
         var streaming = false
+        var terminalOnly = false
         var barrierDeadline: ContinuousClock.Instant?
         var budgetExpired = false
         var budgetTask: Task<Void, Never>?
@@ -46,7 +49,7 @@ final class ReplyAudioQueue: Sendable {
         var pending: [UUID: Stop] = [:]
         var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     }
-    enum Outcome: Equatable { case pending, stopped, waitBudget, sent(Bool) }
+    enum Outcome: Equatable { case pending, stopped, waitBudget, expired, terminalOnly, sent(Bool) }
     private let state = Mutex(State())
     private let now: @Sendable () -> ContinuousClock.Instant
     private let sleepUntil: @Sendable (ContinuousClock.Instant) async throws -> Void
@@ -54,24 +57,39 @@ final class ReplyAudioQueue: Sendable {
         self.now = ReplyAudioEnqueueTesting.clock ?? now
         sleepUntil = ReplyAudioEnqueueTesting.budgetSleep ?? { try await ContinuousClock().sleep(until: $0) }
     }
-    private static func prune(_ state: inout State, at now: ContinuousClock.Instant) {
+    private static func prune(_ state: inout State, at now: ContinuousClock.Instant) -> Bool {
+        let count = state.jobs.count
         state.jobs.removeAll { job in
             guard now >= job.expires else { return false }
             job.budgetTask?.cancel()
             return true
         }
+        return count != state.jobs.count
+    }
+    private func withPrunedState<T>(_ operation: (inout State) throws -> T) rethrows -> T {
+        var waiters: [CheckedContinuation<Void, Never>] = []
+        defer { for waiter in waiters { waiter.resume() } }
+        return try state.withLock { state in
+            if Self.prune(&state, at: now()) {
+                waiters = Array(state.waiters.values)
+                state.waiters.removeAll()
+            }
+            return try operation(&state)
+        }
     }
     var outstandingCount: Int { state.withLock { $0.jobs.count } }
+    var pendingStopCount: Int { state.withLock { $0.pending.count } }
     var waiterCount: Int { state.withLock { $0.waiters.count } }
     func ticket(frame: Frame? = nil) throws -> LocalReplyAudioTicket {
-        try state.withLock { state in
-            Self.prune(&state, at: now())
+        try withPrunedState { state in
             guard state.jobs.count < Self.jobLimit else { throw Refusal.capacity }
             guard state.position < .max else { throw LocalReplyRefusal.internalFailure }
             state.position += 1
             state.jobs.append(Job(position: state.position, expires: now().advanced(by: Self.jobLifetime),
-                                  reply: frame.flatMap { HostSession.replyID($0) }, target: frame?.target))
-            return LocalReplyAudioTicket(epoch: state.epoch, position: state.position)
+                                  reply: frame.flatMap { HostSession.replyID($0) }, target: frame?.target,
+                                  stream: Self.audioStream(frame)))
+            return LocalReplyAudioTicket(epoch: state.epoch, position: state.position,
+                                         releaseKey: state.jobs.last?.releaseKey)
         }
     }
     /// Acceptance and the cutoff share the final-enqueue lock. A vanished connection accepts nothing.
@@ -118,23 +136,26 @@ final class ReplyAudioQueue: Sendable {
         for entry in state.targets.prefix(overflow) { state.floor = max(state.floor, entry.position) }
         state.targets.removeFirst(overflow)
     }
+}
+
+extension ReplyAudioQueue {
     func enqueue(_ ticket: LocalReplyAudioTicket, connection: UUID?, target: String,
-                 publishing: Bool = false, _ send: () -> Bool) -> Outcome {
-        state.withLock { state in
-            Self.prune(&state, at: now())
+                 publishing: Bool = false, terminal: Bool = false, _ send: () -> Bool) -> Outcome {
+        withPrunedState { state in
             guard ticket.epoch == state.epoch,
                   let index = state.jobs.firstIndex(where: { $0.position == ticket.position }) else {
-                return .sent(false)
+                return .expired
             }
+            if state.jobs[index].terminalOnly && !terminal { return .terminalOnly }
             let streaming = state.jobs[index].streaming
-            if !streaming, budgetEnded(at: index, in: &state) { return .waitBudget }
             guard ticket.position > state.floor,
                   ticket.position > (connection.flatMap { state.stops[$0] } ?? 0),
                   streaming || ticket.position > state.unpublishedFloor
                     && ticket.position > (state.targets.last { $0.key == target }?.position ?? 0) else {
                 return .stopped
             }
-            if !streaming, state.pending.values.contains(where: { $0.position >= ticket.position }) {
+            if !streaming, Self.covered(state.jobs[index], target: target, in: state) {
+                if budgetEnded(at: index, in: &state) { return .waitBudget }
                 beginBarrier(at: index, in: &state)
                 return .pending
             }
@@ -153,14 +174,14 @@ final class ReplyAudioQueue: Sendable {
 extension ReplyAudioQueue {
     /// Association fills an issued reservation; absent records are permanently invalid in this epoch.
     func associate(_ ticket: LocalReplyAudioTicket, frame: Frame) {
-        state.withLock { state in
-            Self.prune(&state, at: now())
+        withPrunedState { state in
             guard ticket.epoch == state.epoch,
                   let index = state.jobs.firstIndex(where: { $0.position == ticket.position }),
                   state.jobs[index].reply == nil,
                   let reply = HostSession.replyID(frame), let target = frame.target else { return }
             state.jobs[index].reply = reply
             state.jobs[index].target = target
+            state.jobs[index].stream = Self.audioStream(frame)
         }
     }
     func deliveredText(_ reply: UUID, to connection: UUID) {
@@ -172,14 +193,46 @@ extension ReplyAudioQueue {
     }
     func finish(_ ticket: LocalReplyAudioTicket) {
         let waiters = state.withLock { state -> [CheckedContinuation<Void, Never>] in
-            guard ticket.epoch == state.epoch,
-                  let index = state.jobs.firstIndex(where: { $0.position == ticket.position }) else { return [] }
-            state.jobs[index].budgetTask?.cancel()
-            state.jobs.remove(at: index)
+            guard ticket.epoch == state.epoch else { return [] }
+            if let index = state.jobs.firstIndex(where: { $0.position == ticket.position }) {
+                state.jobs[index].budgetTask?.cancel()
+                state.jobs.remove(at: index)
+            }
             defer { state.waiters.removeAll() }
             return Array(state.waiters.values)
         }
         for waiter in waiters { waiter.resume() }
+    }
+    func release(_ ticket: LocalReplyAudioTicket) {
+        guard withPrunedState({ state in
+            ticket.epoch == state.epoch && state.jobs.contains {
+                $0.position == ticket.position && $0.releaseKey == ticket.releaseKey
+            }
+        }) else { return }
+        finish(ticket)
+    }
+    func admitted(_ ticket: LocalReplyAudioTicket) {
+        state.withLock { state in
+            guard let index = state.jobs.firstIndex(where: { $0.position == ticket.position }) else { return }
+            state.jobs[index].barrierDeadline = nil
+            state.jobs[index].budgetExpired = false
+            state.jobs[index].budgetTask?.cancel()
+            state.jobs[index].budgetTask = nil
+        }
+    }
+    func allowRecovery(_ ticket: LocalReplyAudioTicket) -> Bool {
+        withPrunedState { state in
+            guard let index = state.jobs.firstIndex(where: { $0.position == ticket.position }),
+                  state.jobs[index].streaming else { return false }
+            state.jobs[index].terminalOnly = true
+            return true
+        }
+    }
+    private static func covered(_ job: Job, target: String?, in state: State) -> Bool {
+        state.pending.values.contains {
+            $0.position >= job.position && (!$0.associationsCaptured
+                || (target.map($0.targets.contains) ?? true) || job.destination == $0.connection)
+        }
     }
     func firstSkip(_ ticket: LocalReplyAudioTicket) -> Bool {
         state.withLock { state in
@@ -195,9 +248,22 @@ extension ReplyAudioQueue {
             $0.stops[connection] = nil; $0.selections[connection] = nil; $0.connections.remove(connection)
         }
     }
+    func issued(_ ticket: LocalReplyAudioTicket) -> Bool {
+        state.withLock { ticket.epoch == $0.epoch && ticket.position > 0 && ticket.position <= $0.position }
+    }
+    private static func audioStream(_ frame: Frame?) -> UUID? {
+        guard let frame, case .audio(let audio) = frame.payload else { return nil }
+        return audio.streamID
+    }
+    func recoveryTerminal(_ ticket: LocalReplyAudioTicket, frame: Frame) -> Bool {
+        guard case .audio(let audio) = frame.payload, audio.isFinal, audio.bytes == Data([0, 0]) else { return false }
+        return state.withLock { state in
+            state.jobs.contains { $0.position == ticket.position && $0.reply == audio.reply?.id
+                && $0.target == frame.target && $0.stream == audio.streamID }
+        }
+    }
     func valid(_ ticket: LocalReplyAudioTicket) -> Bool {
-        state.withLock { state in
-            Self.prune(&state, at: now())
+        withPrunedState { state in
             return ticket.epoch == state.epoch && state.jobs.contains { $0.position == ticket.position }
         }
     }
@@ -280,12 +346,11 @@ extension ReplyAudioQueue {
         for waiter in waiters { waiter.resume() }
     }
     private func mustWait(_ ticket: LocalReplyAudioTicket, in state: inout State) -> Bool {
-        Self.prune(&state, at: now())
         guard ticket.epoch == state.epoch,
               let index = state.jobs.firstIndex(where: { $0.position == ticket.position }),
               !state.jobs[index].streaming, !budgetEnded(at: index, in: &state),
               ticket.position > max(state.floor, state.unpublishedFloor),
-              state.pending.values.contains(where: { $0.position >= ticket.position }) else { return false }
+              Self.covered(state.jobs[index], target: state.jobs[index].target, in: state) else { return false }
         beginBarrier(at: index, in: &state)
         return true
     }
@@ -296,7 +361,7 @@ extension ReplyAudioQueue {
             let id = UUID()
             await withTaskCancellationHandler {
                 await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                    let waiting = state.withLock { state in
+                    let waiting = withPrunedState { state in
                         guard !Task.isCancelled, mustWait(ticket, in: &state) else { return false }
                         state.waiters[id] = continuation
                         return true
@@ -307,7 +372,7 @@ extension ReplyAudioQueue {
                 self.finish(ticket)
             }
             try Task.checkCancellation()
-            if state.withLock({ !mustWait(ticket, in: &$0) }) { return }
+            if withPrunedState({ !mustWait(ticket, in: &$0) }) { return }
         }
     }
 }
@@ -317,13 +382,16 @@ private final class ReplyAudioAdmission: Sendable {
     let ticket: LocalReplyAudioTicket
     let probe: Bool
     let target: String
+    let terminal: Bool
     let skipped = Mutex<String?>(nil)
     let pending = Mutex(false)
-    init(queue: ReplyAudioQueue, ticket: LocalReplyAudioTicket, probe: Bool, target: String) {
-        self.queue = queue; self.ticket = ticket; self.probe = probe; self.target = target
+    let recovering = Mutex(false)
+    init(queue: ReplyAudioQueue, ticket: LocalReplyAudioTicket, probe: Bool, target: String, terminal: Bool) {
+        self.queue = queue; self.ticket = ticket; self.probe = probe; self.target = target; self.terminal = terminal
     }
     func enqueue(connection: UUID?, publishing: Bool = false, _ send: () -> Bool) -> Bool {
-        switch queue.enqueue(ticket, connection: connection, target: target, publishing: publishing, send) {
+        switch queue.enqueue(ticket, connection: connection, target: target,
+                             publishing: publishing, terminal: terminal, send) {
         case .pending:
             pending.withLock { $0 = true }
             return false
@@ -333,12 +401,21 @@ private final class ReplyAudioAdmission: Sendable {
         case .waitBudget:
             skipped.withLock { $0 = "wait_budget" }
             return false
-        case .sent(let result): return result
+        case .terminalOnly:
+            skipped.withLock { $0 = "terminal_only" }
+            return false
+        case .expired:
+            skipped.withLock { $0 = "expired" }
+            return false
+        case .sent(let result):
+            if publishing, !result, queue.allowRecovery(ticket) { recovering.withLock { $0 = true } }
+            return result
         }
     }
 }
 /// A continuation barrier for deterministic final-enqueue tests; absent in production.
 enum ReplyAudioEnqueueTesting {
+    @TaskLocal static var rejectTransport = false
     @TaskLocal static var clock: (@Sendable () -> ContinuousClock.Instant)?
     @TaskLocal static var budgetSleep: (@Sendable (ContinuousClock.Instant) async throws -> Void)?
     @TaskLocal static var afterPrivacyDecision: (@Sendable () async -> Void)?
@@ -772,7 +849,8 @@ extension HostSession {
             return true
         }) == true else {
             if let admission = ReplyAudioScope.admission,
-               admission.skipped.withLock({ $0 != nil }) || admission.pending.withLock({ $0 }) { return false }
+               admission.skipped.withLock({ $0 != nil }) || admission.pending.withLock({ $0 })
+                || admission.recovering.withLock({ $0 }) { return false }
             replyRequests[requestID] = nil
             return false
         }
@@ -1054,7 +1132,7 @@ extension WebSocketPeer {
         held: borrowing Mutex<Bool>
     ) -> Bool {
         let send = {
-            let enqueue = { prepared.allSatisfy { $0.enqueue() } }
+            let enqueue = { !ReplyAudioEnqueueTesting.rejectTransport && prepared.allSatisfy { $0.enqueue() } }
             return ReplyAudioScope.admission?.enqueue(connection: connection, publishing: true, enqueue) ?? enqueue()
         }
         guard let hold else { return send() }
@@ -1081,6 +1159,7 @@ extension WebSocketListener {
         guard !stopped, readyResult != nil else { throw LocalReplyRefusal.listenerNotReady }
         guard request.kind == "reply-audio" else { throw LocalReplyRefusal.decodeFailure }
         if request.action == "enqueue" { return try enqueueAudioJob(request) }
+        if request.action == "release" { return try releaseAudioJob(request) }
         let admission: ReplyAudioAdmission, frame: Frame
         do { (admission, frame) = try queuedAudioFrame(request) } catch {
             if let ticket = request.ticket { replyAudioQueue.finish(ticket) }
@@ -1090,10 +1169,11 @@ extension WebSocketListener {
         do {
             try await publishQueuedAudio(admission, frame: frame)
         } catch ReplyAudioProbe.admitted {
+            replyAudioQueue.admitted(ticket)
             return LocalReplyAudioReport()
         } catch {
             guard let reason = admission.skipped.withLock({ $0 }) else {
-                if LocalReplyRefusal(error) != .requestPending { replyAudioQueue.finish(ticket) }
+                retireAudioAfterFailure(ticket, frame: frame, error: error)
                 throw error
             }
             return skippedAudio(admission, frame: frame, reason: reason)
@@ -1104,6 +1184,22 @@ extension WebSocketListener {
         return LocalReplyAudioReport()
     }
 
+    private func releaseAudioJob(_ request: LocalReplyAudioRequest) throws -> LocalReplyAudioReport {
+        guard let ticket = request.ticket, request.frame == nil else { throw LocalReplyRefusal.invalidReplyPayload }
+        replyAudioQueue.release(ticket)
+        return LocalReplyAudioReport()
+    }
+    private func retireAudioAfterFailure(_ ticket: LocalReplyAudioTicket, frame: Frame, error: any Error) {
+        let refusal = LocalReplyRefusal(error)
+        guard refusal != .requestPending else { return }
+        guard refusal == .publicationFailed && replyAudioQueue.allowRecovery(ticket) else {
+            replyAudioQueue.finish(ticket)
+            return
+        }
+        let request = if case .audio(let audio) = frame.payload { audio.reply?.requestID } else { nil as UUID? }
+        log(WebSocketListenerEvent(event: "reply_audio_refused",
+            detail: "reason=publication_failed request=\(request?.uuidString ?? "none") ticket=\(ticket.position)"))
+    }
     private func skippedAudio(
         _ admission: ReplyAudioAdmission, frame: Frame, reason: String
     ) -> LocalReplyAudioReport {
@@ -1113,7 +1209,7 @@ extension WebSocketListener {
             log(WebSocketListenerEvent(event: "reply_audio_skipped",
                 detail: "reason=\(reason) request=\(requestID?.uuidString ?? "none") ticket=\(ticket.position)"))
         }
-        replyAudioQueue.finish(ticket)
+        if reason != "terminal_only" { replyAudioQueue.finish(ticket) }
         return LocalReplyAudioReport(skipped: true)
     }
 
@@ -1135,13 +1231,15 @@ extension WebSocketListener {
 
     private func queuedAudioFrame(_ request: LocalReplyAudioRequest) throws -> (ReplyAudioAdmission, Frame) {
         guard ["check", "publish"].contains(request.action), let ticket = request.ticket,
-              replyAudioQueue.valid(ticket), let frame = request.frame,
+              replyAudioQueue.issued(ticket),
+              let frame = request.frame,
               case .audio = frame.payload, let target = frame.target else {
             throw LocalReplyRefusal.invalidReplyPayload
         }
         replyAudioQueue.associate(ticket, frame: frame)
         return (ReplyAudioAdmission(queue: replyAudioQueue, ticket: ticket,
-                                    probe: request.action == "check", target: target), frame)
+                                    probe: request.action == "check", target: target,
+                                    terminal: replyAudioQueue.recoveryTerminal(ticket, frame: frame)), frame)
     }
 
     private func enqueueAudioJob(_ request: LocalReplyAudioRequest) throws -> LocalReplyAudioReport {
@@ -1159,7 +1257,7 @@ extension WebSocketListener {
             log(WebSocketListenerEvent(event: "reply_audio_refused",
                 detail: "reason=capacity request=\(requestID?.uuidString ?? "none")"))
             // Ordinary, non-retriable refusal. Ticket issuance never publishes or retires the text/card.
-            throw LocalReplyRefusal.publicationFailed
+            return LocalReplyAudioReport(skipped: true, reason: "capacity")
         }
     }
 

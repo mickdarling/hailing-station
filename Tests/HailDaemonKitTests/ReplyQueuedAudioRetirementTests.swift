@@ -75,14 +75,14 @@ extension ReplyQueuedAudioRetirementTests {
             publication = heldPublication(listener, ticket: ticket, audio: audio,
                 holds: EnqueueHolds(enqueue: enqueue, routed: routed, waiting: waiting))
             await routed.wait()
-            stopping = heldStop(listener, connection: connection, timeout: timeout, beforeSnapshot: {
+            stopping = heldStop(listener, connection: connection, timeout: timeout, beforeSession: {
                 captured.release(); await snapshot.wait()
             })
-            try await observeStop(on: pair, captured: captured)
+            await captured.wait()
             enqueue.release()
             await waiting.wait() // The final enqueue returned pending and the caller registered its retry.
             snapshot.release()
-            #expect(await stopping?.value == "stopped")
+            try await observeStop(stopping, on: pair)
             #expect(try await publication?.value == LocalReplyAudioReport())
             #expect(try await receiveFrame(on: pair.sockets[1], step: "B correlated audio") == audio)
             try await finishReply(reply, ticket: ticket, on: pair, listener: listener)
@@ -116,20 +116,20 @@ extension ReplyQueuedAudioRetirementTests {
         #expect(try await receiveFrame(on: pair.sockets[1], step: "B correlated text") == text)
         return reply
     }
-    private func observeStop(on pair: FallbackSocketPair, captured: VoiceStopConfirmationHold) async throws {
-        await captured.wait()
-        #expect(try await receiveFrame(on: pair.sockets[0], step: "unrelated A stop").payload
-            == .control(.stopPlayback))
-    }
 
+    private func observeStop(_ stopping: Task<String, Never>?, on pair: FallbackSocketPair) async throws {
+        #expect(await stopping?.value == "stopped")
+        #expect(try await receiveFrame(on: pair.sockets[0], step: "unrelated stop after barrier")
+            .payload == .control(.stopPlayback))
+    }
     private func heldStop(
         _ listener: WebSocketListener, connection: UUID, timeout: VoiceStopConfirmationHold,
-        afterSend: (@Sendable () async -> Void)? = nil, beforeSnapshot: (@Sendable () async -> Void)? = nil
+        afterSend: (@Sendable () async -> Void)? = nil, beforeSession: (@Sendable () async -> Void)? = nil
     ) -> Task<String, Never> {
         Task {
             await ReplyAudioEnqueueTesting.$stopTimeout.withValue({ await timeout.wait() }, operation: {
                 await ReplyAudioEnqueueTesting.$afterStopSend.withValue(afterSend, operation: {
-                    await ReplyAudioEnqueueTesting.$beforeStopSnapshot.withValue(beforeSnapshot, operation: {
+                    await ReplyAudioEnqueueTesting.$beforeStopSession.withValue(beforeSession, operation: {
                         await listener.stopReplyPlayback(connection: connection, markQueuedAudio: true)
                     })
                 })

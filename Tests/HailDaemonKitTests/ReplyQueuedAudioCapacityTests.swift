@@ -5,6 +5,8 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct ReplyQueuedAudioCapacityTests {
+    private let auditNow = Date(timeIntervalSince1970: 1_800_000_000)
+
     @Test(arguments: [false, true])
     func socketFloodReservesAllTicketsWithoutCuttingExistingAudio(framed: Bool) async throws {
         let clock = QueuedAudioClock()
@@ -15,8 +17,7 @@ import Testing
             .appendingPathComponent("hs-cap-\(UUID().uuidString.prefix(8))")
         defer { try? FileManager.default.removeItem(at: scratch) }
         let socket = scratch.appendingPathComponent("config/reply.sock")
-        let endpoint = try LocalReplyEndpoint(socketURL: socket, destination: rig.env.listener,
-            audit: AuditLog(directory: scratch.appendingPathComponent("audit")))
+        let endpoint = try capacityEndpoint(socket, rig: rig, scratch: scratch, now: auditNow)
         try await endpoint.start()
         do {
             try await rig.start()
@@ -35,6 +36,7 @@ import Testing
                 .replyAudio?.ticket)
             try await flood(framed: framed, endpoint: endpoint, socket: socket, queue: queue)
             try await refusalKeepsText(rig, endpoint: endpoint, socket: socket)
+            try assertCapacityAudit(scratch, at: auditNow)
             #expect(queue.outstandingCount == ReplyAudioQueue.jobLimit)
             #expect(try await exchange(.init(action: "publish", ticket: streaming, frame: final), socket: socket)
                 .delivered == 1)
@@ -51,6 +53,17 @@ import Testing
 }
 
 extension ReplyQueuedAudioCapacityTests {
+    private func capacityEndpoint(
+        _ socket: URL, rig: DeviceVoiceStopRig, scratch: URL, now: Date
+    ) throws -> LocalReplyEndpoint {
+        try LocalReplyEndpoint(socketURL: socket, destination: rig.env.listener,
+            audit: AuditLog(directory: scratch.appendingPathComponent("audit"), now: { now }))
+    }
+    private func assertCapacityAudit(_ scratch: URL, at now: Date) throws {
+        let summary = try RefusalSummary.read(from: AuditHistory(directory: scratch.appendingPathComponent("audit")),
+                                              now: now)
+        #expect(summary.counts == [.init(reason: "replyAudioCapacity", last15Minutes: 2, lastHour: 2)])
+    }
     private func expiryFreesSlots(_ clock: QueuedAudioClock, queue: ReplyAudioQueue, socket: URL) async throws {
         clock.advance(ReplyAudioQueue.jobLifetime)
         #expect(try await exchange(.init(action: "enqueue"), socket: socket).replyAudio?.ticket?.position
@@ -89,9 +102,8 @@ extension ReplyQueuedAudioCapacityTests {
         try await rig.pair.boundedBarrier(step: "overflow sends text only")
     }
     private func refusal() -> LocalReplyResponse {
-        var response = LocalReplyResponse(delivered: 0, error: LocalReplyRefusal.publicationFailed.message,
-            code: .publicationFailed)
-        response.replyAudio = LocalReplyAudioReport()
+        var response = LocalReplyResponse(delivered: 0)
+        response.replyAudio = LocalReplyAudioReport(skipped: true, reason: "capacity")
         return response
     }
     private func exchange(_ request: LocalReplyAudioRequest, socket: URL) async throws -> LocalReplyResponse {

@@ -10,7 +10,7 @@ import Testing
         let clock = QueuedAudioClock()
         let rig = try await clock.makeRig()
         let timeout = VoiceStopConfirmationHold(), wire = VoiceStopConfirmationHold()
-        let entered = VoiceStopConfirmationHold(), waiting = VoiceStopConfirmationHold()
+        let entered = VoiceStopConfirmationHold()
         var stopping: Task<String, Never>?
         defer { timeout.release(); wire.release(); clock.release() }
         do {
@@ -33,9 +33,14 @@ import Testing
                 #expect(try await receiveFrame(on: rig.socket, step: "immediate cut before held send completes")
                     .payload == .control(.stopPlayback))
             }
-            try await expire(queue, ticket: oldT, waiting: waiting, timeout: timeout, clock: clock)
+            clock.advance(.milliseconds(250))
+            timeout.release()
+            try #require(await eventually { queue.pendingStopCount == 0 })
             try await verify(listener, audio: covered, ticket: oldT, skipped: true, socket: other.sockets[0])
             try await verify(listener, audio: uncovered, ticket: oldU, skipped: !capture, socket: other.sockets[1])
+            #expect(rig.details("reply_audio_skipped") == [
+                "reason=stopped request=none ticket=\(oldT.position)"
+            ] + (capture ? [] : ["reason=stopped request=none ticket=\(oldU.position)"]))
             wire.release()
             #expect(await stopping?.value == "stopped")
             try await other.boundedBarrier(step: "only covered pre-cutoff audio is silent after full capture")
@@ -65,20 +70,6 @@ extension ReplyQueuedAudioCapturedTimeoutTests {
                 })
             })
         }
-    }
-    private func expire(
-        _ queue: ReplyAudioQueue, ticket: LocalReplyAudioTicket,
-        waiting: VoiceStopConfirmationHold, timeout: VoiceStopConfirmationHold, clock: QueuedAudioClock
-    ) async throws {
-        let barrier = Task {
-            try await ReplyAudioEnqueueTesting.$waiting.withValue({ waiting.release() }, operation: {
-                try await queue.waitForStops(ticket)
-            })
-        }
-        await waiting.wait()
-        clock.advance(.milliseconds(250))
-        timeout.release() // Drive timeout after a full deadline while the send completion is still held.
-        try await barrier.value
     }
     private func verify(
         _ listener: WebSocketListener, audio: Frame, ticket: LocalReplyAudioTicket,

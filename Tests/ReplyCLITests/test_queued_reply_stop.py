@@ -92,11 +92,12 @@ class QueuedReplyStopTests(unittest.TestCase):
 
         def queue_response(message, response):
             action = message["action"]
+            if action == "release":
+                return {"delivered": 0, "replyAudio": {"skipped": False}}
             attempts[action] = attempts.get(action, 0) + 1
             wire_order.append(action)
             if mode == "capacity" and action == "enqueue":
-                return {"delivered": 0, "code": "publicationFailed", "replyAudio": {"skipped": False},
-                        "error": "reply refused [publicationFailed]: publication failed; outcome is not retryable"}
+                return {"delivered": 0, "replyAudio": {"skipped": True, "reason": "capacity"}}
             if mode == "malformed" and action == "enqueue":
                 return {"delivered": "zero"}
             if (mode in ("old", "new_decode", "uncoded", "wrong_error", "null_report") and action == "enqueue"
@@ -171,10 +172,12 @@ class QueuedReplyStopTests(unittest.TestCase):
                     stdout, stderr = job.communicate(timeout=15)
                     self.assertEqual(job.returncode, 1 if mode in ("legacy", "stale", "connection", "new_decode",
                                                                     "uncoded", "wrong_error", "old_check",
-                                                                    "old_publish", "malformed", "null_report", "capacity") else 0, stderr.decode())
+                                                                    "old_publish", "malformed", "null_report") else 0, stderr.decode())
+                    if mode == "capacity":
+                        self.assertIn(b"reply audio dropped: capacity", stderr)
                     if mode == "old":
                         self.assertEqual(stderr.count(b"reply_audio_queue unsupported"), 1)
-                        self.assertEqual([item["action"] for item in controls], ["enqueue"])
+                        self.assertEqual([item["action"] for item in controls if item["action"] != "release"], ["enqueue"])
                         self.assertGreater(len(frames), 1)
                         self.assertTrue(frames[-1][1]["payload"]["final"])
                         return
@@ -182,7 +185,7 @@ class QueuedReplyStopTests(unittest.TestCase):
                         self.assertFalse(renderer_pid.exists())
                         self.assertNotIn(b"reply_audio_queue unsupported", stderr)
                         self.assertEqual(len(frames), 1)
-                        self.assertEqual([item["action"] for item in controls], ["enqueue"])
+                        self.assertEqual([item["action"] for item in controls if item["action"] != "release"], ["enqueue"])
                         return
                     if mode in ("old_check", "old_publish"):
                         self.assertNotIn(b"reply_audio_queue unsupported", stderr)
@@ -191,7 +194,8 @@ class QueuedReplyStopTests(unittest.TestCase):
                         # no legacy raw frame may follow a check/publish refusal.
                         self.assertEqual(len(audio_frames), attempts.get("publish", 0))
                         self.assertTrue(all(item.get("ticket") for item in controls if item["action"] == "publish"))
-                        self.assertEqual(controls[-1]["action"], mode.removeprefix("old_"))
+                        self.assertEqual([c for c in controls if c["action"] != "release"][-1]["action"],
+                                         mode.removeprefix("old_"))
                         return
                     if mode == "legacy":
                         self.assertIn(b"daemon does not support queued reply audio", stderr)
@@ -200,7 +204,7 @@ class QueuedReplyStopTests(unittest.TestCase):
                     if mode == "stale":
                         self.assertNotIn(b"reply audio skipped after a stop", stderr)
                         self.assertEqual(len(frames), 1)
-                        self.assertEqual([item["action"] for item in controls], ["enqueue", "check"])
+                        self.assertEqual([item["action"] for item in controls if item["action"] != "release"], ["enqueue", "check"])
                         return
                     if contended:
                         self.assertIn(b"reply audio queued behind another reply", stderr)
@@ -215,7 +219,7 @@ class QueuedReplyStopTests(unittest.TestCase):
                     self.assertFalse(frames[-1][1]["payload"]["final"])
                     self.assertEqual(attempts["publish"], 1)
                 elif skipped:
-                    self.assertEqual([item["action"] for item in controls], ["enqueue", "check"])
+                    self.assertEqual([item["action"] for item in controls if item["action"] != "release"], ["enqueue", "check"])
                     self.assertEqual(len(frames), 1)  # completed job, not a negative assertion after a delay
                     self.assertFalse(renderer_pid.exists())
                 else:
