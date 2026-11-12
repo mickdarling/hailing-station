@@ -8,7 +8,8 @@ import Testing
     @Test(arguments: ["malformed", "check", "publish", "release"], [false, true])
     func forgedClientRequestCannotRetireNeighbour(action: String, wrongKey: Bool) async throws {
         let rig = try await DeviceVoiceStopRig.make()
-        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("hs-key-\(UUID().uuidString.prefix(8))")
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hs-key-\(UUID().uuidString.prefix(8))")
         defer { try? FileManager.default.removeItem(at: scratch) }
         let socket = scratch.appendingPathComponent("config/reply.sock")
         let endpoint = try LocalReplyEndpoint(socketURL: socket, destination: rig.env.listener,
@@ -42,7 +43,8 @@ import Testing
     }
     @Test func releaseHasTwentyIndependentRequestsPerMinute() async throws {
         let rig = try await DeviceVoiceStopRig.make()
-        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("hs-kr-\(UUID().uuidString.prefix(8))")
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("hs-kr-\(UUID().uuidString.prefix(8))")
         defer { try? FileManager.default.removeItem(at: scratch) }
         let socket = scratch.appendingPathComponent("config/reply.sock")
         let endpoint = try LocalReplyEndpoint(socketURL: socket, destination: rig.env.listener,
