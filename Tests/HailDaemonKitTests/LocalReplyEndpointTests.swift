@@ -794,6 +794,7 @@ func submit(_ data: Data, socket: String) async throws -> LocalReplyResponse {
         connection.stateUpdateHandler = { state in
             switch state {
             case .ready:
+                connection.stateUpdateHandler = nil
                 connection.send(
                     content: request, contentContext: .defaultMessage, isComplete: false,
                     completion: .contentProcessed { error in
