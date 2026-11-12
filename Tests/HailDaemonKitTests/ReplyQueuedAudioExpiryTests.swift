@@ -55,6 +55,9 @@ import Testing
             await #expect(throws: LocalReplyRefusal.noRecipient) {
                 try await listener.replyAudio(.init(action: "check", ticket: refused, frame: unrouted))
             }
+            #expect(rig.details("reply_audio_refused") == [
+                "reason=noRecipient request=none ticket=\(refused.position)"
+            ])
             for ticket in [finished, refused] {
                 queue.associate(ticket, frame: audio)
                 #expect(!queue.valid(ticket))
@@ -85,6 +88,8 @@ extension ReplyQueuedAudioExpiryTests {
                 #expect(queue.valid(ticket))
                 #expect(queue.outstandingCount == 1)
             }
+            #expect(rig.details("reply_audio_refused") == Array(repeating:
+                "reason=requestPending request=\(context.id.uuidString) ticket=\(ticket.position)", count: 2))
             await session.queueTestCommit(context.id, committed: true)
             #expect(try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: audio))
                 == LocalReplyAudioReport())

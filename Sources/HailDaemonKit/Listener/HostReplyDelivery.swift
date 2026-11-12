@@ -1156,6 +1156,12 @@ extension WebSocketPeer {
 
 extension WebSocketListener {
     public func replyAudio(_ request: LocalReplyAudioRequest) async throws -> LocalReplyAudioReport {
+        do { return try await handleReplyAudio(request) } catch {
+            logAudioRefusal(request, error: error)
+            throw error
+        }
+    }
+    private func handleReplyAudio(_ request: LocalReplyAudioRequest) async throws -> LocalReplyAudioReport {
         guard !stopped, readyResult != nil else { throw LocalReplyRefusal.listenerNotReady }
         guard request.kind == "reply-audio" else { throw LocalReplyRefusal.decodeFailure }
         if request.action == "enqueue" { return try enqueueAudioJob(request) }
@@ -1173,7 +1179,7 @@ extension WebSocketListener {
             return LocalReplyAudioReport()
         } catch {
             guard let reason = admission.skipped.withLock({ $0 }) else {
-                retireAudioAfterFailure(ticket, frame: frame, error: error)
+                retireAudioAfterFailure(ticket, error: error)
                 throw error
             }
             return skippedAudio(admission, frame: frame, reason: reason)
@@ -1189,16 +1195,26 @@ extension WebSocketListener {
         replyAudioQueue.release(ticket)
         return LocalReplyAudioReport()
     }
-    private func retireAudioAfterFailure(_ ticket: LocalReplyAudioTicket, frame: Frame, error: any Error) {
+    private func retireAudioAfterFailure(_ ticket: LocalReplyAudioTicket, error: any Error) {
         let refusal = LocalReplyRefusal(error)
         guard refusal != .requestPending else { return }
         guard refusal == .publicationFailed && replyAudioQueue.allowRecovery(ticket) else {
             replyAudioQueue.finish(ticket)
             return
         }
-        let request = if case .audio(let audio) = frame.payload { audio.reply?.requestID } else { nil as UUID? }
+    }
+    private func logAudioRefusal(_ request: LocalReplyAudioRequest, error: any Error) {
+        let refusal = LocalReplyRefusal(error)
+        let reason = if error is CancellationError { "cancelled" } else {
+            refusal == .publicationFailed ? "publication_failed" : refusal.rawValue
+        }
+        let id = request.frame.flatMap { frame -> UUID? in
+            if case .audio(let audio) = frame.payload { return audio.reply?.requestID }
+            return nil
+        }
+        let ticket = request.ticket.map { String($0.position) } ?? "none"
         log(WebSocketListenerEvent(event: "reply_audio_refused",
-            detail: "reason=publication_failed request=\(request?.uuidString ?? "none") ticket=\(ticket.position)"))
+            detail: "reason=\(reason) request=\(id?.uuidString ?? "none") ticket=\(ticket)"))
     }
     private func skippedAudio(
         _ admission: ReplyAudioAdmission, frame: Frame, reason: String

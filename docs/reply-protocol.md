@@ -788,7 +788,9 @@ marks and in-flight retirement retain the existing `stop_playback` behavior.
 
 The daemon emits the content-free event
 `reply_audio_skipped reason=<stopped|wait_budget|expired> request=<UUID|none> ticket=N`.
-Capacity logs `reply_audio_refused reason=capacity request=<UUID|none>`. Every audio skip/refusal keeps text/cards. A bounded cache of 256 skipped ticket positions
+Capacity logs `reply_audio_refused reason=capacity request=<UUID|none>`. Other queued-audio errors log
+`reply_audio_refused reason=<refusal code|publication_failed|cancelled> request=<UUID|none> ticket=<N|none>`,
+including pending and malformed-ticket refusals. Every audio skip/refusal keeps text/cards. A bounded cache of 256 skipped ticket positions
 deduplicates probe/publish and mid-stream terminal-marker attempts; after cache eviction a repeated old request
 may log again. Actual queued publication keeps the ordinary audit-before-delivery boundary and records refused
 delivery codes for doctor counts. A missing target is refused before any `pushed` audit entry.
