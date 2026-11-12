@@ -1439,3 +1439,102 @@ Discriminating tests:
 Verification runs in fresh `vw1212c3b` on the Dev Work VM. Every phase waits for the shared lane, uses four package
 workers / one compiler worker, closes SSH stdin, and runs under the external 590-second process-group/descendant
 kill trap. The warnings-as-errors wrapper also runs under that cap. Build products are removed after verification.
+
+Round-2 traceability (line references name the verified source/test snapshot; other queued refusals use the common diagnostic at `HostReplyDelivery.swift:1206`):
+
+| Item | Implementation / discriminating assertion | Tests |
+| --- | --- | --- |
+| 1, admitted-check deadline and uncovered jobs | `Sources/HailDaemonKit/Listener/HostReplyDelivery.swift:214`, `:157` | `ReplyQueuedAudioRoundTwoTests.admittedCheckClearsDeadlineBeforeDelayedPublish` (both rows), `capturedTimeoutReleasesUncoveredBarrierButMarksCoveredTicket` |
+| 2, prune/cancellation continuation cleanup | `HostReplyDelivery.swift:69`, `:194` | `ReplyQueuedAudioRoundTwoTests.pruningResumesRegisteredWaiterExactlyOnce` (both rows), existing cancellation test |
+| 3, expiry disposition and request retention | `HostReplyDelivery.swift:407`, `:852`, `:1219` | `ReplyQueuedAudioRoundTwoTests.expiryKeepsCorrelatedTextAndRequest` (check/publish/routing), expiry/probe/target suites |
+| 4, owned release and CLI exits | `HostReplyDelivery.swift:206`; `Sources/HailDaemonKit/PushEndpoint/LocalReplyEndpoint+Submission.swift:321`; `Sources/haild/ReplyCommand.swift:214`, `:1043` | `ReplyQueuedAudioReleaseTests`, `releaseRequiresIssuingCapabilityAndCannotResurrect`, five `ReplyTicketReleaseTests` |
+| 5, O discrimination | `Tests/HailDaemonKitTests/ReplyQueuedAudioCapturedTimeoutTests.swift:9`, `:38`; `ReplyQueuedAudioRoundTwoTests.swift:76` | Covered T logs exactly `stopped` without a barrier; uncovered U already at a barrier plays after captured timeout |
+| 6, unrelated-target floor assertion | `Tests/HailDaemonKitTests/ReplyQueuedAudioBarrierTests.swift:113` | `unresolvableSnapshotCutsOnlyUnpublishedJobs`, all four rows, asserts the second ticket remains live before exact `stopped` |
+| 7, destination removal on finish | `HostReplyDelivery.swift:194`; `Tests/HailDaemonKitTests/ReplyQueuedAudioRoundTwoTests.swift:121` | `finishRemovesDestinationBeforeLaterStop`, second ticket on the same target delivers |
+| 8, own terminal recovery | `HostReplyDelivery.swift:258`, `:1198` | `ReplyQueuedAudioRecoveryTests.transientEnqueueFailureKeepsRequestForOwnTerminalOnly`, own-marker identity unit test |
+| 9, capacity outcome and Doctor | `HostReplyDelivery.swift:1276`; `ReplyCommand.swift:194`; `Sources/HailDaemonKit/Daemon/RefusalSummary.swift:34` | Socket capacity/audit tests, `capacityHasDistinctDoctorCount`, speech/PCM CLI capacity tests |
+| 10, mark-before-budget order | `HostReplyDelivery.swift:151` | Exact `stopped` assertions in captured-timeout rows, shared-budget tests retaining `wait_budget` only while pending |
+| 11, current protocol and synthetic evidence | `docs/reply-protocol.md:678`, `:746`, `:751`, `:771`; this section | Documentation inspection against final behavior and the synthetic checks below |
+
+The source/test snapshot is `5725b844ac86383a33644a2426e500cfd4c6bfed`, verified by SHA-256 on the VM for every
+changed production/test file against main `79fd6c92`. A later documentation-only commit records results.
+Preflight compilation corrected a throwing assertion helper; preflight tests corrected old generic vanished-ticket
+expectations and a duration-bound fixture that had exited before ticket issuance. The new recovery integration
+also caught a shadowed terminal flag. These are corrected in the snapshot; the required final repetitions below
+run that snapshot, rather than treating the preflight failures as passing evidence.
+
+
+Final verification on Swift 6.3.3 (`arm64-apple-macosx26.0`):
+
+| Phase | Result | Phase wall time, seconds | Exit |
+| --- | --- | --- | --- |
+| Focused Swift ×3 | 65 tests / 24 suites each | 27.353, 27.720, 27.813 | 0, 0, 0 |
+| Queue CLI ×3 | 21 tests each | 11.161, 10.255, 10.730 | 0, 0, 0 |
+| Release CLI ×3 | 5 tests each | 42.861, 43.577, 43.765 | 0, 0, 0 |
+| Core Reply CLI ×3 | 50 tests each | 136.971, 138.544, 138.950 | 0, 0, 0 |
+| DeviceVoiceStop | 22 tests / 6 suites | 20.046 | 0 |
+| LocalReply / PushEndpoint | 31 tests / 4 suites | 10.066 | 0 |
+| Reply | 135 tests / 37 suites; 5 existing known issues | 73.773 | 0 |
+| Other Reply families A–M | 57 tests / 10 suites | 2.360 | 0 |
+| Other Reply families N–Z | 96 tests / 20 suites | 29.079 | 0 |
+| Ambient Reply | 33 tests / 9 suites | 12.172 | 0 |
+| Core / Protocol Reply and DeviceVoiceStop | 274 tests / 50 suites | 21.323 | 0 |
+| Doctor / RefusalSummary | 12 tests / 3 suites | 4.762 | 0 |
+| Full Reply CLI | 152 tests; OK | 288.287 | 0 |
+| Warnings-as-errors wrapper | werr build=0; script exit=0 | 233.517 | 0 |
+
+The final build-before-test command was `/bin/zsh "$VM_WORK_ROOT/vw1212c3b-run.sh" build`:
+`swift build --build-tests` with the four-worker / single-compiler-worker flags shown earlier and
+`-Xswiftc -warnings-as-errors`; exit 0, compiler-reported build time 34.13 s. Test phases use
+`swift test --skip-build --no-parallel` with the same flags. The focused filter is
+`HailDaemonKitTests\.(ReplyQueuedAudio|RefusalSummary)`. Each repetition also runs these exact Python selections:
+
+```sh
+python3 -m unittest discover -s Tests/ReplyCLITests -p test_queued_reply_stop.py
+python3 -m unittest discover -s Tests/ReplyCLITests -p test_reply_ticket_release.py
+python3 -m unittest discover -s Tests/ReplyCLITests -p test_reply_cli.py
+```
+
+The remaining Swift filters are:
+
+```text
+HailDaemonKitTests\.\w*DeviceVoiceStop
+HailDaemonKitTests\.\w*(LocalReply|PushEndpoint)
+HailDaemonKitTests\.Reply
+HailDaemonKitTests\.(?!Ambient|Reply|LocalReply)[A-Ma-m]\w*Reply
+HailDaemonKitTests\.(?!Ambient|Reply|LocalReply)[N-Zn-z]\w*Reply
+HailDaemonKitTests\.Ambient\w*Reply
+Hail(Core|Protocol)Tests\.\w*(Reply|DeviceVoiceStop)
+(HailCoachingCommandTests\.\w*Doctor|HailDaemonKitTests\.(RefusalSummary|HealthReport))
+```
+
+The eight family selections passed 660 tests in 139 suites. The five known issues are the existing
+`ReplyRecipientHandoffWaitTests` records at `ReplyRecipientTestSupport.swift:105`; those files are unchanged.
+There were no unexpected issues. The full CLI command was
+`python3 -m unittest discover -s Tests/ReplyCLITests` (152 tests, 287.846 s, OK). The existing warnings-as-errors
+wrapper ran with an external Swift shim that caps compiler workers and disables automatic resolution, under the
+same 590-second kill trap. It emitted the existing CLT missing-module-cache debug-info linker warnings; its
+compiler build and wrapper both completed with exit 0. All 22 required final phases passed; the longest was
+288.287 s. No unchanged failed phase was retried in a loop.
+
+Host verification used `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer taskpolicy -b swiftlint lint
+--strict --quiet <file>` separately for all **19 changed Swift files against main**, with exit 0 and an empty
+combined output file. The non-comment column check also printed nothing:
+
+```sh
+awk 'length($0)>120 && $0 !~ /^[[:space:]]*\/\// { print FILENAME ":" FNR ":" length($0) }' <changed Swift files>
+```
+
+`git diff --check` passed. The authoritative PR-shape exclusions count **four production files**, with no renames:
+`Listener/HostReplyDelivery.swift`, `PushEndpoint/LocalReplyEndpoint+Submission.swift`,
+`Daemon/RefusalSummary.swift` (all under `Sources/HailDaemonKit`), and `Sources/haild/ReplyCommand.swift`.
+`SessionUpdateSpeech.swift`, `WebSocketListener.swift` and `WebSocketListener+SessionUpdate.swift` are unchanged.
+The PR-shape GitHub checks were not run: no PR or push is in scope, and the only GitHub calls were the two
+permitted issue/PR comment reads.
+
+After verification, all 22 changed source/test SHA-256 checks matched the snapshot again and no owned
+build/test process remained. The VM `.build`, wrapper build directory and external Swift shim/bin directory were
+removed; their absence was checked. Logs, the phase result JSON, checksum manifest and cleanup evidence remain
+outside the repository under `vw1212c3b` names. No host build/test, generated product, private configuration,
+endpoint, identity, recording or transcript is committed. No installation, upload, push, PR, online CI result or
+independent approval is claimed. The final record commit changes only this document.
