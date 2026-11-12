@@ -33,8 +33,13 @@ class ReplyTicketReleaseTests(unittest.TestCase):
 
     def exercise(self, mode):
         controls = []
+        pcm = None
 
         def response(index):
+            if mode == "bound" and index == 0:
+                # Grow only after preflight and ticket issuance, before acknowledging its text.
+                with pcm.open("r+b") as audio:
+                    audio.truncate(24_000 * 2 * 1801)
             if mode == "text":
                 return {"delivered": 0, "code": "noRecipient", "error": "synthetic text refusal"}
             return {"delivered": 1}
@@ -59,8 +64,7 @@ class ReplyTicketReleaseTests(unittest.TestCase):
                         args += ["--request", "00000000-0000-4000-8000-000000000001"]
                     if mode == "bound":
                         pcm = Path(scratch) / "oversized.pcm"
-                        with pcm.open("wb") as audio:
-                            audio.truncate(24_000 * 2 * 1801)
+                        pcm.write_bytes(bytes(480))
                         args += ["--text", "synthetic", "--pcm16", str(pcm)]
                     else:
                         args += ["--say", "synthetic"]

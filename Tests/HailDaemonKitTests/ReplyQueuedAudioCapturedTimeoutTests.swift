@@ -33,9 +33,7 @@ import Testing
                 #expect(try await receiveFrame(on: rig.socket, step: "immediate cut before held send completes")
                     .payload == .control(.stopPlayback))
             }
-            clock.advance(.milliseconds(250))
-            timeout.release()
-            try #require(await eventually { queue.pendingStopCount == 0 })
+            try await resolveTimeout(queue, timeout: timeout, clock: clock)
             try await verify(listener, audio: covered, ticket: oldT, skipped: true, socket: other.sockets[0])
             try await verify(listener, audio: uncovered, ticket: oldU, skipped: !capture, socket: other.sockets[1])
             #expect(rig.details("reply_audio_skipped") == [
@@ -70,6 +68,13 @@ extension ReplyQueuedAudioCapturedTimeoutTests {
                 })
             })
         }
+    }
+    private func resolveTimeout(
+        _ queue: ReplyAudioQueue, timeout: VoiceStopConfirmationHold, clock: QueuedAudioClock
+    ) async throws {
+        clock.advance(.milliseconds(250))
+        timeout.release()
+        try #require(await eventually { queue.pendingStopCount == 0 })
     }
     private func verify(
         _ listener: WebSocketListener, audio: Frame, ticket: LocalReplyAudioTicket,
