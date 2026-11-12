@@ -44,7 +44,9 @@ class ReplyQueueTests(unittest.TestCase):
         first_audio = next(at for at, frame in new if frame["type"] == "audio")
         waited = first_audio - new[0][0]  # last accepted text, not caller return or the older job's start
         print(f"#904 queue: newer first audio after text={waited:.3f}s; old=50 new=3 audio frames", flush=True)
-        self.assertLess(waited, 40)
+        # #1223: the 60 s older job drains with ReplyStreamPacer's 20 s queued lead (~39-40 s). Allow 8 s for host
+        # scheduling; a holder stuck on the normal 3 s lead would wait about 56 s and still fail.
+        self.assertLess(waited, (60 - 20) + 8)
         self.assertGreater(first_audio, old[-1][0])
 
     def test_killed_waiter_releases_signal_and_holder_returns_to_small_lead(self):
