@@ -7,10 +7,11 @@ import Testing
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct ReplyQueuedAudioBarrierTests {
     @Test(arguments: ["device", "playback", "privacy", "retired-flight"], [false, true])
     func firstFrameWaitsForSnapshotAndSurvivesTeardown(source: String, teardown: Bool) async throws {
-        let rig = try await DeviceVoiceStopRig.make()
-        let holds = QueuedStopSnapshotHolds()
+        // Freeze admission time: this test proves snapshot and teardown ordering, not the budget.
+        let clock = QueuedAudioClock(), holds = QueuedStopSnapshotHolds()
+        defer { holds.release(); clock.release() }
+        let rig = try await clock.makeRig()
         let waiting = VoiceStopConfirmationHold()
-        defer { holds.release() }
         do {
             try await rig.start()
             let listener = rig.env.listener
@@ -38,7 +39,7 @@ import Testing
             try await playPostStop(on: other, listener: listener)
             holds.snapshot.release()
             await stop.value
-            #expect(try await publication.value == LocalReplyAudioReport(skipped: true))
+            #expect(try await publication.value == LocalReplyAudioReport(skipped: true, reason: "stopped"))
             try await other.boundedBarrier(step: "B receives no pre-stop audio after snapshot")
         } catch {
             holds.snapshot.release()
@@ -110,6 +111,7 @@ extension ReplyQueuedAudioBarrierTests {
             let original = try #require(await listener.peers[originalID])
             let connection = await original.session.connectionID
             let old = try #require(await listener.replyAudio(.init(action: "enqueue", frame: frame)).ticket)
+            let unrelated = try queue.ticket()
             let stop = try #require(queue.captureStop(connection))
             if closedSession {
                 _ = await original.session.failure(.malformed, "synthetic closure", close: true)
@@ -122,9 +124,9 @@ extension ReplyQueuedAudioBarrierTests {
             }
             #expect(try await listener.replyAudio(.init(action: "publish", ticket: old, frame: frame)).skipped)
             // Unknown queued jobs fail closed, but this is not a cutoff for already-published streams.
-            if case .stopped = queue.enqueue(old, connection: nil, target: "unrelated", { true }) {} else {
-                Issue.record("missing fail-closed unpublished cutoff")
-            }
+            #expect(!queue.valid(old))
+            #expect(queue.valid(unrelated))
+            #expect(queue.enqueue(unrelated, connection: nil, target: "unrelated", { true }) == .stopped)
             try await playPostStop(on: other, listener: listener)
             try await other.boundedBarrier(step: "unresolvable stop sends no old audio")
         } catch {

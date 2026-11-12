@@ -52,7 +52,7 @@ import Testing
             #expect(try await receiveFrame(on: rig.socket, step: "race stop").payload == .control(.stopPlayback))
             try #require(await eventually { !rig.details("ambient_dismissed").isEmpty })
             hold.release()
-            #expect(try await publication.value == LocalReplyAudioReport(skipped: true))
+            #expect(try await publication.value == LocalReplyAudioReport(skipped: true, reason: "stopped"))
             #expect(rig.details("reply_audio_skipped") == ["reason=stopped request=none ticket=\(ticket.position)"])
             try await barrier(on: rig.socket, step: "final enqueue sent no audio")
         } catch {
@@ -92,7 +92,7 @@ extension ReplyQueuedAudioRaceTests {
             enqueue.release()
             await waiting.wait() // The final synchronous gate refused; its caller retried asynchronously.
             queue.resolve(stop, targets: [RecipientTestRig.target])
-            #expect(try await publication.value == LocalReplyAudioReport(skipped: true))
+            #expect(try await publication.value == LocalReplyAudioReport(skipped: true, reason: "stopped"))
             try await rig.pair.boundedBarrier(step: "pending final gate sends no audio")
         } catch {
             enqueue.release()

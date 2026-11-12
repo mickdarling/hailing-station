@@ -184,12 +184,27 @@ private func requireTextFrameFits(_ options: ReplyOptions) throws {
     }
 }
 
-private struct ReplyAudioSkipped: Error {}
+private struct ReplyAudioSkipped: Error {
+    let reason: String
+    var note: String {
+        switch reason {
+        case "expired": "reply audio expired"
+        case "wait_budget": "reply audio skipped: stop wait budget"
+        case "terminal_only": "reply audio skipped: terminal only"
+        default: "reply audio skipped after a stop"
+        }
+    }
+}
+private struct ReplyAudioCapacity: Error {}
 private struct ReplyAudioUnsupported: Error {}
 
 private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: ReplyStreamPacing) async throws {
-    do { try await streamReplyAudio(options, rendererRoot: rendererRoot, pacing: pacing) } catch is ReplyAudioSkipped {
-        note("reply audio skipped after a stop")
+    do {
+        try await streamReplyAudio(options, rendererRoot: rendererRoot, pacing: pacing)
+    } catch let skipped as ReplyAudioSkipped {
+        note(skipped.note)
+    } catch is ReplyAudioCapacity {
+        note("reply audio dropped: capacity")
     }
 }
 
@@ -207,6 +222,29 @@ private func streamReplyAudio(_ options: ReplyOptions, rendererRoot: URL, pacing
     // Ordering precedes text; a failed ticket still leaves the text/card delivered before audio fails closed.
     RequestKeepAlive.begin(requestBound: options.requestID != nil)
     let entry = await ReplyBackground.requestAudioTicket(probe: probe, socket: options.socket)
+    do {
+        try await streamTicketedReply(options, rendererRoot: rendererRoot, pacing: pacing,
+                                      job: ReplyQueuedJob(descriptor: descriptor, streamID: streamID,
+                                                          probe: probe, entry: entry))
+        await ReplyBackground.releaseAudioTicket(entry, socket: options.socket)
+    } catch {
+        await ReplyBackground.releaseAudioTicket(entry, socket: options.socket)
+        throw error
+    }
+}
+
+private struct ReplyQueuedJob {
+    let descriptor: ReplyDescriptor
+    let streamID: UUID?
+    let probe: Frame?
+    let entry: Result<LocalReplyAudioTicket?, any Error>
+}
+
+private func streamTicketedReply(
+    _ options: ReplyOptions, rendererRoot: URL, pacing: ReplyStreamPacing,
+    job: ReplyQueuedJob
+) async throws {
+    let descriptor = job.descriptor, streamID = job.streamID, probe = job.probe, entry = job.entry
     var frames = 0, deliveries = 0
     if let frame = textFrame(options, descriptor: descriptor) {
         try await admit(audioBytes: 0, sampleRate: options.sampleRate, pacing: pacing)
@@ -214,6 +252,9 @@ private func streamReplyAudio(_ options: ReplyOptions, rendererRoot: URL, pacing
         frames += 1
     }
     guard let streamID, let probe else { return printSubmitted(frames: frames, deliveries: deliveries) }
+    if case .failure(let error) = entry, error is ReplyAudioCapacity, deliveries == 0 {
+        throw ReplyCommandError.invalid("reply audio dropped: capacity; no text or card delivered")
+    }
     try await ReplyBackground.awaitAudioTurn(socket: options.socket, target: options.target, probe: probe,
                                             ticket: entry.get())
     let context = PCMReplyContext(
@@ -660,7 +701,7 @@ enum ReplyClient {
         guard let report = response.replyAudio else {
             throw ReplyClientError.refused("daemon did not acknowledge queued reply audio")
         }
-        if report.skipped { throw ReplyAudioSkipped() }
+        if report.skipped { throw ReplyAudioSkipped(reason: report.reason ?? "stopped") }
     }
 
     static func submit(
@@ -1003,6 +1044,7 @@ extension ReplyBackground {
         guard isDetachedJob, let probe else { return .success(nil) }
         do {
             let report = try await audioRequest(.init(action: "enqueue", frame: probe), socket: socket)
+            if report.reason == "capacity" { throw ReplyAudioCapacity() }
             guard let ticket = report.ticket, !report.skipped else {
                 throw ReplyClientError.refused("daemon did not issue an audio queue ticket")
             }
@@ -1011,6 +1053,16 @@ extension ReplyBackground {
             note("reply_audio_queue unsupported")
             return .success(nil)
         } catch { return .failure(error) }
+    }
+
+    static func releaseAudioTicket(_ entry: Result<LocalReplyAudioTicket?, any Error>, socket: URL) async {
+        guard case .success(let ticket?) = entry else { return }
+        // Cleanup owns an uncancelled task even when the stream's time bound cancelled its parent.
+        await Task.detached {
+            var line = try? JSONEncoder().encode(LocalReplyAudioRequest(action: "release", ticket: ticket))
+            line?.append(UInt8(ascii: "\n"))
+            if let line { _ = try? await ReplyClient.transact(line, socketURL: socket) }
+        }.value
     }
 
     static func awaitAudioTurn(
@@ -1061,7 +1113,7 @@ extension ReplyBackground {
         let report = try await audioRequest(
             LocalReplyAudioRequest(action: "check", ticket: ticket, frame: probe), socket: socket
         )
-        if report.skipped { throw ReplyAudioSkipped() }
+        if report.skipped { throw ReplyAudioSkipped(reason: report.reason ?? "stopped") }
         queuedTicket.withLock { $0 = ticket }
     }
 

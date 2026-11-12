@@ -82,7 +82,7 @@ extension ReplyQueuedAudioProbeTests {
         _ listener: WebSocketListener, pair: FallbackSocketPair, replies: SlowPrivacyReplies, mode: String
     ) async throws {
         #expect(try await listener.replyAudio(.init(action: "publish", ticket: replies.old, frame: replies.audio))
-            == LocalReplyAudioReport(skipped: true))
+            == LocalReplyAudioReport(skipped: true, reason: "stopped"))
         let final = recipientAudio(replies.stream, sequence: 1, final: true)
         #expect(try await listener.replyAudio(.init(action: "publish", ticket: replies.streaming, frame: final))
             == LocalReplyAudioReport())

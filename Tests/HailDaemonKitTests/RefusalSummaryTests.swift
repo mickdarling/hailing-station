@@ -34,6 +34,17 @@ import Testing
         #expect(summary.recent.map(\.reason) == ["notUniqueRecipient"])
     }
 
+    @Test func capacityHasDistinctDoctorCount() {
+        let summary = RefusalSummary.summarize([
+            line(reason: "replyAudioCapacity", minutesAgo: 1),
+            line(reason: "publicationFailed", minutesAgo: 1)
+        ], now: now)
+        #expect(summary.counts == [
+            .init(reason: "publicationFailed", last15Minutes: 1, lastHour: 1),
+            .init(reason: "replyAudioCapacity", last15Minutes: 1, lastHour: 1)
+        ])
+    }
+
     @Test func unknownReasonsNeverRepeatLogText() {
         let summary = RefusalSummary.summarize([line(reason: "free text from somewhere", minutesAgo: 2)], now: now)
         #expect(summary.counts == [.init(reason: "other", last15Minutes: 1, lastHour: 1)])

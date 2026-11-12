@@ -26,7 +26,7 @@ extension ReplyQueuedAudioBarrierTests {
             let old = try #require(await listener.replyAudio(.init(action: "enqueue", frame: audio)).ticket)
             stopping = try await resolveFailure(rig, original: original, failure: failure, old: old, holds: holds)
             #expect(try await listener.replyAudio(.init(action: "publish", ticket: old, frame: audio))
-                == LocalReplyAudioReport(skipped: true))
+                == LocalReplyAudioReport(skipped: true, reason: "stopped"))
             try await finishFailureAudio(listener, pair: other, stream: stream, ticket: streaming, audio: audio)
             holds.snapshot.release()
             await stopping?.value

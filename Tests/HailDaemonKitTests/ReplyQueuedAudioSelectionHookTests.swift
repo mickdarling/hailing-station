@@ -116,11 +116,7 @@ extension ReplyQueuedAudioSelectionTests {
     private func expectHookOutcome(
         _ queue: ReplyAudioQueue, _ ticket: LocalReplyAudioTicket, target: String, stopped: Bool
     ) {
-        switch queue.enqueue(ticket, connection: nil, target: target, { true }) {
-        case .stopped: #expect(stopped)
-        case .sent(let sent): #expect(!stopped && sent)
-        case .pending: Issue.record("all relevant stops should be resolved")
-        }
+        #expect(queue.enqueue(ticket, connection: nil, target: target, { true }) == (stopped ? .stopped : .sent(true)))
     }
 }
 

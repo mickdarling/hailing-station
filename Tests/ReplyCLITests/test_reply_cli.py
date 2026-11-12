@@ -404,7 +404,8 @@ class ReplyCLITests(unittest.TestCase):
                 server.listen(16)
                 server.settimeout(0.1)
                 frames, errors = [], []
-                queue_position, queue_epoch = 0, str(uuid.uuid4())
+                queue_position, queue_epoch = 0, str(uuid.uuid4()).upper()
+                issued_tickets = {}
                 finished = threading.Event()
 
                 def answer():
@@ -432,8 +433,9 @@ class ReplyCLITests(unittest.TestCase):
                                 if queued and decoded["action"] == "enqueue":
                                     queue_position += 1
                                     response = {"delivered": 0, "replyAudio": {"skipped": False, "ticket": {
-                                        "epoch": queue_epoch, "position": queue_position}}}
-                                elif queued and decoded["action"] == "check":
+                                        "epoch": queue_epoch, "position": queue_position, "releaseKey": str(uuid.uuid4()).upper()}}}
+                                    issued_tickets[queue_position] = response["replyAudio"]["ticket"]
+                                elif queued and decoded["action"] in ("check", "release"):
                                     response = {"delivered": 0, "replyAudio": {"skipped": False}}
                                 else:
                                     index = len(frames)
@@ -441,6 +443,8 @@ class ReplyCLITests(unittest.TestCase):
                                     response = respond(index)
                                     if queued and not response.get("error"):
                                         response = dict(response, replyAudio={"skipped": False})
+                                if queued and decoded["action"] != "enqueue":
+                                    self.assertEqual(decoded["ticket"], issued_tickets[decoded["ticket"]["position"]])
                                 if queued and audio_queue is not None:
                                     response = audio_queue(decoded, response)
                                     if response is None:
@@ -957,6 +961,7 @@ class ReplyCLITests(unittest.TestCase):
                 requests, errors = [], []
                 queue_epoch = str(uuid.uuid4()).upper()
                 queue_position = 0
+                issued_tickets = {}
                 finished = threading.Event()
 
                 def answer():
@@ -980,8 +985,9 @@ class ReplyCLITests(unittest.TestCase):
                                 if queued and decoded["action"] == "enqueue":
                                     queue_position += 1
                                     response = {"delivered": 0, "replyAudio": {"skipped": False, "ticket": {
-                                        "epoch": queue_epoch, "position": queue_position}}}
-                                elif queued and decoded["action"] == "check":
+                                        "epoch": queue_epoch, "position": queue_position, "releaseKey": str(uuid.uuid4()).upper()}}}
+                                    issued_tickets[queue_position] = response["replyAudio"]["ticket"]
+                                elif queued and decoded["action"] in ("check", "release"):
                                     response = {"delivered": 0, "replyAudio": {"skipped": False}}
                                 else:
                                     # Preserve this helper's frame-only assertions and response indexing while
@@ -995,6 +1001,8 @@ class ReplyCLITests(unittest.TestCase):
                                     }
                                     if queued and response is not None and not response.get("error"):
                                         response = dict(response, replyAudio={"skipped": False})
+                                if queued and decoded["action"] != "enqueue":
+                                    self.assertEqual(decoded["ticket"], issued_tickets[decoded["ticket"]["position"]])
                                 if response is not None:
                                     client.sendall(json.dumps(response).encode() + b"\n")
                     except Exception as error:

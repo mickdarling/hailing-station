@@ -115,7 +115,7 @@ import Testing
                 .payload == .control(.stopPlayback))
             try #require(await eventually { rig.details("ambient_dismissed").count == 1 })
             hold.release()
-            #expect(try await publication.value == LocalReplyAudioReport(skipped: true))
+            #expect(try await publication.value == LocalReplyAudioReport(skipped: true, reason: "stopped"))
             try await other.boundedBarrier(step: "B final enqueue refused by target mark")
             try await rig.pair.boundedBarrier(step: "A complete")
         } catch {

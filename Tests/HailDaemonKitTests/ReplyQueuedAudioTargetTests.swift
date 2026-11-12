@@ -27,9 +27,8 @@ import Testing
                 selecting: [RecipientTestRig.target], capabilities: [PlaybackStop.capability])
             defer { fresh.close() }
             #expect(try await listener.replyAudio(.init(action: "check", ticket: old, frame: audio)).skipped)
-            #expect(try await listener.replyAudio(.init(action: "publish", ticket: old, frame: audio)).skipped)
             let audioOnly = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
-            #expect(try await listener.replyAudio(.init(action: "check", ticket: old, frame: audioOnly)).skipped)
+            try await assertRetired(old, frames: [audio, audioOnly], listener: listener)
             #expect(rig.details("reply_audio_skipped") == ["reason=stopped request=none ticket=\(old.position)"])
             try await fresh.boundedBarrier(step: "old ticket sends nothing after reconnect")
             let later = try await queuedAudioTicket(listener)
@@ -89,24 +88,24 @@ import Testing
 }
 
 extension ReplyQueuedAudioTargetTests {
-    @Test func outstandingJobEvictionRaisesFloorAndConsumptionRemovesRecord() throws {
-        let queue = ReplyAudioQueue(), connection = UUID()
-        queue.register(connection)
-        let reply = uncorrelatedDescriptor(audio: true), frame = recipientAudio(reply, sequence: 0)
-        let old = try queue.ticket(frame: frame)
-        queue.deliveredText(reply.id, to: connection)
-        for _ in 0..<ReplyAudioQueue.jobLimit { _ = try queue.ticket(frame: frame) }
-        if case .stopped = queue.enqueue(old, connection: nil, target: "unrelated", { true }) {} else {
-            Issue.record("outstanding eviction must fail closed globally")
-        }
-        let freshReply = uncorrelatedDescriptor(audio: true)
-        let fresh = try queue.ticket(frame: recipientAudio(freshReply, sequence: 0))
-        queue.deliveredText(freshReply.id, to: connection)
-        queue.finish(fresh)
-        queue.stop(connection, targets: [])
-        queue.forget(connection)
-        if case .sent(true) = queue.enqueue(fresh, connection: nil, target: RecipientTestRig.target, { true }) {} else {
-            Issue.record("a finished ticket must leave no destination association")
+    @Test func capacityRefusesWithoutEvictionOrFloorChange() throws {
+        let queue = ReplyAudioQueue()
+        let old = try queue.ticket()
+        for _ in 1..<ReplyAudioQueue.jobLimit { _ = try queue.ticket() }
+        #expect(throws: ReplyAudioQueue.Refusal.capacity) { try queue.ticket() }
+        #expect(queue.outstandingCount == ReplyAudioQueue.jobLimit)
+        #expect(queue.enqueue(old, connection: nil, target: "unrelated", { true }) == .sent(true))
+        queue.finish(old)
+        #expect(!queue.valid(old))
+        let fresh = try queue.ticket()
+        #expect(fresh.position == UInt64(ReplyAudioQueue.jobLimit + 1))
+        #expect(queue.enqueue(old, connection: nil, target: "unrelated", { true }) == .expired)
+    }
+    private func assertRetired(
+        _ ticket: LocalReplyAudioTicket, frames: [Frame], listener: WebSocketListener
+    ) async throws {
+        for frame in frames {
+            #expect(try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: frame)).skipped)
         }
     }
 

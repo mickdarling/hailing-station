@@ -76,18 +76,66 @@ class QueuedReplyStopTests(unittest.TestCase):
     def test_daemon_restart_refuses_stale_waiter_without_audio_skip(self):
         self.exercise(skipped=False, pcm=False, mode="stale")
 
-    def exercise(self, skipped, pcm, mode=None, contended=True):
+    def test_capacity_refusal_keeps_speech_text_and_card_without_rendering(self):
+        self.exercise(skipped=False, pcm=False, mode="capacity", contended=False)
+
+    def test_capacity_refusal_keeps_pcm_text_and_card_without_audio(self):
+        self.exercise(skipped=False, pcm=True, mode="capacity", contended=False)
+
+    def test_expired_check_has_distinct_note(self):
+        self.exercise(skipped=True, pcm=True, contended=False, skip_reason="expired")
+
+    def test_wait_budget_check_has_distinct_note(self):
+        self.exercise(skipped=True, pcm=True, contended=False, skip_reason="wait_budget")
+
+    def test_expired_publish_has_distinct_note(self):
+        self.exercise(skipped=False, pcm=True, mode="publish_skip", contended=False, skip_reason="expired")
+
+    def test_wait_budget_publish_has_distinct_note(self):
+        self.exercise(skipped=False, pcm=True, mode="publish_skip", contended=False, skip_reason="wait_budget")
+
+    def test_capacity_without_actual_text_delivery_is_refused(self):
+        self.exercise(skipped=False, pcm=True, mode="capacity", contended=False, text_deliveries=0)
+
+    def test_audio_only_pcm_capacity_refusal_is_nonzero_and_not_retried(self):
+        controls = []
+
+        def queued(message, response):
+            return {"delivered": 0, "replyAudio": {"skipped": True, "reason": "capacity"}}
+
+        with tempfile.TemporaryDirectory(prefix="hail-capacity-") as scratch:
+            audio = Path(scratch) / "synthetic.pcm"
+            audio.write_bytes(bytes(480))
+            with self.rig.reply_server(lambda index: {"delivered": 1}, audio_queue=queued,
+                                       queue_requests=controls) as (path, frames):
+                environment = self.rig.speech_environment(1)
+                environment["HAILD_REPLY_BACKGROUND"] = str(os.getpid())
+                result = subprocess.run([str(support.HAILD), "reply", "tmux:capacity", "--host", "mac-test",
+                                         "--socket", path, "--pcm16", str(audio)], cwd=support.REPO,
+                                        env=environment, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, b"")
+                self.assertEqual(result.stderr,
+                                 b"haild: reply audio dropped: capacity; no text or card delivered\n")
+                self.assertEqual([item["action"] for item in controls], ["enqueue"])
+                self.assertEqual(frames, [])
+
+    def exercise(self, skipped, pcm, mode=None, contended=True, skip_reason="stopped", text_deliveries=1):
         request = str(uuid.uuid4()).upper()
         controls, attempts, wire_order = [], {}, []
 
         def frame_response(index):
             wire_order.append("frame")
-            return {"delivered": 1}
+            return {"delivered": text_deliveries}
 
         def queue_response(message, response):
             action = message["action"]
+            if action == "release":
+                return {"delivered": 0, "replyAudio": {"skipped": False}}
             attempts[action] = attempts.get(action, 0) + 1
             wire_order.append(action)
+            if mode == "capacity" and action == "enqueue":
+                return {"delivered": 0, "replyAudio": {"skipped": True, "reason": "capacity"}}
             if mode == "malformed" and action == "enqueue":
                 return {"delivered": "zero"}
             if (mode in ("old", "new_decode", "uncoded", "wrong_error", "null_report") and action == "enqueue"
@@ -121,9 +169,9 @@ class QueuedReplyStopTests(unittest.TestCase):
                         fcntl.flock(observer, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 if mode == "stale":
                     return {"delivered": 0, "error": "invalid reply payload", "code": "invalidReplyPayload"}
-                return {"delivered": 0, "replyAudio": {"skipped": skipped}}
+                return {"delivered": 0, "replyAudio": {"skipped": skipped, "reason": skip_reason if skipped else None}}
             if mode == "publish_skip" and action == "publish":
-                return {"delivered": 0, "replyAudio": {"skipped": True}}
+                return {"delivered": 0, "replyAudio": {"skipped": True, "reason": skip_reason}}
             return response
 
         with tempfile.TemporaryDirectory(prefix="hail-queue-stop-") as scratch:
@@ -162,17 +210,33 @@ class QueuedReplyStopTests(unittest.TestCase):
                     stdout, stderr = job.communicate(timeout=15)
                     self.assertEqual(job.returncode, 1 if mode in ("legacy", "stale", "connection", "new_decode",
                                                                     "uncoded", "wrong_error", "old_check",
-                                                                    "old_publish", "malformed", "null_report") else 0, stderr.decode())
+                                                                    "old_publish", "malformed", "null_report")
+                                     or mode == "capacity" and text_deliveries == 0 else 0, stderr.decode())
+                    if mode == "capacity":
+                        expected = b"haild: reply audio dropped: capacity"
+                        if text_deliveries == 0:
+                            expected = b"haild: reply requires exactly one recipient"
+                        self.assertEqual(stderr, expected + b"\n")
+                    if skipped or mode == "publish_skip":
+                        expected = {"stopped": b"reply audio skipped after a stop", "expired": b"reply audio expired",
+                                    "wait_budget": b"reply audio skipped: stop wait budget"}[skip_reason]
+                        if contended:
+                            # Queue readiness releases stderr; later outcomes stay in the daemon's audit/events.
+                            self.assertEqual(stderr, b"haild: reply audio queued behind another reply\n"
+                                             b"haild: reply streaming in the background\n")
+                        else:
+                            self.assertEqual(stderr, b"haild: " + expected + b"\n")
                     if mode == "old":
                         self.assertEqual(stderr.count(b"reply_audio_queue unsupported"), 1)
-                        self.assertEqual([item["action"] for item in controls], ["enqueue"])
+                        self.assertEqual([item["action"] for item in controls if item["action"] != "release"], ["enqueue"])
                         self.assertGreater(len(frames), 1)
                         self.assertTrue(frames[-1][1]["payload"]["final"])
                         return
-                    if mode in ("connection", "new_decode", "uncoded", "wrong_error", "malformed", "null_report"):
+                    if mode in ("connection", "new_decode", "uncoded", "wrong_error", "malformed", "null_report", "capacity"):
+                        self.assertFalse(renderer_pid.exists())
                         self.assertNotIn(b"reply_audio_queue unsupported", stderr)
                         self.assertEqual(len(frames), 1)
-                        self.assertEqual([item["action"] for item in controls], ["enqueue"])
+                        self.assertEqual([item["action"] for item in controls if item["action"] != "release"], ["enqueue"])
                         return
                     if mode in ("old_check", "old_publish"):
                         self.assertNotIn(b"reply_audio_queue unsupported", stderr)
@@ -181,7 +245,8 @@ class QueuedReplyStopTests(unittest.TestCase):
                         # no legacy raw frame may follow a check/publish refusal.
                         self.assertEqual(len(audio_frames), attempts.get("publish", 0))
                         self.assertTrue(all(item.get("ticket") for item in controls if item["action"] == "publish"))
-                        self.assertEqual(controls[-1]["action"], mode.removeprefix("old_"))
+                        self.assertEqual([c for c in controls if c["action"] != "release"][-1]["action"],
+                                         mode.removeprefix("old_"))
                         return
                     if mode == "legacy":
                         self.assertIn(b"daemon does not support queued reply audio", stderr)
@@ -190,7 +255,7 @@ class QueuedReplyStopTests(unittest.TestCase):
                     if mode == "stale":
                         self.assertNotIn(b"reply audio skipped after a stop", stderr)
                         self.assertEqual(len(frames), 1)
-                        self.assertEqual([item["action"] for item in controls], ["enqueue", "check"])
+                        self.assertEqual([item["action"] for item in controls if item["action"] != "release"], ["enqueue", "check"])
                         return
                     if contended:
                         self.assertIn(b"reply audio queued behind another reply", stderr)
@@ -202,10 +267,10 @@ class QueuedReplyStopTests(unittest.TestCase):
                 self.assertEqual(checks[-1]["frame"]["payload"]["reply"]["request"], request)
                 if mode == "publish_skip":
                     self.assertEqual(len(frames), 2)
-                    self.assertFalse(frames[-1][1]["payload"]["final"])
+                    self.assertEqual(frames[-1][1]["payload"]["final"], pcm)
                     self.assertEqual(attempts["publish"], 1)
                 elif skipped:
-                    self.assertEqual([item["action"] for item in controls], ["enqueue", "check"])
+                    self.assertEqual([item["action"] for item in controls if item["action"] != "release"], ["enqueue", "check"])
                     self.assertEqual(len(frames), 1)  # completed job, not a negative assertion after a delay
                     self.assertFalse(renderer_pid.exists())
                 else:

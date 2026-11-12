@@ -7,8 +7,15 @@ import Testing
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct ReplyQueuedAudioPrivacyBarrierTests {
     @Test(arguments: [false, true])
     func devicePrivacyEntryHoldsFirstFrameAcrossTeardown(teardown: Bool) async throws {
-        let rig = try await DuckRig(script: AmbientPrivacyConfirmAfterAckTests.heldSwitch(),
-            capabilities: [DuckMode.capability, PlaybackStop.capability])
+        // Freeze admission time: this test proves snapshot and teardown ordering, not the budget.
+        let clock = QueuedAudioClock()
+        defer { clock.release() }
+        let rig = try await ReplyAudioEnqueueTesting.$clock.withValue({ clock.now }, operation: {
+            try await ReplyAudioEnqueueTesting.$budgetSleep.withValue({ try await clock.sleep(until: $0) }, operation: {
+                try await DuckRig(script: AmbientPrivacyConfirmAfterAckTests.heldSwitch(),
+                    capabilities: [DuckMode.capability, PlaybackStop.capability])
+            })
+        })
         let snapshot = VoiceStopConfirmationHold(), timeout = VoiceStopConfirmationHold()
         defer { rig.close(); snapshot.release(); timeout.release() }
         do {
@@ -50,7 +57,7 @@ import Testing
         if teardown { await removePeer(connection, on: listener) }
         try await publishLater(frame, listener: listener, socket: other.sockets[0])
         snapshot.release()
-        #expect(try await publication.value == LocalReplyAudioReport(skipped: true))
+        #expect(try await publication.value == LocalReplyAudioReport(skipped: true, reason: "stopped"))
         try await other.boundedBarrier(step: "privacy entry silences B's old ticket only")
     }
 
