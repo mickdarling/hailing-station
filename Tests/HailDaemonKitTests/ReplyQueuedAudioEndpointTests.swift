@@ -27,7 +27,7 @@ import Testing
             #expect(try await receiveFrame(on: rig.socket, step: "socket stop").payload == .control(.stopPlayback))
             try #require(await eventually { !rig.details("ambient_dismissed").isEmpty })
             let decision = try await exchange(.init(action: "check", ticket: ticket, frame: audio), socket: socket)
-            #expect(decision.replyAudio == LocalReplyAudioReport(skipped: true))
+            #expect(decision.replyAudio == LocalReplyAudioReport(skipped: true, reason: "stopped"))
             #expect(decision.delivered == 0 && decision.error == nil && decision.code == nil)
             #expect(rig.details("reply_audio_skipped") == ["reason=stopped request=none ticket=\(ticket.position)"])
             let later = try #require(await exchange(.init(action: "enqueue"), socket: socket).replyAudio?.ticket)

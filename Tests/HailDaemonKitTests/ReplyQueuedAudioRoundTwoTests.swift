@@ -162,7 +162,7 @@ extension ReplyQueuedAudioRoundTwoTests {
                 clock.advance(ReplyAudioQueue.jobLifetime)
                 report = try await listener.replyAudio(.init(action: action, ticket: ticket, frame: audio))
             }
-            #expect(report.skipped)
+            #expect(report == LocalReplyAudioReport(skipped: true, reason: "expired"))
             #expect(rig.details("reply_audio_skipped") == [
                 "reason=expired request=\(context.id.uuidString) ticket=\(ticket.position)"
             ])

@@ -32,7 +32,7 @@ import Testing
             }
             await routed.wait()
             try await exhaust(queue, clock: clock, timeout: timeout, enqueue: enqueue, waiting: waiting)
-            #expect(try await publication?.value == LocalReplyAudioReport(skipped: true))
+            #expect(try await publication?.value == LocalReplyAudioReport(skipped: true, reason: "wait_budget"))
             #expect(rig.details("reply_audio_skipped")
                 == ["reason=wait_budget request=\(context.id.uuidString) ticket=\(ticket.position)"])
             #expect(!queue.valid(ticket)); try await rig.pair.boundedBarrier(step: "wait-budget audio never published")
@@ -62,7 +62,7 @@ extension ReplyQueuedAudioBudgetRoutingTests {
         queue.resolve(first, targets: ["unrelated"])
         clock.advance(.milliseconds(125))
         clock.release() // Wakes the existing waiter even though the second successful stop is still unresolved.
-        // Resolution at the exact deadline cannot admit an unpublished job either.
+        // The shared deadline expires while the second stop still has unknown associations.
         // The second unknown stop remains pending through the refusal.
         _ = second
     }

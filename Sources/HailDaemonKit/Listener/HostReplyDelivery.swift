@@ -249,7 +249,12 @@ extension ReplyAudioQueue {
         }
     }
     func issued(_ ticket: LocalReplyAudioTicket) -> Bool {
-        state.withLock { ticket.epoch == $0.epoch && ticket.position > 0 && ticket.position <= $0.position }
+        state.withLock { state in
+            guard ticket.epoch == state.epoch, ticket.position > 0, ticket.position <= state.position,
+                  let key = ticket.releaseKey else { return false }
+            // Retired tickets still report expiry; a live reservation requires its issuing capability.
+            return state.jobs.first { $0.position == ticket.position }.map { $0.releaseKey == key } ?? true
+        }
     }
     private static func audioStream(_ frame: Frame?) -> UUID? {
         guard let frame, case .audio(let audio) = frame.payload else { return nil }
@@ -369,7 +374,7 @@ extension ReplyAudioQueue {
                     if waiting { ReplyAudioEnqueueTesting.waiting?() } else { continuation.resume() }
                 }
             } onCancel: {
-                self.finish(ticket)
+                self.release(ticket)
             }
             try Task.checkCancellation()
             if withPrunedState({ !mustWait(ticket, in: &$0) }) { return }
@@ -1168,7 +1173,7 @@ extension WebSocketListener {
         if request.action == "release" { return try releaseAudioJob(request) }
         let admission: ReplyAudioAdmission, frame: Frame
         do { (admission, frame) = try queuedAudioFrame(request) } catch {
-            if let ticket = request.ticket { replyAudioQueue.finish(ticket) }
+            if let ticket = request.ticket { replyAudioQueue.release(ticket) }
             throw error
         }
         let ticket = admission.ticket
@@ -1191,15 +1196,20 @@ extension WebSocketListener {
     }
 
     private func releaseAudioJob(_ request: LocalReplyAudioRequest) throws -> LocalReplyAudioReport {
-        guard let ticket = request.ticket, request.frame == nil else { throw LocalReplyRefusal.invalidReplyPayload }
+        guard let ticket = request.ticket, request.frame == nil, replyAudioQueue.issued(ticket) else {
+            throw LocalReplyRefusal.invalidReplyPayload
+        }
         replyAudioQueue.release(ticket)
         return LocalReplyAudioReport()
     }
     private func retireAudioAfterFailure(_ ticket: LocalReplyAudioTicket, error: any Error) {
         let refusal = LocalReplyRefusal(error)
-        guard refusal != .requestPending else { return }
+        guard refusal != .requestPending else {
+            replyAudioQueue.admitted(ticket)
+            return
+        }
         guard refusal == .publicationFailed && replyAudioQueue.allowRecovery(ticket) else {
-            replyAudioQueue.finish(ticket)
+            replyAudioQueue.release(ticket)
             return
         }
     }
@@ -1226,7 +1236,7 @@ extension WebSocketListener {
                 detail: "reason=\(reason) request=\(requestID?.uuidString ?? "none") ticket=\(ticket.position)"))
         }
         if reason != "terminal_only" { replyAudioQueue.finish(ticket) }
-        return LocalReplyAudioReport(skipped: true)
+        return LocalReplyAudioReport(skipped: true, reason: reason)
     }
 
     private func publishQueuedAudio(_ admission: ReplyAudioAdmission, frame: Frame) async throws {

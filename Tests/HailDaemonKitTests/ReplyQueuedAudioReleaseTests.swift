@@ -22,13 +22,14 @@ import Testing
             await endpoint.fillReleaseTestBudget()
             let forged = LocalReplyAudioTicket(epoch: other.epoch, position: other.position,
                                                releaseKey: ticket.releaseKey)
-            try await release(forged, socket: socket)
+            try await refuseRelease(forged, socket: socket)
             #expect(queue.valid(other))
             try await release(ticket, socket: socket)
             try await release(ticket, socket: socket)
             #expect(!queue.valid(ticket))
             #expect(queue.outstandingCount == 1)
-            try await release(.init(epoch: ticket.epoch, position: other.position + 100), socket: socket)
+            let unknown = LocalReplyAudioTicket(epoch: ticket.epoch, position: other.position + 100)
+            try await refuseRelease(unknown, socket: socket)
             #expect(queue.valid(other))
             clock.advance(ReplyAudioQueue.jobLifetime)
             try await release(other, socket: socket)
@@ -44,6 +45,11 @@ import Testing
         } catch { await endpoint.stop(); await rig.finish(); throw error }
         await endpoint.stop()
         await rig.finish()
+    }
+    private func refuseRelease(_ ticket: LocalReplyAudioTicket, socket: URL) async throws {
+        let refused = try await exchange(.init(action: "release", ticket: ticket), socket: socket)
+        #expect(refused.code == .invalidReplyPayload && refused.delivered == 0)
+        #expect(refused.replyAudio == LocalReplyAudioReport())
     }
     private func release(_ ticket: LocalReplyAudioTicket, socket: URL) async throws {
         let response = try await exchange(.init(action: "release", ticket: ticket), socket: socket)

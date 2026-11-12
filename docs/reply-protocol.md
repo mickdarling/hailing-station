@@ -680,12 +680,13 @@ a stop detector or changes its default.
 This host implementation has synthetic coverage only. The owner-only reply socket now recognizes
 `kind: "reply-audio"`; the device WebSocket protocol is unchanged. Each transaction is one JSON line and one
 `LocalReplyResponse`. Queue requests retain the socket's ownership, size, connection and shared rate limits.
+Release uses its own 20-request-per-minute bucket, independent of publication and terminal-frame budgets.
 Wrapped final audio retains the independent terminal-frame budget. Actual publication is audited before delivery.
 
 - `{"kind":"reply-audio","action":"enqueue"}` returns `delivered: 0` and
   `replyAudio: {"skipped":false,"ticket":{"epoch":"<daemon UUID>","position":N,"releaseKey":"<random UUID>"}}`.
   The daemon increments one global UInt64 counter; it refuses exhaustion rather than wrapping.
-- `action: "check"` additionally requires `ticket` and `frame`. The frame is a synthetic two-byte audio probe
+- `action: "check"` additionally requires `ticket`, including its issuing `releaseKey`, and `frame`. The frame is a synthetic two-byte audio probe
   carrying the job's ordinary reply descriptor, source and target. It is never published. Normal recipient
   resolution and validation run, without advancing request/flight state or acquiring a routing pin. The response
   has `delivered: 0` and `replyAudio: {"skipped":false}` or `{"skipped":true}`.
@@ -694,9 +695,13 @@ Wrapped final audio retains the independent terminal-frame budget. Actual public
   publication returns `delivered: 1` and `replyAudio: {"skipped":false}`. A queue-stop skip returns
   `delivered: 0`, no error/code, and `replyAudio: {"skipped":true}`. Other refusals retain the existing codes.
 - `action: "release"` requires only the ticket, with its unguessable `releaseKey`; no frame or content is accepted.
-  It removes only that reservation, without a stop or floor change. A wrong key, unknown/expired/finished ticket,
-  or repeated release is a no-op. A released ticket cannot be associated or published again. Cleanup remains
-  available when the shared publication rate bucket is full.
+  It removes only that reservation, without a stop or floor change. A missing/wrong key for a live reservation
+  returns `invalidReplyPayload` and retires nothing. Malformed actions and failed check/publish cleanup also
+  require the matching key; sequential positions and the shared epoch alone confer no retirement authority.
+  A retired issued ticket with a non-null key remains a no-op on release. Foreign, zero and unissued positions
+  are refused. A released ticket cannot be associated or published again. Cleanup remains available when the
+  shared publication rate bucket is full, subject to its independent release budget. Host-internal stop skips,
+  expiry and completed final publication can retire reservations without a key.
 - Unknown outer request/ticket keys, malformed shapes, foreign epochs, zero and unissued positions fail closed.
   A ticket grants no recipient or policy authority. Daemon restarts invalidate tickets. A CLI cannot infer support
   from an ordinary reply acknowledgement: missing `replyAudio` is a refusal.
@@ -705,7 +710,9 @@ Every detached audio job requests its ticket before submitting text or optional 
 `reply-audio.lock`. Enqueue may include the job's audio probe as `frame`, establishing its reply id and target.
 A failed ticket request still delivers text and metadata. Capacity returns a non-retryable
 `replyAudio: {"skipped":true,"reason":"capacity"}` outcome; the CLI prints `reply audio dropped: capacity`
-and exits 0 after text delivery. Doctor counts this as `replyAudioCapacity`, separately from `publicationFailed`.
+and exits 0 only when text or a card was actually delivered. With no delivery (including audio-only PCM), it
+exits 1 with `reply audio dropped: capacity; no text or card delivered`, without retrying.
+Doctor counts this as `replyAudioCapacity`, separately from `publicationFailed`.
 Other issuance errors still refuse audio. On lock acquisition it checks admission before
 reading/synthesizing audio, and wraps every later audio frame with its ticket. This includes jobs that take the
 lock without waiting, covering the preceding reply's device playout tail. Foreground publication stays unchanged.
@@ -754,6 +761,8 @@ job: an unknown scope may cover every pre-cutoff job; a captured scope covers it
 Marks and floors are checked first, so a known covered job logs `stopped`. With no covering pending stop, the job
 may play even after that budget deadline. An admitted check clears its deadline, expired flag and timer under
 the lock, so a renderer's later first frame receives a fresh barrier budget if another stop intervenes.
+A pre-publication `requestPending` refusal clears the same state: the resolved stop's old budget cannot expire
+an uncovered retry under a new stop whose associations are still unknown.
 Admissions recheck all marks after waking. Cancellation and expiry pruning remove/resume registered waiters
 independently of whether their job record remains; all continuations resume outside the queue lock.
 No actor or cooperative thread is blocked while waiting, and no cross-process wall clock is involved.

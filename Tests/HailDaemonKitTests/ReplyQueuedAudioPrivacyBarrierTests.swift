@@ -50,7 +50,7 @@ import Testing
         if teardown { await removePeer(connection, on: listener) }
         try await publishLater(frame, listener: listener, socket: other.sockets[0])
         snapshot.release()
-        #expect(try await publication.value == LocalReplyAudioReport(skipped: true))
+        #expect(try await publication.value == LocalReplyAudioReport(skipped: true, reason: "stopped"))
         try await other.boundedBarrier(step: "privacy entry silences B's old ticket only")
     }
 

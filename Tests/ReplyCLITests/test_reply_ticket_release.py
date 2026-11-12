@@ -34,6 +34,7 @@ class ReplyTicketReleaseTests(unittest.TestCase):
     def exercise(self, mode):
         controls = []
         pcm = None
+        issued_ticket = None
 
         def response(index):
             if mode == "bound" and index == 0:
@@ -45,6 +46,12 @@ class ReplyTicketReleaseTests(unittest.TestCase):
             return {"delivered": 1}
 
         def queued(message, result):
+            nonlocal issued_ticket
+            if message["action"] == "enqueue":
+                issued_ticket = result["replyAudio"]["ticket"].copy()
+                self.assertIsNotNone(issued_ticket["releaseKey"])
+            else:
+                self.assertEqual(message["ticket"], issued_ticket)
             if mode == "retry" and message["action"] == "check":
                 return {"delivered": 0, "code": "requestPending"}
             return result
@@ -83,8 +90,7 @@ class ReplyTicketReleaseTests(unittest.TestCase):
                 releases = [item for item in controls if item["action"] == "release"]
                 self.assertEqual(len(releases), 1, controls)
                 self.assertEqual(set(releases[0]), {"kind", "action", "ticket"})
-                self.assertEqual(releases[0]["ticket"], next(
-                    item["ticket"] for item in controls if item["action"] in ("check", "release")))
+                self.assertEqual(releases[0]["ticket"], issued_ticket)
                 self.assertFalse(any(item["action"] == "publish" for item in controls))
                 self.assertEqual(len(frames), 1)
                 if mode == "retry":

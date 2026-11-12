@@ -1401,14 +1401,19 @@ continuations independently of job-record existence and resume them outside the 
 
 Expiry, including disappearance at final enqueue, logs exactly
 `reply_audio_skipped reason=expired request=<UUID|none> ticket=N`, preserves request ownership and leaves delivered
-text/cards intact. Capability-authenticated, content-free `release` cleans only its issuing reservation, including
-when the publication rate bucket is exhausted. Unknown, expired, finished and already released tickets are no-ops;
-released tickets cannot be associated again. SIGKILL and lost cleanup transactions rely on expiry.
+text/cards intact. Round 3 corrects the retirement boundary: live reservations require the issuing `releaseKey`
+on release, malformed-action cleanup and failed check/publish cleanup. Missing/wrong keys return an ordinary
+refusal and cannot retire a neighbour. Release has its own 20-per-minute bucket and remains available when the
+publication bucket is exhausted. Retired issued tickets with a non-null key are no-ops on release; foreign, zero
+and unissued positions are refused. Released tickets cannot be associated again. SIGKILL and lost cleanup
+transactions rely on expiry.
 
 A transient mid-stream enqueue refusal preserves the request and a terminal-only reservation. Only that reply's
 own two-byte final marker can pass normal routing/policy checks; resumed data logs `terminal_only`. Capacity
 returns an explicit non-retryable audio outcome: text remains delivered, the CLI prints `reply audio dropped:
-capacity` and exits 0, and Doctor records `replyAudioCapacity` separately from `publicationFailed`.
+capacity` and exits 0 only when text or a card was actually delivered. With no delivery it exits 1 with
+`reply audio dropped: capacity; no text or card delivered`, without retrying. Doctor records `replyAudioCapacity`
+separately from `publicationFailed`.
 
 Discriminating tests:
 
@@ -1426,13 +1431,14 @@ Discriminating tests:
 - `ReplyQueuedAudioRecoveryTests`: an injected transport enqueue failure preserves the request; more data is
   refused with the exact request-id token, then the own terminal marker reaches the WebSocket exactly once.
 - `ReplyQueuedAudioReleaseTests`: real owner-only socket decoding, wrong-key isolation, release after rate-budget
-  exhaustion, no-op unknown/expired/finished/repeated release, and no resurrection or content publication.
+  exhaustion, refused unissued positions, no-op expired/finished/repeated release, and no resurrection or content publication.
 - `ReplyQueuedAudioCapacityTests` and `RefusalSummaryTests`: capacity retains text/card and existing streams and
   produces the distinct Doctor audit count. Expiry/probe/target tests assert explicit audio skips for vanished
   issued tickets while retaining generic refusals for malformed, foreign or unissued tickets.
 - `test_reply_ticket_release.py`: real waitable CLI cleanup after refused text, eight exhausted check retries,
   request-bound queue give-up, SIGTERM cancellation and the audio-duration bound. `test_queued_reply_stop.py`
-  asserts capacity's exit 0 and exact note for speech and PCM while retaining text/card without rendering/audio.
+  asserts capacity's exit 0 and exact note for speech and PCM with delivered text/card, and exit 1 for audio-only
+  PCM or zero text deliveries, without rendering/audio.
   Wall-clock cancellation uses the same cancelled stream cleanup path as SIGTERM; its full production-duration
   deadline is not shortened for testing. SIGKILL is covered by the reservation-expiry backstop, not a release claim.
 

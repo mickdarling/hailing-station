@@ -70,6 +70,53 @@ import Testing
     }
 }
 extension ReplyQueuedAudioExpiryTests {
+    @Test(arguments: ["check", "publish"])
+    func requestPendingClearsResolvedBarrierBeforeNewUnknownStop(action: String) async throws {
+        let clock = QueuedAudioClock(), timeout = QueuedAudioGate(), waiting = VoiceStopConfirmationHold()
+        defer { clock.release(); timeout.release() }
+        let rig = try await clock.makeRig()
+        do {
+            try await rig.start()
+            let listener = rig.env.listener, queue = listener.replyAudioQueue, unrelated = UUID()
+            queue.register(unrelated)
+            let context = try await rig.pair.submitInput(on: 0, rig: rig.env.rig)
+            let session = try #require(await listener.peers.values.first).session
+            await session.queueTestCommit(context.id, committed: false)
+            let audio = recipientAudio(recipientDescriptor(context, audio: true), sequence: 0, final: true)
+            let ticket = try await queuedAudioTicket(listener)
+            let first = try capture(queue, connection: unrelated, timeout: timeout)
+            let checking = Task {
+                try await ReplyAudioEnqueueTesting.$waiting.withValue({ waiting.release() }, operation: {
+                    try await listener.replyAudio(.init(action: action, ticket: ticket, frame: audio))
+                })
+            }
+            await waiting.wait()
+            await clock.sleepEntered.wait()
+            queue.resolve(first, targets: [])
+            await #expect(throws: LocalReplyRefusal.requestPending) { try await checking.value }
+            clock.advance(.milliseconds(500))
+            let second = try capture(queue, connection: unrelated, timeout: timeout)
+            #expect(queue.enqueue(ticket, connection: nil, target: RecipientTestRig.target, { true }) == .pending)
+            queue.resolve(second, targets: [])
+            await session.queueTestCommit(context.id, committed: true)
+            #expect(try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: audio))
+                == LocalReplyAudioReport())
+            #expect(try await receiveFrame(on: rig.socket, step: "uncovered retry plays after requestPending") == audio)
+            #expect(queue.outstandingCount == 0 && rig.details("reply_audio_skipped").isEmpty)
+            #expect(rig.details("reply_audio_refused") == [
+                "reason=requestPending request=\(context.id.uuidString) ticket=\(ticket.position)"
+            ])
+            try await rig.pair.boundedBarrier(step: "requestPending retry publishes once")
+        } catch { await rig.finish(); throw error }
+        await rig.finish()
+    }
+    private func capture(
+        _ queue: ReplyAudioQueue, connection: UUID, timeout: QueuedAudioGate
+    ) throws -> ReplyAudioQueue.Stop {
+        try ReplyAudioEnqueueTesting.$stopTimeout.withValue({ await timeout.wait() }, operation: {
+            try #require(queue.captureStop(connection))
+        })
+    }
     @Test func requestPendingPreservesTicketForSameFrameRetry() async throws {
         let rig = try await DeviceVoiceStopRig.make()
         do {

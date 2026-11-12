@@ -82,13 +82,51 @@ class QueuedReplyStopTests(unittest.TestCase):
     def test_capacity_refusal_keeps_pcm_text_and_card_without_audio(self):
         self.exercise(skipped=False, pcm=True, mode="capacity", contended=False)
 
-    def exercise(self, skipped, pcm, mode=None, contended=True):
+    def test_expired_check_has_distinct_note(self):
+        self.exercise(skipped=True, pcm=True, skip_reason="expired")
+
+    def test_wait_budget_check_has_distinct_note(self):
+        self.exercise(skipped=True, pcm=True, skip_reason="wait_budget")
+
+    def test_expired_publish_has_distinct_note(self):
+        self.exercise(skipped=False, pcm=True, mode="publish_skip", skip_reason="expired")
+
+    def test_wait_budget_publish_has_distinct_note(self):
+        self.exercise(skipped=False, pcm=True, mode="publish_skip", skip_reason="wait_budget")
+
+    def test_capacity_without_actual_text_delivery_is_refused(self):
+        self.exercise(skipped=False, pcm=True, mode="capacity", contended=False, text_deliveries=0)
+
+    def test_audio_only_pcm_capacity_refusal_is_nonzero_and_not_retried(self):
+        controls = []
+
+        def queued(message, response):
+            return {"delivered": 0, "replyAudio": {"skipped": True, "reason": "capacity"}}
+
+        with tempfile.TemporaryDirectory(prefix="hail-capacity-") as scratch:
+            audio = Path(scratch) / "synthetic.pcm"
+            audio.write_bytes(bytes(480))
+            with self.rig.reply_server(lambda index: {"delivered": 1}, audio_queue=queued,
+                                       queue_requests=controls) as (path, frames):
+                environment = self.rig.speech_environment(1)
+                environment["HAILD_REPLY_BACKGROUND"] = str(os.getpid())
+                result = subprocess.run([str(support.HAILD), "reply", "tmux:capacity", "--host", "mac-test",
+                                         "--socket", path, "--pcm16", str(audio)], cwd=support.REPO,
+                                        env=environment, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, b"")
+                self.assertEqual(result.stderr,
+                                 b"haild: reply audio dropped: capacity; no text or card delivered\n")
+                self.assertEqual([item["action"] for item in controls], ["enqueue"])
+                self.assertEqual(frames, [])
+
+    def exercise(self, skipped, pcm, mode=None, contended=True, skip_reason="stopped", text_deliveries=1):
         request = str(uuid.uuid4()).upper()
         controls, attempts, wire_order = [], {}, []
 
         def frame_response(index):
             wire_order.append("frame")
-            return {"delivered": 1}
+            return {"delivered": text_deliveries}
 
         def queue_response(message, response):
             action = message["action"]
@@ -131,9 +169,9 @@ class QueuedReplyStopTests(unittest.TestCase):
                         fcntl.flock(observer, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 if mode == "stale":
                     return {"delivered": 0, "error": "invalid reply payload", "code": "invalidReplyPayload"}
-                return {"delivered": 0, "replyAudio": {"skipped": skipped}}
+                return {"delivered": 0, "replyAudio": {"skipped": skipped, "reason": skip_reason if skipped else None}}
             if mode == "publish_skip" and action == "publish":
-                return {"delivered": 0, "replyAudio": {"skipped": True}}
+                return {"delivered": 0, "replyAudio": {"skipped": True, "reason": skip_reason}}
             return response
 
         with tempfile.TemporaryDirectory(prefix="hail-queue-stop-") as scratch:
@@ -172,9 +210,18 @@ class QueuedReplyStopTests(unittest.TestCase):
                     stdout, stderr = job.communicate(timeout=15)
                     self.assertEqual(job.returncode, 1 if mode in ("legacy", "stale", "connection", "new_decode",
                                                                     "uncoded", "wrong_error", "old_check",
-                                                                    "old_publish", "malformed", "null_report") else 0, stderr.decode())
+                                                                    "old_publish", "malformed", "null_report")
+                                     or mode == "capacity" and text_deliveries == 0 else 0, stderr.decode())
                     if mode == "capacity":
-                        self.assertIn(b"reply audio dropped: capacity", stderr)
+                        expected = b"haild: reply audio dropped: capacity"
+                        if text_deliveries == 0:
+                            expected += b"; no text or card delivered"
+                        self.assertEqual(stderr, expected + b"\n")
+                    if skipped or mode == "publish_skip":
+                        expected = {"stopped": b"reply audio skipped after a stop", "expired": b"reply audio expired",
+                                    "wait_budget": b"reply audio skipped: stop wait budget"}[skip_reason]
+                        notes = [line for line in stderr.splitlines() if line != b"haild: reply audio queued behind another reply"]
+                        self.assertEqual(notes, [b"haild: " + expected])
                     if mode == "old":
                         self.assertEqual(stderr.count(b"reply_audio_queue unsupported"), 1)
                         self.assertEqual([item["action"] for item in controls if item["action"] != "release"], ["enqueue"])

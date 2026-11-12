@@ -317,14 +317,13 @@ extension LocalReplyEndpoint {
         guard isDispatch || data.count <= PayloadLimits.defaultMaxFrameBytes else {
             return await respond(.init(delivered: 0, error: "frame too large"), to: client)
         }
-        // Content-free capability cleanup must still work after the shared publication bucket fills.
-        if kind == "reply-audio", (try? Self.decodeReplyAudio(data))?.action == "release" {
-            return await submitReplyAudio(data, from: client)
-        }
+        // Cleanup has a small independent bucket, so publication cannot exhaust its budget.
+        let release = kind == "reply-audio" && (try? Self.decodeReplyAudio(data))?.action == "release"
         let now = clock.now
         let terminal = kind == nil && TerminalProbe.isTerminalAudio(data)
             || kind == "reply-audio" && QueuedTerminalProbe.isTerminalAudio(data)
-        let (bucket, limit) = terminal ? ("local-reply-terminal", Self.maxTerminalFramesPerMinute)
+        let (bucket, limit) = release ? ("local-reply-release", 20)
+            : terminal ? ("local-reply-terminal", Self.maxTerminalFramesPerMinute)
             : ("local-reply", Self.maxFramesPerMinute)
         guard limiter.retryAfter(for: bucket, now: now, limitPerMinute: limit) == nil else {
             await respond(.init(delivered: 0, error: "rate limited"), to: client)

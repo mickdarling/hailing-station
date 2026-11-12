@@ -184,13 +184,25 @@ private func requireTextFrameFits(_ options: ReplyOptions) throws {
     }
 }
 
-private struct ReplyAudioSkipped: Error {}
+private struct ReplyAudioSkipped: Error {
+    let reason: String
+    var note: String {
+        switch reason {
+        case "expired": "reply audio expired"
+        case "wait_budget": "reply audio skipped: stop wait budget"
+        case "terminal_only": "reply audio skipped: terminal only"
+        default: "reply audio skipped after a stop"
+        }
+    }
+}
 private struct ReplyAudioCapacity: Error {}
 private struct ReplyAudioUnsupported: Error {}
 
 private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: ReplyStreamPacing) async throws {
-    do { try await streamReplyAudio(options, rendererRoot: rendererRoot, pacing: pacing) } catch is ReplyAudioSkipped {
-        note("reply audio skipped after a stop")
+    do {
+        try await streamReplyAudio(options, rendererRoot: rendererRoot, pacing: pacing)
+    } catch let skipped as ReplyAudioSkipped {
+        note(skipped.note)
     } catch is ReplyAudioCapacity {
         note("reply audio dropped: capacity")
     }
@@ -240,6 +252,9 @@ private func streamTicketedReply(
         frames += 1
     }
     guard let streamID, let probe else { return printSubmitted(frames: frames, deliveries: deliveries) }
+    if case .failure(let error) = entry, error is ReplyAudioCapacity, deliveries == 0 {
+        throw ReplyCommandError.invalid("reply audio dropped: capacity; no text or card delivered")
+    }
     try await ReplyBackground.awaitAudioTurn(socket: options.socket, target: options.target, probe: probe,
                                             ticket: entry.get())
     let context = PCMReplyContext(
@@ -686,7 +701,7 @@ enum ReplyClient {
         guard let report = response.replyAudio else {
             throw ReplyClientError.refused("daemon did not acknowledge queued reply audio")
         }
-        if report.skipped { throw ReplyAudioSkipped() }
+        if report.skipped { throw ReplyAudioSkipped(reason: report.reason ?? "stopped") }
     }
 
     static func submit(
@@ -1098,7 +1113,7 @@ extension ReplyBackground {
         let report = try await audioRequest(
             LocalReplyAudioRequest(action: "check", ticket: ticket, frame: probe), socket: socket
         )
-        if report.skipped { throw ReplyAudioSkipped() }
+        if report.skipped { throw ReplyAudioSkipped(reason: report.reason ?? "stopped") }
         queuedTicket.withLock { $0 = ticket }
     }
 

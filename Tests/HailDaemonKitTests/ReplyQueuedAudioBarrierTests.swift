@@ -38,7 +38,7 @@ import Testing
             try await playPostStop(on: other, listener: listener)
             holds.snapshot.release()
             await stop.value
-            #expect(try await publication.value == LocalReplyAudioReport(skipped: true))
+            #expect(try await publication.value == LocalReplyAudioReport(skipped: true, reason: "stopped"))
             try await other.boundedBarrier(step: "B receives no pre-stop audio after snapshot")
         } catch {
             holds.snapshot.release()
