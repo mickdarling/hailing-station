@@ -43,6 +43,8 @@ private struct StopFollowupSpeech: SessionUpdateSpeechRendering {
             rig.observation.clock.withLock { $0 = $0.advanced(by: .milliseconds(300)) }
             await rig.env.router.deviceVoiceStopped(connection: connection, latencyMs: nil)
             #expect(try await receiveFrame(on: rig.socket, step: "follow-up stop").payload == .control(.stopPlayback))
+            #expect(try await receiveFrame(on: rig.socket, step: "session-update retraction").payload
+                == .control(.sessionUpdateCancel(update: update)))
             #expect(rig.details("ambient_dismissed").count == 2)
             #expect(rig.details("ambient_voice_stop_ignored").isEmpty)
             try await barrier(on: rig.socket, step: "follow-up stop complete")

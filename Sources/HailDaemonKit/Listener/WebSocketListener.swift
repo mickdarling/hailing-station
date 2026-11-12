@@ -601,6 +601,9 @@ extension WebSocketListener {
         guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
             return "no_connection"
         }
+        // Revoke renderer admission before the first hop, including when no first audio frame exists yet.
+        // Mute and privacy announcements keep their existing contract; privacy has its own global retraction.
+        let cancellations = markQueuedAudio ? sessionUpdateFence.cancelProactive(connection: connection) : []
         let playbackStop = UUID()
         stopsInFlight[playbackStop] = peer.session
         await ReplyAudioEnqueueTesting.beforeStopSession?()
@@ -613,6 +616,11 @@ extension WebSocketListener {
             await sendPlaybackStop(frame, on: peer) {
             outcome = "stopped"
         } else { outcome = result.stopped.isEmpty ? "idle" : "cut" }
+        for receipt in cancellations {
+            emit(WebSocketListenerEvent(event: "session_update_speech_cancelled", sessionID: connection,
+                detail: "reason=stopped update=\(receipt.update) connection_scoped=true"))
+            await peer.cancelSessionUpdate(receipt)
+        }
         if let stop {
             await peer.session.markQueuedAudioStopped(replyAudioQueue, stop: stop, targets: result.targets)
         }

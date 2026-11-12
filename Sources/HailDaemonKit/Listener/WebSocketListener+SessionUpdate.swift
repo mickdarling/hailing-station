@@ -11,6 +11,8 @@ enum SessionUpdatePrivacyScope {
     @TaskLocal static var expectedRevision: UInt64?
     /// Deterministic actor-hop interleaving seam; absent in production.
     @TaskLocal static var beforePeerHop: (@Sendable () async -> Void)?
+    /// Holds the card-to-speech capability hop after transport completion.
+    @TaskLocal static var beforeSpeechCapabilities: (@Sendable () async -> Void)?
     /// Exercises a policy transition while the first host actor validation is pending.
     @TaskLocal static var beforeAuthorityValidation: (@Sendable () async -> Void)?
 }
@@ -115,7 +117,7 @@ extension WebSocketListener {
                                                            taskAuthority: authority)
             await SessionUpdatePrivacyScope.beforePeerHop?()
             guard await peer.deliverSessionUpdate(update, audience: audienceLease, hold: replyHold,
-                                                  ambient: ambient, fence: sessionUpdateFence) else { continue }
+                ambient: ambient, fence: sessionUpdateFence, log: log) else { continue }
             sessionUpdates.acknowledge(update.id)
             sessionUpdateTaskAuthorities[update.id] = nil
             delivered.insert(update.id)
@@ -221,28 +223,41 @@ struct SessionUpdateAdmission: Sendable {
 extension WebSocketPeer {
     func deliverSessionUpdate(
         _ update: SessionUpdate, audience: SessionUpdateAudienceLease, hold: PrivateReplyHold,
-        ambient: (any AmbientListenerWiring)?, fence: SessionUpdateFence
+        ambient: (any AmbientListenerWiring)?, fence: SessionUpdateFence,
+        log: @escaping @Sendable (WebSocketListenerEvent) -> Void = { _ in }
     ) async -> Bool {
         let privacyRevision = audience.privacyRevision, lastInput = audience.lastInput
+        let stopGeneration = Mutex<UInt64?>(nil)
         guard !ended, let admission = await session.prepareSessionUpdate(update, lastInput: lastInput,
                                                                         taskAuthority: audience.taskAuthority),
               let prepared = await prepareReplyPublication(admission.frame),
               await session.enqueueSessionUpdate(admission, lastInput: lastInput, enqueue: {
-                  fence.enqueue {
+                  fence.enqueue(connection: self.session.connectionID) { generation in
                       let handoff: @Sendable () -> Bool = {
                           hold.unlessAnyHeld(expectedRevision: privacyRevision) { prepared.enqueue() }
                       }
-                      return ambient?.withSessionUpdatePermission(connection: self.session.connectionID,
-                                                                 enqueue: handoff) ?? handoff()
+                      let admitted = ambient?.withSessionUpdatePermission(connection: self.session.connectionID,
+                                                                         enqueue: handoff) ?? handoff()
+                      if admitted { stopGeneration.withLock { $0 = generation } }
+                      return admitted
                   }
               }) else { return false }
         guard replySendSucceeded(await prepared.result()) else { return false }
-        if await session.peerCapabilities.contains(SessionUpdateCard.audioCapability) {
-            fence.startSpeech { renderer in
-                let delivery = SessionUpdateSpeechDelivery(admission: admission, lastInput: lastInput,
-                    privacyRevision: privacyRevision, hold: hold, ambient: ambient, fence: fence)
-                await self.speakSessionUpdate(update, delivery: delivery, renderer: renderer)
-            }
+        await SessionUpdatePrivacyScope.beforeSpeechCapabilities?()
+        if await session.peerCapabilities.contains(SessionUpdateCard.audioCapability),
+           let generation = stopGeneration.withLock({ $0 }) {
+            let connection = session.connectionID
+            fence.startSpeech(connection: connection, privacyRevision: privacyRevision, stopGeneration: generation,
+                onStopped: { reason in
+                    let event = reason == "stopped_running" ? "session_update_speech_revoked"
+                        : "session_update_speech_cancelled"
+                    log(WebSocketListenerEvent(event: event, sessionID: connection,
+                        detail: "reason=\(reason) update=\(update.id)"))
+                }, { renderer in
+                    let delivery = SessionUpdateSpeechDelivery(admission: admission, lastInput: lastInput,
+                        privacyRevision: privacyRevision, hold: hold, ambient: ambient, fence: fence)
+                    await self.speakSessionUpdate(update, delivery: delivery, renderer: renderer)
+                })
         }
         return true
     }
