@@ -863,6 +863,11 @@ public enum DiagnosticLimits {
     /// a malformed frame and closes the connection, so a device sends that token only to a host advertising this,
     /// and `other` otherwise.
     public static let streamAbandonedCapability = "device_diagnostics_stream_abandoned"
+    /// Optional stream-position scalars (#1227). Older hosts reject unknown field keys.
+    public static let playbackStreamCapability = "device_diagnostics_playback_stream"
+    public static let playbackStreamFields: Set<DiagnosticField> = [
+        .lastSequence, .expectedSequence, .gap, .receivedFrames, .scheduledFrames, .terminal, .lastFrameMs
+    ]
     public static let maxEventsPerBatch = 32
     public static let integers: ClosedRange<Int64> = -2_147_483_648...2_147_483_647
     /// One to four dot-separated groups of one to six digits, as in `0.1.84` or `26.0.1`.
@@ -928,6 +933,12 @@ public enum DiagnosticField: String, Codable, Sendable, CaseIterable, Comparable
     case app, build, os
     case error, attempt, count, ms
     case on
+    case lastSequence = "last_sequence"
+    case expectedSequence = "expected_sequence"
+    case receivedFrames = "received_frames"
+    case scheduledFrames = "scheduled_frames"
+    case lastFrameMs = "last_frame_ms"
+    case gap, terminal
 
     public enum Kind: Sendable { case token, version, integer, boolean }
 
@@ -935,8 +946,9 @@ public enum DiagnosticField: String, Codable, Sendable, CaseIterable, Comparable
         switch self {
         case .reason, .state, .code, .domain, .route, .device: .token
         case .app, .build, .os: .version
-        case .error, .attempt, .count, .ms: .integer
-        case .on: .boolean
+        case .error, .attempt, .count, .ms, .lastSequence, .expectedSequence,
+             .receivedFrames, .scheduledFrames, .lastFrameMs: .integer
+        case .on, .gap, .terminal: .boolean
         }
     }
 
