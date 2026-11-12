@@ -222,7 +222,7 @@ extension ReplyAudioQueue {
             await withTaskCancellationHandler {
                 await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                     let waiting = state.withLock { state in
-                        guard !Task.isCancelled, ticket.position > state.floor,
+                        guard !Task.isCancelled, ticket.position > max(state.floor, state.unpublishedFloor),
                               state.jobs.first(where: { $0.position == ticket.position })?.streaming != true,
                               state.pending.values.contains(where: { $0.position >= ticket.position }) else {
                             return false
@@ -237,7 +237,7 @@ extension ReplyAudioQueue {
                 waiter?.resume()
             }
             if state.withLock({ state in
-                ticket.position <= state.floor
+                ticket.position <= max(state.floor, state.unpublishedFloor)
                     || state.jobs.first(where: { $0.position == ticket.position })?.streaming == true
                     || !state.pending.values.contains { $0.position >= ticket.position }
             }) { return }
