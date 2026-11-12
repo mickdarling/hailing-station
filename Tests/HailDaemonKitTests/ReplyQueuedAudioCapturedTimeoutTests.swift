@@ -81,7 +81,7 @@ extension ReplyQueuedAudioCapturedTimeoutTests {
         skipped: Bool, socket: URLSessionWebSocketTask
     ) async throws {
         #expect(try await listener.replyAudio(.init(action: "publish", ticket: ticket, frame: audio))
-            == LocalReplyAudioReport(skipped: skipped))
+            == LocalReplyAudioReport(skipped: skipped, reason: skipped ? "stopped" : nil))
         if !skipped { #expect(try await receiveFrame(on: socket, step: "uncovered U plays") == audio) }
     }
 }
