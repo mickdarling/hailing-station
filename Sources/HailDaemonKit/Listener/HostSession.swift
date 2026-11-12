@@ -230,6 +230,7 @@ public actor HostSession {
     var segmentedReplies: Set<UUID> = []
     var recordStoppedReply: @Sendable (UUID) -> Void = { _ in }
     var replyEvent: @Sendable (WebSocketListenerEvent) -> Void = { _ in }
+    let selectionWillChange: (@Sendable (UUID, Set<String>, String, UUID) -> Void)?
     var selectedTarget: String?
     var ambientPolicyGeneration: TargetPolicyGeneration?
     var ambientPolicyStream: UUID?
@@ -258,8 +259,10 @@ public actor HostSession {
             [.duckMode(on: false), .mediaMode(on: false)]
         },
         snapshotPrivacyOff: (@Sendable (UUID) async -> ModeSnapshotPrivacyOff)? = nil,
-        deviceVoiceStop: (@Sendable (UUID, Int?) async -> Void)? = nil
+        deviceVoiceStop: (@Sendable (UUID, Int?) async -> Void)? = nil,
+        selectionWillChange: (@Sendable (UUID, Set<String>, String, UUID) -> Void)? = nil
     ) {
+        self.selectionWillChange = selectionWillChange
         self.deviceVoiceStop = deviceVoiceStop
         snapshot = modeSnapshot
         snapshotOff = snapshotPrivacyOff

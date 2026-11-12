@@ -96,7 +96,7 @@ import Testing
 
 extension ReplyQueuedAudioBarrierTests {
     @Test(arguments: [false, true], [false, true])
-    func unresolvableSnapshotRaisesOnlyCapturedFloor(privacy: Bool, closedSession: Bool) async throws {
+    func unresolvableSnapshotCutsOnlyUnpublishedJobs(privacy: Bool, closedSession: Bool) async throws {
         let rig = try await DeviceVoiceStopRig.make()
         do {
             let listener = rig.env.listener, queue = listener.replyAudioQueue
@@ -121,9 +121,9 @@ extension ReplyQueuedAudioBarrierTests {
                     queueStop: stop)
             }
             #expect(try await listener.replyAudio(.init(action: "publish", ticket: old, frame: frame)).skipped)
-            // The target can be unrelated: an unresolvable snapshot raises the global floor.
+            // Unknown queued jobs fail closed, but this is not a cutoff for already-published streams.
             if case .stopped = queue.enqueue(old, connection: nil, target: "unrelated", { true }) {} else {
-                Issue.record("missing fail-closed global floor")
+                Issue.record("missing fail-closed unpublished cutoff")
             }
             try await playPostStop(on: other, listener: listener)
             try await other.boundedBarrier(step: "unresolvable stop sends no old audio")

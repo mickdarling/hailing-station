@@ -9,9 +9,9 @@ import Testing
         let queue = ReplyAudioQueue(), connection = UUID()
         queue.register(connection)
         let ticket = try queue.ticket()
-        queue.admittedSelection(.init(target: "original", generation: UUID()), connection: connection)
+        queue.selectionWillChange(connection, retiring: [], to: .init(target: "original", generation: UUID()))
         let stop = try #require(queue.captureStop(connection))
-        queue.admittedSelection(.init(target: "later", generation: UUID()), connection: connection)
+        queue.selectionWillChange(connection, retiring: [], to: .init(target: "later", generation: UUID()))
         queue.resolve(stop, targets: [])
         expectStopped(queue, ticket: ticket, target: "original")
         if case .sent(true) = queue.enqueue(ticket, connection: nil, target: "later", { true }) {} else {

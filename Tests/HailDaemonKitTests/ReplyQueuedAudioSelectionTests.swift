@@ -52,7 +52,7 @@ import Testing
     }
 
     @Test(arguments: [false, true])
-    func selectionBetweenAcceptanceAndSessionHopRaisesOnlyCutoff(returnToOriginal: Bool) async throws {
+    func selectionBetweenAcceptanceAndSessionHopKeepsExactTargets(returnToOriginal: Bool) async throws {
         let rig = try await DeviceVoiceStopRig.make()
         let holds = SelectionStopHolds()
         var stopping: Task<Void, Never>?
@@ -61,29 +61,28 @@ import Testing
             try await rig.start()
             let listener = rig.env.listener, queue = listener.replyAudioQueue
             let other = try await FallbackSocketPair.boundedConnect(port: rig.env.port,
-                selecting: [RecipientTestRig.target])
+                selecting: [RecipientTestRig.target, "recipient:other"])
             defer { other.close() }
             _ = try await other.submitInput(on: 0, rig: rig.env.rig)
             let audio = recipientAudio(uncorrelatedDescriptor(audio: true), sequence: 0, final: true)
             let old = try #require(await listener.replyAudio(.init(action: "enqueue", frame: audio)).ticket)
-            let unrelated = try await queuedAudioTicket(listener)
-            let newlySelected = try await queuedAudioTicket(listener)
+            let unrelated = try await queuedOtherTarget(on: other, listener: listener)
+            let untouched = try await queuedAudioTicket(listener)
             let connection = try #require(rig.env.router.activeConnection())
             stopping = holdBeforeSession(rig, connection: connection, holds: holds)
             await holds.entered.wait() // Accepted under the queue lock; no session stop hop has occurred.
             let postStop = try await queuedAudioTicket(listener)
-            if case .pending = queue.enqueue(old, connection: nil, target: RecipientTestRig.target, { true }) {} else {
-                Issue.record("accepted stop must hold the first-frame barrier before the session hop")
-            }
+            expectPending(queue, ticket: old)
             try await rig.pair.select("recipient:other", on: 0)
             if returnToOriginal { try await rig.pair.select(RecipientTestRig.target, on: 0) }
             holds.capture.release()
             await stopping?.value
             #expect(try await receiveFrame(on: rig.socket, step: "A stop after selection")
                 .payload == .control(.stopPlayback))
-            // An unrelated target proves the floor, rather than only the original target mark, was raised.
-            expectStopped(queue, ticket: unrelated, target: "unrelated:floor-proof")
-            expectStopped(queue, ticket: newlySelected, target: "recipient:other")
+            try await playOtherTarget(unrelated, on: other, listener: listener)
+            if case .sent(true) = queue.enqueue(untouched, connection: nil, target: "unrelated", { true }) {} else {
+                Issue.record("selection changes must not raise a global floor")
+            }
             #expect(try await listener.replyAudio(.init(action: "publish", ticket: old, frame: audio)).skipped)
             try await playFresh(on: other, listener: listener, ticket: postStop)
             try await other.boundedBarrier(step: "B pre-cutoff audio silent")
@@ -137,6 +136,12 @@ extension ReplyQueuedAudioSelectionTests {
         }
     }
 
+    private func expectPending(_ queue: ReplyAudioQueue, ticket: LocalReplyAudioTicket) {
+        if case .pending = queue.enqueue(ticket, connection: nil, target: RecipientTestRig.target, { true }) {} else {
+            Issue.record("accepted stop must hold the first-frame barrier before the session hop")
+        }
+    }
+
     private func playOtherTarget(
         _ unrelated: (LocalReplyAudioTicket, Frame), on other: FallbackSocketPair, listener: WebSocketListener
     ) async throws {
@@ -154,11 +159,6 @@ extension ReplyQueuedAudioSelectionTests {
         let audio = recipientAudio(reply, sequence: 0, final: true)
         let ticket = try #require(await listener.replyAudio(.init(action: "enqueue", frame: audio)).ticket)
         return (ticket, audio)
-    }
-    private func expectStopped(_ queue: ReplyAudioQueue, ticket: LocalReplyAudioTicket, target: String) {
-        if case .stopped = queue.enqueue(ticket, connection: nil, target: target, { true }) {} else {
-            Issue.record("pre-cutoff target must be silent")
-        }
     }
     private func playFresh(
         on pair: FallbackSocketPair, listener: WebSocketListener, ticket: LocalReplyAudioTicket
