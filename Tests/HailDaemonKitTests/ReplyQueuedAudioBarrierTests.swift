@@ -7,10 +7,11 @@ import Testing
 @Suite(.serialized, .timeLimit(.minutes(1)), .frozenGuardBudget) struct ReplyQueuedAudioBarrierTests {
     @Test(arguments: ["device", "playback", "privacy", "retired-flight"], [false, true])
     func firstFrameWaitsForSnapshotAndSurvivesTeardown(source: String, teardown: Bool) async throws {
-        let rig = try await DeviceVoiceStopRig.make()
-        let holds = QueuedStopSnapshotHolds()
+        // Freeze admission time: this test proves snapshot and teardown ordering, not the budget.
+        let clock = QueuedAudioClock(), holds = QueuedStopSnapshotHolds()
+        defer { holds.release(); clock.release() }
+        let rig = try await clock.makeRig()
         let waiting = VoiceStopConfirmationHold()
-        defer { holds.release() }
         do {
             try await rig.start()
             let listener = rig.env.listener
