@@ -1544,3 +1544,120 @@ removed; their absence was checked. Logs, the phase result JSON, checksum manife
 outside the repository under `vw1212c3b` names. No host build/test, generated product, private configuration,
 endpoint, identity, recording or transcript is committed. No installation, upload, push, PR, online CI result or
 independent approval is claimed. The final record commit changes only this document.
+
+## PR 1c-3, round 3: keyed retirement and delivery outcomes
+
+Part of #1212. New commits extend `37eabc0c6eea3109451d2482779792ec8155351f` on
+`feat/1212-queue-budget-expiry-capacity`. The verified source/test snapshot is
+`892f0a627b3d342393c897f67c08a2aecc676c8d`; the final evidence commit changes documentation only.
+This is synthetic package, loopback socket and CLI evidence on the Dev Work VM. It supplies no simulator,
+physical-device, microphone, live captured-output, installed-build or TestFlight proof.
+The only GitHub call is `gh issue view 1212 --comments`. No push or PR operation is performed.
+
+| Item | File:line | Discriminating tests |
+| --- | --- | --- |
+| Keyed retirement | `Sources/HailDaemonKit/Listener/HostReplyDelivery.swift:251`, `:1176`, `:1198`, `:1212` | `ReplyQueuedAudioKeyTests.forgedClientRequestCannotRetireNeighbour`: malformed action, check, publish and release, each with absent/wrong key; exact ordinary refusal, two live reservations, then exactly one neighbour audio delivery |
+| Release rate budget | `Sources/HailDaemonKit/PushEndpoint/LocalReplyEndpoint+Submission.swift:321` | `ReplyQueuedAudioKeyTests.releaseHasTwentyIndependentRequestsPerMinute`: full publication bucket, exactly 20 successful release transactions, 21st rate limited, neighbour remains live and plays; `ReplyQueuedAudioReleaseTests` retains keyed cleanup coverage |
+| Capacity with no delivery | `Sources/haild/ReplyCommand.swift:255` | `test_audio_only_pcm_capacity_refusal_is_nonzero_and_not_retried`: exit 1, exact capacity note, one enqueue, zero frames; existing speech/PCM text-card capacity tests retain exit 0; zero text deliveries already fail ordinary text admission with exit 1 |
+| Budget after requestPending | `Sources/HailDaemonKit/Listener/HostReplyDelivery.swift:1207` | `ReplyQueuedAudioExpiryTests.requestPendingClearsResolvedBarrierBeforeNewUnknownStop`, both check/publish: S1 barrier, resolve, exact requestPending, injected +500 ms, S2 unknown, exact pending, resolve uncovered, one actual audio delivery |
+| Python capabilities | `Tests/ReplyCLITests/test_reply_cli.py:435`, `:447`, `:987`, `:1005`; `test_reply_ticket_release.py:48`, `:93` | Both fake servers issue non-null canonical UUID keys and compare check/publish/release tickets with their stored issuance; refused-text release compares against independently captured issuance, including when no check ran |
+| Stale deadline comment | `Tests/HailDaemonKitTests/ReplyQueuedAudioBudgetRoutingTests.swift:65` | `routingRaceExhaustsSharedBudgetAndKeepsCorrelatedText`: the second unknown stop remains pending at the deadline; exact wait_budget report/log and terminal barrier |
+| Distinct notes | `Sources/haild/ReplyCommand.swift:187`, `:704`, `:1116`; `HostReplyDelivery.swift:1239` | `test_queued_reply_stop.py`: exact stopped/expired/wait-budget notes, with expiry and wait-budget at both check and publish; exact capacity note retained. Uncontended jobs assert stderr before readiness; contended jobs assert the existing queue/background readiness handoff and completed frame counts |
+| Protocol/testing claims | `docs/reply-protocol.md:683`, `:698`, `:713`, `:764`, `:800`; this section | Inspection against keyed live-reservation admission, release bucket, actual-delivery outcomes and injected-clock/socket/CLI evidence |
+
+Host-internal stop skips, expiry and completed final publication retain unkeyed retirement. Client failure and
+cancellation cleanup require the issuing key. No reservation is recreated after retirement. A requestPending
+refusal clears its resolved barrier's deadline, expired flag and timer under the queue lock.
+The new tests use explicit gate entry, injected time, complete subprocess outcomes and terminal socket barriers;
+none uses settle-then-assert-negative.
+
+The checker exclusions and rename handling from `scripts/pr-shape.py` count exactly **four production files**
+against the slice base `79fd6c92`: `HostReplyDelivery.swift`, `LocalReplyEndpoint+Submission.swift`,
+`Daemon/RefusalSummary.swift`, and `haild/ReplyCommand.swift`. The RefusalSummary round-3 edit wraps its comment
+for the independent 120-column check. No PR #1220 implementation file is edited in this round.
+
+The fresh VM checkout is `vw1212c3c`, seeded only from a host-local git bundle and advanced by local bundles.
+All **29 changed Swift/Python files** match host SHA-256 checksums. Each phase waits for the shared VM lane,
+closes SSH stdin, uses background priority and an external **590-second** timeout with SIGINT/SIGTERM/SIGHUP
+process-group and descendant TERM/KILL cleanup. Builds use **four SwiftPM workers**, with one compiler worker
+per invocation. Runtime suites are serial; no additional synthetic load workers are launched.
+
+Exact command forms, inside the fresh checkout (`F` supplies the same CLT Testing framework/plugin and linker
+rpaths recorded above, plus `-j 4 --disable-automatic-resolution -Xswiftc -j1`):
+
+```sh
+swift build --build-tests "${F[@]}" -Xswiftc -warnings-as-errors
+# Each of these four commands runs three times, in sequential phases:
+swift test --skip-build --no-parallel "${F[@]}" --filter 'HailDaemonKitTests\.ReplyQueuedAudio'
+python3 -m unittest discover -s Tests/ReplyCLITests -p test_queued_reply_stop.py
+python3 -m unittest discover -s Tests/ReplyCLITests -p test_reply_ticket_release.py
+python3 -m unittest discover -s Tests/ReplyCLITests -p test_reply_cli.py
+# Broader Swift filters, one phase each:
+# HailDaemonKitTests\.\w*DeviceVoiceStop
+# HailDaemonKitTests\.\w*(LocalReply|PushEndpoint)
+# HailDaemonKitTests\.Reply
+# HailDaemonKitTests\.(?!Ambient|Reply|LocalReply)[A-Ma-m]\w*Reply
+# HailDaemonKitTests\.(?!Ambient|Reply|LocalReply)[N-Zn-z]\w*Reply
+# HailDaemonKitTests\.Ambient\w*Reply
+# Hail(Core|Protocol)Tests\.\w*(Reply|DeviceVoiceStop)
+# Doctor|RefusalSummary
+# HailCoachingCommandTests\.\w*Reply
+python3 -m unittest discover -s Tests/ReplyCLITests
+/bin/zsh "$VM_WORK_ROOT/vw-werr.sh" vw1212c3c
+```
+
+Each command runs under `taskpolicy -b` and the outer cap. Swift test additionally uses `/usr/bin/script -q
+/dev/null` to preserve test output. The warnings-as-errors wrapper uses a fresh separate `vw1212c3c-werr` build
+path and an external Swift shim preserving the worker and automatic-resolution flags.
+
+Preflight failures are retained separately: a missing actor-hop await in the new test; an overlong synthetic
+socket pathname; an existing timeout helper omitting the newly returned reason; CLI assertions attempting to
+read notes after stderr had been released at background readiness; and the fixture's PCM final-flag expectation.
+The zero-text-delivery case correctly refused ordinary text admission before checking the capacity result.
+These were corrected before the required final repetitions; failed preflight runs are not passing evidence.
+
+Final results (Swift 6.3.3 on the Dev Work VM; wall times include the phase runner):
+
+| Phase | Result | Wall time, seconds | Exit |
+| --- | --- | --- | --- |
+| Build/tests, final incremental check | Build complete; warnings as errors | 1.353 | 0 |
+| ReplyQueuedAudio ×3 | 64 tests / 24 suites each | 32.122, 32.581, 33.651 | 0, 0, 0 |
+| Queue CLI ×3 | 27 tests each | 12.429, 12.478, 12.139 | 0, 0, 0 |
+| Release CLI ×3 | 5 tests each | 43.562, 43.132, 43.012 | 0, 0, 0 |
+| Core Reply CLI ×3 | 50 tests each | 139.206, 139.407, 140.296 | 0, 0, 0 |
+| DeviceVoiceStop | 22 tests / 6 suites | 21.793 | 0 |
+| LocalReply / PushEndpoint | 31 tests / 4 suites | 9.994 | 0 |
+| Reply | 138 tests / 38 suites; 5 existing known issues | 81.205 | 0 |
+| Other Reply A–M | 57 tests / 10 suites | 1.832 | 0 |
+| Other Reply N–Z | 96 tests / 20 suites | 28.482 | 0 |
+| Ambient Reply | 33 tests / 9 suites | 12.374 | 0 |
+| Core / Protocol Reply and DeviceVoiceStop | 274 tests / 50 suites | 21.769 | 0 |
+| Doctor / RefusalSummary | 18 selected tests / 7 suites | 20.388 | 0 |
+| Full Reply CLI | 158 tests; OK | 290.884 | 0 |
+| Warnings-as-errors wrapper | `werr build=0`; wrapper exit 0 | 239.542 | 0 |
+| Coaching-command Reply | 13 tests / 3 suites | 2.663 | 0 |
+
+All **24 final phases** passed within the cap; the longest took 290.884 seconds. The wrapper's compiler-reported
+build time was 238.15 seconds. Its full log contains zero errors and 120 repeated missing ModuleCache debug-file
+linker warnings, with zero other warning categories. This is a successful warnings-as-errors compiler build,
+not a warning-free linker run. The five existing Reply known issues are the explicit missing-handoff expectations
+in `ReplyRecipientHandoffWaitTests` (`missingHandoffRecordsAnIssueAndReturns`, both cancellation rows, and both
+second-waiter rows), recorded at `ReplyRecipientTestSupport.swift:105`.
+
+Host verification ran `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swiftlint lint --strict --quiet
+<file>` separately for every one of the **26 changed Swift files** against `79fd6c92`, and independently ran:
+
+```sh
+awk 'length($0)>120 {print FILENAME ":" FNR ":" length($0); bad=1} END {exit bad}' <all-changed-Swift-files>
+git diff --check
+```
+
+Both lint checks exit 0 with **empty output**; `git diff --check` also passes. No lint rules or thresholds are
+weakened. Static production counting uses the checker's exact exclusions and includes both names for any rename;
+it remains four. No online PR-shape or GitHub check is run or claimed.
+
+Cleanup rechecked all 29 source/test checksums and clean VM source state, found **zero owned build/test/CLI
+processes**, and removed `vw1212c3c/.build`, the separate `vw1212c3c-werr` build directory, and the external Swift
+shim and its bin directory. Both build directories are absent afterward. Logs, results JSON, summaries and
+checksums remain outside version control under `vw1212c3c` names. No generated build product or private deployment
+data is committed. All new commit messages end with `Part of #1212`.
