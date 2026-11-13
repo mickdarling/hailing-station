@@ -122,8 +122,10 @@ import Testing
         let fake = try FakeRightyo("exit 0")
         defer { fake.cleanUp() }
         let truth = URL(fileURLWithPath: "/usr/bin/true")
+        // A broken settlement stops at the first round with a timeout: at most one 20 s wait, not 150 of them.
         for _ in 0..<150 {
-            try await withThrowingTaskGroup(of: RightyoChildExit?.self) { group in
+            try Task.checkCancellation()
+            let settledAll = try await withThrowingTaskGroup(of: RightyoChildExit?.self) { group in
                 for _ in 0..<20 {
                     let child = try RightyoChildProcess.spawn(truth.path, arguments: [], environment: [],
                                                              directory: fake.directory.path)
@@ -135,10 +137,14 @@ import Testing
                         return exit
                     }
                 }
+                var settledAll = true
                 for try await exit in group {
                     #expect(exit == .exited(0))
+                    if exit == nil { settledAll = false }
                 }
+                return settledAll
             }
+            guard settledAll else { break }
         }
     }
 
