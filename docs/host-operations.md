@@ -102,7 +102,36 @@ haild notify status
 haild notify quiet on
 ```
 
-It is off unless `haild run` gets `--personal-terminal --session-updates`. The target must be a live target from `haild targets`. That target is also the name the update is shown under and the key for its rate limit. Any local process can name any live target, so these limits are cooperative, not a security boundary.
+The managed LaunchAgent opts in through `host.json`. To enable, merge these optional keys into your existing
+config, using an absolute path to a directory you have created privately for update speech:
+
+```json
+{
+  "sessionUpdates": true,
+  "taskProgress": true,
+  "sessionUpdateSpeechRoot": "/absolute/path/to/private-update-speech"
+}
+```
+
+Then run `scripts/host.sh restart`. `sessionUpdates` adds `--session-updates`; `taskProgress` independently adds
+`--task-progress`; `sessionUpdateSpeechRoot` independently adds `--session-update-speech-root <dir>`. The latter
+two require `sessionUpdates: true`; omit either to leave that feature off. `sessionUpdates` and `taskProgress`
+are JSON booleans; the root is a string naming an existing absolute directory owned by your user, with mode 700,
+no final symlink and no extended ACL. Invalid values are refused before the running daemon is stopped.
+Absent keys add no arguments.
+
+To roll back, remove all three keys (or set both booleans to `false` and remove the speech-root key), then run
+`scripts/host.sh restart` again. To disable only progress or speech, remove its corresponding key and restart.
+These steps assume the staged haild already supports these options; they do not install a release or a device build.
+
+This remains the **experimental personal-terminal boundary**: host.sh already passes `--personal-terminal`.
+The listener has no TLS or peer authentication. Any local process can notify as any live target, so rate limits
+are cooperative, not a security boundary. The target must be live in `haild targets`; its ID identifies the
+update and its rate limit. See the [connected task/update candidate](proactive-task-candidate.md) for current
+card, task and speech admission and the remaining physical-device qualification. Configuring these keys is not
+proof of delivery or hearing, and does not enable APNs.
+
+The following held-queue notes describe the historical foundation:
 - **For now every update is held. Nothing is spoken yet:** speaking waits for haild to deliver to the device it chose itself, and held updates are not yet delivered to a device. That comes with the update card and drain work.
 - An `--action` update that a device could be told about prints `push: suggested`, so the session can raise its own notification. Quiet suppresses it.
 - `haild notify quiet on` turns on do-not-disturb until haild restarts. A session cannot turn it off; that is the user's own control.

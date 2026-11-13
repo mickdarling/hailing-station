@@ -37,6 +37,8 @@ usage: scripts/host.sh <install|plist|restart|deploy|status> [options]
 
 host.json: {"bind": "127.0.0.1", "port": 8765, "hostID": "optional", "singleTerminalReplyFallback": true,
             "deviceDiagnostics": false,
+            "sessionUpdates": true, "taskProgress": false,
+            "sessionUpdateSpeechRoot": "/abs/private-existing-directory",
             "voiceRoutes": "/abs/optional-routes.json",
             "ambient": {"rightyo": "/abs/path", "config": "/abs/path", "target": "tmux:name",
                         "ackClips": "/abs/optional-clip-folder", "replyControl": false,
@@ -51,6 +53,10 @@ start, so a new or changed file needs a restart.
 whole number from 60 to 14400; without it, one hour.
 "voiceRoutes" (optional) names the sessions a request can be addressed to ("Deck, ...") and the default (#636).
 It only names targets; each still needs its policy entry. It is read at start, so a change needs a restart.
+"sessionUpdates" (optional boolean) enables experimental personal-terminal updates. "taskProgress" (optional
+boolean) and "sessionUpdateSpeechRoot" (optional string) require "sessionUpdates": true. The speech root must
+be an existing absolute directory owned by you, mode 700, without a symlink or extended ACL.
+These rate limits are cooperative: any local process can notify. Edit host.json, then restart to enable or roll back.
 USAGE
 }
 
@@ -110,6 +116,40 @@ sys.exit(1 if address.is_unspecified or mapped else 0)
 PY
 }
 
+# Match OwnedReplyRenderer's root check: open without following the final symlink, check the same descriptor's
+# owner/mode and extended ACL. This is preflight only; haild rechecks at startup and when rendering.
+is_private_speech_root() {
+  python3 -I - "$1" <<'PY'
+import ctypes, errno, os, sys
+try:
+    descriptor = os.open(sys.argv[1].rstrip("/") or "/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(descriptor)
+        if info.st_uid != os.getuid() or info.st_mode & 0o777 != 0o700:
+            sys.exit(1)
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.acl_get_fd_np.argtypes = [ctypes.c_int, ctypes.c_int]
+        libc.acl_get_fd_np.restype = ctypes.c_void_p
+        libc.acl_get_entry.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]
+        libc.acl_free.argtypes = [ctypes.c_void_p]
+        access = libc.acl_get_fd_np(descriptor, 0x100)  # ACL_TYPE_EXTENDED
+        if access:
+            try:
+                entry = ctypes.c_void_p()
+                result = libc.acl_get_entry(access, 0, ctypes.byref(entry))  # ACL_FIRST_ENTRY
+                valid = result == -1 and ctypes.get_errno() == errno.EINVAL
+            finally:
+                libc.acl_free(access)
+        else:
+            valid = ctypes.get_errno() == errno.ENOENT
+        sys.exit(0 if valid else 1)
+    finally:
+        os.close(descriptor)
+except OSError:
+    sys.exit(1)
+PY
+}
+
 # The arguments after the executable, from host.json, in DAEMON_ARGS. Built as an array, never as joined text,
 # so no config value can become an extra argument.
 DAEMON_ARGS=()
@@ -130,6 +170,22 @@ load_daemon_arguments() {
   fi
   local diagnostics=false
   if read_flag deviceDiagnostics; then diagnostics=true; DAEMON_ARGS+=(--device-diagnostics); fi
+  # host.sh already passes --personal-terminal, required by all three proactive opt-ins (#609).
+  local session_updates=false speech_root
+  if read_flag sessionUpdates; then session_updates=true; DAEMON_ARGS+=(--session-updates); fi
+  if read_flag taskProgress; then
+    [[ "$session_updates" == true ]] || fail '"taskProgress" requires "sessionUpdates": true'
+    DAEMON_ARGS+=(--task-progress)
+  fi
+  read_string sessionUpdateSpeechRoot; speech_root="$VALUE"
+  # An explicitly empty string is invalid too; only an absent key leaves speech unconfigured.
+  if [[ -n "$speech_root" ]] || plutil -type sessionUpdateSpeechRoot "$CONFIG" >/dev/null 2>&1; then
+    [[ "$session_updates" == true ]] || fail '"sessionUpdateSpeechRoot" requires "sessionUpdates": true'
+    if [[ "$speech_root" != /* ]] || ! is_private_speech_root "$speech_root"; then
+      fail '"sessionUpdateSpeechRoot" must be a private existing absolute directory owned by you (mode 700, no symlink or extended ACL)'
+    fi
+    DAEMON_ARGS+=(--session-update-speech-root "$speech_root")
+  fi
   # The owner's named voice routes (#636): a named file that is missing or does not load makes the daemon refuse to
   # start (and deploy rolls back); a relative path is refused here. It needs no ambient settings: tap-to-talk routes
   # too. Without the key no flag is passed and routing stays off.

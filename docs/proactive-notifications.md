@@ -27,7 +27,10 @@ On `main` today:
 - An `action` update prints `push: suggested` only when a target device is *connected* and quiet is off
   (`SessionUpdateQueue.push`, `NotifyCommand.swift`). Nothing is pushed when no device is connected. This design
   reverses that (rule 7 below).
-- `scripts/host.sh` does not pass `--session-updates`.
+- `scripts/host.sh` can pass `--session-updates` through the optional `sessionUpdates` boolean in `host.json`;
+  `taskProgress` and `sessionUpdateSpeechRoot` add the separate task and speech opt-ins, both requiring
+  `sessionUpdates: true`. All remain off when absent. See [host operations](host-operations.md#session-updates-opt-in-609)
+  for enable and rollback steps; this does not enable the proposed owner-key/APNs ladder.
 - Privacy is Part 10's, merged: #807, #808 and #813 on the host, and the switch in #815 to #817 (S-6a to S-6c). It
   is per connection, in memory, never auto-ending (Mick: no auto-end), with replies dropped. A fresh connection
   starts public. `set_privacy {on}` is acted on only while the connection has an active stream, and fails closed to

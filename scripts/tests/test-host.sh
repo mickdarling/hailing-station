@@ -201,6 +201,60 @@ bad_config "relative voice routes path" '{"bind": "127.0.0.1", "port": 8765, "vo
 bad_config "voice routes that is a flag" '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "--port"}'
 bad_config "voice routes with a newline" '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "/r\n--port"}'
 
+# Proactive opt-ins (#609) use the same scratch config and never reach the real launchctl.
+speech_root="$scratch/update speech"
+mkdir -m 700 "$speech_root"
+ln -s "$speech_root" "$scratch/speech-link"
+touch "$scratch/speech-file"
+mkdir -m 755 "$scratch/open-speech"
+update_config() {
+  printf '{"bind": "127.0.0.1", "port": 8765, %s}\n' "$1" > "$HAIL_CONFIG_DIR/host.json"
+}
+expect_update_arguments() {
+  local config="$1"; shift
+  update_config "$config"
+  "$host" plist > "$scratch/updates.plist"
+  python3 -I - "$scratch/updates.plist" "$(release_dir one)/haild" "$@" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as source:
+    actual = plistlib.load(source)["ProgramArguments"]
+expected = [sys.argv[2], "run", "--bind", "127.0.0.1", "--port", "8765", "--personal-terminal"] + sys.argv[3:]
+assert actual == expected, (actual, expected)
+PY
+}
+expect_update_arguments '"sessionUpdates": false, "taskProgress": false'
+expect_update_arguments '"sessionUpdates": true' --session-updates
+expect_update_arguments '"sessionUpdates": true, "taskProgress": true' --session-updates --task-progress
+expect_update_arguments "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$speech_root\"" \
+  --session-updates --session-update-speech-root "$speech_root"
+expect_update_arguments "\"sessionUpdates\": true, \"taskProgress\": true, \"sessionUpdateSpeechRoot\": \"$speech_root\"" \
+  --session-updates --task-progress --session-update-speech-root "$speech_root"
+for enabled in '' '"sessionUpdates": false,'; do
+  bad_config "task progress without session updates" "{\"bind\": \"127.0.0.1\", \"port\": 8765, $enabled \"taskProgress\": true}"
+  bad_config "speech without session updates" \
+    "{\"bind\": \"127.0.0.1\", \"port\": 8765, $enabled \"sessionUpdateSpeechRoot\": \"$speech_root\"}"
+done
+for root in relative "$scratch/missing" "$scratch/speech-file" "$scratch/open-speech" \
+    "$scratch/speech-link" "$scratch/speech-link/" '' --port '/speech\n--port'; do
+  update_config "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$root\""
+  expect_failure "invalid speech root: $root" "$host" plist
+done
+# Mode 700 alone is insufficient when an extended ACL grants another account access.
+chmod +a 'everyone allow read' "$speech_root"
+update_config "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$speech_root\""
+expect_failure "speech root with an extended ACL" "$host" plist
+chmod -N "$speech_root"
+for key in sessionUpdates taskProgress sessionUpdateSpeechRoot; do
+  if [[ "$key" == sessionUpdateSpeechRoot ]]; then type=string; else type=bool; fi
+  for wrong in '"true"' 1 false '{}' '[]'; do
+    [[ "$type:$wrong" == 'string:"true"' || "$type:$wrong" == bool:false ]] && continue
+    update_config "\"$key\": $wrong"
+    if "$host" plist > "$scratch/type.out" 2>&1; then fail "wrong type accepted for $key"; fi
+    grep -q "host.json \"$key\" must be a $type, not a " "$scratch/type.out" \
+      || fail "wrong type message for $key: $(cat "$scratch/type.out")"
+  done
+done
+
 # A voice routes path with a space stays one argument, right after its flag.
 printf '%s\n' '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "/my routes.json"}' > "$HAIL_CONFIG_DIR/host.json"
 "$host" plist > "$scratch/agent.plist"
@@ -228,6 +282,25 @@ expected=("$(release_dir one)/haild" run --bind 127.0.0.1 --port 8765 --personal
 [[ "${arguments[*]}" == "${expected[*]}" ]] || fail "unexpected arguments: ${arguments[*]}"
 [[ "$(plutil -extract EnvironmentVariables.HAIL_HOST_ID raw -o - "$scratch/agent.plist")" == studio.local ]] \
   || fail "host ID not in the environment"
+# Freeze the complete pre-#609 fixture, not just a joined argument string: absent new keys must leave every
+# byte of its generated plist unchanged. Canonicalize the independently authored legacy fields with plutil.
+python3 -I - "$scratch/legacy.plist" "$HAIL_LOG_DIR" "$HAIL_CONFIG_DIR" "${expected[@]}" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "wb") as output:
+    plistlib.dump({
+        "Label": "com.hailingstation.haild", "ProgramArguments": sys.argv[4:],
+        "RunAtLoad": True, "KeepAlive": True, "ProcessType": "Interactive",
+        "StandardOutPath": sys.argv[2] + "/haild.out.log",
+        "StandardErrorPath": sys.argv[2] + "/haild.err.log",
+        "EnvironmentVariables": {"HAIL_HOST_ID": "studio.local", "HAIL_CONFIG_DIR": sys.argv[3]},
+    }, output)
+PY
+plutil -convert xml1 "$scratch/legacy.plist"
+cmp -s "$scratch/legacy.plist" "$scratch/agent.plist" || fail "absent update keys changed the legacy plist bytes"
+
+# Argument coverage above uses the full fixture; lifecycle cases need only the listener's minimal config.
+# Keep their repeated plist writes small enough for serial background-policy runs on a busy host.
+printf '%s\n' '{"bind": "127.0.0.1", "port": 8765}' > "$HAIL_CONFIG_DIR/host.json"
 
 # A failed first migration has nothing to restore; the failed agent is set aside so it cannot load at login.
 mode never-ready
@@ -252,6 +325,18 @@ printf '%s\n' "bootout $domain/com.mickdarling.hailing-station-session" "bootout
 [[ "$(readlink -f "$HAIL_BIN_DIR/haild")" == "$(release_dir one)/haild" ]] || fail "PATH haild is not the running release"
 "$host" status > "$scratch/status" || fail "healthy status exited non-zero"
 grep -q "running: $(release_dir one)/haild (running)" "$scratch/status" || fail "status did not report the daemon"
+
+# Bad proactive settings fail preflight while the existing fake managed job is still running.
+cp "$HAIL_CONFIG_DIR/host.json" "$scratch/good-config.json"
+for config in '"taskProgress": true' "\"sessionUpdateSpeechRoot\": \"$speech_root\"" \
+    "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$scratch/open-speech\""; do
+  update_config "$config"
+  : > "$scratch/launchctl.calls"
+  expect_failure "invalid proactive settings before stop" "$host" restart
+  ! grep -q '^bootout' "$scratch/launchctl.calls" || fail "invalid proactive settings stopped a job"
+  [[ "$(cat "$jobs/com.hailingstation.haild")" == "$(release_dir one)/haild" ]] || fail "preflight changed the job"
+done
+mv "$scratch/good-config.json" "$HAIL_CONFIG_DIR/host.json"
 
 # Staging a new release changes nothing running and is reported as staged, not as drift.
 "$host" install --binary "$scratch/haild-two" >/dev/null
