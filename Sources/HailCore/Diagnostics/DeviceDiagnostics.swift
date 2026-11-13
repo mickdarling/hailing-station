@@ -1,6 +1,7 @@
 public import Foundation
 public import HailProtocol
 public import Observation
+import Synchronization
 #if os(iOS)
 import AVFAudio
 import UIKit
@@ -20,7 +21,8 @@ import UIKit
 @Observable
 public final class DeviceDiagnostics {
     public static let enabledKey = "hailing-station.device-diagnostics.v1"
-    public static let capacity = 500
+    public nonisolated static let capacity = 500
+    nonisolated let recordingState = DiagnosticRecordingState()
     /// Recording: a burst of 60 events, then one per second. Excess is counted, not stored.
     public static let recordRate = (capacity: 60.0, perSecond: 1.0)
     /// Sending mirrors the host's per-session bucket (120 events, 2 per second), so the host never drops.
@@ -69,6 +71,7 @@ public final class DeviceDiagnostics {
         sendTokens = Self.sendRate.capacity
         recordUpdated = clock()
         sendUpdated = recordUpdated
+        recordingState.update(isEnabled ? generation : nil)
         if isEnabled { record(.appInfo, self.appInfo) }
     }
 
@@ -78,6 +81,7 @@ public final class DeviceDiagnostics {
         guard enabled != isEnabled else { return }
         isEnabled = enabled
         generation &+= 1
+        recordingState.update(enabled ? generation : nil)
         buffer.removeAll()
         dropped = 0
         bufferedCount = 0
@@ -86,10 +90,13 @@ public final class DeviceDiagnostics {
 
     /// Buffers one event when logging is on. A value that fails the protocol's bounds, the rate limit or a full
     /// buffer (oldest first) only adds to the dropped count reported in the next batch.
-    public func record(_ name: DiagnosticEventName, _ fields: [DiagnosticField: DiagnosticValue] = [:]) {
+    public func record(
+        _ name: DiagnosticEventName, _ fields: [DiagnosticField: DiagnosticValue] = [:], timestamp: Int64? = nil
+    ) {
         guard isEnabled else { return }
         refill(&recordTokens, updated: &recordUpdated, rate: Self.recordRate)
-        guard recordTokens >= 1, let event = try? DiagnosticEvent(name, timestamp: max(0, wallNow()), fields: fields)
+        guard recordTokens >= 1,
+              let event = try? DiagnosticEvent(name, timestamp: max(0, timestamp ?? wallNow()), fields: fields)
         else {
             dropped += 1
             onPending?()
@@ -163,6 +170,13 @@ public struct DiagnosticBatch: Sendable, Equatable {
     public let generation: UInt64
 }
 
+/// A capture thread may prepare diagnostics only under the current opt-in generation.
+final class DiagnosticRecordingState: Sendable {
+    private let enabledGeneration = Mutex<UInt64?>(nil)
+    var generation: UInt64? { enabledGeneration.withLock { $0 } }
+    func update(_ generation: UInt64?) { enabledGeneration.withLock { $0 = generation } }
+}
+
 extension HostConnection {
     /// Sends one diagnostics batch; only to a ready host that advertises `device_diagnostics` (#234). A host that
     /// does not also advertise `device_diagnostics_stream_abandoned` gets `other` for that code (#469): an older
@@ -171,10 +185,13 @@ extension HostConnection {
         try requireReady(capability: DiagnosticLimits.capability)
         let accepted = snapshot.capabilities.contains(DiagnosticLimits.streamAbandonedCapability)
         let streamFields = snapshot.capabilities.contains(DiagnosticLimits.playbackStreamCapability)
-        let sendable = events.map { event in
+        let masking = snapshot.capabilities.contains(DiagnosticLimits.replyMaskingCapability)
+        let sendable = events.compactMap { event -> DiagnosticEvent? in
+            guard masking || !DeviceDiagnostics.isReplyMaskingReport(event) else { return nil }
             let compatible = streamFields ? event : DeviceDiagnostics.withoutPlaybackStreamFields(event)
             return accepted ? compatible : DeviceDiagnostics.withoutStreamAbandoned(compatible)
         }
+        guard !sendable.isEmpty else { return }
         try await send(.diagnostic(events: sendable), generation: generation)
     }
 }
@@ -243,6 +260,14 @@ extension DeviceDiagnostics {
         return (try? DiagnosticEvent(event.name, timestamp: event.timestamp, fields: fields)) ?? event
     }
 
+    /// Drop the entire new report for an older strict decoder, including the new reason tokens.
+    nonisolated static func isReplyMaskingReport(_ event: DiagnosticEvent) -> Bool {
+        event.fields[.masking] != nil || event.fields[.capture] != nil
+            || event.fields[.reason].map { value in
+                DiagnosticLimits.replyMaskingReasons.contains { value == .token($0) }
+            } == true
+    }
+
     nonisolated static func withoutPlaybackStreamFields(_ event: DiagnosticEvent) -> DiagnosticEvent {
         let fields = event.fields.filter { !DiagnosticLimits.playbackStreamFields.contains($0.key) }
         // Removing validated fields cannot invalidate the event.
@@ -270,8 +295,8 @@ extension DeviceDiagnostics {
         #endif
     }
 
-    /// Reply playback start and end (busy rising and falling) with the echo guard that follows it, and new
-    /// playback failures. The guard masks while busy and for its tail after, so `echo_guard` records both edges.
+    /// Playback busy edges retain their legacy `on` shape. Effective masking is a separate, gated report
+    /// from the capture guard; busy alone does not imply that samples were zeroed.
     public func watch(_ playback: ReplyPlaybackController) {
         // A stream ended for want of its terminal marker (#469) is recorded when it happens, not from its status,
         // which a presentation trim can drop before this observer runs. Its own code, `stream_abandoned`, goes
@@ -289,6 +314,7 @@ extension DeviceDiagnostics {
                 self.watch(playback)
             }
         }
+        (playback.player as? EchoGuardedReplyPlayer)?.flushMaskingDiagnostics()
         if busy != lastPlayback.busy {
             // Gaps heard since playback began (#737), from a player that counts them: how many, and their total
             // length. Anything counted while not busy (idle) was never heard, so a start drops it.

@@ -25,6 +25,10 @@ public final class AmbientReplyEchoGuard: Sendable {
         var masksDuringReplies = false
         var tapActive = false
         var tapQuietAt: ContinuousClock.Instant?
+        var report: MaskingReport?
+        let pending = MaskingTransitions()
+        var recordingState: DiagnosticRecordingState?
+        var pendingGeneration: UInt64?
     }
 
     /// P4b1 is opt-in and inert: P4b2 must supply fresh flags/window and handle the content-free signal.
@@ -35,7 +39,17 @@ public final class AmbientReplyEchoGuard: Sendable {
     private let route = ReplyRoute()
     private let tail: Duration
     private let now: Now
-    @MainActor public weak var diagnostics: DeviceDiagnostics?
+    @MainActor public weak var diagnostics: DeviceDiagnostics? {
+        didSet {
+            if let diagnostics, diagnostics === oldValue { return }
+            let recording = diagnostics?.recordingState
+            state.withLock {
+                $0.recordingState = recording
+                $0.pending.clear()
+                $0.report?.generation = nil
+            }
+        }
+    }
 
     public init(tail: Duration = defaultTail, now: @escaping Now = { ContinuousClock.now }) {
         self.tail = tail
@@ -70,21 +84,12 @@ public final class AmbientReplyEchoGuard: Sendable {
             return true
         }
         guard changed else { return }
+        flushMaskingDiagnostics()
         var fields: [DiagnosticField: DiagnosticValue] = [
             .state: .token(active ? "tap_to_talk_start" : "tap_to_talk_end"), .on: .boolean(active)
         ]
         if !active { fields[.ms] = .integer(Int64(tail / .milliseconds(1))) }
         diagnostics?.record(.echoGuard, fields)
-    }
-
-    /// True while either masking reason or its tail holds.
-    public var isMasking: Bool {
-        let instant = now()
-        return state.withLock { state in
-            if state.tapActive || state.tapQuietAt.map({ instant < $0 }) == true { return true }
-            guard state.masksDuringReplies || !state.routedThroughCapture else { return false }
-            return state.audible || state.quietAt.map { instant < $0 } == true
-        }
     }
 
     /// A/B switch (#269): zero the mic during replies even when they are echo-cancelled.
@@ -98,17 +103,6 @@ public final class AmbientReplyEchoGuard: Sendable {
 
     func setRoutedThroughCapture(_ routed: Bool) {
         state.withLock { $0.routedThroughCapture = routed }
-    }
-
-    /// Zeroes the buffer's samples in place while masking, whatever its sample format. Returns whether it did.
-    @discardableResult
-    func silenceIfMasking(_ buffer: AVAudioPCMBuffer) -> Bool {
-        guard isMasking else { return false }
-        for channel in UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList) {
-            guard let data = channel.mData else { continue }
-            data.initializeMemory(as: UInt8.self, repeating: 0, count: Int(channel.mDataByteSize))
-        }
-        return true
     }
 
     @MainActor
@@ -204,6 +198,217 @@ public final class AmbientReplyEchoGuard: Sendable {
     }
 }
 
+private enum MaskingReason: String, Sendable {
+    case setting
+    case replyNotRouted = "reply_not_routed"
+    case plainCapture = "plain_capture"
+    case tapToTalk = "tap_to_talk"
+}
+
+private enum MaskingCapture: String, Sendable {
+    case plain, vpio, other
+
+    init(_ mode: AmbientCaptureMode?) {
+        switch mode {
+        case .some(.plain): self = .plain
+        case .some(.voiceProcessing): self = .vpio
+        case .none: self = .other
+        }
+    }
+}
+
+/// All fields are scalars. A nil reason is a capture-mode snapshot, not a masking edge.
+private struct MaskingTransition: Sendable {
+    let reason: MaskingReason?
+    let capture: MaskingCapture
+    let masking: Bool
+    let instant: ContinuousClock.Instant
+    let since: ContinuousClock.Instant?
+    let generation: UInt64
+}
+
+/// Sendability is provided by the enclosing State mutex: no ring reference escapes that lock.
+/// Storage is allocated before capture starts; append/clear are O(1), with no copy-on-write storage.
+private final class MaskingTransitions: @unchecked Sendable {
+    private let storage = UnsafeMutableBufferPointer<MaskingTransition?>.allocate(capacity: DeviceDiagnostics.capacity)
+    private var head = 0
+    private(set) var length = 0
+    private(set) var dropped = 0
+    var isEmpty: Bool { length == 0 }
+
+    init() { storage.initialize(repeating: nil) }
+    deinit { storage.deinitialize(); storage.deallocate() }
+
+    func clear() { head = 0; length = 0; dropped = 0 }
+
+    func append(_ transition: MaskingTransition) {
+        if length == storage.count {
+            storage[head] = transition
+            head = (head + 1) % storage.count
+            dropped = min(Int(Int32.max), dropped + 1)
+        } else {
+            storage[(head + length) % storage.count] = transition
+            length += 1
+        }
+    }
+
+    /// The main actor preallocates the destination before taking the mutex; only scalar copies happen here.
+    func drain(into destination: inout [MaskingTransition?]) -> (count: Int, dropped: Int) {
+        for index in 0..<length { destination[index] = storage[(head + index) % storage.count] }
+        let result = (length, dropped)
+        clear()
+        return result
+    }
+}
+
+private struct MaskingReport: Sendable {
+    let token: UUID // Internal lifecycle fence only; never included in diagnostics.
+    let capture: MaskingCapture
+    var reason: MaskingReason?
+    var since: ContinuousClock.Instant?
+    var generation: UInt64?
+}
+
+extension AmbientReplyEchoGuard {
+    /// True while either masking reason or its tail holds.
+    public var isMasking: Bool {
+        let instant = now()
+        return state.withLock { Self.maskingReason($0, at: instant) != nil }
+    }
+
+    /// Zeroes the buffer's samples in place while masking, whatever its sample format. Returns whether it did.
+    @discardableResult
+    func silenceIfMasking(_ buffer: AVAudioPCMBuffer, capture: UUID? = nil) -> Bool {
+        let instant = now()
+        let (masking, pending) = state.withLock { state in
+            let reason = Self.maskingReason(state, at: instant)
+            let wasEmpty = state.pending.isEmpty
+            if let capture, state.report?.token == capture {
+                Self.updateReport(&state, reason: reason, at: instant)
+            }
+            return (reason != nil, wasEmpty && !state.pending.isEmpty)
+        }
+        if pending { Task { @MainActor [weak self] in self?.flushMaskingDiagnostics() } }
+        guard masking else { return false }
+        for channel in UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList) {
+            guard let data = channel.mData else { continue }
+            data.initializeMemory(as: UInt8.self, repeating: 0, count: Int(channel.mDataByteSize))
+        }
+        return true
+    }
+
+    /// The same predicate as the sample zeroing path. Reasons have precedence only for reporting;
+    /// changing the setting, routing, tap, or tail still has exactly its previous masking effect.
+    private static func maskingReason(_ state: State, at instant: ContinuousClock.Instant) -> MaskingReason? {
+        if state.tapActive || state.tapQuietAt.map({ instant < $0 }) == true { return .tapToTalk }
+        guard state.masksDuringReplies || !state.routedThroughCapture,
+              state.audible || state.quietAt.map({ instant < $0 }) == true else { return nil }
+        if state.masksDuringReplies { return .setting }
+        return state.report?.capture == .plain ? .plainCapture : .replyNotRouted
+    }
+
+    @MainActor
+    func beginMaskingReport(_ token: UUID, mode: AmbientCaptureMode?) {
+        state.withLock { state in
+            Self.updateReport(&state, reason: nil, at: now())
+            state.report = MaskingReport(token: token, capture: MaskingCapture(mode),
+                                         generation: state.recordingState?.generation)
+        }
+        flushMaskingDiagnostics()
+        diagnostics?.record(.captureState, [.capture: .token(mode?.rawValue ?? "other")])
+    }
+
+    @MainActor
+    func endMaskingReport(_ token: UUID) {
+        state.withLock { state in
+            guard state.report?.token == token else { return }
+            Self.updateReport(&state, reason: nil, at: now())
+            state.report = nil
+        }
+        flushMaskingDiagnostics()
+    }
+}
+
+extension AmbientReplyEchoGuard {
+    @MainActor
+    func flushMaskingDiagnostics() {
+        guard state.withLock({ !$0.pending.isEmpty }) else { return }
+        var transitions = [MaskingTransition?](repeating: nil, count: DeviceDiagnostics.capacity)
+        let (batch, generation, recording) = state.withLock { state in
+            (state.pending.drain(into: &transitions), state.pendingGeneration, state.recordingState)
+        }
+        guard let diagnostics, let generation, let recording, recording === diagnostics.recordingState,
+              diagnostics.isEnabled, diagnostics.generation == generation else { return }
+        if batch.dropped > 0 {
+            diagnostics.record(.eventsDropped, [.code: .token("app_buffer"), .count: .integer(Int64(batch.dropped))])
+        }
+        let anchor = now()
+        let wallMilliseconds = Int64((Date().timeIntervalSince1970 * 1_000).rounded(.down))
+        for index in 0..<batch.count {
+            guard let transition = transitions[index], diagnostics.isEnabled,
+                  diagnostics.generation == transition.generation else { continue }
+            record(transition, diagnostics: diagnostics, anchor: anchor, wallMilliseconds: wallMilliseconds)
+        }
+    }
+
+    @MainActor
+    private func record(
+        _ transition: MaskingTransition, diagnostics: DeviceDiagnostics,
+        anchor: ContinuousClock.Instant, wallMilliseconds: Int64
+    ) {
+        let timestamp = max(0, wallMilliseconds + Self.milliseconds(anchor.duration(to: transition.instant)))
+        guard let reason = transition.reason else {
+            diagnostics.record(.captureState, [.capture: .token(transition.capture.rawValue)], timestamp: timestamp)
+            return
+        }
+        var fields: [DiagnosticField: DiagnosticValue] = [
+            .masking: .boolean(transition.masking), .reason: .token(reason.rawValue),
+            .capture: .token(transition.capture.rawValue), .count: .integer(1)
+        ]
+        if !transition.masking, let since = transition.since {
+            let elapsed = Self.milliseconds(since.duration(to: transition.instant))
+            fields[.ms] = .integer(max(0, min(Int64(Int32.max), elapsed)))
+        }
+        diagnostics.record(.echoGuard, fields, timestamp: timestamp)
+    }
+
+    @MainActor
+    private static func milliseconds(_ duration: Duration) -> Int64 {
+        let parts = duration.components
+        return parts.seconds * 1_000 + parts.attoseconds / 1_000_000_000_000_000
+    }
+
+    private static func updateReport(
+        _ state: inout State, reason: MaskingReason?, at instant: ContinuousClock.Instant
+    ) {
+        guard var report = state.report else { return }
+        let generation = state.recordingState?.generation
+        if report.generation != generation {
+            report.reason = nil
+            report.since = nil
+            report.generation = generation
+            state.pending.clear()
+            if let generation {
+                state.pending.append(MaskingTransition(reason: nil, capture: report.capture, masking: false,
+                                                       instant: instant, since: nil, generation: generation))
+            }
+        }
+        state.pendingGeneration = generation
+        guard let generation, report.reason != reason else { state.report = report; return }
+        if let previous = report.reason, let since = report.since {
+            state.pending.append(MaskingTransition(reason: previous, capture: report.capture, masking: false,
+                                                   instant: instant, since: since, generation: generation))
+        }
+        if let reason {
+            state.pending.append(MaskingTransition(reason: reason, capture: report.capture, masking: true,
+                                                   instant: instant, since: nil, generation: generation))
+        }
+        report.reason = reason
+        report.since = reason == nil ? nil : instant
+        state.report = report
+    }
+}
+
 extension AmbientReplyEchoGuard {
     /// After a successful segment yield, retire only the reply tail. Call before closing the onset window.
     /// The last analysed window supplies the configured onset; both clocks must have passed the safe interval.
@@ -274,6 +479,8 @@ final class EchoGuardedReplyPlayer: ReplyAudioPlaying {
     var gapReporter: (any PlayoutGapReporting)? { player as? any PlayoutGapReporting }
 
     func setTapCaptureActive(_ active: Bool) { echoGuard.setTapCaptureActive(active) }
+
+    func flushMaskingDiagnostics() { echoGuard.flushMaskingDiagnostics() }
 
     func schedule(_ payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?) throws {
         try audible { try player.schedule(payload, onPlayed: onPlayed) }
@@ -393,6 +600,8 @@ final class EchoMaskedCapture: AudioCapturing {
         let captureToken = echoGuard.proactiveActivity.beginCapture()
         proactiveToken = captureToken
         routing?.attach()
+        let mode = routing.map { $0.cancelsEcho ? AmbientCaptureMode.voiceProcessing : .plain }
+        echoGuard.beginMaskingReport(captureToken, mode: mode)
         let routing = routing
         let echoGuard = echoGuard
         let (stream, continuation) = AsyncStream<AudioCaptureBuffer>.makeStream(bufferingPolicy: .unbounded)
@@ -401,10 +610,11 @@ final class EchoMaskedCapture: AudioCapturing {
                 echoGuard.proactiveActivity.observe(buffer.pcmBuffer, capturedAt: buffer.capturedAt,
                                                     capture: captureToken)
                 echoGuard.observeSegmentOnset(buffer.pcmBuffer)
-                echoGuard.silenceIfMasking(buffer.pcmBuffer)
+                echoGuard.silenceIfMasking(buffer.pcmBuffer, capture: captureToken)
                 continuation.yield(buffer)
             }
             echoGuard.proactiveActivity.endCapture(captureToken)
+            await echoGuard.endMaskingReport(captureToken)
             await routing?.detach()
             continuation.finish()
         }
@@ -420,7 +630,10 @@ final class EchoMaskedCapture: AudioCapturing {
 
     @MainActor
     func stop() {
-        if let proactiveToken { echoGuard.proactiveActivity.endCapture(proactiveToken) }
+        if let proactiveToken {
+            echoGuard.proactiveActivity.endCapture(proactiveToken)
+            echoGuard.endMaskingReport(proactiveToken)
+        }
         proactiveToken = nil
         capture.stop()
         routing?.detach()

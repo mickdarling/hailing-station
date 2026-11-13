@@ -868,6 +868,9 @@ public enum DiagnosticLimits {
     public static let playbackStreamFields: Set<DiagnosticField> = [
         .lastSequence, .expectedSequence, .gap, .receivedFrames, .scheduledFrames, .terminal, .lastFrameMs
     ]
+    /// Effective capture masking edges (#1213); older hosts receive only the legacy busy records.
+    public static let replyMaskingCapability = "device_diagnostics_reply_masking"
+    public static let replyMaskingReasons = ["setting", "reply_not_routed", "plain_capture", "tap_to_talk"]
     public static let maxEventsPerBatch = 32
     public static let integers: ClosedRange<Int64> = -2_147_483_648...2_147_483_647
     /// One to four dot-separated groups of one to six digits, as in `0.1.84` or `26.0.1`.
@@ -932,7 +935,7 @@ public enum DiagnosticField: String, Codable, Sendable, CaseIterable, Comparable
     case reason, state, code, domain, route, device
     case app, build, os
     case error, attempt, count, ms
-    case on
+    case on, masking, capture
     case lastSequence = "last_sequence"
     case expectedSequence = "expected_sequence"
     case receivedFrames = "received_frames"
@@ -944,11 +947,11 @@ public enum DiagnosticField: String, Codable, Sendable, CaseIterable, Comparable
 
     public var kind: Kind {
         switch self {
-        case .reason, .state, .code, .domain, .route, .device: .token
+        case .reason, .state, .code, .domain, .route, .device, .capture: .token
         case .app, .build, .os: .version
         case .error, .attempt, .count, .ms, .lastSequence, .expectedSequence,
              .receivedFrames, .scheduledFrames, .lastFrameMs: .integer
-        case .on, .gap, .terminal: .boolean
+        case .on, .masking, .gap, .terminal: .boolean
         }
     }
 
@@ -969,8 +972,8 @@ public enum DiagnosticVocabulary {
             "default", "app_was_suspended", "built_in_mic_muted", "scene_was_backgrounded", "route_disconnected",
             // why ambient listening stopped
             "user", "permission_denied", "binding_changed", "background", "start_failed", "capture_ended",
-            "system_interruption", "host_refused", "send_failed", "other"
-        ],
+            "system_interruption", "host_refused", "send_failed"
+        ] + DiagnosticLimits.replyMaskingReasons + ["other"],
         .state: [
             "disconnected", "connecting", "negotiating", "ready", "reconnecting", "failed",
             "ended_by_system", "tap_to_talk_start", "tap_to_talk_end", "other"
@@ -993,6 +996,7 @@ public enum DiagnosticVocabulary {
             "line_in", "line_out", "bluetooth_a2dp", "bluetooth_hfp", "bluetooth_le", "airplay", "hdmi",
             "car_audio", "usb_audio", "other"
         ],
+        .capture: ["plain", "vpio", "other"],
         .device: ["phone", "pad", "mac", "other"]
     ]
 }
