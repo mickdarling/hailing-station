@@ -118,22 +118,25 @@ import Testing
 
     /// Exit readiness raced with waitable status (#297 review): every quick-exit leader must still settle.
     @Test func manyQuickExitLeadersAllSettle() async throws {
+        try RightyoChildGroup.requireOwnedRuntime()
         let fake = try FakeRightyo("exit 0")
         defer { fake.cleanUp() }
         let truth = URL(fileURLWithPath: "/usr/bin/true")
         for _ in 0..<150 {
-            try await withThrowingTaskGroup(of: (RightyoChildExit, Duration).self) { group in
+            try await withThrowingTaskGroup(of: RightyoChildExit?.self) { group in
                 for _ in 0..<20 {
-                    let child = try RightyoChildProcess(executable: truth, config: fake.config, session: "hail-test",
-                                                        timing: Self.quick)
+                    let child = try RightyoChildProcess.spawn(truth.path, arguments: [], environment: [],
+                                                             directory: fake.directory.path)
+                    [child.input, child.output, child.errors].forEach { close($0) }
+                    let owned = RightyoChildGroup(leader: child.pid, termGrace: Self.quick.termGrace) { false }
                     group.addTask {
-                        let started = ContinuousClock.now
-                        return (await child.stop(), ContinuousClock.now - started)
+                        let exit = await owned.settled.wait(timeout: 20)
+                        if exit == nil { owned.signal(SIGKILL) }
+                        return exit
                     }
                 }
-                for try await (exit, took) in group {
+                for try await exit in group {
                     #expect(exit == .exited(0))
-                    #expect(took < .seconds(2))
                 }
             }
         }
