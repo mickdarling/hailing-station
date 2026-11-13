@@ -31,7 +31,10 @@ Round 2 replaces capture-path event construction with a preallocated 500-slot
 ring. It stores scalar reason/capture enums, on/off, monotonic instant, interval
 start for off durations, and enable generation. Appending, resetting, and
 oldest-first overflow are constant-time and allocate no transition storage.
-Only an empty-to-nonempty queue schedules a main-actor wake. The main actor
+Round 3 starts one long-lived main-actor drainer per capture, with an
+`AsyncStream<Void>` wake created at begin using `.bufferingNewest(1)`. The
+capture path appends scalars under the lock and yields the existing continuation
+only on empty-to-nonempty; it creates no task. The main actor
 copies the scalars into an already allocated destination under the lock, then
 converts instants to timestamps and constructs events outside it. Overflow uses
 `events_dropped code=app_buffer`; diagnostics' separate rate/capacity limits
@@ -41,7 +44,12 @@ Enable generations and logger identity discard stale prepared data. The first
 buffer after re-enabling or attaching a different log snapshots fresh mode and
 masking state. Reattaching the same log preserves its interval. Pending masking
 records flush before legacy playback and tap edges. Stale capture buffers and
-completion callbacks cannot report for a replacement stream.
+completion callbacks cannot report for a replacement stream. Each drainer's
+callback checks its capture token before flushing. Capture end, stop, and
+replacement finish the old wake and cancel its task; end also synchronously
+flushes the last transitions. The owner stops its task on deinitialization,
+and the drainer uses a weak guard reference. Synchronous playback/tap flushes
+remain available.
 
 A doctor/status current-stream summary and accumulated masked time remain a
 follow-up beyond the four-production-file budget. Physical proof requires an
@@ -122,3 +130,30 @@ Mutation checks run after this baseline, each restored to the committed sources 
 | Disable capability stripping | `ReplyMaskingCompatibilityTests` | fails (2 assertions) |
 
 The restored sources pass the selected suites again (97 tests in 18 suites).
+
+## Round 3 verification
+
+`ReplyMaskingDrainerTests` counts actual task starts through an injected factory
+while 32 transitions await separate drain acknowledgements. It also awaits an
+ended drainer, checks its wake is finished, verifies synchronous final edges,
+and invokes the old task's retained callback against a replacement lifecycle.
+These are deterministic checks, without sleeps or scheduler timing thresholds.
+
+Round 3 repository verification: **100 tests in 19 suites passed** with the
+same selected-suite command above and `--no-parallel`. The final phase took
+561.9 s; an earlier compilation phase stopped at 840 s and continued after
+fresh gates. Every phase used `<host-gate>/hostslot-wait.sh` followed by
+`<host-gate>/voice-quiet.sh`, the same Xcode developer directory, `taskpolicy -b`,
+and two jobs. No separate package or device app build was used.
+
+Host SwiftLint passed without diagnostics under the same developer directory:
+
+```sh
+swiftlint lint --quiet Sources/HailCore/AmbientReplyEchoGuard.swift Tests/HailCoreTests/ReplyMaskingDrainerTests.swift
+```
+
+The verified baseline is committed before mutation checks. The post-commit
+mutation starts a task for each capture-path wake through the observable task
+factory; `manyTransitionsAcrossDrainsStartOnlyOneTask` must fail. Restore the
+exact committed source afterward. Mutation results are reported separately;
+mutants are never committed.

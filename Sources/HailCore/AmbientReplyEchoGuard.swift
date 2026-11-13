@@ -5,6 +5,9 @@ import HailProtocol
 import Observation
 import Synchronization
 
+/// Internal task factory so tests can count actual drainer allocations without scheduler timing.
+typealias MaskingReportTaskFactory = @Sendable (@escaping @MainActor @Sendable () async -> Void) -> Task<Void, Never>
+
 /// Keeps the phone's own reply out of the ambient stream (#227): while a reply is audible, and for a short tail
 /// after, ambient capture yields zeroed samples (timing and sequence numbers unchanged) so RightyO never hears it.
 /// With `echoCancelledCapture()` (#269) replies play through the capture's voice-processing engine instead, so the
@@ -29,6 +32,7 @@ public final class AmbientReplyEchoGuard: Sendable {
         let pending = MaskingTransitions()
         var recordingState: DiagnosticRecordingState?
         var pendingGeneration: UInt64?
+        var maskingWake: AsyncStream<Void>.Continuation?
     }
 
     /// P4b1 is opt-in and inert: P4b2 must supply fresh flags/window and handle the content-free signal.
@@ -39,6 +43,8 @@ public final class AmbientReplyEchoGuard: Sendable {
     private let route = ReplyRoute()
     private let tail: Duration
     private let now: Now
+    private let reportTask: MaskingReportTaskFactory
+    @MainActor private(set) var maskingReportDrainer: MaskingReportDrainer?
     @MainActor public weak var diagnostics: DeviceDiagnostics? {
         didSet {
             if let diagnostics, diagnostics === oldValue { return }
@@ -51,9 +57,17 @@ public final class AmbientReplyEchoGuard: Sendable {
         }
     }
 
-    public init(tail: Duration = defaultTail, now: @escaping Now = { ContinuousClock.now }) {
+    public convenience init(tail: Duration = defaultTail, now: @escaping Now = { ContinuousClock.now }) {
+        self.init(tail: tail, now: now, reportTask: { operation in
+            Task { @MainActor in await operation() }
+        })
+    }
+
+    init(tail: Duration = defaultTail, now: @escaping Now = { ContinuousClock.now },
+         reportTask: @escaping MaskingReportTaskFactory) {
         self.tail = tail
         self.now = now
+        self.reportTask = reportTask
         segmentOnsetGate = ReplySegmentOnsetGate(tail: tail, now: now)
         proactiveActivity = ProactiveAudioActivity(now: now)
     }
@@ -181,7 +195,9 @@ public final class AmbientReplyEchoGuard: Sendable {
         playback.wireProactiveActivity(self)
         track(playback)
     }
+}
 
+extension AmbientReplyEchoGuard {
     /// Observes every input of the busy flag, past its short-circuit, so masking never outlasts an idle tail.
     @MainActor
     private func track(_ playback: ReplyPlaybackController) {
@@ -196,6 +212,26 @@ public final class AmbientReplyEchoGuard: Sendable {
         }
         setReplyAudible(audible)
     }
+}
+
+/// One owner per capture. Weak callbacks avoid retaining the guard while the drainer awaits a wake.
+/// The callback and handle also let tests exercise a queued stale wake and await termination directly.
+final class MaskingReportDrainer: Sendable {
+    let token: UUID
+    let wake: AsyncStream<Void>.Continuation
+    let drain: @MainActor @Sendable () -> Void
+    let task: Task<Void, Never>
+
+    init(token: UUID, wake: AsyncStream<Void>.Continuation,
+         drain: @escaping @MainActor @Sendable () -> Void, task: Task<Void, Never>) {
+        self.token = token
+        self.wake = wake
+        self.drain = drain
+        self.task = task
+    }
+
+    func stop() { wake.finish(); task.cancel() }
+    deinit { stop() }
 }
 
 private enum MaskingReason: String, Sendable {
@@ -280,15 +316,15 @@ extension AmbientReplyEchoGuard {
     @discardableResult
     func silenceIfMasking(_ buffer: AVAudioPCMBuffer, capture: UUID? = nil) -> Bool {
         let instant = now()
-        let (masking, pending) = state.withLock { state in
+        let (masking, wake) = state.withLock { state in
             let reason = Self.maskingReason(state, at: instant)
             let wasEmpty = state.pending.isEmpty
             if let capture, state.report?.token == capture {
                 Self.updateReport(&state, reason: reason, at: instant)
             }
-            return (reason != nil, wasEmpty && !state.pending.isEmpty)
+            return (reason != nil, wasEmpty && !state.pending.isEmpty ? state.maskingWake : nil)
         }
-        if pending { Task { @MainActor [weak self] in self?.flushMaskingDiagnostics() } }
+        wake?.yield()
         guard masking else { return false }
         for channel in UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList) {
             guard let data = channel.mData else { continue }
@@ -309,22 +345,41 @@ extension AmbientReplyEchoGuard {
 
     @MainActor
     func beginMaskingReport(_ token: UUID, mode: AmbientCaptureMode?) {
+        maskingReportDrainer?.stop()
+        let (wakes, wake) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let drain: @MainActor @Sendable () -> Void = { [weak self] in
+            guard let self, self.state.withLock({ $0.report?.token == token }) else { return }
+            self.flushMaskingDiagnostics()
+        }
+        let task = reportTask {
+            for await _ in wakes {
+                guard !Task.isCancelled else { return }
+                drain()
+            }
+        }
         state.withLock { state in
             Self.updateReport(&state, reason: nil, at: now())
             state.report = MaskingReport(token: token, capture: MaskingCapture(mode),
                                          generation: state.recordingState?.generation)
+            state.maskingWake = wake
         }
+        maskingReportDrainer = MaskingReportDrainer(token: token, wake: wake, drain: drain, task: task)
         flushMaskingDiagnostics()
         diagnostics?.record(.captureState, [.capture: .token(mode?.rawValue ?? "other")])
     }
 
     @MainActor
     func endMaskingReport(_ token: UUID) {
-        state.withLock { state in
-            guard state.report?.token == token else { return }
+        let ended = state.withLock { state in
+            guard state.report?.token == token else { return false }
             Self.updateReport(&state, reason: nil, at: now())
             state.report = nil
+            state.maskingWake = nil
+            return true
         }
+        guard ended else { return }
+        maskingReportDrainer?.stop()
+        maskingReportDrainer = nil
         flushMaskingDiagnostics()
     }
 }
