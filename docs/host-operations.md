@@ -117,8 +117,10 @@ Then run `scripts/host.sh restart`. `sessionUpdates` adds `--session-updates`; `
 `--task-progress`; `sessionUpdateSpeechRoot` independently adds `--session-update-speech-root <dir>`. The latter
 two require `sessionUpdates: true`; omit either to leave that feature off. `sessionUpdates` and `taskProgress`
 are JSON booleans; the root is a string naming an existing absolute directory owned by your user, with mode 700,
-no final symlink and no extended ACL. Invalid values are refused before the running daemon is stopped.
-Absent keys add no arguments.
+no symlink in any component and no extended ACL. The path must already be normalized: no `.` or `..`
+components or repeated slashes; one trailing slash is allowed. This host.sh preflight is stricter than haild's
+unchanged ancestor handling. Invalid values are refused before the running daemon is stopped. Absent keys
+add no arguments.
 
 To roll back, remove all three keys (or set both booleans to `false` and remove the speech-root key), then run
 `scripts/host.sh restart` again. To disable only progress or speech, remove its corresponding key and restart.

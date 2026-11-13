@@ -55,7 +55,8 @@ whole number from 60 to 14400; without it, one hour.
 It only names targets; each still needs its policy entry. It is read at start, so a change needs a restart.
 "sessionUpdates" (optional boolean) enables experimental personal-terminal updates. "taskProgress" (optional
 boolean) and "sessionUpdateSpeechRoot" (optional string) require "sessionUpdates": true. The speech root must
-be an existing absolute directory owned by you, mode 700, without a symlink or extended ACL.
+be an existing absolute directory owned by you, mode 700, no symlink in any component and no extended ACL.
+The path must be normalized; one trailing slash is allowed. This ancestor preflight is stricter than haild's check.
 These rate limits are cooperative: any local process can notify. Edit host.json, then restart to enable or roll back.
 USAGE
 }
@@ -76,7 +77,9 @@ read_value() {
   # plutil prints a missing-key error on stdout, so nothing is read unless the key exists.
   actual="$(plutil -type "$key" "$CONFIG" 2>/dev/null)" || return 0
   [[ "$actual" == "$type" ]] || fail "host.json \"$key\" must be a $type, not a $actual"
-  VALUE="$(plutil -extract "$key" raw -o - "$CONFIG")"
+  # -n suppresses plutil's own terminating newline; the sentinel preserves any newline in the actual value.
+  VALUE="$(plutil -extract "$key" raw -n -o - "$CONFIG" && printf x)" || fail "could not read host.json \"$key\""
+  VALUE="${VALUE%x}"
 }
 
 # A string that is safe to pass as one daemon argument: no control characters, no leading dash.
@@ -116,14 +119,28 @@ sys.exit(1 if address.is_unspecified or mapped else 0)
 PY
 }
 
-# Match OwnedReplyRenderer's root check: open without following the final symlink, check the same descriptor's
-# owner/mode and extended ACL. This is preflight only; haild rechecks at startup and when rendering.
+# Keep OwnedReplyRenderer's final owner/mode/ACL checks, with a stricter normalized, symlink-free ancestor walk.
+# This is preflight only; haild's own checks at startup and when rendering are unchanged.
 is_private_speech_root() {
   python3 -I - "$1" <<'PY'
 import ctypes, errno, os, sys
 try:
-    descriptor = os.open(sys.argv[1].rstrip("/") or "/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    path = sys.argv[1]
+    if path.endswith("//"):
+        sys.exit(1)
+    if path.endswith("/") and path != "/":
+        path = path[:-1]
+    components = path.split("/")[1:] if path != "/" else []
+    if (not path.startswith("/") or path != os.path.normpath(path)
+            or any(part in ("", ".", "..") for part in components)):
+        sys.exit(1)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptor = os.open("/", flags)
     try:
+        for component in components:
+            child = os.open(component, flags, dir_fd=descriptor)  # openat: refuse symlinks at every step.
+            os.close(descriptor)
+            descriptor = child
         info = os.fstat(descriptor)
         if info.st_uid != os.getuid() or info.st_mode & 0o777 != 0o700:
             sys.exit(1)
@@ -182,7 +199,7 @@ load_daemon_arguments() {
   if [[ -n "$speech_root" ]] || plutil -type sessionUpdateSpeechRoot "$CONFIG" >/dev/null 2>&1; then
     [[ "$session_updates" == true ]] || fail '"sessionUpdateSpeechRoot" requires "sessionUpdates": true'
     if [[ "$speech_root" != /* ]] || ! is_private_speech_root "$speech_root"; then
-      fail '"sessionUpdateSpeechRoot" must be a private existing absolute directory owned by you (mode 700, no symlink or extended ACL)'
+      fail '"sessionUpdateSpeechRoot" must be a private existing normalized absolute directory owned by you (mode 700, no symlink in any component, no extended ACL)'
     fi
     DAEMON_ARGS+=(--session-update-speech-root "$speech_root")
   fi

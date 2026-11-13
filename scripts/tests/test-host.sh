@@ -127,6 +127,13 @@ fi
 
 # Config validation, all before anything runs.
 bad_config() { printf '%s\n' "$2" > "$HAIL_CONFIG_DIR/host.json"; expect_failure "$1" "$host" plist; }
+bad_string_config() {
+  local key="$1" expected
+  printf '%s\n' "$2" > "$HAIL_CONFIG_DIR/host.json"
+  if "$host" plist > "$scratch/string.out" 2>&1; then fail "string guard accepted $key"; fi
+  expected="error: host.json \"$key\" must not contain control characters or start with '-'"
+  [[ "$(cat "$scratch/string.out")" == "$expected" ]] || fail "wrong string guard message: $(cat "$scratch/string.out")"
+}
 bad_config "missing port" '{"bind": "127.0.0.1"}'
 bad_config "out-of-range port" '{"bind": "127.0.0.1", "port": 70000}'
 bad_config "missing bind" '{"port": 8765}'
@@ -198,13 +205,16 @@ bad_config "target that is a flag" \
   '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
     "ambient": {"rightyo": "/r", "config": "/c", "target": "--reply-socket"}}'
 bad_config "relative voice routes path" '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "routes.json"}'
-bad_config "voice routes that is a flag" '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "--port"}'
-bad_config "voice routes with a newline" '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "/r\n--port"}'
+bad_string_config voiceRoutes '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "--port"}'
+bad_string_config voiceRoutes '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "/r\n--port"}'
+bad_string_config voiceRoutes '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "/r.json\n"}'
 
 # Proactive opt-ins (#609) use the same scratch config and never reach the real launchctl.
 speech_root="$scratch/update speech"
 mkdir -m 700 "$speech_root"
+mkdir -m 700 "$speech_root/child"
 ln -s "$speech_root" "$scratch/speech-link"
+ln -s "$scratch" "$scratch/parent-link"
 touch "$scratch/speech-file"
 mkdir -m 755 "$scratch/open-speech"
 update_config() {
@@ -229,16 +239,26 @@ expect_update_arguments "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": 
   --session-updates --session-update-speech-root "$speech_root"
 expect_update_arguments "\"sessionUpdates\": true, \"taskProgress\": true, \"sessionUpdateSpeechRoot\": \"$speech_root\"" \
   --session-updates --task-progress --session-update-speech-root "$speech_root"
+expect_update_arguments "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$speech_root/child\"" \
+  --session-updates --session-update-speech-root "$speech_root/child"
+expect_update_arguments "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$speech_root/child/\"" \
+  --session-updates --session-update-speech-root "$speech_root/child/"
 for enabled in '' '"sessionUpdates": false,'; do
   bad_config "task progress without session updates" "{\"bind\": \"127.0.0.1\", \"port\": 8765, $enabled \"taskProgress\": true}"
   bad_config "speech without session updates" \
     "{\"bind\": \"127.0.0.1\", \"port\": 8765, $enabled \"sessionUpdateSpeechRoot\": \"$speech_root\"}"
 done
-for root in relative "$scratch/missing" "$scratch/speech-file" "$scratch/open-speech" \
-    "$scratch/speech-link" "$scratch/speech-link/" '' --port '/speech\n--port'; do
+# Real directories behind these paths ensure the refusals exercise symlinks and normalization, not missing paths.
+# Dash/control guard coverage uses bad_string_config above, rather than redundant invalid speech-root paths.
+for root in "$scratch/parent-link/update speech" "$scratch/speech-link/." "$scratch/speech-link/child/.." \
+    "$speech_root//child" "$speech_root/./child" "$speech_root/child/.." "$speech_root//" './x' \
+    relative "$scratch/missing" "$scratch/speech-file" "$scratch/open-speech" \
+    "$scratch/speech-link" "$scratch/speech-link/" ''; do
   update_config "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$root\""
   expect_failure "invalid speech root: $root" "$host" plist
 done
+bad_string_config sessionUpdateSpeechRoot \
+  "{\"bind\": \"127.0.0.1\", \"port\": 8765, \"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$speech_root\n\"}"
 # Mode 700 alone is insufficient when an extended ACL grants another account access.
 chmod +a 'everyone allow read' "$speech_root"
 update_config "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$speech_root\""
