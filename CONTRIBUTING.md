@@ -4,7 +4,7 @@ Hailing Station is public while still early and security-sensitive. Issues, desi
 
 ## Code contributions
 
-External code contributions are not yet being accepted. The project is intended to remain available under AGPL-3.0-only while also supporting separately licensed official distributions. A contributor agreement that grants the necessary relicensing rights will be published before outside code is merged.
+External code contributions are not yet being accepted. The project is intended to remain available under AGPL-3.0-or-later while also supporting separately licensed official distributions. A contributor agreement that grants the necessary relicensing rights will be published before outside code is merged.
 
 Please do not submit code copied from another project or a pull request containing substantive implementation until that agreement is in place.
 
