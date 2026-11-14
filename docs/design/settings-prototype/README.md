@@ -20,6 +20,10 @@ Inspect the before/after review and explicit activation choices rather than trea
 
 ## Catalog and interactions
 
+### Consolidated layout
+
+Settings use a bounded six-row index and one focused editor instead of a continuous form. Scope, search, category, group reset and attention presets stay in a fixed command area; review/apply stays in its own fixed bar. Page numbers and the total setting count make the rest of a category explicit. On iPhone and narrow iPad, choosing a setting opens its focused detail with a return to the same list. The station header and voice dock are compact, with the dock still above the four iPhone tabs. These are documentation-only presentation changes.
+
 The HTML embeds **504 descriptors**: Listening 49, Privacy 82, Voices 70, Notifications 36, Targets 34, Audio 28, Appearance 7, Advanced 198. This count includes expanded object members, invocation fields and operation composers, plus explicitly disabled system-owned and fixed/library-only entries. Each carries public source/default/range/role/risk/activation metadata and inventory-row provenance. It is not a claim that 504 persistent preferences exist in production. The 24 static frames show representative full-content category forms and link onward to this complete searchable index.
 
 Use the Host and Role selectors to see offline and insufficient-role states. In the listening category, the initial **synthetic** profile has the cue requirement on (code default off), so **Pay attention to me** produces a visible change. It changes only `conversation.require_cue`; choose Review, simulate owner authorization, then save pending or simulate activation. Configured/effective values and activation status remain separate. Field bounds illustrate source rules; complete authoritative filesystem, trust and cross-schema validation belongs to the future host implementation.
