@@ -3,23 +3,24 @@ import Darwin
 import Foundation
 import Synchronization
 
-/// Exact-child ownership only. No shell, ambient environment, credentials or daemon registration.
+/// Exact-child ownership by default; opt-in group ownership for wrappers. No ambient environment or registration.
 struct OwnedStdioCommand: Sendable {
     let executable: String
     var arguments: [String] = []
     var environment: [String] = []
+    var ownProcessGroup = false
 }
-
 private struct StdioResources {
     var pid: pid_t?
+    var processGroup: pid_t?
     var input: Int32
     var output: Int32
     var stopped = false
     var writes = 0
     var reads = 0
     var reaps = 0
+    var signalTarget: pid_t? { processGroup.map { -$0 } ?? pid }
 }
-
 final class OwnedStdioChild: Sendable {
     let chunks: AsyncThrowingStream<Data, any Error>
     private let resources: Mutex<StdioResources>
@@ -33,7 +34,6 @@ final class OwnedStdioChild: Sendable {
     private let readable: any DispatchSourceRead
     private let processExit: any DispatchSourceProcess
     private let grace: TimeInterval
-
     init(command: OwnedStdioCommand, grace: TimeInterval = 0.1) throws {
         guard command.executable.hasPrefix("/"), grace > 0, grace <= 1,
               !([command.executable] + command.arguments + command.environment).contains(where: {
@@ -68,7 +68,7 @@ final class OwnedStdioChild: Sendable {
             guard !state.stopped else { return false }
             state.stopped = true
             close(state.input); state.input = -1
-            if let pid = state.pid { _ = kill(pid, SIGTERM) }
+            if let target = state.signalTarget { _ = kill(target, SIGTERM) }
             exited.enter() // Admission precedes any concurrent join observing an empty group.
             return true
         }
@@ -77,14 +77,16 @@ final class OwnedStdioChild: Sendable {
         continuation.finish(throwing: CodexStdioError.stopped)
         graceQueue.asyncAfter(deadline: .now() + grace) {
             defer { self.exited.leave() }
-            self.resources.withLock { if let pid = $0.pid { _ = kill(pid, SIGKILL) } }
+            self.resources.withLock { state in
+                // The wrapper may already be reaped while its grandchildren still own the group's pipes.
+                if let target = state.signalTarget { _ = kill(target, SIGKILL) }
+                state.processGroup = nil
+            }
         }
     }
-
     func join() async {
         await withCheckedContinuation { joined in exited.notify(queue: joinQueue) { joined.resume() } }
     }
-
     func write(_ data: Data) async throws {
         guard data.count <= 65_537 else { throw CodexStdioError.capacityExceeded }
         try resources.withLock { state in
@@ -99,7 +101,6 @@ final class OwnedStdioChild: Sendable {
             }
         }
     }
-
     private func writeAll(_ data: Data) throws {
         var offset = 0
         while offset < data.count {
@@ -118,7 +119,6 @@ final class OwnedStdioChild: Sendable {
             }
         }
     }
-
     private func readReady() {
         var buffer = [UInt8](repeating: 0, count: 4_096)
         while true {
@@ -140,7 +140,6 @@ final class OwnedStdioChild: Sendable {
             }
         }
     }
-
     private func reap(observedExit: Bool) {
         let reaped = resources.withLock { state -> Bool in
             guard let pid = state.pid else { return true }
@@ -156,7 +155,6 @@ final class OwnedStdioChild: Sendable {
         if reaped { processExit.cancel() }
     }
 }
-
 extension OwnedStdioChild {
     private static func spawn(_ command: OwnedStdioCommand) throws -> (StdioResources, pid_t) {
         var input = [Int32](repeating: -1, count: 2), output = input
@@ -170,10 +168,14 @@ extension OwnedStdioChild {
         defer { posix_spawn_file_actions_destroy(&actions) }
         guard posix_spawnattr_init(&attributes) == 0 else { throw CodexStdioError.transportLost }
         defer { posix_spawnattr_destroy(&attributes) }
+        let flags = POSIX_SPAWN_CLOEXEC_DEFAULT | (command.ownProcessGroup ? POSIX_SPAWN_SETPGROUP : 0)
+        if command.ownProcessGroup {
+            guard posix_spawnattr_setpgroup(&attributes, 0) == 0 else { throw CodexStdioError.transportLost }
+        }
         let setup = [posix_spawn_file_actions_adddup2(&actions, input[0], STDIN_FILENO),
                      posix_spawn_file_actions_adddup2(&actions, output[1], STDOUT_FILENO),
                      posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0),
-                     posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))]
+                     posix_spawnattr_setflags(&attributes, Int16(flags))]
         guard setup.allSatisfy({ $0 == 0 }) else { throw CodexStdioError.transportLost }
         var arguments = ([command.executable] + command.arguments).map { strdup($0) } + [nil]
         var environment = command.environment.map { strdup($0) } + [nil]
@@ -184,7 +186,8 @@ extension OwnedStdioChild {
         let result = posix_spawn(&pid, command.executable, &actions, &attributes, &arguments, &environment)
         guard result == 0 else { throw CodexStdioError.transportLost }
         close(input[0]); close(output[1]); keep = true
-        return (StdioResources(pid: pid, input: input[1], output: output[0]), pid)
+        return (StdioResources(pid: pid, processGroup: command.ownProcessGroup ? pid : nil,
+                               input: input[1], output: output[0]), pid)
     }
     private static func configure(input: Int32, output: Int32) throws {
         for descriptor in [input, output] {
