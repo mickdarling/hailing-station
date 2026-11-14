@@ -1,76 +1,150 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="900" viewBox="0 0 1080 900" role="img" aria-labelledby="title desc"><title id="title">ipad — Advanced and diagnostics — consolidated browser</title><desc id="desc">Synthetic compact settings design. Fixed scope, search, reset, presets and review; six-item paged list and focused editor. No live settings or native validation.</desc><g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif">
-<rect x="0" y="0" width="1080" height="900" rx="12" fill="#eff1ee" stroke="#dce2da"/>
-<rect x="0" y="0" width="214" height="900" rx="0" fill="#f5f6f3" stroke="#dce2da"/>
-<text x="18" y="32" font-size="12" fill="#606e67" font-weight="400">● ● ●</text>
-<text x="18" y="72" font-size="19" fill="#24312e" font-weight="650">Hailing Station</text>
-<text x="18" y="108" font-size="11" fill="#606e67" font-weight="400">Station     Sessions     Devices</text>
-<text x="18" y="150" font-size="11" fill="#606e67" font-weight="650">SETTINGS</text>
-<text x="20" y="192" font-size="13" fill="#606e67" font-weight="400">Listening and attention</text>
-<text x="20" y="240" font-size="13" fill="#606e67" font-weight="400">Privacy</text>
-<text x="20" y="288" font-size="13" fill="#606e67" font-weight="400">Voices and replies</text>
-<text x="20" y="336" font-size="13" fill="#606e67" font-weight="400">Notifications and</text>
-<text x="20" y="355" font-size="13" fill="#606e67" font-weight="400">updates</text>
-<text x="20" y="384" font-size="13" fill="#606e67" font-weight="400">Targets</text>
-<text x="20" y="432" font-size="13" fill="#606e67" font-weight="400">Audio</text>
-<text x="20" y="480" font-size="13" fill="#606e67" font-weight="400">Appearance</text>
-<rect x="10" y="502" width="194" height="42" rx="8" fill="#e7f1e9" stroke="#dce2da"/>
-<text x="20" y="528" font-size="13" fill="#196e5d" font-weight="400">Advanced and</text>
-<text x="20" y="547" font-size="13" fill="#196e5d" font-weight="400">diagnostics</text>
-<text x="18" y="842" font-size="12" fill="#606e67" font-weight="400">Example host · synthetic</text>
-<text x="18" y="866" font-size="12" fill="#606e67" font-weight="400">Inspector closed</text>
-<rect x="214" y="0" width="866" height="48" rx="8" fill="#fff" stroke="#dce2da"/>
-<text x="234" y="30" font-size="14" fill="#24312e" font-weight="650">Example target</text>
-<text x="840" y="30" font-size="13" fill="#606e67" font-weight="400">○ Mic off · demo    Aa   ⚙</text>
-<text x="234" y="88" font-size="25" fill="#24312e" font-weight="650">Advanced and diagnostics</text>
-<rect x="234" y="104" width="180" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
-<text x="244" y="126" font-size="12" fill="#196e5d" font-weight="600">Scope: All applicable ⌄</text>
-<rect x="925" y="104" width="132" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
-<text x="935" y="126" font-size="12" fill="#196e5d" font-weight="600">Reset group…</text>
-<rect x="234" y="148" width="826" height="36" rx="8" fill="#f7f8f5" stroke="#dce2da"/>
-<text x="246" y="171" font-size="13" fill="#606e67" font-weight="400">Find a setting or exact key</text>
-<text x="234" y="212" font-size="11" fill="#606e67" font-weight="400">198 entries · synthetic · owner</text>
-<rect x="234" y="228" width="313.88" height="440" rx="8" fill="#f5f6f3" stroke="#dce2da"/>
-<rect x="241" y="237" width="299.88" height="57" rx="8" fill="#e7f1e9" stroke="#dce2da"/>
-<text x="251" y="257" font-size="12" fill="#196e5d" font-weight="400">Listener interface</text>
-<text x="251" y="284" font-size="11" fill="#606e67" font-weight="400">Not configured</text>
-<rect x="241" y="298" width="299.88" height="57" rx="8" fill="#f5f6f3" stroke="#dce2da"/>
-<text x="251" y="318" font-size="12" fill="#24312e" font-weight="400">Listener port</text>
-<text x="251" y="345" font-size="11" fill="#606e67" font-weight="400">Not configured</text>
-<rect x="241" y="359" width="299.88" height="57" rx="8" fill="#f5f6f3" stroke="#dce2da"/>
-<text x="251" y="379" font-size="12" fill="#24312e" font-weight="400">Host reply identity</text>
-<text x="251" y="406" font-size="11" fill="#606e67" font-weight="400">Not configured</text>
-<rect x="241" y="420" width="299.88" height="57" rx="8" fill="#f5f6f3" stroke="#dce2da"/>
-<text x="251" y="440" font-size="12" fill="#24312e" font-weight="400">Policy schema version</text>
-<text x="251" y="467" font-size="11" fill="#606e67" font-weight="400">1</text>
-<rect x="241" y="481" width="299.88" height="57" rx="8" fill="#f5f6f3" stroke="#dce2da"/>
-<text x="251" y="501" font-size="12" fill="#24312e" font-weight="400">Deliveries per minute</text>
-<text x="251" y="528" font-size="11" fill="#606e67" font-weight="400">30</text>
-<rect x="241" y="542" width="299.88" height="57" rx="8" fill="#f5f6f3" stroke="#dce2da"/>
-<text x="251" y="562" font-size="12" fill="#24312e" font-weight="400">Connection probe mode</text>
-<text x="251" y="589" font-size="11" fill="#606e67" font-weight="400">false</text>
-<rect x="242" y="621" width="85" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
-<text x="252" y="643" font-size="12" fill="#196e5d" font-weight="600">‹ Previous</text>
-<text x="336" y="643" font-size="11" fill="#606e67" font-weight="400">1 / 33</text>
-<rect x="466.88" y="621" width="73" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
-<text x="476.88" y="643" font-size="12" fill="#196e5d" font-weight="600">Next ›</text>
-<rect x="565.88" y="228" width="494.12" height="440" rx="12" fill="#fff" stroke="#dce2da"/>
-<text x="581.88" y="256" font-size="20" fill="#24312e" font-weight="400">Listener interface</text>
-<text x="581.88" y="292" font-size="11" fill="#606e67" font-weight="400">bind</text>
-<rect x="581.88" y="317" width="462.12" height="38" rx="8" fill="#f7f8f5" stroke="#dce2da"/>
-<text x="593.88" y="341" font-size="14" fill="#24312e" font-weight="400">Not configured</text>
-<text x="581.88" y="373" font-size="13" fill="#606e67" font-weight="400">Network interface to listen on; admin</text>
-<text x="581.88" y="400" font-size="12" fill="#24312e" font-weight="400">Default: Required IPv4/IPv6 literal</text>
-<text x="581.88" y="424" font-size="12" fill="#606e67" font-weight="400">Allowed: Valid IPv4/IPv6 literal; host script rejects unspecified,</text>
-<text x="581.88" y="442" font-size="12" fill="#606e67" font-weight="400">IPv4-mapped, and scoped literals</text>
-<text x="581.88" y="466" font-size="12" fill="#a23c32" font-weight="400">Restart host · admin · high risk</text>
-<text x="581.88" y="492" font-size="12" fill="#86531a" font-weight="400">Unavailable: admin permission required.</text>
-<rect x="214" y="790" width="866" height="44" rx="0" fill="#fff" stroke="#dce2da"/>
-<text x="234" y="817" font-size="12" fill="#606e67" font-weight="400">No pending changes</text>
-<rect x="921" y="795" width="138" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
-<text x="931" y="817" font-size="12" fill="#196e5d" font-weight="600">Review changes</text>
-<rect x="214" y="844" width="866" height="50" rx="0" fill="#fff" stroke="#dce2da"/>
-<rect x="234" y="851" width="666" height="34" rx="7" fill="#196e5d" stroke="#dce2da"/>
-<text x="244" y="873" font-size="12" fill="#fff" font-weight="600">Tap to talk</text>
-<rect x="915" y="851" width="140" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
-<text x="925" y="873" font-size="12" fill="#196e5d" font-weight="600">Privacy · More</text>
-</g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="1194" height="1024" viewBox="0 0 1194 1024" role="img" aria-labelledby="title desc"><title id="title">ipad — Advanced and diagnostics — full-pane settings</title><desc id="desc">Original synthetic Revision B design study. Directly editable complete rows fill the pane. Reset, favorite and info sit by each control; technical details are in the optional inspector, closed. Page capacity is height-based. No live data or rendered/native verification.</desc><g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"><rect x="0" y="0" width="1194" height="1024" rx="12" fill="#eff1ee" stroke="#dce2da"/>
+<rect x="0" y="0" width="232" height="1024" rx="0" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="18" y="30" font-size="14" fill="#24312e" font-weight="400">Hailing Station</text>
+<text x="18" y="70" font-size="19" fill="#24312e" font-weight="650">Hailing Station</text>
+<text x="18" y="105" font-size="12" fill="#24312e" font-weight="400">Station    Sessions    Devices</text>
+<text x="18" y="146" font-size="11" fill="#606e67" font-weight="650">SETTINGS</text>
+<text x="20" y="182" font-size="14" fill="#196e5d" font-weight="600">☆  Favorites</text>
+<text x="20" y="224" font-size="13" fill="#606e67" font-weight="400">Listening and attention</text>
+<text x="20" y="269" font-size="13" fill="#606e67" font-weight="400">Privacy</text>
+<text x="20" y="314" font-size="13" fill="#606e67" font-weight="400">Voices and replies</text>
+<text x="20" y="359" font-size="13" fill="#606e67" font-weight="400">Notifications and updates</text>
+<text x="20" y="404" font-size="13" fill="#606e67" font-weight="400">Targets</text>
+<text x="20" y="449" font-size="13" fill="#606e67" font-weight="400">Audio</text>
+<text x="20" y="494" font-size="13" fill="#606e67" font-weight="400">Appearance</text>
+<rect x="10" y="515" width="212" height="38" rx="8" fill="#e7f1e9" stroke="#dce2da"/>
+<text x="20" y="539" font-size="13" fill="#196e5d" font-weight="650">Advanced and diagnostics</text>
+<text x="18" y="962" font-size="12" fill="#24312e" font-weight="400">Example host · synthetic</text>
+<text x="18" y="986" font-size="12" fill="#24312e" font-weight="400">Optional inspector: closed</text>
+<text x="18" y="1008" font-size="11" fill="#24312e" font-weight="400">No live configuration</text>
+<rect x="232" y="0" width="962" height="46" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="250" y="29" font-size="14" fill="#24312e" font-weight="650">Example target</text>
+<text x="955" y="29" font-size="12" fill="#606e67" font-weight="400">○ Mic off · demo     Aa     ⓘ</text>
+<text x="252" y="86" font-size="25" fill="#24312e" font-weight="650">Advanced and diagnostics</text>
+<rect x="849" y="59" width="185" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="858" y="80" font-size="12" fill="#196e5d" font-weight="600">All applicable scopes ⌄</text>
+<rect x="1047" y="59" width="127" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1056" y="80" font-size="12" fill="#196e5d" font-weight="600">Reset group…</text>
+<rect x="252" y="116" width="922" height="34" rx="7" fill="#f7f8f5" stroke="#dce2da"/>
+<text x="262" y="138" font-size="13" fill="#606e67" font-weight="400">Find a setting or exact key</text>
+<text x="252" y="172" font-size="12" fill="#606e67" font-weight="400">198 settings · owner · synthetic values</text>
+<rect x="252" y="183" width="922" height="80" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="202" font-size="14" fill="#24312e" font-weight="600">Listener interface</text>
+<text x="262" y="220" font-size="12" fill="#606e67" font-weight="400">Network interface to listen on; admin</text>
+<text x="262" y="236" font-size="11" fill="#86531a" font-weight="400">Restart host · admin · high risk</text>
+<text x="262" y="251" font-size="11" fill="#86531a" font-weight="400">Requires admin · unavailable</text>
+<rect x="694" y="206" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="227" font-size="13" fill="#606e67" font-weight="400">Not configured</text>
+<rect x="1034" y="206" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="232" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="206" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="232" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="206" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="232" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="263" width="922" height="80" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="282" font-size="14" fill="#24312e" font-weight="600">Listener port</text>
+<text x="262" y="300" font-size="12" fill="#606e67" font-weight="400">Local listener port; admin</text>
+<text x="262" y="316" font-size="11" fill="#86531a" font-weight="400">Restart host · admin · high risk</text>
+<text x="262" y="331" font-size="11" fill="#86531a" font-weight="400">Requires admin · unavailable</text>
+<rect x="694" y="286" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="307" font-size="13" fill="#606e67" font-weight="400">Not configured</text>
+<rect x="1034" y="286" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="312" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="286" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="312" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="286" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="312" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="343" width="922" height="80" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="362" font-size="14" fill="#24312e" font-weight="600">Host reply identity</text>
+<text x="262" y="380" font-size="12" fill="#606e67" font-weight="400">Stable reply source identity; admin</text>
+<text x="262" y="396" font-size="11" fill="#86531a" font-weight="400">Restart host · admin · high risk</text>
+<text x="262" y="411" font-size="11" fill="#86531a" font-weight="400">Requires admin · unavailable</text>
+<rect x="694" y="366" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="387" font-size="13" fill="#606e67" font-weight="400">Not configured</text>
+<rect x="1034" y="366" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="392" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="366" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="392" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="366" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="392" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="423" width="922" height="96" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="442" font-size="14" fill="#24312e" font-weight="600">Policy schema version</text>
+<text x="262" y="460" font-size="12" fill="#606e67" font-weight="400">Schema compatibility, not an ordinary editable</text>
+<text x="262" y="476" font-size="12" fill="#606e67" font-weight="400">preference; dev</text>
+<text x="262" y="492" font-size="11" fill="#86531a" font-weight="400">Not supported · dev · high risk</text>
+<text x="262" y="507" font-size="11" fill="#86531a" font-weight="400">App-managed · see details</text>
+<rect x="694" y="454" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="475" font-size="13" fill="#606e67" font-weight="400">1</text>
+<rect x="1034" y="454" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="480" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="454" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="480" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="454" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="480" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="519" width="922" height="96" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="538" font-size="14" fill="#24312e" font-weight="600">Deliveries per minute</text>
+<text x="262" y="556" font-size="12" fill="#606e67" font-weight="400">Per-target and per-device admitted line budget;</text>
+<text x="262" y="572" font-size="12" fill="#606e67" font-weight="400">owner/admin</text>
+<text x="262" y="588" font-size="11" fill="#86531a" font-weight="400">Immediate · admin · high risk</text>
+<text x="262" y="603" font-size="11" fill="#86531a" font-weight="400">Requires admin · unavailable</text>
+<rect x="694" y="550" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="571" font-size="13" fill="#606e67" font-weight="400">30</text>
+<rect x="1034" y="550" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="576" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="550" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="576" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="550" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="576" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="615" width="922" height="80" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="634" font-size="14" fill="#24312e" font-weight="600">Connection probe mode</text>
+<text x="262" y="652" font-size="12" fill="#606e67" font-weight="400">Selects read-only connection probe authorizer</text>
+<text x="262" y="668" font-size="11" fill="#606e67" font-weight="400">Restart host · dev · medium risk</text>
+<text x="262" y="683" font-size="11" fill="#86531a" font-weight="400">Requires dev · unavailable</text>
+<rect x="694" y="638" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="659" font-size="13" fill="#606e67" font-weight="400">Off</text>
+<rect x="1034" y="638" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="664" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="638" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="664" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="638" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="664" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="695" width="922" height="96" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="714" font-size="14" fill="#24312e" font-weight="600">Personal terminal mode</text>
+<text x="262" y="732" font-size="12" fill="#606e67" font-weight="400">Enables terminal processing/reply socket; required for</text>
+<text x="262" y="748" font-size="12" fill="#606e67" font-weight="400">every extra personal feature</text>
+<text x="262" y="764" font-size="11" fill="#86531a" font-weight="400">Restart host · admin · high risk</text>
+<text x="262" y="779" font-size="11" fill="#86531a" font-weight="400">Requires admin · unavailable</text>
+<rect x="694" y="726" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="747" font-size="13" fill="#606e67" font-weight="400">Off</text>
+<rect x="1034" y="726" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="752" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="726" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="752" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="726" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="752" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="791" width="922" height="78" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="810" font-size="14" fill="#24312e" font-weight="600">Share host health summary</text>
+<text x="262" y="828" font-size="12" fill="#606e67" font-weight="400">Personal-terminal only; advertises/answers host</text>
+<text x="262" y="844" font-size="12" fill="#606e67" font-weight="400">doctor-summary capability; no matching host.json key</text>
+<text x="262" y="860" font-size="11" fill="#606e67" font-weight="400">Restart host · owner · medium risk</text>
+<rect x="694" y="813" width="335" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="702" y="834" font-size="13" fill="#24312e" font-weight="400">Off</text>
+<rect x="1034" y="813" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="839" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="813" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="839" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="813" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="839" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="882" width="87" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="261" y="903" font-size="12" fill="#196e5d" font-weight="600">‹ Previous</text>
+<text x="573" y="904" font-size="12" fill="#606e67" font-weight="400">1–8 of 198 · Page 1/23</text>
+<rect x="1103" y="882" width="71" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1112" y="903" font-size="12" fill="#196e5d" font-weight="600">Next ›</text>
+<rect x="232" y="928" width="962" height="44" rx="0" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="244" y="955" font-size="12" fill="#606e67" font-weight="400">No draft changes</text>
+<rect x="1047" y="933" width="135" height="34" rx="7" fill="#196e5d" stroke="#dce2da"/>
+<text x="1056" y="954" font-size="12" fill="#fff" font-weight="600">Review changes</text>
+<rect x="232" y="972" width="962" height="52" rx="0" fill="#fff" stroke="#dce2da"/>
+<rect x="244" y="977" width="862" height="40" rx="7" fill="#196e5d" stroke="#dce2da"/>
+<text x="253" y="1001" font-size="12" fill="#fff" font-weight="600">Tap to talk · simulation</text>
+<text x="1129" y="1001" font-size="16" fill="#196e5d" font-weight="400">♬   •••</text></g></svg>

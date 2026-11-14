@@ -1,81 +1,148 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="900" viewBox="0 0 1080 900" role="img" aria-labelledby="title desc"><title id="title">ipad — Listening and attention — consolidated browser</title><desc id="desc">Synthetic compact settings design. Fixed scope, search, reset, presets and review; six-item paged list and focused editor. No live settings or native validation.</desc><g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif">
-<rect x="0" y="0" width="1080" height="900" rx="12" fill="#eff1ee" stroke="#dce2da"/>
-<rect x="0" y="0" width="214" height="900" rx="0" fill="#f5f6f3" stroke="#dce2da"/>
-<text x="18" y="32" font-size="12" fill="#606e67" font-weight="400">● ● ●</text>
-<text x="18" y="72" font-size="19" fill="#24312e" font-weight="650">Hailing Station</text>
-<text x="18" y="108" font-size="11" fill="#606e67" font-weight="400">Station     Sessions     Devices</text>
-<text x="18" y="150" font-size="11" fill="#606e67" font-weight="650">SETTINGS</text>
-<rect x="10" y="166" width="194" height="42" rx="8" fill="#e7f1e9" stroke="#dce2da"/>
-<text x="20" y="192" font-size="13" fill="#196e5d" font-weight="400">Listening and attention</text>
-<text x="20" y="240" font-size="13" fill="#606e67" font-weight="400">Privacy</text>
-<text x="20" y="288" font-size="13" fill="#606e67" font-weight="400">Voices and replies</text>
-<text x="20" y="336" font-size="13" fill="#606e67" font-weight="400">Notifications and</text>
-<text x="20" y="355" font-size="13" fill="#606e67" font-weight="400">updates</text>
-<text x="20" y="384" font-size="13" fill="#606e67" font-weight="400">Targets</text>
-<text x="20" y="432" font-size="13" fill="#606e67" font-weight="400">Audio</text>
-<text x="20" y="480" font-size="13" fill="#606e67" font-weight="400">Appearance</text>
-<text x="20" y="528" font-size="13" fill="#606e67" font-weight="400">Advanced and</text>
-<text x="20" y="547" font-size="13" fill="#606e67" font-weight="400">diagnostics</text>
-<text x="18" y="842" font-size="12" fill="#606e67" font-weight="400">Example host · synthetic</text>
-<text x="18" y="866" font-size="12" fill="#606e67" font-weight="400">Inspector closed</text>
-<rect x="214" y="0" width="866" height="48" rx="8" fill="#fff" stroke="#dce2da"/>
-<text x="234" y="30" font-size="14" fill="#24312e" font-weight="650">Example target</text>
-<text x="840" y="30" font-size="13" fill="#606e67" font-weight="400">○ Mic off · demo    Aa   ⚙</text>
-<text x="234" y="88" font-size="25" fill="#24312e" font-weight="650">Listening and attention</text>
-<rect x="234" y="104" width="180" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
-<text x="244" y="126" font-size="12" fill="#196e5d" font-weight="600">Scope: All applicable ⌄</text>
-<rect x="925" y="104" width="132" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
-<text x="935" y="126" font-size="12" fill="#196e5d" font-weight="600">Reset group…</text>
-<rect x="234" y="148" width="826" height="36" rx="8" fill="#f7f8f5" stroke="#dce2da"/>
-<text x="246" y="171" font-size="13" fill="#606e67" font-weight="400">Find a setting or exact key</text>
-<rect x="234" y="198" width="192" height="34" rx="7" fill="#196e5d" stroke="#dce2da"/>
-<text x="244" y="220" font-size="12" fill="#fff" font-weight="600">Pay attention to me</text>
-<rect x="436" y="198" width="182" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
-<text x="446" y="220" font-size="12" fill="#196e5d" font-weight="600">Require cues</text>
-<text x="234" y="258" font-size="11" fill="#606e67" font-weight="400">49 entries · synthetic · owner</text>
-<rect x="234" y="274" width="313.88" height="440" rx="8" fill="#f5f6f3" stroke="#dce2da"/>
-<rect x="241" y="283" width="299.88" height="57" rx="8" fill="#e7f1e9" stroke="#dce2da"/>
-<text x="251" y="303" font-size="12" fill="#196e5d" font-weight="400">Require a follow-up cue</text>
-<text x="251" y="330" font-size="11" fill="#606e67" font-weight="400">false</text>
-<rect x="241" y="344" width="299.88" height="57" rx="8" fill="#f5f6f3" stroke="#dce2da"/>
-<text x="251" y="364" font-size="12" fill="#24312e" font-weight="400">Listening engine executable</text>
-<text x="251" y="391" font-size="11" fill="#606e67" font-weight="400">Not configured</text>
-<rect x="241" y="405" width="299.88" height="57" rx="8" fill="#f5f6f3" stroke="#dce2da"/>
-<text x="251" y="425" font-size="12" fill="#24312e" font-weight="400">Listening engine configuration file</text>
-<text x="251" y="452" font-size="11" fill="#606e67" font-weight="400">Not configured</text>
-<rect x="241" y="466" width="299.88" height="57" rx="8" fill="#f5f6f3" stroke="#dce2da"/>
-<text x="251" y="486" font-size="12" fill="#24312e" font-weight="400">Bridge delivery target</text>
-<text x="251" y="513" font-size="11" fill="#606e67" font-weight="400">Not configured</text>
-<rect x="241" y="527" width="299.88" height="57" rx="8" fill="#f5f6f3" stroke="#dce2da"/>
-<text x="251" y="547" font-size="12" fill="#24312e" font-weight="400">Bridge session identifier</text>
-<text x="251" y="574" font-size="11" fill="#606e67" font-weight="400">Not configured</text>
-<rect x="241" y="588" width="299.88" height="57" rx="8" fill="#f5f6f3" stroke="#dce2da"/>
-<text x="251" y="608" font-size="12" fill="#24312e" font-weight="400">Allow synthetic bridge input</text>
-<text x="251" y="635" font-size="11" fill="#606e67" font-weight="400">false</text>
-<rect x="242" y="667" width="85" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
-<text x="252" y="689" font-size="12" fill="#196e5d" font-weight="600">‹ Previous</text>
-<text x="336" y="689" font-size="11" fill="#606e67" font-weight="400">1 / 9</text>
-<rect x="466.88" y="667" width="73" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
-<text x="476.88" y="689" font-size="12" fill="#196e5d" font-weight="600">Next ›</text>
-<rect x="565.88" y="274" width="494.12" height="440" rx="12" fill="#fff" stroke="#dce2da"/>
-<text x="581.88" y="302" font-size="20" fill="#24312e" font-weight="400">Require a follow-up cue</text>
-<text x="581.88" y="338" font-size="11" fill="#606e67" font-weight="400">conversation.require_cue</text>
-<rect x="581.88" y="363" width="462.12" height="38" rx="8" fill="#f7f8f5" stroke="#dce2da"/>
-<text x="593.88" y="387" font-size="14" fill="#24312e" font-weight="400">false</text>
-<text x="581.88" y="419" font-size="13" fill="#606e67" font-weight="400">Applies only to uncertain engaged follow-ups. Answers to</text>
-<text x="581.88" y="438" font-size="13" fill="#606e67" font-weight="400">reported questions, configured confidence bypass and enabled</text>
-<text x="581.88" y="457" font-size="13" fill="#606e67" font-weight="400">continuation rules may waive it. Direct requests have their own</text>
-<text x="581.88" y="476" font-size="13" fill="#606e67" font-weight="400">path.</text>
-<text x="581.88" y="503" font-size="12" fill="#24312e" font-weight="400">Default: bool; false</text>
-<text x="581.88" y="527" font-size="12" fill="#606e67" font-weight="400">Allowed: Boolean</text>
-<text x="581.88" y="551" font-size="12" fill="#196e5d" font-weight="400">Reload listening engine · owner · medium risk</text>
-<rect x="214" y="790" width="866" height="44" rx="0" fill="#fff" stroke="#dce2da"/>
-<text x="234" y="817" font-size="12" fill="#606e67" font-weight="400">No pending changes</text>
-<rect x="921" y="795" width="138" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
-<text x="931" y="817" font-size="12" fill="#196e5d" font-weight="600">Review changes</text>
-<rect x="214" y="844" width="866" height="50" rx="0" fill="#fff" stroke="#dce2da"/>
-<rect x="234" y="851" width="666" height="34" rx="7" fill="#196e5d" stroke="#dce2da"/>
-<text x="244" y="873" font-size="12" fill="#fff" font-weight="600">Tap to talk</text>
-<rect x="915" y="851" width="140" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
-<text x="925" y="873" font-size="12" fill="#196e5d" font-weight="600">Privacy · More</text>
-</g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="1194" height="1024" viewBox="0 0 1194 1024" role="img" aria-labelledby="title desc"><title id="title">ipad — Listening and attention — full-pane settings</title><desc id="desc">Original synthetic Revision B design study. Directly editable complete rows fill the pane. Reset, favorite and info sit by each control; technical details are in the optional inspector, closed. Page capacity is height-based. No live data or rendered/native verification.</desc><g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"><rect x="0" y="0" width="1194" height="1024" rx="12" fill="#eff1ee" stroke="#dce2da"/>
+<rect x="0" y="0" width="232" height="1024" rx="0" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="18" y="30" font-size="14" fill="#24312e" font-weight="400">Hailing Station</text>
+<text x="18" y="70" font-size="19" fill="#24312e" font-weight="650">Hailing Station</text>
+<text x="18" y="105" font-size="12" fill="#24312e" font-weight="400">Station    Sessions    Devices</text>
+<text x="18" y="146" font-size="11" fill="#606e67" font-weight="650">SETTINGS</text>
+<text x="20" y="182" font-size="14" fill="#196e5d" font-weight="600">☆  Favorites</text>
+<rect x="10" y="200" width="212" height="38" rx="8" fill="#e7f1e9" stroke="#dce2da"/>
+<text x="20" y="224" font-size="13" fill="#196e5d" font-weight="650">Listening and attention</text>
+<text x="20" y="269" font-size="13" fill="#606e67" font-weight="400">Privacy</text>
+<text x="20" y="314" font-size="13" fill="#606e67" font-weight="400">Voices and replies</text>
+<text x="20" y="359" font-size="13" fill="#606e67" font-weight="400">Notifications and updates</text>
+<text x="20" y="404" font-size="13" fill="#606e67" font-weight="400">Targets</text>
+<text x="20" y="449" font-size="13" fill="#606e67" font-weight="400">Audio</text>
+<text x="20" y="494" font-size="13" fill="#606e67" font-weight="400">Appearance</text>
+<text x="20" y="539" font-size="13" fill="#606e67" font-weight="400">Advanced and diagnostics</text>
+<text x="18" y="962" font-size="12" fill="#24312e" font-weight="400">Example host · synthetic</text>
+<text x="18" y="986" font-size="12" fill="#24312e" font-weight="400">Optional inspector: closed</text>
+<text x="18" y="1008" font-size="11" fill="#24312e" font-weight="400">No live configuration</text>
+<rect x="232" y="0" width="962" height="46" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="250" y="29" font-size="14" fill="#24312e" font-weight="650">Example target</text>
+<text x="955" y="29" font-size="12" fill="#606e67" font-weight="400">○ Mic off · demo     Aa     ⓘ</text>
+<text x="252" y="86" font-size="25" fill="#24312e" font-weight="650">Listening and attention</text>
+<rect x="849" y="59" width="185" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="858" y="80" font-size="12" fill="#196e5d" font-weight="600">All applicable scopes ⌄</text>
+<rect x="1047" y="59" width="127" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1056" y="80" font-size="12" fill="#196e5d" font-weight="600">Reset group…</text>
+<rect x="252" y="116" width="922" height="34" rx="7" fill="#f7f8f5" stroke="#dce2da"/>
+<text x="262" y="138" font-size="13" fill="#606e67" font-weight="400">Find a setting or exact key</text>
+<rect x="252" y="160" width="188" height="34" rx="7" fill="#196e5d" stroke="#dce2da"/>
+<text x="261" y="181" font-size="12" fill="#fff" font-weight="600">Pay attention to me</text>
+<rect x="450" y="160" width="120" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="459" y="181" font-size="12" fill="#196e5d" font-weight="600">Require cues</text>
+<text x="252" y="216" font-size="12" fill="#606e67" font-weight="400">49 settings · owner · synthetic values</text>
+<rect x="252" y="227" width="922" height="62" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="246" font-size="14" fill="#24312e" font-weight="600">Require a follow-up cue</text>
+<text x="262" y="264" font-size="12" fill="#606e67" font-weight="400">Applies only to uncertain engaged follow-ups.</text>
+<text x="262" y="280" font-size="11" fill="#606e67" font-weight="400">Reload listening engine · owner · medium risk</text>
+<rect x="694" y="241" width="335" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="702" y="262" font-size="13" fill="#24312e" font-weight="400">On (synthetic)</text>
+<rect x="1034" y="241" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="267" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="241" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="267" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="241" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="267" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="289" width="922" height="80" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="308" font-size="14" fill="#24312e" font-weight="600">Listening engine executable</text>
+<text x="262" y="326" font-size="12" fill="#606e67" font-weight="400">RightyO process used for ambient audio; admin</text>
+<text x="262" y="342" font-size="11" fill="#86531a" font-weight="400">Restart host · admin · high risk</text>
+<text x="262" y="357" font-size="11" fill="#86531a" font-weight="400">Requires admin · unavailable</text>
+<rect x="694" y="312" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="333" font-size="13" fill="#606e67" font-weight="400">Not configured</text>
+<rect x="1034" y="312" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="338" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="312" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="338" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="312" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="338" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="369" width="922" height="80" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="388" font-size="14" fill="#24312e" font-weight="600">Listening engine configuration file</text>
+<text x="262" y="406" font-size="12" fill="#606e67" font-weight="400">Which RightyO JSON configuration new children read; admin</text>
+<text x="262" y="422" font-size="11" fill="#86531a" font-weight="400">Restart host · admin · high risk</text>
+<text x="262" y="437" font-size="11" fill="#86531a" font-weight="400">Requires admin · unavailable</text>
+<rect x="694" y="392" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="413" font-size="13" fill="#606e67" font-weight="400">Not configured</text>
+<rect x="1034" y="392" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="418" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="392" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="418" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="392" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="418" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="449" width="922" height="78" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="468" font-size="14" fill="#24312e" font-weight="600">Bridge delivery target</text>
+<text x="262" y="486" font-size="12" fill="#606e67" font-weight="400">Delivery target, must resolve to current bound registry</text>
+<text x="262" y="502" font-size="12" fill="#606e67" font-weight="400">entry; owner/app</text>
+<text x="262" y="518" font-size="11" fill="#86531a" font-weight="400">Next process · owner · high risk</text>
+<rect x="694" y="471" width="335" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="702" y="492" font-size="13" fill="#24312e" font-weight="400">Not configured</text>
+<rect x="1034" y="471" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="497" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="471" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="497" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="471" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="497" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="527" width="922" height="78" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="546" font-size="14" fill="#24312e" font-weight="600">Reload listening engine</text>
+<text x="262" y="564" font-size="12" fill="#606e67" font-weight="400">Reload active RightyO child, never starts listening;</text>
+<text x="262" y="580" font-size="12" fill="#606e67" font-weight="400">status no reload; owner</text>
+<text x="262" y="596" font-size="11" fill="#86531a" font-weight="400">Reload listening engine · owner · high risk</text>
+<rect x="694" y="549" width="335" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="702" y="570" font-size="13" fill="#24312e" font-weight="400">Configure…</text>
+<rect x="1034" y="549" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="575" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="549" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="575" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="549" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="575" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="605" width="922" height="78" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="624" font-size="14" fill="#24312e" font-weight="600">Inspect listening engine status</text>
+<text x="262" y="642" font-size="12" fill="#606e67" font-weight="400">Reload active RightyO child, never starts listening;</text>
+<text x="262" y="658" font-size="12" fill="#606e67" font-weight="400">status no reload; owner</text>
+<text x="262" y="674" font-size="11" fill="#86531a" font-weight="400">Next process · owner · high risk</text>
+<rect x="694" y="627" width="335" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="702" y="648" font-size="13" fill="#24312e" font-weight="400">Configure…</text>
+<rect x="1034" y="627" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="653" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="627" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="653" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="627" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="653" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="683" width="922" height="62" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="702" font-size="14" fill="#24312e" font-weight="600">Attention decision provider</text>
+<text x="262" y="720" font-size="12" fill="#606e67" font-weight="400">Selects mock or hosted Jev transcript decisions.</text>
+<text x="262" y="736" font-size="11" fill="#606e67" font-weight="400">Reload listening engine · owner · medium risk</text>
+<rect x="694" y="697" width="335" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="702" y="718" font-size="13" fill="#24312e" font-weight="400">Not configured</text>
+<rect x="1034" y="697" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="723" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="697" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="723" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="697" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="723" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="745" width="922" height="62" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="764" font-size="14" fill="#24312e" font-weight="600">Attention request budget</text>
+<text x="262" y="782" font-size="12" fill="#606e67" font-weight="400">No cap by default in live mode; demo fallback is 20.</text>
+<text x="262" y="798" font-size="11" fill="#606e67" font-weight="400">Reload listening engine · owner · medium risk</text>
+<rect x="694" y="759" width="335" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="702" y="780" font-size="13" fill="#24312e" font-weight="400">Not configured</text>
+<rect x="1034" y="759" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="785" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="759" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="785" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="759" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="785" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="882" width="87" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="261" y="903" font-size="12" fill="#196e5d" font-weight="600">‹ Previous</text>
+<text x="573" y="904" font-size="12" fill="#606e67" font-weight="400">1–8 of 49 · Page 1/7</text>
+<rect x="1103" y="882" width="71" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1112" y="903" font-size="12" fill="#196e5d" font-weight="600">Next ›</text>
+<rect x="232" y="928" width="962" height="44" rx="0" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="244" y="955" font-size="12" fill="#606e67" font-weight="400">No draft changes</text>
+<rect x="1047" y="933" width="135" height="34" rx="7" fill="#196e5d" stroke="#dce2da"/>
+<text x="1056" y="954" font-size="12" fill="#fff" font-weight="600">Review changes</text>
+<rect x="232" y="972" width="962" height="52" rx="0" fill="#fff" stroke="#dce2da"/>
+<rect x="244" y="977" width="862" height="40" rx="7" fill="#196e5d" stroke="#dce2da"/>
+<text x="253" y="1001" font-size="12" fill="#fff" font-weight="600">Tap to talk · simulation</text>
+<text x="1129" y="1001" font-size="16" fill="#196e5d" font-weight="400">♬   •••</text></g></svg>

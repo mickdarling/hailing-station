@@ -99,7 +99,7 @@ Audio reuses the existing **input preference** and **system output picker** affo
 
 ### All 24 section frames
 
-Each row contains the same section on Mac, iPad and iPhone. These are documentation assets; the implementation must still verify actual native accessibility, routing, sizing and lifecycle behavior separately.
+Each gallery row contains the same section on Mac, iPad and iPhone. The revised frames use full-pane editable rows, inline Reset/star/Info and height-filled pages; Favorites sits below Settings, and the optional inspector starts closed. Static counts reflect each illustrated viewport, not a fixed page-size rule. These are original synthetic documentation assets. Source/layout review is complete; rendered browser, native accessibility, routing, sizing and lifecycle qualification remain outstanding.
 
 | Mac | iPad | iPhone |
 | --- | --- | --- |
