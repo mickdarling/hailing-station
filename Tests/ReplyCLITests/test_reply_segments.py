@@ -5,7 +5,6 @@ import copy
 import json
 import os
 import re
-import signal
 import statistics
 import subprocess
 import tempfile
@@ -201,24 +200,23 @@ class ReplySegmentCLITests(unittest.TestCase):
         self.assertEqual(len(self.invocations()), 2)
         self.assertEqual(list(self.root.iterdir()), [])
 
-    def test_cancellation_mid_segment_stops_owned_child_and_later_segments(self):
-        environment = self.environment("60000")
-        environment["REPLY_RENDERER_TEST_STALL_AFTER_BYTES"] = "1"
+    def test_host_refusal_mid_segment_stops_owned_child_and_later_segments(self):
+        environment = self.environment("130000")
         environment.pop("HAILD_REPLY_FOREGROUND")
-        with self.rig.reply_server(lambda index: {"delivered": 1}) as (path, frames):
+        def respond(index):
+            return {"delivered": 1} if index < 2 else {"delivered": 0, "error": "reply stopped"}
+        with self.rig.reply_server(respond) as (path, frames):
             result = self.rig.run_reply(["--say", "First. Second. Third.", "--socket", path,
                                          "--renderer-output-root", str(self.root)], path, environment)
             self.assertEqual(result.returncode, 0, result.stderr)
-            job = self.rig.jobs[-1]
-            self.rig.wait_for(lambda: len(frames) >= 2, 10)
-            os.kill(job, signal.SIGTERM)  # bounded detached job cancels its Swift task cooperatively
             self.rig.await_jobs()
         self.assertEqual(len(self.invocations()), 1)
         self.assertTrue(all(not self.rig.alive(item["pid"]) for item in self.invocations()))
         self.assertEqual(list(self.root.iterdir()), [])
-        # Existing Task cancellation also cancels terminal submission; no frames appear after retirement.
+        self.assertEqual(self.rig.job_ends[0]["reason"], "refused")
+        # The host refusal stops publication before a segment end or any later renderer.
         self.assertFalse(any(frame["payload"].get("segmentEnd") for _, frame in frames))
-        self.assert_outcome("cancelled")
+        self.assert_outcome("failed")
 
     def test_supersession_mid_reply_never_starts_later_segment(self):
         environment = self.environment("2880000")

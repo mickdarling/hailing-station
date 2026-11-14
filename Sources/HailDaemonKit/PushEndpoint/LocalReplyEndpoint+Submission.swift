@@ -57,6 +57,29 @@ public struct LocalReplyAudioRequest: Codable, Sendable {
     }
 }
 
+/// Content-free local job telemetry only; never forwarded to a device or used as reply authority.
+public struct LocalReplyJobEnd: Codable, Sendable {
+    public enum Reason: String, Codable, Sendable, CaseIterable {
+        case done, refused, bound, signal
+        case publicationFailed = "publication_failed"
+    }
+    public static let kind = "reply-job-ended"
+    public let kind: String
+    public let reason: Reason
+    public let frames: Int
+    public let audioMS: Int
+
+    public init(reason: Reason, frames: Int, audioMS: Int) {
+        kind = Self.kind
+        self.reason = reason; self.frames = frames; self.audioMS = audioMS
+    }
+
+    public var line: String? {
+        guard kind == Self.kind, frames >= 0, audioMS >= 0 else { return nil }
+        return "reply_job_ended reason=\(reason.rawValue) frames=\(frames) audio_ms=\(audioMS)"
+    }
+}
+
 public struct LocalReplyAudioReport: Codable, Equatable, Sendable {
     public var ticket: LocalReplyAudioTicket?
     public var skipped: Bool
@@ -322,7 +345,9 @@ extension LocalReplyEndpoint {
         let now = clock.now
         let terminal = kind == nil && TerminalProbe.isTerminalAudio(data)
             || kind == "reply-audio" && QueuedTerminalProbe.isTerminalAudio(data)
-        let (bucket, limit) = release ? ("local-reply-release", 20)
+        let ended = kind == LocalReplyJobEnd.kind
+        let (bucket, limit) = ended ? ("local-reply-job-end", Self.maxFramesPerMinute)
+            : release ? ("local-reply-release", 20)
             : terminal ? ("local-reply-terminal", Self.maxTerminalFramesPerMinute)
             : ("local-reply", Self.maxFramesPerMinute)
         guard limiter.retryAfter(for: bucket, now: now, limitPerMinute: limit) == nil else {
@@ -330,6 +355,7 @@ extension LocalReplyEndpoint {
             return
         }
         limiter.record(bucket, at: now)
+        if ended { return await submitJobEnd(data, from: client) }
         if kind == "voice-guards" { return await submitVoiceGuards(data, from: client) }
         if isDispatch { return await submitDispatch(data, from: client) }
         if kind == LocalAmbientRequest.kind { return await submitAmbient(data, from: client) }
@@ -337,6 +363,16 @@ extension LocalReplyEndpoint {
         if kind == LocalTaskProgressRequest.kind { return await submitTaskProgress(data, from: client) }
         if kind == "reply-audio" { return await submitReplyAudio(data, from: client) }
         await submitReply(data, from: client)
+    }
+
+    /// The socket already enforces owner-only access and a separate bounded telemetry budget.
+    private func submitJobEnd(_ data: Data, from client: LocalReplyConnection) async {
+        guard let report = try? JSONDecoder().decode(LocalReplyJobEnd.self, from: data),
+              let line = report.line else {
+            return await respond(.init(delivered: 0, error: "invalid job end"), to: client)
+        }
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+        await respond(.init(delivered: 0), to: client)
     }
 
     private static func decodeReplyAudio(_ data: Data) throws -> LocalReplyAudioRequest {
