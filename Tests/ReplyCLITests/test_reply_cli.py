@@ -30,6 +30,7 @@ class ReplyCLITests(unittest.TestCase):
         # Every detached job a test starts is waited for (or killed) before its fake socket closes, and every
         # test has its own TMPDIR, so no job, renderer folder or lock outlives the test that made it (#469).
         self.jobs = []
+        self.job_ends = []
         scratch = tempfile.mkdtemp(prefix="hail-cli-")
         self.addCleanup(shutil.rmtree, scratch, True)
         previous = os.environ.get("TMPDIR")
@@ -430,7 +431,10 @@ class ReplyCLITests(unittest.TestCase):
                                 queued = decoded.get("kind") == "reply-audio"
                                 if queued and queue_requests is not None:
                                     queue_requests.append(decoded)
-                                if queued and decoded["action"] == "enqueue":
+                                if decoded.get("kind") == "reply-job-ended":
+                                    self.job_ends.append(decoded)
+                                    response = {"delivered": 0}
+                                elif queued and decoded["action"] == "enqueue":
                                     queue_position += 1
                                     response = {"delivered": 0, "replyAudio": {"skipped": False, "ticket": {
                                         "epoch": queue_epoch, "position": queue_position, "releaseKey": str(uuid.uuid4()).upper()}}}
@@ -982,7 +986,10 @@ class ReplyCLITests(unittest.TestCase):
                                     request += chunk
                                 decoded = json.loads(request)
                                 queued = decoded.get("kind") == "reply-audio"
-                                if queued and decoded["action"] == "enqueue":
+                                if decoded.get("kind") == "reply-job-ended":
+                                    self.job_ends.append(decoded)
+                                    response = {"delivered": 0}
+                                elif queued and decoded["action"] == "enqueue":
                                     queue_position += 1
                                     response = {"delivered": 0, "replyAudio": {"skipped": False, "ticket": {
                                         "epoch": queue_epoch, "position": queue_position, "releaseKey": str(uuid.uuid4()).upper()}}}

@@ -39,7 +39,20 @@ if "REPLY_RENDERER_TEST_STDOUT_BYTES" in os.environ:
     assert os.environ["VBSAY_STDOUT"] == "1"
     counts = os.environ["REPLY_RENDERER_TEST_STDOUT_BYTES"].split(",")
     count = int(counts[min(invocation - 1, len(counts) - 1)])
-    value = invocation if os.environ.get("REPLY_RENDERER_TEST_SEGMENT_BYTES") else 0
+    value = int(os.environ.get("REPLY_RENDERER_TEST_BYTE", "0"))
+    if os.environ.get("REPLY_RENDERER_TEST_SEGMENT_BYTES"):
+        value = invocation
+    if os.environ.get("REPLY_RENDERER_TEST_PAUSE_AFTER_FIRST_FRAME"):
+        os.write(1, bytes([value]) * 24_000)
+        resume = os.environ.get("REPLY_RENDERER_TEST_RESUME_FILE")
+        if resume:
+            deadline = time.monotonic() + 30
+            while not Path(resume).exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert Path(resume).exists()
+        else:
+            time.sleep(2)
+        count -= 24_000
     for start in range(0, count, 7_000):
         os.write(1, bytes([value]) * min(7_000, count - start))
     if os.environ.get("REPLY_RENDERER_TEST_STALL_AFTER_BYTES"):

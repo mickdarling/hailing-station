@@ -1,9 +1,11 @@
 """#1212: content-free reservation cleanup on completed CLI exit paths; synthetic socket only."""
 import fcntl
 import os
+import select
 import signal
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -25,7 +27,7 @@ class ReplyTicketReleaseTests(unittest.TestCase):
     def test_request_bound_waiter_gives_up_and_releases_ticket(self):
         self.exercise("request")
 
-    def test_sigterm_waiter_releases_ticket(self):
+    def test_sigterm_before_ready_releases_ticket(self):
         self.exercise("signal")
 
     def test_audio_time_bound_releases_ticket(self):
@@ -35,8 +37,11 @@ class ReplyTicketReleaseTests(unittest.TestCase):
         controls = []
         pcm = None
         issued_ticket = None
+        release = threading.Event()
 
         def response(index):
+            if mode == "signal":
+                release.wait(10)  # hold text acknowledgement, before the job can report ready
             if mode == "bound" and index == 0:
                 # Grow only after preflight and ticket issuance, before acknowledging its text.
                 with pcm.open("r+b") as audio:
@@ -80,11 +85,10 @@ class ReplyTicketReleaseTests(unittest.TestCase):
                     self.addCleanup(self.finish, job)
                     self.rig.wait_for(lambda: len(frames) == 1, 10)
                     if mode == "signal":
-                        # Observe its actual kernel wait before cancellation, without a settling delay.
-                        from test_queued_reply_stop import QueuedReplyStopTests
-                        self.rig.wait_for(lambda: QueuedReplyStopTests.waiter_registered(
-                            lock.with_name("reply-audio.waiters")), 10)
                         job.send_signal(signal.SIGTERM)
+                        # Cancellation releases stderr while text is still held: ready cannot win this race.
+                        self.rig.wait_for(lambda: bool(select.select([job.stderr], [], [], 0)[0]), 10)
+                        release.set()
                     _, stderr = job.communicate(timeout=50)
                     self.assertNotEqual(job.returncode, 0, stderr)
                 releases = [item for item in controls if item["action"] == "release"]
