@@ -53,17 +53,34 @@ Test and fixture files:
 Verification uses both host gates (`hostslot-wait.sh`, then `voice-quiet.sh`) before each phase, background
 policy, two Swift build jobs, serial tests, and an 810-second work watchdog per phase.
 
-Results so far: 31 queued CLI tests passed (91.235 s), and 31 selected streaming/signal/failure CLI tests passed
-(92.178 s). The `haild` product and command-test target build successfully; strict lint passes on all five
-changed Swift files, and Python syntax/whitespace checks pass. Swift suite execution awaits completion of the
-cold test build, continued across bounded phases. The initial three `swift test` build phases reached the
-watchdog before executing tests, without compiler errors.
+Results on implementation commit `cf5612f4c0852b79f5180c6c687a57bd98981f4a`:
+
+- The expanded Swift filter passed **153 tests in 55 suites** with no parallel test execution
+  (184.731 s; the incremental build completed in 141.50 s).
+- The four full Reply CLI modules passed **76 tests** (273.300 s), after the implementation commit.
+- Strict host lint passed on all five changed Swift files. Python syntax and whitespace checks passed.
+- Earlier checks passed 31 queued CLI tests (91.235 s) and 31 selected streaming/signal/failure CLI tests
+  (92.178 s); the `haild` product and command-test target also built successfully.
+
+The cold build was continued in bounded phases. Native compiler caching and disabled IDE indexing preserved
+progress without changing source or test semantics. The first expanded run exposed an overlong synthetic
+Unix-socket path in the new endpoint test; shortening its UUID suffix fixed the fixture. The passing rerun
+covers that correction, which was already included in the implementation commit.
+
+`LocalReplyEndpoint+Submission.swift` is a security-critical path. Its change is limited to a closed-vocabulary,
+nonnegative-counter telemetry model, a separate bounded admission bucket, and consuming the existing owner-only
+socket request into the daemon's stderr log. It never invokes publication routing, changes reply authority,
+or forwards telemetry to a device. A future PR must retain `security:critical` and complete the repository's
+independent review requirements; no such review is claimed here.
 
 ```sh
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 taskpolicy -b swift build -j 2 --product haild
 taskpolicy -b swift build -j 2 --target HailCoachingCommandTests
-taskpolicy -b swift test -j 2 --no-parallel --filter 'QueuedAudioEncodingTests|ReplyJobEndTests|ReplyJobEndEndpointTests|ReplyQueuedAudioEndpointTests|ReplyStreamPacerBacklogTests'
+taskpolicy -b swift test -j 2 --no-parallel --disable-index-store \
+  -Xswiftc -explicit-module-build -Xswiftc -cache-compile-job \
+  -Xswiftc -cas-path -Xswiftc "$PWD/.build/verification-1241/cas" -Xswiftc -Rcache-compile-job \
+  --filter 'QueuedAudioEncodingTests|ReplyJobEnd|LocalReplyEndpoint|ReplyQueuedAudio|ReplyBackground|Reply.*Stream'
 taskpolicy -b python3 -m unittest discover -s Tests/ReplyCLITests -k queue
 PYTHONPATH=Tests/ReplyCLITests taskpolicy -b python3 -m unittest \
   test_reply_job_end.ReplyJobEndTests.test_publication_failure_logs_primary_reason_after_terminal_recovery \
@@ -89,3 +106,10 @@ capacities. The socket test accepts slash-heavy queued audio and consumes end te
 CLI tests check the entire slash-heavy stream and terminal, publication failure and recovery, a lost static-audio
 ack followed by a refused terminal, signal immunity between two renderer chunks, and cancellation before ready.
 Existing segment cancellation expectations now use pre-ready cancellation or host refusal, matching #1241.
+
+Post-commit full CLI verification (a separate gated phase):
+
+```sh
+cd Tests/ReplyCLITests
+taskpolicy -b python3 -m unittest test_reply_job_end test_reply_cli test_reply_segments test_reply_ticket_release
+```
