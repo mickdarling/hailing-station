@@ -59,8 +59,8 @@ enum ReplyBackground {
             Darwin.signal(signal, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: signal, queue: .global())
             source.setEventHandler {
-                // The job leads its own session, so its group holds the renderer too.
-                if let pid = child.withLock({ $0 }) { kill(-pid, SIGTERM) }
+                // The job owns renderer cancellation and ignores caller signals after ready.
+                if let pid = child.withLock({ $0 }) { kill(pid, SIGTERM) }
                 exit(128 + signal)
             }
             source.resume()
@@ -85,7 +85,14 @@ enum ReplyBackground {
 
     /// In the detached job, after its first accepted audio frame: tell the caller, then let go of its pipe.
     static func ready() {
-        guard isDetachedJob, readied.withLock({ done in defer { done = true }; return !done }) else { return }
+        guard isDetachedJob, readied.withLock({ done in
+            guard !done else { return false }
+            // Before ready these retain their original disposition. Once ready the caller no longer owns us.
+            Darwin.signal(SIGINT, SIG_IGN)
+            Darwin.signal(SIGHUP, SIG_IGN)
+            done = true
+            return true
+        }) else { return }
         _ = readyLine.withUnsafeBytes { write(STDERR_FILENO, $0.baseAddress, $0.count) }
         releaseStandardError()
     }
@@ -95,15 +102,19 @@ enum ReplyBackground {
         if null >= 0 { dup2(null, STDERR_FILENO); close(null) }
     }
 
-    /// Runs the detached job under its wall-clock bound. SIGTERM, or losing the caller before ready, cancels it
-    /// cooperatively, so the renderer is cancelled and its private output cleaned up rather than abandoned.
+    /// Before ready, SIGTERM or losing the caller cancels cooperatively and cleans up the owned renderer.
+    /// After ready caller signals are ignored; the wall-clock bound still owns the job's lifetime.
     static func bounded(_ job: @escaping @Sendable () async throws -> Void) async throws {
         restartBound()
         let task = Task { try await boundedJob(job) }
         let cancel: @Sendable () -> Void = {
             // Before ready, the caller's pipe may have no reader left; a final error must not die writing to it.
-            if !readied.withLock({ $0 }) { releaseStandardError() }
-            task.cancel()
+            readied.withLock { ready in
+                guard !ready else { return }
+                releaseStandardError()
+                endReason(.signal)
+                task.cancel()
+            }
         }
         signal(SIGTERM, SIG_IGN)
         let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
@@ -126,6 +137,7 @@ enum ReplyBackground {
                 while case let end = deadline.withLock({ $0.end }), ContinuousClock.now < end {
                     try await Task.sleep(until: end, clock: .continuous)
                 }
+                endReason(.bound)
                 throw ReplyCommandError.invalid("background reply exceeded its time bound")
             }
             defer { group.cancelAll() }
