@@ -1,0 +1,148 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1194" height="1024" viewBox="0 0 1194 1024" role="img" aria-labelledby="title desc"><title id="title">ipad — Audio — full-pane settings</title><desc id="desc">Original synthetic Revision B design study. Directly editable complete rows fill the pane. Reset, favorite and info sit by each control; technical details are in the optional inspector, closed. Page capacity is height-based. No live data or rendered/native verification.</desc><g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"><rect x="0" y="0" width="1194" height="1024" rx="12" fill="#eff1ee" stroke="#dce2da"/>
+<rect x="0" y="0" width="232" height="1024" rx="0" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="18" y="30" font-size="14" fill="#24312e" font-weight="400">Hailing Station</text>
+<text x="18" y="70" font-size="19" fill="#24312e" font-weight="650">Hailing Station</text>
+<text x="18" y="105" font-size="12" fill="#24312e" font-weight="400">Station    Sessions    Devices</text>
+<text x="18" y="146" font-size="11" fill="#606e67" font-weight="650">SETTINGS</text>
+<text x="20" y="182" font-size="14" fill="#196e5d" font-weight="600">☆  Favorites</text>
+<text x="20" y="224" font-size="13" fill="#606e67" font-weight="400">Listening and attention</text>
+<text x="20" y="269" font-size="13" fill="#606e67" font-weight="400">Privacy</text>
+<text x="20" y="314" font-size="13" fill="#606e67" font-weight="400">Voices and replies</text>
+<text x="20" y="359" font-size="13" fill="#606e67" font-weight="400">Notifications and updates</text>
+<text x="20" y="404" font-size="13" fill="#606e67" font-weight="400">Targets</text>
+<rect x="10" y="425" width="212" height="38" rx="8" fill="#e7f1e9" stroke="#dce2da"/>
+<text x="20" y="449" font-size="13" fill="#196e5d" font-weight="650">Audio</text>
+<text x="20" y="494" font-size="13" fill="#606e67" font-weight="400">Appearance</text>
+<text x="20" y="539" font-size="13" fill="#606e67" font-weight="400">Advanced and diagnostics</text>
+<text x="18" y="962" font-size="12" fill="#24312e" font-weight="400">Example host · synthetic</text>
+<text x="18" y="986" font-size="12" fill="#24312e" font-weight="400">Optional inspector: closed</text>
+<text x="18" y="1008" font-size="11" fill="#24312e" font-weight="400">No live configuration</text>
+<rect x="232" y="0" width="962" height="46" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="250" y="29" font-size="14" fill="#24312e" font-weight="650">Example target</text>
+<text x="955" y="29" font-size="12" fill="#606e67" font-weight="400">○ Mic off · demo     Aa     ⓘ</text>
+<text x="252" y="86" font-size="25" fill="#24312e" font-weight="650">Audio</text>
+<rect x="849" y="59" width="185" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="858" y="80" font-size="12" fill="#196e5d" font-weight="600">All applicable scopes ⌄</text>
+<rect x="1047" y="59" width="127" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1056" y="80" font-size="12" fill="#196e5d" font-weight="600">Reset group…</text>
+<rect x="252" y="116" width="922" height="34" rx="7" fill="#f7f8f5" stroke="#dce2da"/>
+<text x="262" y="138" font-size="13" fill="#606e67" font-weight="400">Find a setting or exact key</text>
+<text x="252" y="172" font-size="12" fill="#606e67" font-weight="400">28 settings · owner · synthetic values</text>
+<rect x="252" y="183" width="922" height="78" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="202" font-size="14" fill="#24312e" font-weight="600">Preferred microphone</text>
+<text x="262" y="220" font-size="12" fill="#606e67" font-weight="400">Selects durable preferred input; active route is</text>
+<text x="262" y="236" font-size="12" fill="#606e67" font-weight="400">separately confirmed by OS</text>
+<text x="262" y="252" font-size="11" fill="#606e67" font-weight="400">Immediate · owner · medium risk</text>
+<rect x="694" y="205" width="335" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="702" y="226" font-size="13" fill="#24312e" font-weight="400">Automatic</text>
+<rect x="1034" y="205" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="231" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="205" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="231" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="205" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="231" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="261" width="922" height="96" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="280" font-size="14" fill="#24312e" font-weight="600">Preferred microphone identity</text>
+<text x="262" y="298" font-size="12" fill="#606e67" font-weight="400">Selects durable preferred input; active route is</text>
+<text x="262" y="314" font-size="12" fill="#606e67" font-weight="400">separately confirmed by OS</text>
+<text x="262" y="330" font-size="11" fill="#606e67" font-weight="400">Immediate · app · medium risk</text>
+<text x="262" y="345" font-size="11" fill="#86531a" font-weight="400">App-managed · see details</text>
+<rect x="694" y="292" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="313" font-size="13" fill="#606e67" font-weight="400">Not configured</text>
+<rect x="1034" y="292" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="318" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="292" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="318" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="292" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="318" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="357" width="922" height="96" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="376" font-size="14" fill="#24312e" font-weight="600">Preferred microphone name</text>
+<text x="262" y="394" font-size="12" fill="#606e67" font-weight="400">Selects durable preferred input; active route is</text>
+<text x="262" y="410" font-size="12" fill="#606e67" font-weight="400">separately confirmed by OS</text>
+<text x="262" y="426" font-size="11" fill="#606e67" font-weight="400">Immediate · app · medium risk</text>
+<text x="262" y="441" font-size="11" fill="#86531a" font-weight="400">App-managed · see details</text>
+<rect x="694" y="388" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="409" font-size="13" fill="#606e67" font-weight="400">Not configured</text>
+<rect x="1034" y="388" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="414" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="388" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="414" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="388" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="414" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="453" width="922" height="96" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="472" font-size="14" fill="#24312e" font-weight="600">Preferred microphone kind</text>
+<text x="262" y="490" font-size="12" fill="#606e67" font-weight="400">Selects durable preferred input; active route is</text>
+<text x="262" y="506" font-size="12" fill="#606e67" font-weight="400">separately confirmed by OS</text>
+<text x="262" y="522" font-size="11" fill="#606e67" font-weight="400">Immediate · app · medium risk</text>
+<text x="262" y="537" font-size="11" fill="#86531a" font-weight="400">App-managed · see details</text>
+<rect x="694" y="484" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="505" font-size="13" fill="#606e67" font-weight="400">Not configured</text>
+<rect x="1034" y="484" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="510" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="484" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="510" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="484" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="510" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="549" width="922" height="62" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="568" font-size="14" fill="#24312e" font-weight="600">Output route</text>
+<text x="262" y="586" font-size="12" fill="#606e67" font-weight="400">iPhone/iPad use AVRoutePickerView.</text>
+<text x="262" y="602" font-size="11" fill="#606e67" font-weight="400">System approval · owner · medium risk</text>
+<rect x="694" y="563" width="335" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="702" y="584" font-size="13" fill="#24312e" font-weight="400">System output picker</text>
+<rect x="1034" y="563" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="589" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="563" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="589" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="563" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="589" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="611" width="922" height="80" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="630" font-size="14" fill="#24312e" font-weight="600">Listening input route provenance</text>
+<text x="262" y="648" font-size="12" fill="#606e67" font-weight="400">Only known route token or other; host-set</text>
+<text x="262" y="664" font-size="11" fill="#606e67" font-weight="400">Next process · dev · medium risk</text>
+<text x="262" y="679" font-size="11" fill="#86531a" font-weight="400">App-managed · see details</text>
+<rect x="694" y="634" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="655" font-size="13" fill="#606e67" font-weight="400">Not configured</text>
+<rect x="1034" y="634" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="660" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="634" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="660" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="634" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="660" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="691" width="922" height="80" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="710" font-size="14" fill="#24312e" font-weight="600">Speech recognizer backend</text>
+<text x="262" y="728" font-size="12" fill="#606e67" font-weight="400">Recognition implementation</text>
+<text x="262" y="744" font-size="11" fill="#86531a" font-weight="400">Reload listening engine · admin · high risk</text>
+<text x="262" y="759" font-size="11" fill="#86531a" font-weight="400">Requires admin · unavailable</text>
+<rect x="694" y="714" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="735" font-size="13" fill="#606e67" font-weight="400">whisper.cpp</text>
+<rect x="1034" y="714" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="740" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="714" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="740" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="714" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="740" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="771" width="922" height="62" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="790" font-size="14" fill="#24312e" font-weight="600">Hosted recognition language</text>
+<text x="262" y="808" font-size="12" fill="#606e67" font-weight="400">Hosted language hint</text>
+<text x="262" y="824" font-size="11" fill="#606e67" font-weight="400">Reload listening engine · owner · medium risk</text>
+<rect x="694" y="785" width="335" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="702" y="806" font-size="13" fill="#24312e" font-weight="400">Not configured</text>
+<rect x="1034" y="785" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="811" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="785" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="811" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="785" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="811" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="882" width="87" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="261" y="903" font-size="12" fill="#196e5d" font-weight="600">‹ Previous</text>
+<text x="573" y="904" font-size="12" fill="#606e67" font-weight="400">1–8 of 28 · Page 1/4</text>
+<rect x="1103" y="882" width="71" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1112" y="903" font-size="12" fill="#196e5d" font-weight="600">Next ›</text>
+<rect x="232" y="928" width="962" height="44" rx="0" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="244" y="955" font-size="12" fill="#606e67" font-weight="400">No draft changes</text>
+<rect x="1047" y="933" width="135" height="34" rx="7" fill="#196e5d" stroke="#dce2da"/>
+<text x="1056" y="954" font-size="12" fill="#fff" font-weight="600">Review changes</text>
+<rect x="232" y="972" width="962" height="52" rx="0" fill="#fff" stroke="#dce2da"/>
+<rect x="244" y="977" width="862" height="40" rx="7" fill="#196e5d" stroke="#dce2da"/>
+<text x="253" y="1001" font-size="12" fill="#fff" font-weight="600">Tap to talk · simulation</text>
+<text x="1129" y="1001" font-size="16" fill="#196e5d" font-weight="400">♬   •••</text></g></svg>
