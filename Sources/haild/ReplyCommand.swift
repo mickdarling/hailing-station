@@ -117,6 +117,7 @@ private struct PCMReplyContext {
     var frameLimit: Int?
     /// A spoken reply's delivery timing (#737), logged once when it ends.
     var timing: ReplyTimingRecorder?
+    var maxPCMBytes = 60_000
 }
 
 func reply(_ arguments: ArraySlice<String>) async throws {
@@ -138,7 +139,9 @@ func reply(_ arguments: ArraySlice<String>) async throws {
     let pacing = ReplyStreamPacing(paced: audio && !pacingOff)
     guard audio else { return try await streamReply(options, rendererRoot: rendererRoot, pacing: pacing) }
     guard ReplyBackground.isDetachedJob else { try ReplyBackground.detach() }
-    try await ReplyBackground.bounded { try await streamReply(options, rendererRoot: rendererRoot, pacing: pacing) }
+    try await ReplyBackground.run(socket: options.socket) {
+        try await streamReply(options, rendererRoot: rendererRoot, pacing: pacing)
+    }
 }
 
 /// Checked before any text is sent. A paced static file must also fit its frames into the paced sending time: at a
@@ -202,8 +205,10 @@ private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: Rep
     do {
         try await streamReplyAudio(options, rendererRoot: rendererRoot, pacing: pacing)
     } catch let skipped as ReplyAudioSkipped {
+        ReplyBackground.endReason(.refused)
         note(skipped.note)
     } catch is ReplyAudioCapacity {
+        ReplyBackground.endReason(.refused)
         note("reply audio dropped: capacity")
     }
 }
@@ -261,7 +266,8 @@ private func streamTicketedReply(
         sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
         socket: options.socket, pacing: pacing,
         frameLimit: ReplyBackground.isDetachedJob ? nil
-            : LocalReplyEndpoint.maxFramesPerMinute - (options.text == nil ? 0 : 1)
+            : LocalReplyEndpoint.maxFramesPerMinute - (options.text == nil ? 0 : 1),
+        maxPCMBytes: try QueuedAudioEncoding.pcmCapacity(frame: probe, ticket: ReplyBackground.audioTicket)
     )
     if let file = options.pcm16 {
         let result = try await sendPCM(file, context: context)
@@ -335,7 +341,8 @@ private func sendPCM(
 private func requireSendable(_ url: URL, context: PCMReplyContext, from start: Int, marksFinal: Bool) throws {
     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
     let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
-    let segments = (size + pcmSegmentBytes - 1) / pcmSegmentBytes
+    let segmentBytes = min(pcmSegmentBytes, context.maxPCMBytes)
+    let segments = (size + segmentBytes - 1) / segmentBytes
     guard size > 0, size.isMultiple(of: 2), segments > 0 else {
         throw ReplyCommandError.invalid("PCM16 reply is empty or has a partial sample")
     }
@@ -350,7 +357,7 @@ private func sendPCMFile(
 ) async throws {
     let startingSequence = progress.sequence
     try requireSendable(url, context: context, from: startingSequence, marksFinal: marksFinal)
-    let segmentBytes = pcmSegmentBytes
+    let segmentBytes = min(pcmSegmentBytes, context.maxPCMBytes)
     let handle = try FileHandle(forReadingFrom: url)
     defer { try? handle.close() }
     var current = try handle.read(upToCount: segmentBytes) ?? Data()
@@ -377,6 +384,7 @@ private func sendPCMFile(
             current = next
         }
     } catch {
+        ReplyBackground.recordFailure(error)
         // A static reply that stops partway still ends its stream, so the phone's queue moves on (#467).
         if marksFinal, progress.sequence > startingSequence {
             _ = try? await sendFinalPCM(sequence: progress.sequence, context: context, paced: false)
@@ -424,6 +432,7 @@ private func streamVBSay(
         }
         return (progress.sequence + 1, progress.deliveries)
     } catch {
+        ReplyBackground.recordFailure(error)
         try? await progress.finish(context: context, recovering: true)
         if outcome == "failed", ReplyBackground.isSuperseded {
             outcome = "superseded"
@@ -458,6 +467,7 @@ private func renderReplySegment(
         if segment.final { outcome = "played" }
         try await renderer.waitForCleanup()
     } catch {
+        ReplyBackground.recordFailure(error)
         try? await progress.finish(context: context, recovering: true)
         renderer.retire(cancel: true)
         await renderer.waitForCancellationSignals()
@@ -489,6 +499,7 @@ private func submitSpeechAudio(_ frame: Frame, socketURL: URL) async throws -> I
         if error is CancellationError || error is ReplyAudioSkipped { throw error }
         // Local refusal/lost acknowledgement remains the primary category, not a renderer cleanup
         // failure. Never forward raw endpoint/NW errors or restart the whole accepted-text command.
+        ReplyBackground.recordFailure(error)
         throw OwnedReplyRendererError.publicationFailed
     }
 }
@@ -507,8 +518,8 @@ private func publishRenderer(
     for try await bytes in renderer.audio {
         if !bytes.isEmpty, !observedPCM { context.timing?.mark(.pcm); observedPCM = true }
         pending.append(bytes)
-        while pending.count >= StreamedReplyFrames.bytes(sequence: progress.sequence) {
-            let size = StreamedReplyFrames.bytes(sequence: progress.sequence)
+        while pending.count >= StreamedReplyFrames.bytes(sequence: progress.sequence, maximum: context.maxPCMBytes) {
+            let size = StreamedReplyFrames.bytes(sequence: progress.sequence, maximum: context.maxPCMBytes)
             if segmentEnd, pending.count == size { break }
             context.timing?.mark(.frameReady)
             progress.deliveries += try await sendStreamedPCM(
@@ -542,12 +553,13 @@ private func publishRenderer(
 /// fewer of the endpoint's per-minute frames. Each frame is generated at ~2.5x realtime, well before the one ahead
 /// of it finishes playing; `ReplyStreamPacing` holds the rest back to stay a bounded lead ahead of playback.
 enum StreamedReplyFrames {
-    static func bytes(sequence: Int) -> Int {
-        switch sequence {
+    static func bytes(sequence: Int, maximum: Int = 60_000) -> Int {
+        let preferred = switch sequence {
         case 0: 24_000 // 0.5 s at 24 kHz s16 mono
         case 1: 36_000 // 0.75 s
         default: 60_000 // 1.25 s, under PayloadLimits.maxAudioBytes
         }
+        return min(preferred, maximum)
     }
 }
 
@@ -696,10 +708,13 @@ enum ReplyClient {
     }
 
     private static func requireAudioResponse(_ response: LocalReplyResponse, queued: Bool) throws {
+        if response.code == .publicationFailed {
+            throw ReplyClientError.failed(response.error ?? LocalReplyRefusal.publicationFailed.message)
+        }
         if let error = response.error { throw ReplyClientError.refused(error) }
         guard queued else { return }
         guard let report = response.replyAudio else {
-            throw ReplyClientError.refused("daemon did not acknowledge queued reply audio")
+            throw ReplyClientError.failed("daemon did not acknowledge queued reply audio")
         }
         if report.skipped { throw ReplyAudioSkipped(reason: report.reason ?? "stopped") }
     }
@@ -708,9 +723,7 @@ enum ReplyClient {
         _ frame: Frame, socketURL: URL, ticket: LocalReplyAudioTicket? = nil
     ) async throws -> Int {
         try requireOwnerSocket(socketURL)
-        var request = if let ticket {
-            try JSONEncoder().encode(LocalReplyAudioRequest(action: "publish", ticket: ticket, frame: frame))
-        } else { try FrameCoding.encode(frame) }
+        var request = try QueuedAudioEncoding.encode(frame, ticket: ticket)
         guard request.count <= PayloadLimits.defaultMaxFrameBytes else {
             throw ReplyClientError.failed("frame too large")
         }
@@ -986,6 +999,7 @@ extension ReplyBackground {
     /// This job's audio-turn lock and the stop file that supersedes it (#467), once it holds the turn.
     private static let turn = Mutex<ReplyAudioTurn?>(nil)
     private static let queuedTicket = Mutex<LocalReplyAudioTicket?>(nil)
+    static var audioTicket: LocalReplyAudioTicket? { queuedTicket.withLock { $0 } }
 
     private static func audioRequest(
         _ request: LocalReplyAudioRequest, socket: URL
@@ -1182,6 +1196,7 @@ extension ReplyBackground {
                 } else { nil }
                 let delivered = try await ReplyClient.submit(frame, socketURL: socketURL, ticket: ticket)
                 RequestKeepAlive.accepted()
+                accepted(frame)
                 return delivered
             } catch let error {
                 guard isDetachedJob, case ReplyClientError.refused("rate limited") = error else { throw error }
@@ -1223,5 +1238,86 @@ enum RequestKeepAlive {
     /// The latest a request-bound frame may go; nil for a target-only reply, which has no request to keep.
     static func latest(final: Bool) -> ContinuousClock.Instant? {
         state.withLock { $0.bound ? $0.last.advanced(by: final ? finalBudget : dataBudget) : nil }
+    }
+}
+
+/// Base64 has a content-independent length with the canonical encoder: no slash can add an escape byte.
+/// Measure the actual envelope (including its queue ticket), reserving the longest sequence/timestamp and
+/// segment-end flag, then fit whole base64 quads and whole PCM16 samples. No speculative encode/split loop.
+enum QueuedAudioEncoding {
+    static func encode(_ frame: Frame, ticket: LocalReplyAudioTicket?) throws -> Data {
+        if let ticket {
+            let request = LocalReplyAudioRequest(action: "publish", ticket: ticket, frame: frame)
+            return try FrameCoding.encoder().encode(request)
+        }
+        return try FrameCoding.encode(frame)
+    }
+
+    static func pcmCapacity(frame: Frame, ticket: LocalReplyAudioTicket?) throws -> Int {
+        var envelope = frame
+        guard case .audio(var audio) = envelope.payload else { throw ReplyCommandError.invalid("expected audio") }
+        audio.bytes = Data()
+        audio.sequence = Int.max
+        audio.isFinal = false
+        audio.isSegmentEnd = true
+        envelope.payload = .audio(audio)
+        envelope.timestamp = Int64.max
+        let available = PayloadLimits.defaultMaxFrameBytes - (try encode(envelope, ticket: ticket).count)
+        guard available >= 4 else { throw ReplyClientError.failed("frame too large") }
+        let capacity = min(PayloadLimits.maxAudioBytes, available / 4 * 3)
+        return capacity - capacity % 2
+    }
+}
+
+extension ReplyBackground {
+    private static let jobEnd = Mutex((reason: LocalReplyJobEnd.Reason.done, frames: 0, audio: 0.0))
+
+    static func endReason(_ reason: LocalReplyJobEnd.Reason) {
+        jobEnd.withLock { if $0.reason == .done { $0.reason = reason } }
+    }
+
+    static func accepted(_ frame: Frame) {
+        guard isDetachedJob else { return }
+        jobEnd.withLock { state in
+            state.frames += 1
+            if case .audio(let audio) = frame.payload, !(audio.isFinal && audio.bytes.count == 2) {
+                state.audio += Double(audio.bytes.count) / Double(audio.sampleRate * audio.channels * 2)
+            }
+        }
+    }
+
+    /// Record before recovery/cleanup so a secondary terminal refusal cannot replace the primary failure.
+    static func recordFailure(_ error: any Error) {
+        if error is CancellationError || error as? OwnedReplyRendererError == .cancelled {
+            endReason(.signal)
+        } else if error is ReplyAudioSkipped || error is ReplyAudioCapacity || error is ReplyCommandError {
+            endReason(.refused)
+        } else if case ReplyClientError.refused = error {
+            endReason(.refused)
+        } else {
+            endReason(.publicationFailed)
+        }
+    }
+
+    static func run(socket: URL, job: @escaping @Sendable () async throws -> Void) async throws {
+        do { try await bounded(job) } catch {
+            recordFailure(error)
+            await reportEnd(socket: socket)
+            throw error
+        }
+        await reportEnd(socket: socket)
+    }
+
+    private static func reportEnd(socket: URL) async {
+        let report = jobEnd.withLock {
+            LocalReplyJobEnd(reason: $0.reason, frames: $0.frames, audioMS: Int(($0.audio * 1_000).rounded()))
+        }
+        // Stderr is released at ready. The owner-only daemon socket owns the log, even after job cancellation.
+        // One transaction, no retry after an ambiguous acknowledgement: never duplicate the end line.
+        await Task.detached {
+            guard var line = try? FrameCoding.encoder().encode(report) else { return }
+            line.append(UInt8(ascii: "\n"))
+            _ = try? await ReplyClient.transact(line, socketURL: socket)
+        }.value
     }
 }
