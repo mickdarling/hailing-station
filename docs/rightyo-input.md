@@ -36,9 +36,9 @@ carries `role_status: "ready"` (SHA-256 `d003d834cc3b826f09cd45df426d8dc4644eb93
 
 ## Replay started before reloading (#1247)
 
-Before any RightyO live enablement or reload, use the new installed RightyO's
-`scripts/emit_started_event.py --config /path/to/live-config.json --out /path/to/scratch/started.json`
-with `PYTHONPATH=src` from its checkout (no listener is started), then run
+Before any RightyO live enablement or reload, run the new installed RightyO's emitter from its checkout:
+`PYTHONPATH=src python3 scripts/emit_started_event.py --config /path/to/live-config.json --out /path/to/scratch/started.json`
+(no listener is started), then run
 `HAILD_RIGHTYO_STARTED_EVENT=/path/to/scratch/started.json swift test --no-parallel --filter RightyoStartedEventReplayTests`
 in Hailing Station. The optional test skips when the variable is absent; an unreadable or incompatible file
 fails. The suite replays through the ambient pipeline's `RightyoInputEvent.decode` and
