@@ -34,6 +34,20 @@ turn as context (`--session formed-demo`); dry run prints one request receipt.
 Since RightyO main `6594c65` the fixture's terminal `session` event also
 carries `role_status: "ready"` (SHA-256 `d003d834cc3b826f09cd45df426d8dc4644eb93af5dfdebb1134832ca2bc53b3`).
 
+## Replay started before reloading (#1247)
+
+Before any RightyO live enablement or reload, use the new installed RightyO's
+`scripts/emit_started_event.py --config /path/to/live-config.json --out /path/to/scratch/started.json`
+with `PYTHONPATH=src` from its checkout (no listener is started), then run
+`HAILD_RIGHTYO_STARTED_EVENT=/path/to/scratch/started.json swift test --no-parallel --filter RightyoStartedEventReplayTests`
+in Hailing Station. The optional test skips when the variable is absent; an unreadable or incompatible file
+fails. The suite replays through the ambient pipeline's `RightyoInputEvent.decode` and
+`RightyoInputConsumer.consume` validation/admission path, without starting a child or delivering input.
+It also pins the all-options producer fixture and the pre-rightyo#286 `dismissal.min_attend` refusal;
+[fixture provenance and regeneration](../Tests/Fixtures/RightyO/README.md) names both exact RightyO revisions
+and the authored all-options config. Keep live output in scratch, never in Git. Passing this check proves
+started-event compatibility only; it is not a captured-output round trip or physical-device validation.
+
 ## Opt into one explicitly selected local target
 
 Use `haild targets` to identify the target and its existing policy. Allowing, confirming, locking or
