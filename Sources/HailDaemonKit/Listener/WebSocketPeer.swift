@@ -198,11 +198,11 @@ extension WebSocketPeer {
 
     /// Preparation is not an enqueue grant; its transport permit must remain current at final admission.
     func prepareReplyPublication(
-        _ frame: Frame, onLateSuccess: (@Sendable () -> Void)? = nil
+        _ frame: Frame, onLateSuccess: (@Sendable () -> Void)? = nil, silentCard: Bool = false
     ) async -> PreparedWebSocketReply? {
         let frame = await session.replyFrameForPeer(frame)
         guard !ended, !closing, !Task.isCancelled, let data = try? FrameCoding.encode(frame),
-              let permit = replyTransport.issuePermit() else { return nil }
+              let permit = replyTransport.issuePermit(frame: frame, silentCard: silentCard) else { return nil }
         // Synthetic completion control; all production and injected sends retain the same final transport gate.
         if let submitReply {
             return PreparedWebSocketReply(
@@ -231,7 +231,8 @@ extension WebSocketPeer {
 
     func send(_ frame: Frame) async -> Bool {
         guard !ended, !closing, !Task.isCancelled else { return false }
-        guard let data = try? FrameCoding.encode(frame), let permit = replyTransport.issuePermit() else { return false }
+        guard let data = try? FrameCoding.encode(frame),
+              let permit = replyTransport.issuePermit(frame: frame) else { return false }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "hail.frame", metadata: [metadata])
         return await withTaskCancellationHandler {
@@ -255,7 +256,7 @@ extension WebSocketPeer {
     /// cannot hold the caller up, and whatever the connection is given later still goes out after it.
     func post(_ frame: Frame) -> Bool {
         guard !ended, !closing, let data = try? FrameCoding.encode(frame),
-              let permit = replyTransport.issuePermit() else { return false }
+              let permit = replyTransport.issuePermit(frame: frame) else { return false }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "hail.frame", metadata: [metadata])
         let submit = {
@@ -276,14 +277,17 @@ final class ReplyTransportLifecycle: Sendable {
     private struct State {
         var retired = false
         var onRetirement: (@Sendable () -> Void)?
+        var streams: Set<UUID> = []
+        var onReplyEnd: (@Sendable () -> Void)?
     }
     private let retired = Mutex(State())
     private let authority = ReplyPublicationAuthority()
 
-    func issuePermit() -> ReplyTransportPermit? {
+    func issuePermit(frame: Frame? = nil, silentCard: Bool = false) -> ReplyTransportPermit? {
         retired.withLock { retired in
             guard !retired.retired else { return nil }
-            return ReplyTransportPermit(lifecycle: self, permit: authority.issuePermit())
+            return ReplyTransportPermit(lifecycle: self, permit: authority.issuePermit(),
+                                        frame: frame, silentCard: silentCard)
         }
     }
 
@@ -310,12 +314,37 @@ final class ReplyTransportLifecycle: Sendable {
 
     var isRetired: Bool { retired.withLock { $0.retired } }
 
+    func observeReplyEnd(_ callback: @escaping @Sendable () -> Void) {
+        retired.withLock { $0.onReplyEnd = callback }
+    }
+
     fileprivate func performIfCurrent<Result: Sendable>(
-        _ permit: ReplyPublicationPermit, operation: () throws -> Result
+        _ permit: ReplyPublicationPermit, frame: Frame?, silentCard: Bool, operation: () throws -> Result
     ) rethrows -> Result? {
-        try retired.withLock { retired in
-            guard !retired.retired else { return nil }
-            return try permit.performIfCurrent(operation)
+        var notify: (@Sendable () -> Void)?
+        defer { notify?() }
+        return try retired.withLock { retired in
+            guard !retired.retired, !silentCard || retired.streams.isEmpty else { return nil }
+            let result = try permit.performIfCurrent(operation)
+            if result as? Bool == true, let frame, let boundary = Self.replyBoundary(frame) {
+                if boundary.terminal {
+                    retired.streams.remove(boundary.id)
+                    notify = retired.onReplyEnd
+                } else { retired.streams.insert(boundary.id) }
+            }
+            return result
+        }
+    }
+    /// Text declares an upcoming audio stream; only its final audio frame ends that reply on the wire.
+    private static func replyBoundary(_ frame: Frame) -> (id: UUID, terminal: Bool)? {
+        switch frame.payload {
+        case .text(let text):
+            guard let reply = text.reply else { return nil }
+            return (reply.id, reply.audioStreamID == nil && text.isFinal)
+        case .audio(let audio):
+            guard let reply = audio.reply else { return nil }
+            return (reply.id, audio.isFinal)
+        default: return nil
         }
     }
 }
@@ -324,14 +353,19 @@ final class ReplyTransportLifecycle: Sendable {
 struct ReplyTransportPermit: Sendable {
     private let lifecycle: ReplyTransportLifecycle
     private let permit: ReplyPublicationPermit
+    private let frame: Frame?
+    private let silentCard: Bool
 
-    fileprivate init(lifecycle: ReplyTransportLifecycle, permit: ReplyPublicationPermit) {
+    fileprivate init(lifecycle: ReplyTransportLifecycle, permit: ReplyPublicationPermit,
+                     frame: Frame?, silentCard: Bool) {
         self.lifecycle = lifecycle
         self.permit = permit
+        self.frame = frame
+        self.silentCard = silentCard
     }
 
     func performIfCurrent<Result: Sendable>(_ operation: () throws -> Result) rethrows -> Result? {
-        try lifecycle.performIfCurrent(permit, operation: operation)
+        try lifecycle.performIfCurrent(permit, frame: frame, silentCard: silentCard, operation: operation)
     }
 
     func retireTransport() { lifecycle.retire() }

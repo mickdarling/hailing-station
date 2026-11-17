@@ -213,10 +213,7 @@ public actor HostSession {
     /// Explicit listener opt-in; merely selecting a target never enables unsolicited output negotiation.
     let sessionUpdatesEnabled: Bool
     var voiceStopLogs = VoiceStopLogWindow()
-    var state = State.awaitingHello {
-        didSet { if state == .closed { sessionUpdateActivity.close() } }
-    }
-    nonisolated let sessionUpdateActivity = SessionUpdateSettleActivity()
+    var state = State.awaitingHello
     var peerName = "terminal"
     /// What the device said it can do in its hello (#309), bounded; it gates host-sent `stop_playback`.
     var peerCapabilities: Set<String> = []
@@ -228,7 +225,7 @@ public actor HostSession {
     var acceptedVoiceStop: (at: ContinuousClock.Instant, revision: UInt64)?
     /// Replies whose audio is reaching this connection and has not finished, oldest first, bounded ids only.
     var repliesInFlight: [UUID] = [] {
-        didSet { replyFlightRevision &+= 1; sessionUpdateActivity.changed() }
+        didSet { replyFlightRevision &+= 1 }
     }
     var stoppedReplies: [UUID] = []
     /// Subset of in-flight replies with a segment boundary actually enqueued to this capable peer.
@@ -244,9 +241,7 @@ public actor HostSession {
     var overheardScope = "off"
     let connectionID = UUID()
     var selectionGeneration = UUID()
-    var replyRequests: [UUID: HostReplyRequest] = [:] {
-        didSet { sessionUpdateActivity.changed() }
-    }
+    var replyRequests: [UUID: HostReplyRequest] = [:]
     /// The late record each uncommitted request evicted at capacity (#430), keyed by that request, so a refusal
     /// before commit can give it back (#723). An entry lives only while its handoff is in flight.
     var evictedForHandoff: [UUID: (id: UUID, request: HostReplyRequest)] = [:]
@@ -303,7 +298,6 @@ public actor HostSession {
         case .control(let control): return .control(control)
         case .text(let text):
             guard text.isFinal else { return .nonFinalText }
-            sessionUpdateActivity.changed() // Finalized tap-to-talk turn, before any policy/registry hop.
             guard let target = frame.target else { return .untargetedText }
             guard let pasted = text.pasted else {
                 return .input(AuthorizedInput(
@@ -346,8 +340,6 @@ public actor HostSession {
     /// negotiated version.
     func authorize(_ frame: Frame, device: String) async -> AuthorizedInput? {
         guard case .ready(let version) = state, frame.version == version else { return nil }
-        sessionUpdateActivity.beginInput()
-        defer { sessionUpdateActivity.endInput() }
         switch await admit(frame, version: version, device: device) {
         case .input(let input)?: return input
         default: return nil
@@ -386,8 +378,6 @@ extension HostSession {
             guard frame.version == version else {
                 return failure(.protocolVersion, "frame version does not match the session", close: true)
             }
-            let finalInput = sessionUpdateActivity.beginFinalInput(frame)
-            defer { sessionUpdateActivity.endInput(if: finalInput) }
             if case .control(.voiceStopped(let latency)) = frame.payload {
                 return await receiveVoiceStop(frame, latency: latency)
             }
@@ -478,9 +468,7 @@ extension HostSession {
         }
         // Diagnostics (#234) are stored and never answered: no error, no selection or delivery change.
         if case .control(.diagnostic(let events)) = frame.payload, let sink = authorizer.diagnostics {
-            sessionUpdateActivity.beginPlaybackEvents(events)
-            let count = await sink.record(events, session: connectionID, device: peerName)
-            sessionUpdateActivity.playbackEvents(Array(events.prefix(count)))
+            await sink.record(events, session: connectionID, device: peerName)
             return HostSessionResult(frames: [])
         }
         // A closed route kind (rightyo#164), never a port name: noted for attribution and never answered either.

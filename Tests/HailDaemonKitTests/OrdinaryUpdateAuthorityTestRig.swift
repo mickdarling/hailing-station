@@ -40,6 +40,7 @@ struct OrdinaryUpdateAuthorityTestRig: Sendable {
             })
         let connection = await session.connectionID, generation = await session.selectionGeneration
         await listener.enableSessionUpdates()
+        await listener.configureSessionUpdateSpeech(UnusedUpdateSpeech())
         await listener.installSessionUpdateTestPeer(peer, connectionID: connection, generation: generation)
         return Self(store: store, adapter: adapter, host: host, session: session, listener: listener,
                     connection: connection, sends: sends)

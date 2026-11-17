@@ -12,22 +12,24 @@ It does not add terminal authentication or TLS. The approved owner-key and APNs 
 push installation is supplied here. The queue alone, and a successful card send, are never hearing proof.
 
 The host chooses the live ambient connection, otherwise the exact target's current last-input connection.
-Capabilities, selection generation, current target policy, registry binding, global privacy, quiet and media
+Capabilities, selection generation, current target policy, registry binding, global privacy and quiet
 are checked before publication and again at enqueue. Cooperative provider binding leases remain leases;
 legacy tmux binding validation remains a fresh listing snapshot, as in the existing requestless reply path.
 An ambiguous, missing, incapable or unavailable recipient leaves the update held. No voice request is borrowed.
 
 Cards enter the attributed session conversation once per host/update identity, with bounded receipts and history.
 Enrolled progress/completion cards also carry their exact task identifier as unspoken metadata.
-Private updates are dropped and held updates are purged. Privacy entry followed by exit cannot restore a delayed
-report or prepared frame. Ordinary `info` retains interaction and playback-pause drains. The local #1249
-Design A candidate also offers a silent-only settle drain while speech status is `not_configured`: no reply,
-pending/admitted request or finalized turn for `sessionUpdateSettleMs` (default 8000 ms, 2000...120000 ms).
-Quiet, media, meeting and privacy still block; privacy discards old cards. A configured spoken renderer keeps
-the existing triggers, and explicitly enrolled cadence reports retain immediate cards. Every enabled drain
-attempt emits `session_update_drained` with `trigger=<asked|interaction|natural_pause|settle> count=N`, including
-zero when blocked or empty. See [host settings](host-operations.md#session-updates-opt-in-609) and the
-[synthetic settle record](testing/session-update-settle.md). This is not installation or physical delivery proof.
+With speech configured, private updates are dropped and held updates are purged; prepared frames cannot cross
+privacy epochs. With speech `not_configured`, #1249 instead retains silent info through privacy and delivers
+it immediately once quiet/privacy/meeting holds clear. Every submission attempts delivery immediately. A reply
+stream on the exact recipient blocks the card until its terminal frame is enqueued, independently of playback.
+A new reply that wins admission before the card delays it until that reply's terminal too. Media, requests,
+finalized turns and owner speech do not hold these visual-only cards. Source authority and fresh final-enqueue
+privacy checks remain mandatory. Action cards and configured speech keep main's rules.
+Every enabled drain attempt emits `session_update_drained` with
+`trigger=<asked|interaction|natural_pause|immediate|reply_end|hold_cleared> count=N`, including zero when blocked
+or empty. See [host operations](host-operations.md#session-updates-opt-in-609) and the
+[synthetic immediate-delivery record](testing/session-update-immediate.md). This is not installation or physical proof.
 
 ## Speech admission
 

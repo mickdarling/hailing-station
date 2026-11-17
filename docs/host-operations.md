@@ -122,23 +122,24 @@ components or repeated slashes; one trailing slash is allowed. This host.sh pref
 unchanged ancestor handling. Invalid values are refused before the running daemon is stopped. Absent keys
 add no arguments.
 
-For silent visual cards, `sessionUpdateSettleMs` is an optional JSON integer: default **8000 ms**, inclusive
-bounds **2000...120000 ms** (#1249, Design A). `load_daemon_arguments` in `scripts/host.sh` reads and validates it
-beside the other session-update settings; the generated LaunchAgent supplies `HAIL_SESSION_UPDATE_SETTLE_MS`.
-The listener reads that scalar at construction (direct invocations without it use 8000). This is a launch-time
-setting; changing the file does not change a running host. No renderer is enabled by this setting.
+The local #1249 candidate sends `info` cards immediately on submit while speech status is `not_configured`.
+If a reply is streaming to that connection, its terminal frame must be enqueued first; device playback-end is
+not required. A second reply that starts before the card's final enqueue wins the race: the card waits until
+that reply's terminal too, so a card never appears inside a reply stream. There is no settle timer or setting.
 
-While speech status is `not_configured`, an ordinary held `info` card can drain after this full settle interval
-with no reply playing, pending/admitted request or finalized turn on its recipient connection. Reply start/end,
-request admission/completion, finalized turns and mode changes restart the interval. Quiet, media, meeting and
-privacy still block; privacy discards old held output rather than resuming it. No ongoing speech-activity signal
-is inferred: this trigger delivers silent cards only. Configured speech retains the existing reply-end, interaction
-and asked triggers. Action cards retain immediate delivery. See [synthetic verification](testing/session-update-settle.md).
+Explicit notify quiet, privacy, and meeting hold silent info cards. Clearing a hold offers them immediately,
+subject to the same reply-stream ordering. Privacy retains these silent info cards; source policy/binding,
+selection, capability, lifetime and exact-peer checks still apply. Media mode, pending/admitted requests,
+finalized turns, device playback and owner speech do not delay silent cards. A configured spoken renderer keeps
+main's delivery rules, including its privacy discard policy. Action cards keep main's immediate delivery path.
+The local session API still only permits sessions to turn quiet on; its owner-side flag-clear is tested directly,
+not exposed as a new `quiet_off` request or live CLI command by this change.
 
 Every enabled drain attempt emits the content-free event `session_update_drained` with detail
-`trigger=<asked|interaction|natural_pause|settle> count=N`; no target, card, transcript or reply text is included.
-This is transport completion evidence, not proof that a person saw or heard the update. These local changes have
-no physical-device qualification or deployment recorded.
+`trigger=<asked|interaction|natural_pause|immediate|reply_end|hold_cleared> count=N`; no target, card, transcript
+or reply text is included. The count records completed transport sends, not proof that a person saw or heard
+an update. See [synthetic verification](testing/session-update-immediate.md). These are local source changes;
+no installation or physical-device qualification is recorded.
 
 To roll back, remove all three keys (or set both booleans to `false` and remove the speech-root key), then run
 `scripts/host.sh restart` again. To disable only progress or speech, remove its corresponding key and restart.
