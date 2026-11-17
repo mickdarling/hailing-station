@@ -20,8 +20,14 @@ An ambiguous, missing, incapable or unavailable recipient leaves the update held
 Cards enter the attributed session conversation once per host/update identity, with bounded receipts and history.
 Enrolled progress/completion cards also carry their exact task identifier as unspoken metadata.
 Private updates are dropped and held updates are purged. Privacy entry followed by exit cannot restore a delayed
-report or prepared frame. Ordinary `info` waits for an interaction or playback-pause drain; explicitly enrolled
-cadence reports can show their card without waiting for another owner request.
+report or prepared frame. Ordinary `info` retains interaction and playback-pause drains. The local #1249
+Design A candidate also offers a silent-only settle drain while speech status is `not_configured`: no reply,
+pending/admitted request or finalized turn for `sessionUpdateSettleMs` (default 8000 ms, 2000...120000 ms).
+Quiet, media, meeting and privacy still block; privacy discards old cards. A configured spoken renderer keeps
+the existing triggers, and explicitly enrolled cadence reports retain immediate cards. Every enabled drain
+attempt emits `session_update_drained` with `trigger=<asked|interaction|natural_pause|settle> count=N`, including
+zero when blocked or empty. See [host settings](host-operations.md#session-updates-opt-in-609) and the
+[synthetic settle record](testing/session-update-settle.md). This is not installation or physical delivery proof.
 
 ## Speech admission
 

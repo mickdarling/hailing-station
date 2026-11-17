@@ -10,6 +10,10 @@ beyond what Status lists**, and implementation waits for Mick's answers to the o
 
 The connected task/update source candidate is described in [proactive-task-candidate.md](proactive-task-candidate.md).
 It does not install or enable delivery, qualify physical hearing, or implement the approved-key/APNs ladder below.
+The local #1249 Design A implementation adds a silent-only settle trigger and content-free drain events; see
+[host operations](host-operations.md#session-updates-opt-in-609) for `sessionUpdateSettleMs` (8000 ms by default,
+2000...120000 ms), scope and activation. Configured speech keeps the existing triggers. This change is synthetic
+verification only; it records no install or physical-device proof.
 The historical merged-foundation inventory follows.
 
 | Piece | State |

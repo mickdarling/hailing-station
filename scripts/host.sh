@@ -53,6 +53,7 @@ start, so a new or changed file needs a restart.
 whole number from 60 to 14400; without it, one hour.
 "voiceRoutes" (optional) names the sessions a request can be addressed to ("Deck, ...") and the default (#636).
 It only names targets; each still needs its policy entry. It is read at start, so a change needs a restart.
+"sessionUpdateSettleMs" (optional integer, 2000...120000, default 8000) delays silent info cards after activity.
 "sessionUpdates" (optional boolean) enables experimental personal-terminal updates. "taskProgress" (optional
 boolean) and "sessionUpdateSpeechRoot" (optional string) require "sessionUpdates": true. The speech root must
 be an existing absolute directory owned by you, mode 700, no symlink in any component and no extended ACL.
@@ -170,6 +171,7 @@ PY
 # The arguments after the executable, from host.json, in DAEMON_ARGS. Built as an array, never as joined text,
 # so no config value can become an extra argument.
 DAEMON_ARGS=()
+SESSION_UPDATE_SETTLE_MS=""
 load_daemon_arguments() {
   require_config
   local bind port rightyo rightyo_config target fallback=false
@@ -190,6 +192,12 @@ load_daemon_arguments() {
   # host.sh already passes --personal-terminal, required by all three proactive opt-ins (#609).
   local session_updates=false speech_root
   if read_flag sessionUpdates; then session_updates=true; DAEMON_ARGS+=(--session-updates); fi
+  read_value sessionUpdateSettleMs integer
+  SESSION_UPDATE_SETTLE_MS="$VALUE"
+  if [[ -n "$SESSION_UPDATE_SETTLE_MS" ]] && { ! [[ "$SESSION_UPDATE_SETTLE_MS" =~ ^[0-9]+$ && ${#SESSION_UPDATE_SETTLE_MS} -le 6 ]] \
+      || (( SESSION_UPDATE_SETTLE_MS < 2000 || SESSION_UPDATE_SETTLE_MS > 120000 )); }; then
+    fail '"sessionUpdateSettleMs" must be an integer between 2000 and 120000'
+  fi
   if read_flag taskProgress; then
     [[ "$session_updates" == true ]] || fail '"taskProgress" requires "sessionUpdates": true'
     DAEMON_ARGS+=(--task-progress)
@@ -379,7 +387,12 @@ write_plist() {
   plutil -insert ProcessType -string Interactive "$out"
   plutil -insert StandardOutPath -string "$LOGS/haild.out.log" "$out"
   plutil -insert StandardErrorPath -string "$LOGS/haild.err.log" "$out"
-  if [[ -n "$HOST_ID" || -n "${HAIL_CONFIG_DIR:-}" ]]; then plutil -insert EnvironmentVariables -dictionary "$out"; fi
+  if [[ -n "$HOST_ID" || -n "${HAIL_CONFIG_DIR:-}" || -n "$SESSION_UPDATE_SETTLE_MS" ]]; then
+    plutil -insert EnvironmentVariables -dictionary "$out"
+  fi
+  if [[ -n "$SESSION_UPDATE_SETTLE_MS" ]]; then
+    plutil -insert EnvironmentVariables.HAIL_SESSION_UPDATE_SETTLE_MS -string "$SESSION_UPDATE_SETTLE_MS" "$out"
+  fi
   if [[ -n "$HOST_ID" ]]; then plutil -insert EnvironmentVariables.HAIL_HOST_ID -string "$HOST_ID" "$out"; fi
   # The daemon's config directory (policy, audit, reply socket) is the one this script reads and checks.
   if [[ -n "${HAIL_CONFIG_DIR:-}" ]]; then

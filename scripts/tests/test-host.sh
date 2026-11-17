@@ -243,6 +243,20 @@ expect_update_arguments "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": 
   --session-updates --session-update-speech-root "$speech_root/child"
 expect_update_arguments "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$speech_root/child/\"" \
   --session-updates --session-update-speech-root "$speech_root/child/"
+# The launch-time scalar is validated beside the other session-update settings and transported as one env value.
+for settle in 2000 8000 120000; do
+  expect_update_arguments "\"sessionUpdates\": true, \"sessionUpdateSettleMs\": $settle" --session-updates
+  [[ "$(plutil -extract EnvironmentVariables.HAIL_SESSION_UPDATE_SETTLE_MS raw -o - "$scratch/updates.plist")" == "$settle" ]] \
+    || fail "settle environment did not preserve $settle"
+done
+expect_update_arguments '"sessionUpdates": true' --session-updates
+if plutil -extract EnvironmentVariables.HAIL_SESSION_UPDATE_SETTLE_MS raw -o - "$scratch/updates.plist" >/dev/null 2>&1; then
+  fail "absent settle setting must leave the daemon's 8000 ms default intact"
+fi
+for invalid in 1999 120001 -1 9223372036854775807 true '"8000"' 8000.5 null '{}' '[]'; do
+  update_config "\"sessionUpdates\": true, \"sessionUpdateSettleMs\": $invalid"
+  expect_failure "invalid settle interval: $invalid" "$host" plist
+done
 for enabled in '' '"sessionUpdates": false,'; do
   bad_config "task progress without session updates" "{\"bind\": \"127.0.0.1\", \"port\": 8765, $enabled \"taskProgress\": true}"
   bad_config "speech without session updates" \

@@ -122,6 +122,24 @@ components or repeated slashes; one trailing slash is allowed. This host.sh pref
 unchanged ancestor handling. Invalid values are refused before the running daemon is stopped. Absent keys
 add no arguments.
 
+For silent visual cards, `sessionUpdateSettleMs` is an optional JSON integer: default **8000 ms**, inclusive
+bounds **2000...120000 ms** (#1249, Design A). `load_daemon_arguments` in `scripts/host.sh` reads and validates it
+beside the other session-update settings; the generated LaunchAgent supplies `HAIL_SESSION_UPDATE_SETTLE_MS`.
+The listener reads that scalar at construction (direct invocations without it use 8000). This is a launch-time
+setting; changing the file does not change a running host. No renderer is enabled by this setting.
+
+While speech status is `not_configured`, an ordinary held `info` card can drain after this full settle interval
+with no reply playing, pending/admitted request or finalized turn on its recipient connection. Reply start/end,
+request admission/completion, finalized turns and mode changes restart the interval. Quiet, media, meeting and
+privacy still block; privacy discards old held output rather than resuming it. No ongoing speech-activity signal
+is inferred: this trigger delivers silent cards only. Configured speech retains the existing reply-end, interaction
+and asked triggers. Action cards retain immediate delivery. See [synthetic verification](testing/session-update-settle.md).
+
+Every enabled drain attempt emits the content-free event `session_update_drained` with detail
+`trigger=<asked|interaction|natural_pause|settle> count=N`; no target, card, transcript or reply text is included.
+This is transport completion evidence, not proof that a person saw or heard the update. These local changes have
+no physical-device qualification or deployment recorded.
+
 To roll back, remove all three keys (or set both booleans to `false` and remove the speech-root key), then run
 `scripts/host.sh restart` again. To disable only progress or speech, remove its corresponding key and restart.
 These steps assume the staged haild already supports these options; they do not install a release or a device build.
