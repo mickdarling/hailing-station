@@ -130,7 +130,7 @@ extension WebSocketListener {
         ) else {
             return updateReport(.refused, reason: stopped ? "stopping" : "invalid")
         }
-        if revision != replyHold.entryRevision {
+        if !silentInfo(update.priority), revision != replyHold.entryRevision {
             return updateReport(.dropped, reason: "private")
         }
         authority?.generation.observePolicy()

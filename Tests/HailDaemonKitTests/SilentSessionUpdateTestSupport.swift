@@ -20,7 +20,9 @@ struct SilentUpdateRig {
     let connection: UUID
     let evidence: SilentUpdateEvidence
 
-    static func make(ambient: (any AmbientListenerWiring)? = nil, observe: Bool = true) async throws -> Self {
+    static func make(
+        ambient: (any AmbientListenerWiring)? = nil, observe: Bool = true, installRecipient: Bool = true
+    ) async throws -> Self {
         let host = try await RecipientTestRig.make(), evidence = SilentUpdateEvidence()
         let session = HostSession(host: host.host, authorizer: PersonalTerminalAuthorizer())
         _ = await session.receive(helloFrame(capabilities: [SessionUpdateCard.capability]))
@@ -34,7 +36,9 @@ struct SilentUpdateRig {
             })
         await listener.enableSessionUpdates()
         let connection = await session.connectionID, generation = await session.selectionGeneration
-        await listener.installSessionUpdateTestPeer(peer, connectionID: connection, generation: generation)
+        if installRecipient {
+            await listener.installSessionUpdateTestPeer(peer, connectionID: connection, generation: generation)
+        }
         if observe { await listener.observeSilentSessionUpdates(peer) }
         return Self(host: host, listener: listener, session: session, peer: peer,
                     connection: connection, evidence: evidence)

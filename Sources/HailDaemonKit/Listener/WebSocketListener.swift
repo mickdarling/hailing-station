@@ -374,7 +374,6 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     /// Synchronous final enqueue gate for proactive updates. Unknown wiring fails closed. No callback may wait
     /// or re-enter the router: only a prepared transport hand-off runs while privacy/media state is locked.
     func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool
-    func withSilentSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool
     func taskProgressAudience() -> TaskProgressAmbientAudience?
     func withTaskProgressPermission(_ audience: TaskProgressAmbientAudience, commit: @Sendable () -> Bool) -> Bool
     /// Identity-only final owner admission. The nonescaping commit changes pure cadence, never I/O or router state.
@@ -421,7 +420,6 @@ extension AmbientListenerWiring {
     public func activeConnection() -> UUID? { nil }
     public func mediaMode(connection: UUID) -> Bool { false }
     public func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool { false }
-    public func withSilentSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool { false }
     public var sessionUpdatesPrivate: Bool { true }
     public func taskProgressAudience() -> TaskProgressAmbientAudience? { nil }
     public func withTaskProgressPermission(
@@ -471,6 +469,7 @@ extension WebSocketListener {
         lastInput.forget(connection: peer.session.connectionID)
         await endAmbient(of: peer)
         await refreshTaskProgressEnvironment()
+        await drainSilentSessionUpdates(.recipientChanged)
     }
 
     /// Ends every stream, then waits (bounded) for each ambient child to be reaped and each in-flight dispatch
@@ -828,18 +827,14 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// cancelled) when it ends, times out or the connection stops. Every child registered meanwhile is told.
         var media: [UUID: AmbientMediaTimer] = [:]
         /// #735 meeting mode (rightyo#227): the profile, start and guarded timeout; exclusive with media and privacy.
-        var meeting: [UUID: AmbientMeetingTimer] = [:] {
-            didSet { notifySilentUpdates() }
-        }
+        var meeting: [UUID: AmbientMeetingTimer] = [:]
         /// Connections `stop(connection:)` tore down (#735 meeting mode review rounds 1 and 4), recorded there and
         /// never inferred: a late media or meeting entry from a child of theirs, running or still being made, is
         /// refused. A connection id is never reused, so the mark is never lifted for a live connection; it is only
         /// pruned once no child and no start can still speak for it (`pruneClosed`).
         var closed: Set<UUID> = []
         /// Connections whose owner turned duck mode on (#735), kept like `media`. A connection is never in both.
-        var duck: [UUID: AmbientDuckTimer] = [:] {
-            didSet { notifySilentUpdates() }
-        }
+        var duck: [UUID: AmbientDuckTimer] = [:]
         /// #735 meeting mode restore (MM-E): the meeting or media mode a dropped connection left on, daemon-wide and
         /// in RAM only, until the next ambient start restores it or privacy, the owner's off or its expiry ends it.
         var parked: ParkedModes?
@@ -847,18 +842,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// connection's stale verdict never drops another's), daemon-wide and in RAM only: every fresh stream starts
         /// private while any is held, until the owner's own privacy-off clears them all. A stale verdict also
         /// drops the judged source's own park. At most `maxParkedPrivacy`.
-        var parks: [UUID: ParkedPrivacy] = [:] {
-            didSet { notifySilentUpdates() }
-        }
+        var parks: [UUID: ParkedPrivacy] = [:]
         /// A park was evicted at the bound (#961). Every fresh stream starts private while it is set, so an eviction
         /// never opens privacy; only the owner's own privacy-off clears it.
-        var parkOverflow = false {
-            didSet { notifySilentUpdates() }
-        }
-        func notifySilentUpdates() {
-            guard let listener = listener?.value else { return }
-            Task.detached { await listener.drainSilentSessionUpdates(.holdCleared) }
-        }
+        var parkOverflow = false
         /// The live connection each restored connection took its privacy from (#941), with that arming: the only one
         /// an owner's off there may end. Dropped with the connection.
         var privacySources: [UUID: PrivacySource] = [:]
@@ -961,7 +948,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     /// resurrect an old stream, owner or task. Public starts do not depend on reply diagnostics being enabled.
     func taskProgressOwnerChanged() {
         guard let listener = state.withLock({ $0.listener?.value }) else { return }
-        taskProgressChanges.enqueue { await listener.refreshTaskProgressEnvironment() }
+        taskProgressChanges.enqueue {
+            await listener.refreshTaskProgressEnvironment()
+            await listener.drainSilentSessionUpdates(.recipientChanged)
+        }
     }
 
     /// Called in order from the gate's actor; only spawns, enqueues or signals, never awaits. A start that finds
@@ -2647,7 +2637,6 @@ extension AmbientRightyoRouter {
             mediaNotices.enqueue { [weak self, weak listener] in
                 guard self?.duckMode(connection: connection) == false else { return }
                 listener?.replyHold.set(false, connection: connection)
-                if let listener { Task.detached { await listener.drainSilentSessionUpdates(.holdCleared) } }
                 self?.emit("ambient_privacy_replies", connection: connection, detail: "released=true")
             }
         }
@@ -3271,16 +3260,3 @@ extension AmbientRightyoRouter {
         }
     }
 }
-
-#if os(macOS)
-extension AmbientRightyoRouter {
-    /// A shared screen is a hold; media and capture activity are irrelevant to visual-only information.
-    public func withSilentSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool {
-        state.withLock { state in
-            guard !state.shuttingDown, !state.closed.contains(connection), state.duck.isEmpty,
-                  state.parks.isEmpty, !state.parkOverflow, state.meeting[connection] == nil else { return false }
-            return enqueue()
-        }
-    }
-}
-#endif

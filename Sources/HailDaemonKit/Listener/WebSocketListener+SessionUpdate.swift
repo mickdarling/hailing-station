@@ -18,7 +18,7 @@ enum SessionUpdatePrivacyScope {
 }
 
 enum SilentSessionUpdateDrainReason: String, Sendable {
-    case immediate, replyEnd = "reply_end", holdCleared = "hold_cleared"
+    case immediate, replyEnd = "reply_end", holdCleared = "hold_cleared", recipientChanged = "recipient_changed"
 }
 
 struct SessionUpdateAudienceLease: Sendable {
@@ -50,15 +50,14 @@ extension WebSocketListener {
         return authority
     }
 
-    // Read router state first: a mode notification scheduled under that lock must observe its completed
-    // transition (including synchronous reply-hold release) before deciding the queue is still private.
+    // Privacy gates spoken and action output; visual-only info is independent of room audio modes.
     var sessionUpdatesPrivate: Bool { ambient?.sessionUpdatesPrivate == true || replyHold.anyHeld }
 
     func purgePrivateSessionUpdates() {
         sessionUpdates.expire(now: .now)
         let revision = replyHold.entryRevision
         if revision != sessionUpdatePrivacyRevision || sessionUpdatesPrivate {
-            // Owner rule #1249: silent info waits through privacy. Spoken/action output keeps main's discard rule.
+            // Silent info ignores privacy. Spoken/action output keeps main's discard rule.
             for update in sessionUpdates.held where !silentInfo(update.priority) {
                 sessionUpdates.acknowledge(update.id)
             }
@@ -109,7 +108,6 @@ extension WebSocketListener {
             return []
         }
         purgePrivateSessionUpdates()
-        guard !sessionUpdatesPrivate else { return [] }
         sessionUpdatesDelivering = true
         defer {
             sessionUpdatesDelivering = false
@@ -131,7 +129,7 @@ extension WebSocketListener {
     private func deliverOfferedSessionUpdate(_ update: SessionUpdate, connection: UUID?) async -> Bool {
         let silent = silentInfo(update.priority)
         purgePrivateSessionUpdates()
-        guard !stopped, !sessionUpdatesQuiet, !sessionUpdatesPrivate else { return false }
+        guard !stopped, !sessionUpdatesQuiet, silent || !sessionUpdatesPrivate else { return false }
         guard sessionUpdates.held.contains(where: { $0.id == update.id }) else { return false }
         guard let authority = sessionUpdateTaskAuthorities[update.id] else {
             sessionUpdates.acknowledge(update.id)
@@ -268,8 +266,7 @@ extension WebSocketPeer {
               let prepared = await prepareReplyPublication(admission.frame, silentCard: silentGate != nil),
               await session.enqueueSessionUpdate(admission, lastInput: lastInput, enqueue: {
                   if let silentGate {
-                      return self.enqueueSilentUpdate(prepared, gates: (silentGate, fence),
-                                                      hold: hold, ambient: ambient, audience: audience)
+                      return self.enqueueSilentUpdate(prepared, gates: (silentGate, fence))
                   }
                   return fence.enqueue(connection: self.session.connectionID) { generation in
                       let handoff: @Sendable () -> Bool = {
@@ -302,16 +299,11 @@ extension WebSocketPeer {
         return true
     }
     private nonisolated func enqueueSilentUpdate(
-        _ prepared: PreparedWebSocketReply, gates: (SilentSessionUpdateGate, SessionUpdateFence),
-        hold: PrivateReplyHold, ambient: (any AmbientListenerWiring)?, audience: SessionUpdateAudienceLease
+        _ prepared: PreparedWebSocketReply, gates: (SilentSessionUpdateGate, SessionUpdateFence)
     ) -> Bool {
         gates.0.enqueue {
             guard gates.1.speechStatus == "not_configured" else { return false }
-            let handoff: @Sendable () -> Bool = {
-                hold.unlessAnyHeld(expectedRevision: audience.privacyRevision) { prepared.enqueue() }
-            }
-            return ambient?.withSilentSessionUpdatePermission(connection: self.session.connectionID,
-                                                               enqueue: handoff) ?? handoff()
+            return prepared.enqueue()
         }
     }
 }

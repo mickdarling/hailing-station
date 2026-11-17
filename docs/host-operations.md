@@ -127,16 +127,19 @@ If a reply is streaming to that connection, its terminal frame must be enqueued 
 not required. A second reply that starts before the card's final enqueue wins the race: the card waits until
 that reply's terminal too, so a card never appears inside a reply stream. There is no settle timer or setting.
 
-Explicit notify quiet, privacy, and meeting hold silent info cards. Clearing a hold offers them immediately,
-subject to the same reply-stream ordering. Privacy retains these silent info cards; source policy/binding,
-selection, capability, lifetime and exact-peer checks still apply. Media mode, pending/admitted requests,
-finalized turns, device playback and owner speech do not delay silent cards. A configured spoken renderer keeps
-main's delivery rules, including its privacy discard policy. Action cards keep main's immediate delivery path.
+Only explicit `haild notify quiet on` holds silent info cards; clearing quiet offers them immediately,
+subject to the same reply-stream ordering. Privacy, meeting and media modes do not hold these visual cards:
+privacy protects people in the room from audio, and a meeting's other participants do not see the owner's cards.
+Source policy/binding, selection, capability, lifetime and exact-peer checks still apply. A card held without
+a recipient is retried when ambient listening supplies one, or admitted input establishes a last-input recipient.
+Pending/admitted requests, finalized turns, device playback and owner speech do not delay silent cards.
+A configured spoken renderer keeps main's delivery and drain rules, including its privacy discard policy,
+quiet/media guards and held-on-submit info behavior in meeting mode. Action cards keep main's immediate path.
 The local session API still only permits sessions to turn quiet on; its owner-side flag-clear is tested directly,
 not exposed as a new `quiet_off` request or live CLI command by this change.
 
 Every enabled drain attempt emits the content-free event `session_update_drained` with detail
-`trigger=<asked|interaction|natural_pause|immediate|reply_end|hold_cleared> count=N`; no target, card, transcript
+`trigger=<asked|interaction|natural_pause|immediate|reply_end|hold_cleared|recipient_changed> count=N`; no target, card, transcript
 or reply text is included. The count records completed transport sends, not proof that a person saw or heard
 an update. See [synthetic verification](testing/session-update-immediate.md). These are local source changes;
 no installation or physical-device qualification is recorded.
