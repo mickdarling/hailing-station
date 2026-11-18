@@ -372,9 +372,12 @@ answer and by `haild notify status`, stays as it is. An `info` update held for a
 
 - **Session sends (#1258 owner decision, local source candidate): unlimited by default** for action cards, silent
   info cards and spoken updates. `SessionUpdatePolicy.perSessionLimit == nil` disables send accounting and keeps
-  no send history. All session-update actions bypass and do not spend the shared local-reply 120/minute
-  bucket, so reply traffic cannot starve updates. Owner-only socket access and frame-size limits still apply;
-  other kinds keep their existing budgets.
+  no send history. Protection against a stuck local loop uses a **60 submissions/minute per host** runaway
+  guard that normal use never reaches. Status and quiet-on requests share a separate **120/minute per host**
+  control bucket. Both are independent of the local-reply bucket, so replies and updates cannot spend or block
+  each other's admission. Refusals report `runaway_guard` or `control_rate_limited` and `retry_after` seconds;
+  `haild notify` prints the reason and retry time. Content-free refusal logs appear at most once per minute
+  per reason. Owner-only socket access and frame-size limits still apply; other kinds keep their existing budgets.
 - **Held memory bounds stay:** 5 per session, 20 total, 4-hour lifetime. `full`/`expired` behavior and oldest-info
   eviction are unchanged; unlimited sends do not allow unbounded held cards.
 - The push ladder and quiet-hours wiring below remain proposed; unlimited session sends do not implement APNs.

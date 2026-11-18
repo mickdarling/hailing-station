@@ -340,8 +340,11 @@ extension LocalReplyEndpoint {
         guard isDispatch || data.count <= PayloadLimits.defaultMaxFrameBytes else {
             return await respond(.init(delivered: 0, error: "frame too large"), to: client)
         }
-        // Updates have no socket send budget. Owner-only access, the frame cap and held bounds still apply.
-        if kind == LocalSessionUpdateRequest.kind { return await submitSessionUpdate(data, from: client) }
+        // Updates have independent admission to protect against a stuck local loop.
+        if kind == LocalSessionUpdateRequest.kind {
+            guard await admitSessionUpdate(data, from: client) else { return }
+            return await submitSessionUpdate(data, from: client)
+        }
         // Cleanup has a small independent bucket, so publication cannot exhaust its budget.
         let release = kind == "reply-audio" && (try? Self.decodeReplyAudio(data))?.action == "release"
         let now = clock.now

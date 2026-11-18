@@ -7,16 +7,16 @@ import Testing
 /// #1258: real owner-only Unix socket admission, synthetic device transport and reply publication.
 @Suite(.serialized, .timeLimit(.minutes(1))) struct SessionUpdateSocketBudgetTests {
     @Test(arguments: SessionUpdatePriority.allCases)
-    func moreThan120UpdatesDoNotSpendTheReplyBudget(priority: SessionUpdatePriority) async throws {
+    func sixtyUpdatesDoNotSpendTheReplyBudget(priority: SessionUpdatePriority) async throws {
         try await withSocket { rig, socket in
             let started = ContinuousClock.now
             let request = LocalSessionUpdateRequest(action: .submit, target: RecipientTestRig.target,
                                                     priority: priority, text: "Synthetic card")
-            for _ in 0...LocalReplyEndpoint.maxFramesPerMinute {
+            for _ in 0..<60 {
                 let response = try await submit(JSONEncoder().encode(request), socket: socket)
                 #expect(response.error == nil && response.update?.outcome == .delivered)
             }
-            #expect(rig.sends == LocalReplyEndpoint.maxFramesPerMinute + 1)
+            #expect(rig.sends == 60)
             #expect(await rig.listener.sessionUpdates.sent.isEmpty)
             // All 120 replies still fit after the update burst: updates must not spend their bucket either.
             try await fillReplyBudget(socket: socket)

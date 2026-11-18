@@ -166,10 +166,13 @@ The following held-queue notes describe the historical foundation:
 - `haild notify quiet on` turns on do-not-disturb until haild restarts. A session cannot turn it off; that is the user's own control.
 
 The #1258 local source candidate follows the owner's 2026-11-18 decision: no send budget by default for
-**action cards, silent info cards or spoken updates**. Session-update requests (including status and quiet
-controls) bypass the shared local-reply 120/minute bucket and do not spend it. Reply traffic cannot block them;
-all other local kinds keep their existing admission budgets. Owner-only socket access and frame-size limits
-remain in force. Held memory bounds remain **5 per session, 20 total, 4 hours**; a queue full of action cards still
+**action cards, silent info cards or spoken updates**. Protection against a stuck local loop uses an independent
+**60 submissions/minute per host** runaway guard that normal use never reaches. Status and quiet-on controls
+share a separate **120 requests/minute per host** bucket. Neither bucket spends the local-reply bucket, and
+reply traffic cannot block updates or controls. All other local kinds keep their existing admission budgets.
+A refusal reports `runaway_guard` or `control_rate_limited` with `retry_after` seconds; `haild notify` prints the
+reason and retry time. Each reason produces at most one content-free refusal log line per minute.
+Owner-only socket access and frame-size limits remain in force. Held memory bounds remain **5 per session, 20 total, 4 hours**; a queue full of action cards still
 refuses with `full`, and held expiry and oldest-info eviction are unchanged. These local changes have
 [synthetic verification only](testing/1258-unlimited-session-updates.md), with no install or live config change.
 
