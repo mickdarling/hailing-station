@@ -109,13 +109,22 @@ Tests asserting cards wait for terminal frames have been removed/replaced. The o
 listener fixtures retain inert renderers so their tests still cover unchanged configured-speech behavior.
 Only the recipient-transition fixture starts a temporary fake ambient child (`/bin/cat`); it captures nothing.
 
+## Delivery guarantee: at least once, not exactly once
+
+A silent card is owned from enqueue until transport completion, so a pending drain never sends it a second time while
+the first send is unresolved. One narrow race remains by design: if the recipient's transport is retired just as a send
+completes (a late success on a retiring or abandoned send), the card is kept and offered to the next recipient, so it
+favours "never lost" over "never sent twice". The app de-duplicates by endpoint and update id
+(`Sources/HailCore/ConversationLog.swift`), so the same device reconnecting shows it once; a different owner device
+could show the card again. `SilentSessionUpdateCancellationTests.retiredSendRetainsCardForTheNextRecipient` records this
+behaviour. Tightening it (acknowledging any reported send) is tracked in #1256 with the other second-key notes.
+
 ## Commands and executed results
 
-Every build/test phase begins, in order, with:
+Every build/test phase began, in order, by waiting until no other heavy build was running on the host and the owner's
+voice session had been quiet for two minutes (host-local operator scripts, not part of this repository), then:
 
 ```sh
-"$HOME/.local/share/jarvis/voicework-2026-11-11/hostslot-wait.sh"
-"$HOME/.local/share/jarvis/voicework-2026-11-11/voice-quiet.sh"
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 ```
 
