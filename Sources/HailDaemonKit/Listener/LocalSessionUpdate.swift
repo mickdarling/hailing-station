@@ -114,9 +114,10 @@ extension WebSocketListener {
 
     private func sessionUpdate(carried request: LocalSessionUpdateRequest) async -> LocalSessionUpdateReport {
         let revision = SessionUpdatePrivacyScope.expectedRevision ?? replyHold.entryRevision
-        guard silentInfo(request.priority ?? .info) || !sessionUpdatesPrivate else {
-            return updateReport(.dropped, reason: "private")
-        }
+        let taskReport = TaskProgressPublicationScope.authority != nil
+            || SessionUpdatePrivacyScope.expectedRevision != nil
+        var ordinarySilent = !taskReport && silentInfo(request.priority ?? .info)
+        guard ordinarySilent || !sessionUpdatesPrivate else { return updateReport(.dropped, reason: "private") }
         guard let target = request.target else { return updateReport(.refused, reason: "unknown_target") }
         let authority = await sessionUpdateAuthority(for: target)
         guard let listing = try? await host.registry.listing(),
@@ -130,7 +131,8 @@ extension WebSocketListener {
         ) else {
             return updateReport(.refused, reason: stopped ? "stopping" : "invalid")
         }
-        if !silentInfo(update.priority), revision != replyHold.entryRevision {
+        ordinarySilent = !taskReport && silentInfo(update.priority)
+        if !ordinarySilent, revision != replyHold.entryRevision {
             return updateReport(.dropped, reason: "private")
         }
         authority?.generation.observePolicy()
@@ -138,15 +140,14 @@ extension WebSocketListener {
               authority.binding == listing.first(where: { $0.info.id == target })?.binding else {
             return updateReport(.refused, reason: "retired_authority")
         }
-        guard silentInfo(request.priority ?? .info) || !sessionUpdatesPrivate else {
-            return updateReport(.dropped, reason: "private")
-        }
+        guard ordinarySilent || !sessionUpdatesPrivate else { return updateReport(.dropped, reason: "private") }
         // Hold before delivery so a failed exact-peer hand-off cannot consume an update or spend its budget twice.
         var audience = updateAudience(for: target)
         (audience.lastActiveDevice, audience.listeningDevice) = (audience.target, nil)
         let decision = sessionUpdates.submit(update, audience: audience, now: now)
         guard case .held = decision else { return decided(decision) }
         sessionUpdateTaskAuthorities[update.id] = authority
+        if taskReport { sessionUpdateTaskIDs.insert(update.id) }
         let delivered = await deliverSubmittedCard(update)
         purgePrivateSessionUpdates()
         if sessionUpdates.held.contains(where: { $0.id == update.id }) { return decided(decision) }
@@ -154,7 +155,7 @@ extension WebSocketListener {
     }
 
     private func deliverSubmittedCard(_ update: SessionUpdate) async -> Bool {
-        let silent = silentInfo(update.priority)
+        let silent = silentInfo(update)
         guard silent || update.priority == .action || TaskProgressPublicationScope.authority?.taskFence != nil
             else { return false }
         return await deliverSessionUpdates(.interaction, only: update.id,

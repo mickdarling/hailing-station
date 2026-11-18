@@ -21,7 +21,8 @@ struct SilentUpdateRig {
     let evidence: SilentUpdateEvidence
 
     static func make(
-        ambient: (any AmbientListenerWiring)? = nil, installRecipient: Bool = true
+        ambient: (any AmbientListenerWiring)? = nil, installRecipient: Bool = true,
+        send: WebSocketPeer.ReplySender? = nil
     ) async throws -> Self {
         let host = try await RecipientTestRig.make(), evidence = SilentUpdateEvidence()
         let session = HostSession(host: host.host, authorizer: PersonalTerminalAuthorizer())
@@ -32,7 +33,8 @@ struct SilentUpdateRig {
         let peer = WebSocketPeer(id: UUID(), connection: NWConnection(host: "127.0.0.1", port: 9, using: .tcp),
             session: session, queue: DispatchQueue(label: "synthetic.silent"), helloTimeout: .seconds(5),
             log: { _ in }, onEnd: { _ in }, submitReply: { complete in
-                evidence.sends.withLock { $0 += 1 }; complete(nil)
+                evidence.sends.withLock { $0 += 1 }
+                if let send { send(complete) } else { complete(nil) }
             })
         await listener.enableSessionUpdates()
         let connection = await session.connectionID, generation = await session.selectionGeneration

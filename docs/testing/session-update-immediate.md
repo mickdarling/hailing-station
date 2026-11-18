@@ -12,14 +12,19 @@ a captured-output round trip, a physical-device check, or proof of seeing/hearin
 With speech status `not_configured`, an ordinary `info` update attempts delivery immediately on submit.
 It can enqueue between any two reply frames. Only explicit `haild notify quiet on` holds silent info;
 clearing quiet offers it immediately, including during a streaming reply. Privacy, meeting, media, requests,
-finalized turns, owner speech and device playback do not hold it. Configured speech and action cards retain
-main's behavior. Expiry, capacity, rate budget, exact recipient, capability, selection generation, target
-policy and binding authority still apply. No settle setting or new quiet-off CLI/API is introduced.
+finalized turns, owner speech and device playback do not hold it. Configured speech, action cards, and
+task-authorized reports retain main's behavior. Only ordinary (non-task) info gets the silent room-mode exemption. Task reports retain their
+solicitation privacy revision, held-output purge, immediate-publication eligibility and final publication gates,
+including on hosts with no speech renderer. Expiry, capacity, rate budget, exact recipient, capability,
+selection generation, target policy and binding authority still apply. No settle setting or new quiet-off CLI/API is introduced.
 
 `WebSocketPeer.swift` is restored byte-for-byte to main: no stream entries, reply-boundary parsing,
 silent-card permit, active-stream transport-lock condition, terminal observer, or reply-end silent drain.
 Its existing retirement lock and prepared ticket retain live-connection, atomic, one-time transport enqueue.
 The listener retains cards until successful completion and coalesces concurrent drains into a follow-up.
+A per-card sending owner survives caller cancellation after enqueue: follow-up drains skip it until the
+transport succeeds, fails, or retires. Late success acknowledges only that same sending owner on a live
+transport. Retirement retains the card for a fresh exact-recipient offer; an old completion cannot consume it.
 A no-recipient card retries when a device begins listening or admitted input establishes its recipient.
 
 The P2 fix retains a `SilentSessionUpdateRecipient` in the audience lease. After all asynchronous preparation,
@@ -89,6 +94,15 @@ thread/address scopes still apply; these are read-only source findings, not phys
 | Action unchanged mid-reply | `SilentSessionUpdateTests.actionCardStillDeliversImmediatelyDuringReply` |
 | Closed connection refuses prepared/pending frames | `connectionClosedWithPendingCardNeverDelivers` |
 | Concurrent submission while draining goes exactly once | `SilentSessionUpdateRaceTests.submissionDuringAnOutstandingDrainIsDeliveredOnceAfterIt` |
+| Round 3: cancelled enqueue plus pending drain -> exactly two enqueues for two cards | `SilentSessionUpdateCancellationTests.abandonedCardMustNotBeEnqueuedAgainByPendingDrain` |
+| Cancel after enqueue -> retain ownership, late success -> no resend | `cancellationAfterEnqueueRetainsOwnershipUntilSuccess` |
+| Cancel before enqueue -> drain delivers each card once | `cancellationBeforeEnqueueLeavesEachCardForTheDrainOnce` |
+| Retire mid-send -> next recipient once; old success/failure cannot consume retained card | `retiredSendRetainsCardForTheNextRecipient` (success/failure, cancelled/active caller) |
+| Round 3: task solicitation privacy pair during direct submission -> dropped | `TaskProgressSilentPrivacyTests.silentTaskReportMustRetainItsSolicitationPrivacyEpoch` (with/without task fence) |
+| Enrolled-controller report privacy pair during submission -> dropped | `enrolledSilentReportMustNotCrossPrivacyPairDuringSubmission` |
+| Task info retains main submission, held privacy purge and final enqueue gates without renderer | `taskInfoKeepsMainSubmissionAndHeldPrivacyRules`, `taskPrivacyAtFinalEnqueueStillRefusesWithoutRenderer` |
+| Speech configured during ordinary submission preserves privacy rejection without spending budget | `TaskProgressSilentPrivacyTests.configuringSpeechDuringSubmissionKeepsPrivacyRejectionAndBudget` |
+| Ordinary info still delivers across privacy pair and while privacy is on | `ordinaryInfoStillDeliversAcrossPrivacyPairDuringSubmission`, `SilentSessionUpdateHoldTests.roomModesDoNotHoldSilentInfo` |
 | Other trigger names and empty counts remain content-free | `allExistingDrainTriggersLogEmptyCountsWithoutContent` |
 
 Tests asserting cards wait for terminal frames have been removed/replaced. The ordinary-authority and
@@ -174,10 +188,97 @@ on all 13 changed Swift files with zero violations. The restored full-package bu
 the restored serial family run passed **489 tests in 107 suites** in **320.067 s**. `git diff --check` passed.
 No unmutated test failure was classified as pre-existing; no baseline exemption was used.
 
+## Round 3 review fixes
+
+Starting head: `3b6548fd3edf2678f874f8a96771ffe72a445280`. The read-only independent probes were copied into
+normal `HailDaemonKitTests` suites here; the review worktree was neither edited nor built.
+
+`SessionUpdateSending` retains each silent ordinary card's transport ownership after cancellation. A drain
+never selects that owner again. An abandoned send's first late success acknowledges only its matching live
+owner; failure/retirement permits another exact-recipient offer. The original card identity, expiry and spent
+budget remain unchanged. No reply-stream ordering or peer transport implementation was added.
+
+Only ordinary non-task info can bypass room privacy. Submission detects task authority or a retained privacy
+revision, and queued task provenance remains attached through later drains. Task-authorized info uses main's
+submission eligibility, privacy-epoch rejection, held-output purge, media and final publication gates even
+without a renderer. Ordinary silent info still sends immediately under privacy.
+
+Each phase ran the two preflight scripts above in order, with
+`DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`. Commands:
+
+```sh
+taskpolicy -b swift build --build-tests -j 2
+taskpolicy -b swift test --no-parallel --skip-build -j 2 --filter 'SilentSessionUpdateCancellationTests|TaskProgressSilentPrivacyTests'
+```
+
+The initial full-package build passed (`Build complete! (634.77s)`). All **9 new tests in 2 suites** passed
+in **0.828 s** (test command wall time **7.899 s**). The final gate additionally covers retirement with an
+active (uncancelled) caller. The new tests include both retirement completion cases, both direct
+task-authority fence cases, the actual enrolled-controller report route and the ordinary-info positive control.
+
+Round 3 mutations used the same preflights, followed by:
+
+```sh
+taskpolicy -b swift build --build-tests -j 2
+taskpolicy -b swift test --no-parallel --skip-build -j 2 --filter "$test_filter"
+```
+
+| Mutation | `test_filter` | Build command wall time | Test command wall time / result |
+| --- | --- | --- | --- |
+| Drop ownership retention after abandoned enqueue | `SilentSessionUpdateCancellationTests/abandonedCardMustNotBeEnqueuedAgainByPendingDrain` | 31.022 s, pass | 5.797 s, exit 1: three enqueues instead of two |
+| Reapply silent exemption to task-authorized reports (final code) | `TaskProgressSilentPrivacyTests` | 95.863 s, pass | 6.123 s, exit 1: direct and enrolled reports sent stale output; task held/final-enqueue rules also failed |
+
+Both mutants compiled and failed through real expectation failures, with no timeout or unrelated failure
+counted as a kill. The privacy mutation was also caught before the final speech-configuration recheck was
+preserved (83.364 s build, 5.692 s test, exit 1), then rerun against the final submission code. All mutations
+were restored to exact saved bytes. The ownership production file remained byte-for-byte unchanged between
+its mutation and the final restored source.
+
+Final strict lint passed on all **14 Swift files changed from main**, zero violations:
+
+```sh
+swiftlint lint --strict \
+  Sources/HailDaemonKit/Listener/HostReplyDelivery.swift \
+  Sources/HailDaemonKit/Listener/LocalSessionUpdate.swift \
+  Sources/HailDaemonKit/Listener/WebSocketListener+SessionUpdate.swift \
+  Sources/HailDaemonKit/Listener/WebSocketListener.swift \
+  Tests/HailDaemonKitTests/OrdinaryUpdateAuthorityTestRig.swift \
+  Tests/HailDaemonKitTests/SessionUpdateDeliveryTests.swift \
+  Tests/HailDaemonKitTests/SilentSessionUpdateCancellationTests.swift \
+  Tests/HailDaemonKitTests/SilentSessionUpdateHoldTests.swift \
+  Tests/HailDaemonKitTests/SilentSessionUpdateRaceTests.swift \
+  Tests/HailDaemonKitTests/SilentSessionUpdateRecipientTests.swift \
+  Tests/HailDaemonKitTests/SilentSessionUpdateTestSupport.swift \
+  Tests/HailDaemonKitTests/SilentSessionUpdateTests.swift \
+  Tests/HailDaemonKitTests/SilentSessionUpdateWireTests.swift \
+  Tests/HailDaemonKitTests/TaskProgressSilentPrivacyTests.swift
+```
+
+The exact command is also retained in `/tmp/hs1249-review3-fixes/final-lint.json`; `final-lint.log` holds the result.
+All phase preflights, commands, exit codes and timings are recorded in this directory's per-phase JSON and
+logs: `initial-build`, `regressions`, `mutation-ownership`, `mutation-task-privacy`,
+`mutation-task-privacy-final`, and `final-gate`. Original/restored SHA-256 manifests are retained alongside them.
+
+Final restored-source verification:
+
+```sh
+taskpolicy -b swift build --build-tests -j 2
+taskpolicy -b swift test --no-parallel --skip-build -j 2 --filter 'SessionUpdate|OrdinaryUpdate|TaskProgress|TerminalReplyTransport|PreparedWebSocketReply|WebSocket|AmbientMeeting|AmbientPrivacy|AmbientDuck|AmbientMedia'
+```
+
+The restored full-package build passed (`Build complete! (27.29s)`, command wall time **30.887 s**).
+The serial family gate passed **499 tests in 109 suites** in **330.976 s** (command wall time **336.680 s**),
+including all **10 new tests**, the expanded active/cancelled retirement cases, the final speech-configuration
+budget check and every existing focused family. `AmbientPrivacySwitchTests.aSwitchToTheStateAlreadyHeldDoesNothing`
+passed in **2.570 s** in this gate. No unmutated test failed, so no main-baseline classification or exemption was
+used. `git diff --check` passed. `WebSocketPeer.swift` still matches main exactly. These results are synthetic
+host verification, not an app/simulator build, installation, captured-output round trip or physical-device proof.
+
 ## Scope
 
 Exactly four production files differ from supplied main `3c6fb4ce62bf52921cd026918620e6357d4a204e`, using
 `scripts/pr-shape.py` exclusions/rename handling: `HostReplyDelivery.swift`, `LocalSessionUpdate.swift`,
 `WebSocketListener+SessionUpdate.swift`, `WebSocketListener.swift`, under `Sources/HailDaemonKit/Listener/`.
 `WebSocketPeer.swift` matches main. `scripts/`, `.github/`, `Sources/HailCore/`, `Apps/`, and build identifiers
-are untouched. This is one new local commit; no push, PR, live configuration, installation, or upload.
+are untouched. Round 3 adds one new local commit atop the starting head; no push, PR, live configuration,
+installation, or upload.

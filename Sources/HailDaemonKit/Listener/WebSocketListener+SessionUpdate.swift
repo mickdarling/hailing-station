@@ -61,13 +61,15 @@ extension WebSocketListener {
         let revision = replyHold.entryRevision
         if revision != sessionUpdatePrivacyRevision || sessionUpdatesPrivate {
             // Silent info ignores privacy. Spoken/action output keeps main's discard rule.
-            for update in sessionUpdates.held where !silentInfo(update.priority) {
+            for update in sessionUpdates.held where !silentInfo(update) {
                 sessionUpdates.acknowledge(update.id)
             }
             sessionUpdatePrivacyRevision = revision
         }
         let kept = Set(sessionUpdates.held.map(\.id))
         sessionUpdateTaskAuthorities = sessionUpdateTaskAuthorities.filter { kept.contains($0.key) }
+        sessionUpdateTaskIDs.formIntersection(kept)
+        sessionUpdateSending = sessionUpdateSending.filter { kept.contains($0.key) && !$0.value.transport.isRetired }
     }
 
     /// Content-free availability for the task cadence controller. Actual publication repeats every gate.
@@ -123,17 +125,18 @@ extension WebSocketListener {
         // Copying preserves the real held queue until each send completes.
         let updates = offered.drain(trigger, audience: .init(quiet: sessionUpdatesQuiet), now: .now)
         for update in updates where id == nil || update.id == id {
-            if reason != nil && !silentInfo(update.priority) { continue }
+            if reason != nil && !silentInfo(update) { continue }
             if await deliverOfferedSessionUpdate(update, connection: connection) { delivered.insert(update.id) }
         }
         return delivered
     }
 
     private func deliverOfferedSessionUpdate(_ update: SessionUpdate, connection: UUID?) async -> Bool {
-        let silent = silentInfo(update.priority)
+        let silent = silentInfo(update)
         purgePrivateSessionUpdates()
         guard !stopped, !sessionUpdatesQuiet, silent || !sessionUpdatesPrivate else { return false }
-        guard sessionUpdates.held.contains(where: { $0.id == update.id }) else { return false }
+        guard sessionUpdateSending[update.id] == nil,
+              sessionUpdates.held.contains(where: { $0.id == update.id }) else { return false }
         guard let authority = sessionUpdateTaskAuthorities[update.id] else {
             sessionUpdates.acknowledge(update.id)
             return false
@@ -153,19 +156,54 @@ extension WebSocketListener {
             taskAuthority: authority, silentRecipient: silent ? .init(
                 connection: recipient, target: update.session, ledger: lastInput, ambient: ambient
             ) : nil)
+        return await sendOfferedSessionUpdate(update, peer: peer, audience: audienceLease, silent: silent)
+    }
+
+    private func sendOfferedSessionUpdate(
+        _ update: SessionUpdate, peer: WebSocketPeer, audience: SessionUpdateAudienceLease, silent: Bool
+    ) async -> Bool {
+        let sending = silent ? SessionUpdateSending(transport: peer.replyTransport) : nil
+        sessionUpdateSending[update.id] = sending
+        defer {
+            if sending?.abandoned != true, sessionUpdateSending[update.id] === sending {
+                sessionUpdateSending[update.id] = nil
+            }
+        }
         await SessionUpdatePrivacyScope.beforePeerHop?()
-        guard await peer.deliverSessionUpdate(update, audience: audienceLease, hold: replyHold,
+        guard await peer.deliverSessionUpdate(update, audience: audience, hold: replyHold,
             ambient: ambient, fence: sessionUpdateFence, log: log,
-            silentGate: silent ? silentUpdateGate : nil) else {
-            if silent, audienceLease.silentRecipient?.changed == true {
+            silentGate: silent ? silentUpdateGate : nil, sending: sending,
+            onLateSuccess: { [weak self] in
+                guard let sending else { return }
+                Task { await self?.completeSilentSessionUpdate(update.id, sending: sending) }
+            }) else {
+            if silent, audience.silentRecipient?.changed == true {
                 silentUpdateDrainPending = .recipientChanged
             }
             return false
         }
+        if let sending, sending.transport.isRetired { return false }
         sessionUpdates.acknowledge(update.id)
         sessionUpdateTaskAuthorities[update.id] = nil
         return true
     }
+
+    private func completeSilentSessionUpdate(_ id: UUID, sending: SessionUpdateSending) {
+        guard sessionUpdateSending[id] === sending, !sending.transport.isRetired else { return }
+        sessionUpdateSending[id] = nil
+        sessionUpdates.acknowledge(id)
+        sessionUpdateTaskAuthorities[id] = nil
+        logSessionUpdateDrain(.interaction, reason: .immediate, count: 1)
+    }
+}
+
+/// An abandoned caller cannot release an enqueued card. Only completion or retirement releases ownership.
+final class SessionUpdateSending: Sendable {
+    let transport: ReplyTransportLifecycle
+    private let state = Mutex(false)
+    init(transport: ReplyTransportLifecycle) { self.transport = transport }
+    var abandoned: Bool { state.withLock { $0 } }
+    func abandon() { state.withLock { $0 = true } }
 }
 
 extension HostSession {
@@ -268,13 +306,14 @@ extension WebSocketPeer {
         _ update: SessionUpdate, audience: SessionUpdateAudienceLease, hold: PrivateReplyHold,
         ambient: (any AmbientListenerWiring)?, fence: SessionUpdateFence,
         log: @escaping @Sendable (WebSocketListenerEvent) -> Void = { _ in },
-        silentGate: SilentSessionUpdateGate? = nil
+        silentGate: SilentSessionUpdateGate? = nil, sending: SessionUpdateSending? = nil,
+        onLateSuccess: (@Sendable () -> Void)? = nil
     ) async -> Bool {
         let privacyRevision = audience.privacyRevision, lastInput = audience.lastInput
         let stopGeneration = Mutex<UInt64?>(nil)
         guard !ended, let admission = await session.prepareSessionUpdate(update, lastInput: lastInput,
                                                                         taskAuthority: audience.taskAuthority),
-              let prepared = await prepareReplyPublication(admission.frame),
+              let prepared = await prepareReplyPublication(admission.frame, onLateSuccess: onLateSuccess),
               await session.enqueueSessionUpdate(admission, lastInput: lastInput, enqueue: {
                   if let silentGate {
                       return self.enqueueSilentUpdate(prepared, gates: (silentGate, fence),
@@ -290,7 +329,7 @@ extension WebSocketPeer {
                       return admitted
                   }
               }) else { return false }
-        guard replySendSucceeded(await prepared.result()) else { return false }
+        guard sessionUpdateSendSucceeded(await prepared.result(), sending: sending) else { return false }
         if silentGate != nil { return true }
         await SessionUpdatePrivacyScope.beforeSpeechCapabilities?()
         if await session.peerCapabilities.contains(SessionUpdateCard.audioCapability),
@@ -310,6 +349,13 @@ extension WebSocketPeer {
         }
         return true
     }
+    private func sessionUpdateSendSucceeded(
+        _ outcome: PreparedWebSocketReply.Outcome, sending: SessionUpdateSending?
+    ) -> Bool {
+        if outcome == .abandoned { sending?.abandon() }
+        return replySendSucceeded(outcome)
+    }
+
     private nonisolated func enqueueSilentUpdate(
         _ prepared: PreparedWebSocketReply, gates: (SilentSessionUpdateGate, SessionUpdateFence),
         recipient: SilentSessionUpdateRecipient?
@@ -333,6 +379,10 @@ final class SilentSessionUpdateGate: Sendable {
 }
 
 extension WebSocketListener {
+    func silentInfo(_ update: SessionUpdate) -> Bool {
+        !sessionUpdateTaskIDs.contains(update.id) && silentInfo(update.priority)
+    }
+
     func silentInfo(_ priority: SessionUpdatePriority) -> Bool {
         priority == .info && sessionUpdateFence.speechStatus == "not_configured"
     }

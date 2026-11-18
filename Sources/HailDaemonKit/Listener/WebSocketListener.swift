@@ -121,6 +121,8 @@ public actor WebSocketListener {
     var silentUpdateDrainPending: SilentSessionUpdateDrainReason?
     var taskProgressController: ListenerTaskProgress?
     let taskProgressOwnerLifetime = TaskProgressOwnerLifetime()
+    var sessionUpdateTaskIDs: Set<UUID> = []
+    var sessionUpdateSending: [UUID: SessionUpdateSending] = [:]
     var sessionUpdateTaskAuthorities: [UUID: TaskProgressPublicationAuthority] = [:]
     var sessionUpdatesDelivering = false, sessionUpdatePrivacyRevision: UInt64 = 0
     let sessionUpdateFence = SessionUpdateFence()
