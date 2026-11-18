@@ -41,6 +41,37 @@ import Testing
         }
     }
 
+    @Test(arguments: [
+        #"{"kind":"update","action":17}"#, #"{"kind":"update","action":null}"#,
+        #"{"kind":"update","action":{}}"#, #"{"kind":"update","action":"unknown"}"#,
+        #"{"kind":"update"}"#
+    ])
+    func malformedActionsSpendSubmitAdmissionBeforeStrictDecoding(frame: String) async throws {
+        try await withGuardSocket { context in
+            let started = ContinuousClock.now
+            let data = Data(frame.utf8)
+            let before = await context.rig.listener.sessionUpdates
+            let history = try context.fullHistory()
+            for _ in 0..<60 {
+                let response = try await submit(data, socket: context.socket)
+                #expect(response.code == .decodeFailure && response.update == nil)
+            }
+            let admission = await context.endpoint.limiter
+            let instant = ContinuousClock.now
+            #expect(admission.retryAfter(for: "local-session-update", now: instant, limitPerMinute: 60) != nil)
+            #expect(admission.retryAfter(for: "local-session-update-control", now: instant,
+                                         limitPerMinute: 1) == nil)
+            // The full submit bucket refuses even an undecodable action, before strict decoding can reject it.
+            try expectGuard(await submit(data, socket: context.socket), reason: "runaway_guard")
+            #expect(context.publisher.calls.withLock { $0 } == 0)
+            #expect(context.rig.sends == 0)
+            #expect(await context.rig.listener.sessionUpdates == before)
+            #expect(await context.rig.listener.sessionUpdatesQuiet == false)
+            #expect(try context.fullHistory() == history, "malformed actions create no durable update record")
+            #expect(ContinuousClock.now - started < .seconds(60))
+        }
+    }
+
     @Test func controlsHaveTheirOwn120RequestWindow() async throws {
         try await withGuardSocket { context in
             let started = ContinuousClock.now
@@ -125,72 +156,4 @@ import Testing
     }
 }
 
-private struct GuardSocketContext {
-    let rig: SilentUpdateRig
-    let endpoint: LocalReplyEndpoint
-    let publisher: GuardTestPublisher
-    let directory: URL
-    var socket: String { directory.appendingPathComponent("c/replies.sock").path }
-    func history() throws -> [String] {
-        try AuditHistory(directory: directory.appendingPathComponent("audit")).today()
-            .filter { $0.contains("local-update") }
-    }
-}
-
-private func withGuardSocket(_ body: (GuardSocketContext) async throws -> Void) async throws {
-    let rig = try await SilentUpdateRig.make()
-    let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("hs-rg-\(UUID().uuidString.prefix(8))")
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let publisher = GuardTestPublisher(listener: rig.listener)
-    let endpoint = try LocalReplyEndpoint(socketURL: directory.appendingPathComponent("c/replies.sock"),
-        destination: publisher, audit: AuditLog(directory: directory.appendingPathComponent("audit")))
-    do {
-        try await endpoint.start()
-        try await body(.init(rig: rig, endpoint: endpoint, publisher: publisher, directory: directory))
-    } catch {
-        await endpoint.stop()
-        await rig.listener.stop()
-        throw error
-    }
-    await endpoint.stop()
-    await rig.listener.stop()
-}
-
-private final class GuardTestPublisher: HostReplyPublishing {
-    let listener: WebSocketListener
-    let calls = Mutex(0)
-    init(listener: WebSocketListener) { self.listener = listener }
-    func publish(_ frame: Frame) async throws -> Int { 1 }
-    func sessionUpdate(_ request: LocalSessionUpdateRequest) async -> LocalSessionUpdateReport {
-        calls.withLock { $0 += 1 }
-        return await listener.sessionUpdate(request)
-    }
-}
-
-/// Serial socket tests capture the actual content-free stderr lines.
-private final class GuardLogCapture {
-    let url: URL
-    let handle: FileHandle
-    var original: Int32
-    init(directory: URL) throws {
-        url = directory.appendingPathComponent("refusals.log")
-        _ = FileManager.default.createFile(atPath: url.path, contents: nil)
-        handle = try FileHandle(forWritingTo: url)
-        original = dup(STDERR_FILENO)
-        _ = dup2(handle.fileDescriptor, STDERR_FILENO)
-    }
-    func restore() {
-        guard original >= 0 else { return }
-        _ = dup2(original, STDERR_FILENO)
-        close(original)
-        original = -1
-        try? handle.close()
-    }
-    func lines() throws -> [String] {
-        try String(contentsOf: url, encoding: .utf8).split(separator: "\n").map(String.init)
-            .filter { $0.hasPrefix("session_update_refused ") }
-    }
-    deinit { restore() }
-}
 #endif

@@ -16,6 +16,8 @@ extension LocalReplyEndpoint {
         let now = clock.now
         if let wait = limiter.retryAfter(for: bucket, now: now, limitPerMinute: control ? 120 : 60) {
             let seconds = Int(wait.components.seconds) + (wait.components.attoseconds > 0 ? 1 : 0)
+            // Admission refusals carry no listener status. Keep the report defaults for wire compatibility:
+            // existing decoders require held/quiet; their values and speech fields are placeholders here.
             var report = LocalSessionUpdateReport(outcome: .refused, reason: reason)
             report.retryAfter = seconds
             let logKey = "session-update-refusal-log:" + reason

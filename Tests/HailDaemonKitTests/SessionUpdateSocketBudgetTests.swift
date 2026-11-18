@@ -8,7 +8,7 @@ import Testing
 @Suite(.serialized, .timeLimit(.minutes(1))) struct SessionUpdateSocketBudgetTests {
     @Test(arguments: SessionUpdatePriority.allCases)
     func sixtyUpdatesDoNotSpendTheReplyBudget(priority: SessionUpdatePriority) async throws {
-        try await withSocket { rig, socket in
+        try await withSocket { rig, socket, _ in
             let started = ContinuousClock.now
             let request = LocalSessionUpdateRequest(action: .submit, target: RecipientTestRig.target,
                                                     priority: priority, text: "Synthetic card")
@@ -26,7 +26,7 @@ import Testing
 
     @Test(arguments: SessionUpdatePriority.allCases)
     func exhaustedReplyBudgetCannotBlockAnyUpdateAction(priority: SessionUpdatePriority) async throws {
-        try await withSocket { rig, socket in
+        try await withSocket { rig, socket, _ in
             let started = ContinuousClock.now
             try await fillReplyBudget(socket: socket)
             let requests: [LocalSessionUpdateRequest] = [
@@ -48,7 +48,7 @@ import Testing
     }
 
     @Test func reply121IsStillRateLimited() async throws {
-        try await withSocket { _, socket in
+        try await withSocket { _, socket, _ in
             let started = ContinuousClock.now
             try await fillReplyBudget(socket: socket)
             let response = try await submit(replyData(), socket: socket)
@@ -58,12 +58,16 @@ import Testing
     }
 
     @Test func oversizedUpdatesStillFailBeforeDispatch() async throws {
-        try await withSocket { rig, socket in
+        try await withSocket { rig, socket, endpoint in
+            let admission = await endpoint.limiter
             let request = LocalSessionUpdateRequest(action: .submit, target: RecipientTestRig.target,
                 text: String(repeating: "x", count: PayloadLimits.defaultMaxFrameBytes))
             let response = try await submit(JSONEncoder().encode(request), socket: socket)
             #expect(response == LocalReplyResponse(delivered: 0, error: "frame too large"))
             #expect(rig.sends == 0)
+            let limiter = await endpoint.limiter
+            #expect(limiter == admission, "oversized frames spend no update admission")
+            #expect(limiter.retryAfter(for: "local-session-update", now: .now, limitPerMinute: 1) == nil)
         }
     }
 
@@ -81,7 +85,7 @@ import Testing
         }
     }
 
-    private func withSocket(_ body: (SilentUpdateRig, String) async throws -> Void) async throws {
+    private func withSocket(_ body: (SilentUpdateRig, String, LocalReplyEndpoint) async throws -> Void) async throws {
         let rig = try await SilentUpdateRig.make()
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(
             "hs-ub-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -92,7 +96,7 @@ import Testing
             audit: AuditLog(directory: scratch.appendingPathComponent("audit")))
         do {
             try await endpoint.start()
-            try await body(rig, socket.path)
+            try await body(rig, socket.path, endpoint)
         } catch {
             await endpoint.stop()
             await rig.listener.stop()

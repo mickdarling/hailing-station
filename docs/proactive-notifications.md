@@ -17,7 +17,7 @@ recipient becoming available retries held silent cards. An audience change durin
 peer at enqueue and offers the same card to the new device exactly once. See [host operations](host-operations.md#session-updates-opt-in-609)
 for scope. There is no settle setting. Configured speech keeps the existing rules. This change has synthetic
 verification only; it records no installation or physical-device proof.
-The #1258 local source candidate follows the owner's 2026-11-18 decision: action cards, silent info cards and
+The #1258 default behavior merged in PR #1265 follows the owner's 2026-11-18 decision: action cards, silent info cards and
 spoken updates have **no send budget by default**. Socket admission, the optional host cap and unchanged held
 bounds are described under [Rate limits and quiet hours](#rate-limits-and-quiet-hours). Its
 [verification is synthetic only](testing/1258-unlimited-session-updates.md); no live configuration, installation
@@ -370,7 +370,7 @@ answer and by `haild notify status`, stays as it is. An `info` update held for a
 
 ## Rate limits and quiet hours
 
-- **Session sends (#1258 owner decision, local source candidate): unlimited by default** for action cards, silent
+- **Session sends (#1258 owner decision, merged in PR #1265): unlimited by default** for action cards, silent
   info cards and spoken updates. `SessionUpdatePolicy.perSessionLimit == nil` disables send accounting and keeps
   no send history. Protection against a stuck local loop uses a **60 submissions/minute per host** runaway
   guard that normal use never reaches. Status and quiet-on requests share a separate **120/minute per host**
@@ -386,8 +386,8 @@ answer and by `haild notify status`, stays as it is. An `info` update held for a
   socket runaway guard still applies. A configured cap preserves the queue's `rate_limited` refusal,
   `retry_after`, and refusals spending no queue budget. See the
   [host settings](host-operations.md#session-updates-opt-in-609) for an example and argument names and the
-  [cap verification record](testing/1258-session-update-cap.md) for synthetic proof. This branch depends on
-  the unlimited-default and socket-admission change.
+  [cap verification record](testing/1258-session-update-cap.md) for synthetic proof. The cap candidate builds
+  on the unlimited-default and socket-admission change merged in PR #1265.
 - **Held memory bounds stay:** 5 per session, 20 total, 4-hour lifetime. `full`/`expired` behavior and oldest-info
   eviction are unchanged; unlimited sends do not allow unbounded held cards.
 - The push ladder and quiet-hours wiring below remain proposed; unlimited session sends do not implement APNs.
