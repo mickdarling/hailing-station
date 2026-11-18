@@ -68,6 +68,7 @@ public enum ConnectionProbeDaemon {
         /// `--session-updates` (#609), only with `--personal-terminal`: sessions may send unsolicited updates
         /// through `haild notify`. Off by default.
         var sessionUpdates = false
+        var sessionUpdatePolicy = SessionUpdatePolicy()
         /// Task deadlines require the separately enabled connected-update path. Both remain off by default.
         var taskProgress = false
         var sessionUpdateSpeechRoot: URL?
@@ -87,7 +88,7 @@ public enum ConnectionProbeDaemon {
         var authorizer: (any HostSessionAuthorizing)?, personalTerminal = false
         // Value-free switches: `--single-terminal-reply-fallback`, `--device-diagnostics` (#234), and the rest below.
         var switches: Set<String> = [], replySocket: URL?, ambient: [String: String] = [:], voiceRoutes: URL?
-        var speechRoot: URL?
+        var speechRoot: URL?, updateLimits: [String: String] = [:]
         var rest = arguments[...]
         while let flag = rest.popFirst() {
             switch flag {
@@ -105,6 +106,8 @@ public enum ConnectionProbeDaemon {
             case "--voice-routes" where voiceRoutes == nil: voiceRoutes = try path(from: &rest, absolute: true)
             case "--session-update-speech-root" where speechRoot == nil:
                 speechRoot = try path(from: &rest, absolute: true)
+            case "--session-update-per-session-limit", "--session-update-window-seconds":
+                try parseSessionUpdateLimit(flag, from: &rest, into: &updateLimits)
             case "--single-terminal-reply-fallback", "--device-diagnostics",
                  "--ambient-reply-control", "--session-updates", "--task-progress", "--host-health":
                 switches.insert(flag)
@@ -114,30 +117,35 @@ public enum ConnectionProbeDaemon {
             default: throw WebSocketListenerError.invalidArguments
             }
         }
-        guard let address, let port, let authorizer,
-              personalTerminal || (replySocket == nil && switches.isEmpty && voiceRoutes == nil && speechRoot == nil),
-              !switches.contains("--task-progress") || switches.contains("--session-updates"),
-              speechRoot == nil || switches.contains("--session-updates"),
-              ambient.isEmpty || (personalTerminal && switches.contains("--single-terminal-reply-fallback")) else {
-            throw WebSocketListenerError.invalidArguments
-        }
+        guard let address, let port, let authorizer else { throw WebSocketListenerError.invalidArguments }
         return try finishOptions(Options(address: address, port: port, authorizer: authorizer),
             personalTerminal: personalTerminal, switches: switches,
-            paths: ExtraPaths(reply: replySocket, voice: voiceRoutes, speech: speechRoot), ambient: ambient)
+            paths: ExtraPaths(reply: replySocket, voice: voiceRoutes, speech: speechRoot, limits: updateLimits),
+            ambient: ambient)
     }
 
-    private struct ExtraPaths { var reply: URL?, voice: URL?, speech: URL? }
+    private struct ExtraPaths {
+        var reply: URL?, voice: URL?, speech: URL?
+        var limits: [String: String] = [:]
+    }
 
     private static func finishOptions(
         _ seed: Options, personalTerminal: Bool, switches: Set<String>,
         paths: ExtraPaths, ambient: [String: String]
     ) throws -> Options {
+        guard personalTerminal || (paths.reply == nil && switches.isEmpty && paths.voice == nil && paths.speech == nil),
+              !switches.contains("--task-progress") || switches.contains("--session-updates"),
+              paths.speech == nil || switches.contains("--session-updates"),
+              ambient.isEmpty || (personalTerminal && switches.contains("--single-terminal-reply-fallback")) else {
+            throw WebSocketListenerError.invalidArguments
+        }
         var options = seed
         options.personalTerminal = personalTerminal ? (paths.reply ?? LocalReplyEndpoint.standardSocket()) : nil
         options.singleTerminalReplyFallback = switches.contains("--single-terminal-reply-fallback")
         options.ambient = try ambientOptions(ambient, switches)
         options.diagnostics = switches.contains("--device-diagnostics") ? DiagnosticLog.standardDirectory() : nil
         options.sessionUpdates = switches.contains("--session-updates")
+        options.sessionUpdatePolicy = try sessionUpdatePolicy(paths.limits, enabled: options.sessionUpdates)
         options.taskProgress = switches.contains("--task-progress")
         options.sessionUpdateSpeechRoot = paths.speech
         options.health = switches.contains("--host-health")
@@ -195,14 +203,14 @@ extension ConnectionProbeDaemon {
         return (listener, replyEndpoint)
     }
 
-    private static func configureProactive(_ listener: WebSocketListener, options: Options) async throws {
+    static func configureProactive(_ listener: WebSocketListener, options: Options) async throws {
         guard options.personalTerminal != nil else {
             guard !options.sessionUpdates, !options.taskProgress, options.sessionUpdateSpeechRoot == nil else {
                 throw WebSocketListenerError.invalidArguments
             }
             return
         }
-        if options.sessionUpdates { await listener.enableSessionUpdates() }
+        if options.sessionUpdates { await listener.configureSessionUpdatePolicy(options.sessionUpdatePolicy) }
         #if os(macOS)
         if let root = options.sessionUpdateSpeechRoot {
             await listener.configureSessionUpdateSpeech(try OwnedSessionUpdateSpeechRenderer(outputRoot: root))
@@ -326,4 +334,39 @@ extension ConnectionProbeDaemon {
         return AmbientRightyoRouter(configuration: configuration, log: log)
     }
     #endif
+}
+
+/// Startup-only cap validation, shared by the parsed options and proactive listener composition (#1258).
+extension ConnectionProbeDaemon {
+    struct SessionUpdateLimitError: Error, CustomStringConvertible {
+        var description: String {
+            "sessionUpdatePerSessionLimit (1...10000) and sessionUpdateWindowSeconds (1...86400) "
+                + "must both be positive integers and require sessionUpdates: true"
+        }
+    }
+
+    private static func parseSessionUpdateLimit(
+        _ flag: String, from rest: inout ArraySlice<String>, into limits: inout [String: String]
+    ) throws {
+        guard limits[flag] == nil, let value = rest.popFirst() else { throw SessionUpdateLimitError() }
+        limits[flag] = value
+    }
+
+    private static func sessionUpdatePolicy(_ values: [String: String], enabled: Bool) throws -> SessionUpdatePolicy {
+        guard !values.isEmpty else { return SessionUpdatePolicy(enabled: enabled) }
+        func integer(_ key: String, maximum: Int) throws -> Int {
+            guard let raw = values[key], !raw.isEmpty, raw.count <= 5,
+                  raw.allSatisfy({ ("0"..."9").contains($0) }),
+                  let value = Int(raw), (1...maximum).contains(value) else { throw SessionUpdateLimitError() }
+            return value
+        }
+        guard enabled else { throw SessionUpdateLimitError() }
+        let limit = try integer("--session-update-per-session-limit", maximum: 10_000)
+        let seconds = try integer("--session-update-window-seconds", maximum: 86_400)
+        return SessionUpdatePolicy(enabled: enabled, perSessionLimit: limit, window: .seconds(seconds))
+    }
+}
+
+extension WebSocketListener {
+    func configureSessionUpdatePolicy(_ policy: SessionUpdatePolicy) { sessionUpdates.policy = policy }
 }

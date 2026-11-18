@@ -176,7 +176,30 @@ Owner-only socket access and frame-size limits remain in force. Held memory boun
 refuses with `full`, and held expiry and oldest-info eviction are unchanged. These local changes have
 [synthetic verification only](testing/1258-unlimited-session-updates.md), with no install or live config change.
 
-Exit codes: 0 when held or for status; 75 only for `rate_limited`; 1 for other refusals, including `runaway_guard` and `control_rate_limited` (deliberately not 75, so a retry-on-75 wrapper does not loop into the guard), `unknown_target`, `full` and `not enabled`. Output gives counts and reasons only, never the words. Requests are audited as `local-update` with the action only.
+To opt into a send cap, add both flat keys alongside `"sessionUpdates": true`:
+
+```json
+{
+  "sessionUpdates": true,
+  "sessionUpdatePerSessionLimit": 6,
+  "sessionUpdateWindowSeconds": 3600
+}
+```
+
+`sessionUpdatePerSessionLimit` must be a JSON integer from **1 to 10000**; `sessionUpdateWindowSeconds` must be
+a JSON integer from **1 to 86400**. Neither key is present by default. Both must be set together and require
+`sessionUpdates: true`. Zero, negative, fractional, wrong-type, incomplete and out-of-range values are refused
+with a clear validation error before plist generation/restart can stop a running daemon. `scripts/host.sh` passes
+`--session-update-per-session-limit N --session-update-window-seconds S` in the LaunchAgent's `ProgramArguments`;
+`ConnectionProbeDaemon.options` validates them again and `configureProactive` applies the policy at startup.
+The existing `HAIL_CONFIG_DIR` environment bridge continues to identify the host config directory; the cap uses
+arguments, not additional environment variables. Remove both cap keys to restore unlimited session sends;
+the separate socket runaway guard still applies. Settings are read at start and need a restart to take effect.
+A configured cap retains the queue's sliding-window `rate_limited` refusal and `retry_after`; refusals spend no
+queue budget. These local changes have
+[synthetic verification only](testing/1258-session-update-cap.md), with no install or live config change.
+
+Exit codes: 0 when held or for status; 75 only for `rate_limited` (the optional send cap above); 1 for other refusals, including `runaway_guard` and `control_rate_limited` (deliberately not 75, so a retry-on-75 wrapper does not loop into the guard), `unknown_target`, `full` and `not enabled`. Output gives counts and reasons only, never the words. Requests are audited as `local-update` with the action only.
 
 ## When replies stop arriving
 

@@ -75,11 +75,12 @@ public struct LocalSessionUpdateReport: Codable, Sendable, Equatable {
         /// answer. `not_enabled`: haild runs without `--session-updates`.
         case held, delivered, dropped, refused, status, notEnabled = "not_enabled"
     }
-
     public var outcome: Outcome
-    /// For `refused`: `disabled`, `rate_limited`, `full`, `expired`, `unknown_target`, `invalid` or `stopping`.
+    /// For `refused`: `disabled`, `rate_limited`, `runaway_guard`, `control_rate_limited`, `full`, `expired`,
+    /// `unknown_target`, `invalid` or `stopping`. Admission refusals carry no status: held, quiet and speech
+    /// fields are compatibility placeholders; only outcome, reason and retry time are meaningful.
     public var reason: String?
-    /// Whole seconds until the session may send again, for `rate_limited`.
+    /// Whole seconds until admission may resume, for `rate_limited`, `runaway_guard` or `control_rate_limited`.
     public var retryAfter: Int?
     /// A held `action` update with a device to tell: the caller may raise its own push notification too.
     public var push = false
@@ -88,7 +89,6 @@ public struct LocalSessionUpdateReport: Codable, Sendable, Equatable {
     /// Cards are available independently of spoken admission. This is capability status, never hearing proof.
     public var speechUnavailable: String? = "attention_signal_missing"
     public var speechStatus: String?
-
     public init(outcome: Outcome, reason: String? = nil) { (self.outcome, self.reason) = (outcome, reason) }
 }
 

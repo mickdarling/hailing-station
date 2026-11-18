@@ -85,6 +85,16 @@ class NotifyCLITests(unittest.TestCase):
             "push: unavailable (APNs delivery is not configured)",
         ])
 
+    def test_admission_refusals_print_no_placeholder_status(self):
+        for reason in ("runaway_guard", "control_rate_limited"):
+            with self.subTest(reason=reason):
+                response = self.report("refused", reason=reason, retryAfter=30,
+                                       speechUnavailable="attention_signal_missing")
+                result, _ = self.run_notify(["status"], response)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(result.stdout, f"refused: {reason}; try again in 30 s\n")
+                self.assertEqual(result.stderr, "")
+
     def test_refusals_map_to_lines_and_exit_codes(self):
         cases = [
             (self.report("refused", reason="rate_limited", retryAfter=120), 75,
