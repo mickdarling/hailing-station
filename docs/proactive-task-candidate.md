@@ -21,8 +21,9 @@ An ambiguous, missing, incapable or unavailable recipient leaves the update held
 Cards enter the attributed session conversation once per host/update identity, with bounded receipts and history.
 Enrolled progress/completion cards also carry their exact task identifier as unspoken metadata.
 With speech configured, private updates are dropped and held updates are purged; prepared frames cannot cross
-privacy epochs. With speech `not_configured`, #1249 delivers silent info immediately in privacy, meeting and
-media modes. Only explicit notify quiet holds it; clearing quiet retries delivery. Privacy protects the room's
+privacy epochs. With speech `not_configured`, #1249 delivers ordinary (non-task) silent info immediately in privacy,
+meeting and media modes. Task progress and completion reports keep their privacy epochs, purge rules and publication
+gates unchanged, with or without a renderer. Only explicit notify quiet holds it; clearing quiet retries delivery. Privacy protects the room's
 audio, and meeting participants do not see the owner's visual cards. A card held without a recipient retries
 when ambient listening supplies one or admitted input establishes a last-input recipient. Every submission
 attempts delivery immediately, including between a reply's audio frames. Visual content arrives independently
