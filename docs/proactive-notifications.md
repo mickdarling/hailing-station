@@ -10,6 +10,13 @@ beyond what Status lists**, and implementation waits for Mick's answers to the o
 
 The connected task/update source candidate is described in [proactive-task-candidate.md](proactive-task-candidate.md).
 It does not install or enable delivery, qualify physical hearing, or implement the approved-key/APNs ladder below.
+The local #1249 candidate delivers silent info immediately, including between reply audio frames, with
+only an explicit notify quiet hold and content-free drain events. Privacy, meeting and media do not hold silent
+cards: room audio privacy and a meeting's participants do not restrict the owner's visual updates. A missing
+recipient becoming available retries held silent cards. An audience change during preparation refuses the old
+peer at enqueue and offers the same card to the new device exactly once. See [host operations](host-operations.md#session-updates-opt-in-609)
+for scope. There is no settle setting. Configured speech keeps the existing rules. This change has synthetic
+verification only; it records no installation or physical-device proof.
 The historical merged-foundation inventory follows.
 
 | Piece | State |

@@ -694,6 +694,12 @@ final class LastInputLedger: Sendable {
 
     func latest(for target: String) -> Entry? { state.withLock { $0.latest[target] } }
 
+    /// The caller owns the receiving HostSession actor turn; its own input cannot invert transport/ledger locks.
+    /// Do not await or re-enter the ledger. Another device's input cannot change the audience during enqueue.
+    func withLatest(for target: String, enqueue: (Entry?) -> Bool) -> Bool {
+        state.withLock { enqueue($0.latest[target]) }
+    }
+
     func pinned(_ reply: UUID, target: String) -> Entry? {
         state.withLock { $0.pins.last(where: { $0.reply == reply && $0.target == target })?.entry }
     }

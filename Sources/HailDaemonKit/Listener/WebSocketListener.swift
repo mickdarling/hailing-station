@@ -110,9 +110,19 @@ public actor WebSocketListener {
     /// `replyHold`: connections whose agent replies are refused while private (#735 S-2c); the ambient router sets it.
     let (lastInput, replyHold) = (LastInputLedger(), PrivateReplyHold())
     /// Sessions' unsolicited updates (#609): off unless `--session-updates`. The quiet switch lasts until restart.
-    var sessionUpdates = SessionUpdateQueue(), sessionUpdatesQuiet = false
+    var sessionUpdates = SessionUpdateQueue()
+    let silentUpdateGate = SilentSessionUpdateGate()
+    var sessionUpdatesQuiet = false {
+        didSet {
+            silentUpdateGate.setQuiet(sessionUpdatesQuiet)
+            if !sessionUpdatesQuiet { Task.detached { await self.drainSilentSessionUpdates(.holdCleared) } }
+        }
+    }
+    var silentUpdateDrainPending: SilentSessionUpdateDrainReason?
     var taskProgressController: ListenerTaskProgress?
     let taskProgressOwnerLifetime = TaskProgressOwnerLifetime()
+    var sessionUpdateTaskIDs: Set<UUID> = []
+    var sessionUpdateSending: [UUID: SessionUpdateSending] = [:]
     var sessionUpdateTaskAuthorities: [UUID: TaskProgressPublicationAuthority] = [:]
     var sessionUpdatesDelivering = false, sessionUpdatePrivacyRevision: UInt64 = 0
     let sessionUpdateFence = SessionUpdateFence()
@@ -189,6 +199,7 @@ extension WebSocketListener {
     public func stop(reason: String = "requested") async {
         guard !stopped else { return }
         stopped = true
+        silentUpdateGate.close()
         peers.values.forEach { $0.replyTransport.retire() }
         taskProgressOwnerLifetime.close()
         sessionUpdateFence.close()
@@ -364,6 +375,8 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     /// Synchronous final enqueue gate for proactive updates. Unknown wiring fails closed. No callback may wait
     /// or re-enter the router: only a prepared transport hand-off runs while privacy/media state is locked.
     func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool
+    /// Identity-only gate for visual cards. Current audience and enqueue share the routing lock; no audio holds.
+    func withSilentSessionUpdateAudience(_ enqueue: @Sendable (UUID?) -> Bool) -> Bool
     func taskProgressAudience() -> TaskProgressAmbientAudience?
     func withTaskProgressPermission(_ audience: TaskProgressAmbientAudience, commit: @Sendable () -> Bool) -> Bool
     /// Identity-only final owner admission. The nonescaping commit changes pure cadence, never I/O or router state.
@@ -411,6 +424,7 @@ extension AmbientListenerWiring {
     public func mediaMode(connection: UUID) -> Bool { false }
     public func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool { false }
     public var sessionUpdatesPrivate: Bool { true }
+    public func withSilentSessionUpdateAudience(_ enqueue: @Sendable (UUID?) -> Bool) -> Bool { false }
     public func taskProgressAudience() -> TaskProgressAmbientAudience? { nil }
     public func withTaskProgressPermission(
         _ audience: TaskProgressAmbientAudience, commit: @Sendable () -> Bool
@@ -459,6 +473,7 @@ extension WebSocketListener {
         lastInput.forget(connection: peer.session.connectionID)
         await endAmbient(of: peer)
         await refreshTaskProgressEnvironment()
+        await drainSilentSessionUpdates(.recipientChanged)
     }
 
     /// Ends every stream, then waits (bounded) for each ambient child to be reaped and each in-flight dispatch
@@ -937,7 +952,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     /// resurrect an old stream, owner or task. Public starts do not depend on reply diagnostics being enabled.
     func taskProgressOwnerChanged() {
         guard let listener = state.withLock({ $0.listener?.value }) else { return }
-        taskProgressChanges.enqueue { await listener.refreshTaskProgressEnvironment() }
+        taskProgressChanges.enqueue {
+            await listener.refreshTaskProgressEnvironment()
+            await listener.drainSilentSessionUpdates(.recipientChanged)
+        }
     }
 
     /// Called in order from the gate's actor; only spawns, enqueues or signals, never awaits. A start that finds
@@ -1127,6 +1145,16 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             let connection = state.active.flatMap { state.runs[$0.run]?.connection }
             return Self.ambientOwner(stream: state.active?.stream, connection: connection,
                                      newestStart: state.newestStart, queued: state.queue)
+        }
+    }
+
+    public func withSilentSessionUpdateAudience(_ enqueue: @Sendable (UUID?) -> Bool) -> Bool {
+        state.withLock { state in
+            guard !state.shuttingDown else { return false }
+            let connection = state.active.flatMap { state.runs[$0.run]?.connection }
+            let listening = Self.ambientOwner(stream: state.active?.stream, connection: connection,
+                                             newestStart: state.newestStart, queued: state.queue)
+            return enqueue(listening)
         }
     }
 
