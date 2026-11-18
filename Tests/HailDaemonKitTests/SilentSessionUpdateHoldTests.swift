@@ -24,13 +24,13 @@ import Testing
     }
 
     @Test(arguments: ["privacy", "meeting", "media"])
-    func roomModesWaitOnlyForStreamingReplyTerminal(_ mode: String) async throws {
+    func roomModesDeliverInsideStreamingReply(_ mode: String) async throws {
         let router = makeRouter(), rig = try await SilentUpdateRig.make(ambient: router), reply = UUID()
         await set(mode, on: true, rig: rig, router: router)
         try await rig.send(rig.frame(reply, text: true))
-        #expect(await rig.submit().outcome == .held && rig.sends == 1)
+        #expect(await rig.submit().outcome == .delivered && rig.sends == 2)
         try await rig.send(rig.frame(reply))
-        #expect(rig.sends == 2)
+        #expect(rig.sends == 3)
         try await rig.send(rig.frame(reply, final: true))
         #expect(await eventually { await rig.listener.sessionUpdate(.init(action: .status)).held == 0 })
         #expect(rig.sends == 4)
@@ -86,7 +86,7 @@ import Testing
         await rig.listener.stop()
     }
 
-    @Test func quietAtFinalPeerHopRefusesSendAndClearDuringReplyWaitsForTerminal() async throws {
+    @Test func quietAtFinalPeerHopRefusesSendAndClearDuringReplyDeliversImmediately() async throws {
         let mode = "quiet"
         let router = makeRouter(), rig = try await SilentUpdateRig.make(ambient: router), reply = UUID()
         let report = await SessionUpdatePrivacyScope.$beforePeerHop.withValue({
@@ -95,9 +95,10 @@ import Testing
         #expect(report.outcome == .held && rig.sends == 0)
         try await rig.send(rig.frame(reply, text: true))
         await set(mode, on: false, rig: rig, router: router)
-        // Join a real drain at the cleared hold while the stream still owns the transport.
+        // Join the cleared-hold drain while the reply is still streaming.
         await rig.listener.drainSilentSessionUpdates(.holdCleared)
-        #expect(rig.sends == 1)
+        #expect(await eventually { await rig.listener.sessionUpdate(.init(action: .status)).held == 0 })
+        #expect(rig.sends == 2)
         try await rig.send(rig.frame(reply, final: true))
         #expect(await eventually { await rig.listener.sessionUpdate(.init(action: .status)).held == 0 })
         #expect(rig.sends == 3)

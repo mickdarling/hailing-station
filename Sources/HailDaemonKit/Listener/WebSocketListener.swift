@@ -303,7 +303,6 @@ extension WebSocketListener {
             Task { await self?.peerEnded(endedID) }
         }
         (peers[id], transports[session.connectionID]) = (peer, connection)
-        observeSilentSessionUpdates(peer)
         replyAudioQueue.register(session.connectionID)
         await peer.start()
     }
@@ -374,6 +373,8 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     /// Synchronous final enqueue gate for proactive updates. Unknown wiring fails closed. No callback may wait
     /// or re-enter the router: only a prepared transport hand-off runs while privacy/media state is locked.
     func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool
+    /// Identity-only gate for visual cards. Current audience and enqueue share the routing lock; no audio holds.
+    func withSilentSessionUpdateAudience(_ enqueue: @Sendable (UUID?) -> Bool) -> Bool
     func taskProgressAudience() -> TaskProgressAmbientAudience?
     func withTaskProgressPermission(_ audience: TaskProgressAmbientAudience, commit: @Sendable () -> Bool) -> Bool
     /// Identity-only final owner admission. The nonescaping commit changes pure cadence, never I/O or router state.
@@ -421,6 +422,7 @@ extension AmbientListenerWiring {
     public func mediaMode(connection: UUID) -> Bool { false }
     public func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool { false }
     public var sessionUpdatesPrivate: Bool { true }
+    public func withSilentSessionUpdateAudience(_ enqueue: @Sendable (UUID?) -> Bool) -> Bool { false }
     public func taskProgressAudience() -> TaskProgressAmbientAudience? { nil }
     public func withTaskProgressPermission(
         _ audience: TaskProgressAmbientAudience, commit: @Sendable () -> Bool
@@ -1141,6 +1143,16 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             let connection = state.active.flatMap { state.runs[$0.run]?.connection }
             return Self.ambientOwner(stream: state.active?.stream, connection: connection,
                                      newestStart: state.newestStart, queued: state.queue)
+        }
+    }
+
+    public func withSilentSessionUpdateAudience(_ enqueue: @Sendable (UUID?) -> Bool) -> Bool {
+        state.withLock { state in
+            guard !state.shuttingDown else { return false }
+            let connection = state.active.flatMap { state.runs[$0.run]?.connection }
+            let listening = Self.ambientOwner(stream: state.active?.stream, connection: connection,
+                                             newestStart: state.newestStart, queued: state.queue)
+            return enqueue(listening)
         }
     }
 

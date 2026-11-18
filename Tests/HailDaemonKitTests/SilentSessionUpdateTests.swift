@@ -12,39 +12,6 @@ import Testing
         await rig.listener.stop()
     }
 
-    @Test func streamingReplyOwnsEveryFrameThroughTerminalThenCardDeliversExactlyOnce() async throws {
-        let rig = try await SilentUpdateRig.make(), reply = UUID()
-        try await rig.send(rig.frame(reply, text: true))
-        #expect(await rig.submit().outcome == .held)
-        #expect(rig.sends == 1)
-        try await rig.send(rig.frame(reply))
-        #expect(rig.sends == 2)
-        try await rig.send(rig.frame(reply, final: true))
-        #expect(await eventually { await rig.listener.sessionUpdate(.init(action: .status)).held == 0 })
-        #expect(rig.sends == 4)
-        await rig.listener.drainSilentSessionUpdates(.replyEnd)
-        #expect(rig.sends == 4 && rig.drains.contains("trigger=reply_end count=1"))
-        await rig.listener.stop()
-    }
-
-    @Test func secondReplyStartingAtCardPeerHopWinsAndCardWaitsForItsTerminal() async throws {
-        let rig = try await SilentUpdateRig.make(observe: false), first = UUID(), second = UUID()
-        try await rig.send(rig.frame(first, text: true))
-        #expect(await rig.submit().outcome == .held)
-        try await rig.send(rig.frame(first, final: true))
-        await SessionUpdatePrivacyScope.$beforePeerHop.withValue({
-            try? await rig.send(rig.frame(second, text: true))
-        }, operation: { await rig.listener.drainSilentSessionUpdates(.replyEnd) })
-        #expect(rig.sends == 3, "first text, first terminal, second text; no card inside second reply")
-        try await rig.send(rig.frame(second))
-        #expect(rig.sends == 4)
-        await rig.listener.observeSilentSessionUpdates(rig.peer)
-        try await rig.send(rig.frame(second, final: true))
-        #expect(await eventually { await rig.listener.sessionUpdate(.init(action: .status)).held == 0 })
-        #expect(rig.sends == 6)
-        await rig.listener.stop()
-    }
-
     @Test(arguments: ["request", "turn", "playback"])
     func inputAndDevicePlaybackDoNotHoldSilentCards(_ activity: String) async throws {
         let rig = try await SilentUpdateRig.make()
@@ -77,13 +44,14 @@ import Testing
 
     @Test func connectionClosedWithPendingCardNeverDelivers() async throws {
         let rig = try await SilentUpdateRig.make(), reply = UUID()
-        try await rig.send(rig.frame(reply, text: true))
+        await rig.listener.setSyntheticQuiet(true)
         #expect(await rig.submit().outcome == .held)
         let terminal = try #require(await rig.peer.prepareReplyPublication(rig.frame(reply, final: true)))
         await rig.peer.finish(reason: "synthetic closed")
         #expect(!terminal.enqueue())
-        await rig.listener.drainSilentSessionUpdates(.replyEnd)
-        #expect(rig.sends == 1)
+        await rig.listener.setSyntheticQuiet(false)
+        await rig.listener.drainSilentSessionUpdates(.immediate)
+        #expect(rig.sends == 0)
         await rig.listener.stop()
     }
 }

@@ -23,22 +23,6 @@ import Testing
         await rig.listener.stop()
     }
 
-    @Test func terminalEventDuringAnOutstandingDrainIsNotLost() async throws {
-        let rig = try await SilentUpdateRig.make(), reply = UUID()
-        try await rig.send(rig.frame(reply, text: true))
-        let report = await SessionUpdatePrivacyScope.$beforePeerHop.withValue({
-            try? await rig.send(rig.frame(reply, final: true))
-            // Join the event at the busy boundary deterministically, even if the automatic event runs later.
-            await rig.listener.drainSilentSessionUpdates(.replyEnd)
-        }, operation: { await rig.submit() })
-        #expect(report.outcome == .delivered)
-        #expect(await eventually { await rig.listener.sessionUpdate(.init(action: .status)).held == 0 })
-        #expect(rig.sends == 3)
-        await rig.listener.drainSilentSessionUpdates(.replyEnd)
-        #expect(rig.sends == 3)
-        await rig.listener.stop()
-    }
-
     @Test func configuringSpeechAtThePeerHopRefusesTheSilentAttempt() async throws {
         let rig = try await SilentUpdateRig.make()
         let report = await SessionUpdatePrivacyScope.$beforePeerHop.withValue({

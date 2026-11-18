@@ -11,6 +11,8 @@ enum SessionUpdatePrivacyScope {
     @TaskLocal static var expectedRevision: UInt64?
     /// Deterministic actor-hop interleaving seam; absent in production.
     @TaskLocal static var beforePeerHop: (@Sendable () async -> Void)?
+    /// Suspends after preparation and immediately before final admission; absent in production.
+    @TaskLocal static var beforeEnqueue: (@Sendable () async -> Void)?
     /// Holds the card-to-speech capability hop after transport completion.
     @TaskLocal static var beforeSpeechCapabilities: (@Sendable () async -> Void)?
     /// Exercises a policy transition while the first host actor validation is pending.
@@ -18,13 +20,14 @@ enum SessionUpdatePrivacyScope {
 }
 
 enum SilentSessionUpdateDrainReason: String, Sendable {
-    case immediate, replyEnd = "reply_end", holdCleared = "hold_cleared", recipientChanged = "recipient_changed"
+    case immediate, holdCleared = "hold_cleared", recipientChanged = "recipient_changed"
 }
 
 struct SessionUpdateAudienceLease: Sendable {
     let lastInput: LastInputLedger.Entry?
     let privacyRevision: UInt64
     var taskAuthority: TaskProgressPublicationAuthority?
+    var silentRecipient: SilentSessionUpdateRecipient?
 }
 
 extension WebSocketListener {
@@ -147,11 +150,18 @@ extension WebSocketListener {
               let peer = peers.values.first(where: { $0.session.connectionID == recipient }) else { return false }
         let last = lastInput.latest(for: update.session)
         let audienceLease = SessionUpdateAudienceLease(lastInput: last, privacyRevision: replyHold.entryRevision,
-                                           taskAuthority: authority)
+            taskAuthority: authority, silentRecipient: silent ? .init(
+                connection: recipient, target: update.session, ledger: lastInput, ambient: ambient
+            ) : nil)
         await SessionUpdatePrivacyScope.beforePeerHop?()
         guard await peer.deliverSessionUpdate(update, audience: audienceLease, hold: replyHold,
             ambient: ambient, fence: sessionUpdateFence, log: log,
-            silentGate: silent ? silentUpdateGate : nil) else { return false }
+            silentGate: silent ? silentUpdateGate : nil) else {
+            if silent, audienceLease.silentRecipient?.changed == true {
+                silentUpdateDrainPending = .recipientChanged
+            }
+            return false
+        }
         sessionUpdates.acknowledge(update.id)
         sessionUpdateTaskAuthorities[update.id] = nil
         return true
@@ -217,6 +227,7 @@ extension HostSession {
                 $0.info.id == admission.binding.targetID && $0.info.alive && $0.binding == admission.binding.sessionID
             }) else { return false }
         }
+        await SessionUpdatePrivacyScope.beforeEnqueue?()
         admission.taskAuthority?.generation.observePolicy()
         guard !Task.isCancelled, admission.generation == selectionGeneration,
               let target = admission.frame.target,
@@ -263,10 +274,11 @@ extension WebSocketPeer {
         let stopGeneration = Mutex<UInt64?>(nil)
         guard !ended, let admission = await session.prepareSessionUpdate(update, lastInput: lastInput,
                                                                         taskAuthority: audience.taskAuthority),
-              let prepared = await prepareReplyPublication(admission.frame, silentCard: silentGate != nil),
+              let prepared = await prepareReplyPublication(admission.frame),
               await session.enqueueSessionUpdate(admission, lastInput: lastInput, enqueue: {
                   if let silentGate {
-                      return self.enqueueSilentUpdate(prepared, gates: (silentGate, fence))
+                      return self.enqueueSilentUpdate(prepared, gates: (silentGate, fence),
+                                                      recipient: audience.silentRecipient)
                   }
                   return fence.enqueue(connection: self.session.connectionID) { generation in
                       let handoff: @Sendable () -> Bool = {
@@ -299,11 +311,12 @@ extension WebSocketPeer {
         return true
     }
     private nonisolated func enqueueSilentUpdate(
-        _ prepared: PreparedWebSocketReply, gates: (SilentSessionUpdateGate, SessionUpdateFence)
+        _ prepared: PreparedWebSocketReply, gates: (SilentSessionUpdateGate, SessionUpdateFence),
+        recipient: SilentSessionUpdateRecipient?
     ) -> Bool {
         gates.0.enqueue {
             guard gates.1.speechStatus == "not_configured" else { return false }
-            return prepared.enqueue()
+            return recipient?.enqueue { prepared.enqueue() } ?? false
         }
     }
 }
@@ -324,12 +337,6 @@ extension WebSocketListener {
         priority == .info && sessionUpdateFence.speechStatus == "not_configured"
     }
 
-    func observeSilentSessionUpdates(_ peer: WebSocketPeer) {
-        peer.replyTransport.observeReplyEnd { [weak self] in
-            Task.detached { await self?.drainSilentSessionUpdates(.replyEnd) }
-        }
-    }
-
     func drainSilentSessionUpdates(_ reason: SilentSessionUpdateDrainReason) async {
         guard sessionUpdateFence.speechStatus == "not_configured", !sessionUpdates.held.isEmpty else { return }
         _ = await deliverSessionUpdates(.interaction, reason: reason)
@@ -342,5 +349,33 @@ extension WebSocketListener {
         let name = reason?.rawValue
             ?? (trigger == .naturalPause ? "natural_pause" : trigger == .asked ? "asked" : "interaction")
         log(.init(event: "session_update_drained", detail: "trigger=\(name) count=\(count)"))
+    }
+}
+
+/// Audience selection and the actual enqueue share the router/ledger locks, after all async preparation.
+/// A rejected old recipient leaves the original queue entry intact and schedules one fresh-audience offer.
+final class SilentSessionUpdateRecipient: Sendable {
+    let connection: UUID
+    let target: String
+    let ledger: LastInputLedger
+    let ambient: (any AmbientListenerWiring)?
+    private let rejected = Mutex(false)
+    var changed: Bool { rejected.withLock { $0 } }
+
+    init(connection: UUID, target: String, ledger: LastInputLedger, ambient: (any AmbientListenerWiring)?) {
+        (self.connection, self.target, self.ledger, self.ambient) = (connection, target, ledger, ambient)
+    }
+
+    func enqueue(_ operation: @escaping @Sendable () -> Bool) -> Bool {
+        let handoff: @Sendable (UUID?) -> Bool = { listening in
+            self.ledger.withLatest(for: self.target) { last in
+                guard (listening ?? last?.connection) == self.connection else {
+                    self.rejected.withLock { $0 = true }
+                    return false
+                }
+                return operation()
+            }
+        }
+        return ambient?.withSilentSessionUpdateAudience(handoff) ?? handoff(nil)
     }
 }

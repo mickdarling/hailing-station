@@ -25,13 +25,13 @@ privacy epochs. With speech `not_configured`, #1249 delivers silent info immedia
 media modes. Only explicit notify quiet holds it; clearing quiet retries delivery. Privacy protects the room's
 audio, and meeting participants do not see the owner's visual cards. A card held without a recipient retries
 when ambient listening supplies one or admitted input establishes a last-input recipient. Every submission
-attempts delivery immediately. A reply stream on the exact recipient blocks the card until its terminal frame
-is enqueued, independently of playback.
-A new reply that wins admission before the card delays it until that reply's terminal too. Media, requests,
+attempts delivery immediately, including between a reply's audio frames. Visual content arrives independently
+of full, ordered voice playback. The final handoff validates the current audience while holding its routing
+locks through transport enqueue; an audience change retains the card for a fresh offer to the new device. Media, requests,
 finalized turns and owner speech do not hold these visual-only cards. Source authority and fresh final-enqueue
 recipient/policy checks remain mandatory. Action cards and configured speech keep main's existing mode rules.
 Every enabled drain attempt emits `session_update_drained` with
-`trigger=<asked|interaction|natural_pause|immediate|reply_end|hold_cleared|recipient_changed> count=N`, including zero when blocked
+`trigger=<asked|interaction|natural_pause|immediate|hold_cleared|recipient_changed> count=N`, including zero when blocked
 or empty. See [host operations](host-operations.md#session-updates-opt-in-609) and the
 [synthetic immediate-delivery record](testing/session-update-immediate.md). This is not installation or physical proof.
 

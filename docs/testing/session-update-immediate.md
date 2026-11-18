@@ -1,80 +1,103 @@
 # Immediate silent session-update cards (#1249)
 
-This local source candidate supersedes Design A, its settle timer, and the earlier silent privacy/meeting holds
-under the owner's final instruction.
-It is synthetic verification, not an installed build, captured-output round trip, or physical-device proof.
-There is no settle setting or environment variable; `scripts/host.sh` and its tests match `origin/main`.
+This local source candidate follows the owner's newest rule: display card content as it arrives, while
+keeping voice playback full and ordered.
 
-## Rule and ordering boundary
+This supersedes Design A, its settle timer, silent privacy/meeting holds, and terminal-frame ordering.
+Verification here is synthetic, including a loopback WebSocket; it is not installation, an app build,
+a captured-output round trip, a physical-device check, or proof of seeing/hearing anything.
 
-While speech status is `not_configured`, an ordinary info update attempts delivery immediately in every mode.
-Only explicit `haild notify quiet on` holds it; clearing quiet offers it immediately. Privacy, meeting and media
-do not hold silent info: privacy protects the room's audio, and meeting participants do not see the owner's
-visual cards. Expiry, capacity, rate budget, exact recipient, capability, selection generation, target policy,
-and binding authority still apply. Requests, finalized turns, owner speech, and device playback are irrelevant
-to silent-card admission. Configured speech and action-card
-behavior remain as on main. The session-facing quiet-on API is unchanged; the owner-side flag-clear is tested
-directly, without introducing a new CLI or session quiet-off command.
+## Host rule and implementation
 
-`ReplyTransportLifecycle` in `WebSocketPeer.swift` serializes the final Network enqueue with transport retirement
-and stream bookkeeping. A text frame declaring audio opens its reply; a text-only terminal or final audio
-frame ends it. Silent info uses a distinct transport permit that can enqueue only with no active stream on
-that connection. Terminal notifications run outside the transport lock. The listener retains queued cards
-until successful exact-peer completion and coalesces events received during an active drain into one follow-up.
+With speech status `not_configured`, an ordinary `info` update attempts delivery immediately on submit.
+It can enqueue between any two reply frames. Only explicit `haild notify quiet on` holds silent info;
+clearing quiet offers it immediately, including during a streaming reply. Privacy, meeting, media, requests,
+finalized turns, owner speech and device playback do not hold it. Configured speech and action cards retain
+main's behavior. Expiry, capacity, rate budget, exact recipient, capability, selection generation, target
+policy and binding authority still apply. No settle setting or new quiet-off CLI/API is introduced.
 
-If a second reply enqueues its first frame before the card wins final admission, the card stays held through
-that reply's terminal as well. It may go before the next reply's first frame or after its terminal, never inside.
-The transport lock makes checking for an active stream and enqueuing the card atomic. Device playback-end and
-elapsed time play no role. A closed connection retires permits, so pending/prepared cards cannot enqueue there.
+`WebSocketPeer.swift` is restored byte-for-byte to main: no stream entries, reply-boundary parsing,
+silent-card permit, active-stream transport-lock condition, terminal observer, or reply-end silent drain.
+Its existing retirement lock and prepared ticket retain live-connection, atomic, one-time transport enqueue.
+The listener retains cards until successful completion and coalesces concurrent drains into a follow-up.
+A no-recipient card retries when a device begins listening or admitted input establishes its recipient.
 
-The explicit quiet gate covers the synchronous final handoff after asynchronous registry/policy preparation.
-Silent info has no privacy/meeting gate or privacy-epoch restriction; spoken/action guards remain unchanged.
-Router audience changes retry silent cards held without a recipient, including a real admitted ambient start
-with reply diagnostics disabled. Admitted input already retries through the interaction event; peer teardown
-also retries against the newly selected audience. A connection alone does not invent a last-input recipient.
-Silent delivery cannot start speech,
-even if a renderer is configured after enqueue; configuration observed at final admission refuses that silent attempt.
+The P2 fix retains a `SilentSessionUpdateRecipient` in the audience lease. After all asynchronous preparation,
+`enqueueSilentUpdate` checks quiet and absence of a renderer, then validates the current audience while
+holding the ambient router state lock and last-input ledger lock through the actual prepared enqueue.
+The receiving `HostSession` actor turn also remains held. Its own input cannot run concurrently and invert
+transport/ledger locking. Another device cannot change last-input attribution during this enqueue.
+An audience mismatch sends nothing to the old peer, retains the original queue entry, and schedules a
+fresh-audience offer. Budget and identity are not renewed. Spoken/action output uses its existing path.
 
-Every enabled drain attempt emits only `session_update_drained` with
-`trigger=<asked|interaction|natural_pause|immediate|reply_end|hold_cleared|recipient_changed> count=N`, including zero when blocked
-or empty. Counts mean successful transport completion, never viewing or hearing proof.
+Enabled drain logs contain only `session_update_drained trigger=... count=N`, including blocked/empty counts.
+Triggers are `asked`, `interaction`, `natural_pause`, `immediate`, `hold_cleared`, `recipient_changed`.
+Counts record completed transport sends. No content, target, peer identity, transcript or recording is logged.
+
+## Read-only app findings
+
+No `Sources/HailCore` or `Apps/` source is changed.
+
+(a) A valid negotiated `session_update` between reply audio frames cannot alter reply sequencing, terminal
+handling or playback. `HostConnection+Lifecycle.swift:103` processes each socket frame independently;
+`HostConnection+Protocol.swift:44` decodes it, and `:60` dispatches session-update controls through
+`publishSessionUpdate` (`:73`) and `publishNotice`, separately from `publishReply` (`:124`).
+`HostConnectionStore.swift:345` consumes the update before segment wiring, reply history, or `onReplyFrame`;
+`:361` records its separate speech receipt and conversation entry. It never reaches ordinary reply ingress.
+`ReplyPlaybackController.swift:120` keys audio by reply, `:131` stores it by audio sequence, `:166` schedules
+only contiguous frames, and `:187` handles the audio terminal; `ReplyPlaybackController+Segments.swift:84`
+selects final playback completion. The card dispatch invokes none of these. Its speech-receipt policy
+observation can recheck playback
+(`ReplyPlaybackController+Proactive.swift:148`); that retires only marked proactive identities and preserves
+ordinary reply FIFO (`:103`). The UI renders the conversation
+in `Apps/Hail-iOS/StationLayout.swift:173` and `ConversationChatView.swift:53`, independently of audio controls.
+
+Existing app limitation: `HostConnectionStore+ProactivePlayback.swift:15` still suppresses card presentation
+while private/pending privacy or restoring transport (`:20`–`:22`). Thus host delivery in privacy does not
+establish app display in privacy. That is a separate app-side follow-up to the general owner rule; it is not
+a mid-stream sequencing/playback hazard and is outside this host commit.
+
+(b) In the normal conversation thread, reply text displays on final text-frame receipt, including behind an
+earlier reply's queued/playing audio. `HostConnectionStore.swift:348` calls `conversation.noteReply` before
+playback ingress (`:350`). `ConversationLog.swift:239` accepts text, `:243` updates existing text, and `:274`
+appends a new entry without checking playback. The app passes these entries to the chat
+(`StationLayout.swift:173`) and renders every entry (`ConversationChatView.swift:53`).
+
+There is an app-side exception: without a selected conversation thread, `StationLayout.swift:182` uses the
+single-reply `ReplyPlaybackView`. Its `:8` chooses `playback.presentationForControls` over the supplied latest
+reply, and `:44` renders that chosen transcript. `ReplyPlaybackController.swift:108` selects the active reply,
+then the queued head, before latest. Therefore a newly received reply's text can remain hidden behind an earlier
+active reply until that playback selection advances. A separate app issue is needed for this fallback panel
+to obey the owner's general display-on-arrival rule. This host-only commit changes none of it. Existing
+thread/address scopes still apply; these are read-only source findings, not physical UI timing proof.
 
 ## Synthetic traceability
 
-| Requirement | Tests |
+| Requirement | Test |
 | --- | --- |
-| Immediate submit, no content in drain log | `SilentSessionUpdateTests.silentInfoDeliversOnSubmitAndLogsNoContent` |
-| Streaming text/audio through terminal, exactly one card | `streamingReplyOwnsEveryFrameThroughTerminalThenCardDeliversExactlyOnce` |
-| A second reply wins at card admission | `secondReplyStartingAtCardPeerHopWinsAndCardWaitsForItsTerminal` |
-| Only quiet retains; clearing drains | `SilentSessionUpdateHoldTests.quietRetainsCardsAndClearDrainsImmediately` |
-| Quiet turns on during async preparation, clears during reply | `quietAtFinalPeerHopRefusesSendAndClearDuringReplyWaitsForTerminal` |
-| Privacy/meeting/media deliver immediately | `roomModesDoNotHoldSilentInfo` (each mode) |
-| Privacy/meeting/media wait only through a streaming reply's terminal | `roomModesWaitOnlyForStreamingReplyTerminal` (each mode) |
-| Mode entry during async preparation does not hold silent info | `roomModeEntryAtFinalPeerHopDoesNotHoldSilentInfo` (each mode); `privacyEntryDuringSubmissionDoesNotDiscardSilentInfo` |
-| Configured speech keeps main's privacy discard, quiet hold and held-on-submit meeting behavior | `configuredSpeechKeepsMainModeBehavior`; `configuredSpeechPrivacyAtFinalEnqueueRefusesCard` |
-| Held without a recipient, device connects/starts listening | `SilentSessionUpdateRecipientTests.cardHeldWithoutRecipientDeliversWhenDeviceConnectsAndStartsListening` (with/without an initially connected peer; no last-input recipient) |
-| Request/finalized turn/device playback do not hold | `inputAndDevicePlaybackDoNotHoldSilentCards` (each activity) |
-| Configured speech keeps main's info/action behavior | `configuredSpeechKeepsMainInfoAndActionBehavior`; existing session-update speech/stop families |
-| Action remains immediate even mid-reply | `actionCardStillDeliversImmediatelyDuringReply` |
-| Pending card and prepared terminal after connection closes | `connectionClosedWithPendingCardNeverDelivers` |
-| A second submission during a suspended drain | `SilentSessionUpdateRaceTests.submissionDuringAnOutstandingDrainIsDeliveredOnceAfterIt` |
-| Terminal event while a drain is active | `terminalEventDuringAnOutstandingDrainIsNotLost` |
-| Renderer configured during preparation | `configuringSpeechAtThePeerHopRefusesTheSilentAttempt` |
-| Existing trigger names, empty drain counts | `allExistingDrainTriggersLogEmptyCountsWithoutContent` |
+| Submit immediately; content-free log | `SilentSessionUpdateTests.silentInfoDeliversOnSubmitAndLogsNoContent` |
+| Actual wire card between audio sequence 0 and terminal sequence 1; unchanged reply frames; no duplicates | `SilentSessionUpdateWireTests.silentCardArrivesBetweenReplyAudioFramesWithoutChangingTheReply` |
+| Quiet on holds / off delivers | `SilentSessionUpdateHoldTests.quietRetainsCardsAndClearDrainsImmediately` |
+| Quiet enters at final peer hop; clears during reply and delivers before terminal | `quietAtFinalPeerHopRefusesSendAndClearDuringReplyDeliversImmediately` |
+| Privacy/meeting/media deliver, including mid-reply | `roomModesDoNotHoldSilentInfo`, `roomModesDeliverInsideStreamingReply` |
+| Mode changes during preparation/submission do not hold silent cards | `roomModeEntryAtFinalPeerHopDoesNotHoldSilentInfo`, `privacyEntryDuringSubmissionDoesNotDiscardSilentInfo` |
+| No recipient -> connects/listens -> exactly once | `SilentSessionUpdateRecipientTests.cardHeldWithoutRecipientDeliversWhenDeviceConnectsAndStartsListening` (both connection cases) |
+| P2: two live selected devices, preparation suspended, switch A -> B, never A, once B | `recipientSwitchDuringPreparationSendsOnlyToNewDeviceExactlyOnce` |
+| Request/turn/device playback do not hold | `SilentSessionUpdateTests.inputAndDevicePlaybackDoNotHoldSilentCards` |
+| Configured speech retains main's submit/drain/action and mode behavior | `configuredSpeechKeepsMainInfoAndActionBehavior`, `configuredSpeechKeepsMainModeBehavior`, `configuredSpeechPrivacyAtFinalEnqueueRefusesCard` |
+| Renderer configured during preparation refuses silent handoff | `SilentSessionUpdateRaceTests.configuringSpeechAtThePeerHopRefusesTheSilentAttempt` |
+| Action unchanged mid-reply | `SilentSessionUpdateTests.actionCardStillDeliversImmediatelyDuringReply` |
+| Closed connection refuses prepared/pending frames | `connectionClosedWithPendingCardNeverDelivers` |
+| Concurrent submission while draining goes exactly once | `SilentSessionUpdateRaceTests.submissionDuringAnOutstandingDrainIsDeliveredOnceAfterIt` |
+| Other trigger names and empty counts remain content-free | `allExistingDrainTriggersLogEmptyCountsWithoutContent` |
 
-The existing ordinary-authority and general listener fixture explicitly configure an inert renderer so their
-held-info, epoch-discard and manual-drain assertions continue to exercise unchanged spoken-mode behavior.
-The silent fixtures use no renderer except tests explicitly verifying the configured path. All transports are
-never-started synthetic peers; mode tests use the real router's meeting/media state. The recipient test starts
-only a temporary fake ambient child (`/bin/cat`), with no microphone, recording, real provider or device.
+Tests asserting cards wait for terminal frames have been removed/replaced. The ordinary-authority and
+listener fixtures retain inert renderers so their tests still cover unchanged configured-speech behavior.
+Only the recipient-transition fixture starts a temporary fake ambient child (`/bin/cat`); it captures nothing.
 
-## Executed verification for the final owner rule
+## Commands and executed results
 
-The full worktree `swift build --build-tests -j 2` passed in **595.66 s**. Strict lint passed on all
-**11 Swift files changed versus `origin/main`**, with zero violations. No installation, simulator build,
-captured-output round trip or physical-device proof is claimed.
-
-Every build/test phase starts with these preflights, in order:
+Every build/test phase begins, in order, with:
 
 ```sh
 "$HOME/.local/share/jarvis/voicework-2026-11-11/hostslot-wait.sh"
@@ -82,74 +105,79 @@ Every build/test phase starts with these preflights, in order:
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 ```
 
-The worktree build and serial family-test commands are:
+Full package build and serial family tests:
 
 ```sh
 taskpolicy -b swift build --build-tests -j 2
 taskpolicy -b swift test --no-parallel --skip-build -j 2 --filter 'SessionUpdate|OrdinaryUpdate|TaskProgress|TerminalReplyTransport|PreparedWebSocketReply|WebSocket|AmbientMeeting|AmbientPrivacy|AmbientDuck|AmbientMedia'
 ```
 
-The exact lint command is:
+Strict lint runs on every Swift file changed from main or the starting head (including the new wire test):
 
 ```sh
 swiftlint lint --strict \
+  Sources/HailDaemonKit/Listener/HostReplyDelivery.swift \
   Sources/HailDaemonKit/Listener/LocalSessionUpdate.swift \
   Sources/HailDaemonKit/Listener/WebSocketListener+SessionUpdate.swift \
   Sources/HailDaemonKit/Listener/WebSocketListener.swift \
   Sources/HailDaemonKit/Listener/WebSocketPeer.swift \
   Tests/HailDaemonKitTests/OrdinaryUpdateAuthorityTestRig.swift \
   Tests/HailDaemonKitTests/SessionUpdateDeliveryTests.swift \
-  Tests/HailDaemonKitTests/SilentSessionUpdate*.swift
+  Tests/HailDaemonKitTests/SilentSessionUpdateHoldTests.swift \
+  Tests/HailDaemonKitTests/SilentSessionUpdateRaceTests.swift \
+  Tests/HailDaemonKitTests/SilentSessionUpdateRecipientTests.swift \
+  Tests/HailDaemonKitTests/SilentSessionUpdateTestSupport.swift \
+  Tests/HailDaemonKitTests/SilentSessionUpdateTests.swift \
+  Tests/HailDaemonKitTests/SilentSessionUpdateWireTests.swift
 ```
 
-Mutation runs use the same preflights and developer directory, followed by:
+Mutation phases use the same preflights, followed by:
 
 ```sh
 taskpolicy -b swift build --build-tests -j 2
 taskpolicy -b swift test --no-parallel --skip-build -j 2 --filter "$test_filter"
 ```
 
-The unmutated serial family run passed **490 tests in 106 suites** in **246.368 s**, including both
-no-recipient scenarios and every silent/spoken mode case. No build or unmutated test failure was classified
-as pre-existing; no origin/main failure exemption was used.
+The full-package build passed (`Build complete! (234.93s)`). The serial family run passed **489 tests in
+107 suites** in **241.158 s**, including the actual wire-order and two-device P2 tests. Strict lint passed
+on all **13** Swift files listed above with zero violations. Initial attempts found new closure/fixture actor
+annotation errors and a lint invocation missing the developer-directory environment; those were corrected.
+No failure was classified as pre-existing and no main-baseline exemption was used.
+
+All five requested mutations were killed; details follow below. Local logs are under
+`/tmp/hs1249-arrival-rework`: `family-{build,test}.log`, `family-result.json`, `lint.log`,
+`mutation-*-{build,test}.log`, `mutation-results.json`, and the original/restored SHA-256 manifests.
+Build/test phases retain their own host-slot and voice-quiet preflight logs.
 
 ## Mutation results
 
-Each deliberate regression compiled successfully and failed the required named test. The privacy and meeting
-variants each failed only their matching mode case in `roomModesDoNotHoldSilentInfo`; the quiet variant failed
-`quietRetainsCardsAndClearDrainsImmediately`; the spoken variant failed
-`configuredSpeechPrivacyAtFinalEnqueueRefusesCard`. Dropping the recipient hook failed both cases of
-`cardHeldWithoutRecipientDeliversWhenDeviceConnectsAndStartsListening`: the active recipient existed, but the
-card remained held with zero sends. No compiler failure, timeout or unrelated test was counted as a kill.
+Each deliberate regression compiled and failed the named test through real expectation failures, with no
+compiler error, receive timeout, or unrelated failure counted as a kill. The values below are the exact
+`test_filter` arguments to the mutation command above; elapsed times are command wall time.
 
-The `test_filter` values below are the exact arguments to the mutation command above.
-
-| Variant | Deliberate regression | `test_filter` | Build | Result |
+| Mutation | Regression | `test_filter` | Build | Test |
 | --- | --- | --- | --- | --- |
-| `privacy` | Re-add a silent privacy hold | `SilentSessionUpdateHoldTests/roomModesDoNotHoldSilentInfo` | Pass, 97.91s | Killed, test exit 1 |
-| `meeting` | Re-add a silent meeting hold | `SilentSessionUpdateHoldTests/roomModesDoNotHoldSilentInfo` | Pass, 30.58s | Killed, test exit 1 |
-| `quiet` | Ignore silent queue, listener and final-enqueue quiet checks | `SilentSessionUpdateHoldTests/quietRetainsCardsAndClearDrainsImmediately` | Pass, 37.93s | Killed, test exit 1 |
-| `spoken-privacy` | Remove the spoken final-enqueue global privacy fence | `SilentSessionUpdateHoldTests/configuredSpeechPrivacyAtFinalEnqueueRefusesCard` | Pass, 32.27s | Killed, test exit 1 |
-| `recipient-hook` | Remove the ambient owner-change silent drain hook | `SilentSessionUpdateRecipientTests` | Pass, 40.47s | Killed, test exit 1 |
+| `wait-behind-reply` | Restore reply stream tracking and silent-card waiting behind its terminal | `SilentSessionUpdateWireTests` | Pass, 154.529s | Killed (exit 1), 7.940s |
+| `quiet` | Drop queue, listener and final-enqueue quiet checks | `SilentSessionUpdateHoldTests/quietRetainsCardsAndClearDrainsImmediately` | Pass, 160.654s | Killed (exit 1), 7.371s |
+| `recipient-transition` | Drop ambient owner-change silent drain | `SilentSessionUpdateRecipientTests/cardHeldWithoutRecipientDeliversWhenDeviceConnectsAndStartsListening` | Pass, 46.791s | Killed (exit 1), 7.782s |
+| `recipient-check` | Drop final synchronous audience comparison (P2) | `SilentSessionUpdateRecipientTests/recipientSwitchDuringPreparationSendsOnlyToNewDeviceExactlyOnce` | Pass, 43.408s | Killed (exit 1), 6.552s |
+| `ignore-speech-configured` | Treat configured info as silent and ignore the final renderer check | `SilentSessionUpdateTests/configuredSpeechKeepsMainInfoAndActionBehavior` | Pass, 31.265s | Killed (exit 1), 6.062s |
 
-Mutations ran one at a time in this worktree against the full package, with no reduced manifest or alternate
-harness. After each run, the changed source was restored to its exact original bytes. Both mutated production
-files also match their saved SHA-256 snapshots after all five runs. The final restored full-package build
-passed in **41.31 s**, followed by the same serial family command: **490 tests in 106 suites passed** in
-**240.673 s**. Restored strict lint again passed on all 11 changed Swift files with zero violations.
-`git diff --check` passed. No unmutated build/test failure was classified as pre-existing.
+The waiting mutant received a pong before the card, proving the card missed the middle of the reply. The
+quiet mutant sent while quiet was on. Dropping the recipient-transition hook left the card held with no sends
+in both connection cases. Dropping the P2 check sent once to A and zero times to B. Ignoring the renderer
+configuration made configured info deliver immediately instead of retaining main's submit/drain behavior.
 
-## Scope and local evidence
+After every variant, mutated sources were restored to their exact saved bytes. The original, restored and
+current SHA-256 manifests match for all three mutation-touched production files. Restored strict lint passed
+on all 13 changed Swift files with zero violations. The restored full-package build passed in **32.87 s**;
+the restored serial family run passed **489 tests in 107 suites** in **320.067 s**. `git diff --check` passed.
+No unmutated test failure was classified as pre-existing; no baseline exemption was used.
 
-The final production-file count versus the supplied `origin/main`
-(`3c6fb4ce62bf52921cd026918620e6357d4a204e`) is **four**, using `scripts/pr-shape.py` exclusions and rename handling:
-`LocalSessionUpdate.swift`, `WebSocketListener+SessionUpdate.swift`, `WebSocketListener.swift`, and
-`WebSocketPeer.swift`, all under `Sources/HailDaemonKit/Listener/`. This delta changes the first three; the
-transport ordering mechanism in `WebSocketPeer.swift` is retained from the previous rework.
-`scripts/` and `.github/` are untouched versus both the previous commit and main. `HostSession.swift` also
-matches main. No push, PR, live configuration, installation or upload is included.
+## Scope
 
-Local logs are under `/tmp/hs1249-final-delta`: `build.log`, `test.log`, `lint-all-changed.log`,
-`mutation-{privacy,meeting,quiet,spoken-privacy,recipient-hook}-{build,test}.log`, `mutation-results.json`,
-`restored-sha256.json`, `mutation-runner.log`, `restored-lint.log`, and `restored-{build,test}.log`. The local mutation driver and all
-build products remain outside version control.
+Exactly four production files differ from supplied main `3c6fb4ce62bf52921cd026918620e6357d4a204e`, using
+`scripts/pr-shape.py` exclusions/rename handling: `HostReplyDelivery.swift`, `LocalSessionUpdate.swift`,
+`WebSocketListener+SessionUpdate.swift`, `WebSocketListener.swift`, under `Sources/HailDaemonKit/Listener/`.
+`WebSocketPeer.swift` matches main. `scripts/`, `.github/`, `Sources/HailCore/`, `Apps/`, and build identifiers
+are untouched. This is one new local commit; no push, PR, live configuration, installation, or upload.

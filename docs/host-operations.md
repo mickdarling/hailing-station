@@ -123,23 +123,28 @@ unchanged ancestor handling. Invalid values are refused before the running daemo
 add no arguments.
 
 The local #1249 candidate sends `info` cards immediately on submit while speech status is `not_configured`.
-If a reply is streaming to that connection, its terminal frame must be enqueued first; device playback-end is
-not required. A second reply that starts before the card's final enqueue wins the race: the card waits until
-that reply's terminal too, so a card never appears inside a reply stream. There is no settle timer or setting.
+Display content as it arrives; speech keeps its full, ordered playback. Silent cards have no reply-stream
+ordering: a `session_update` frame can arrive between a reply's audio frames. There is no settle timer or setting.
 
-Only explicit `haild notify quiet on` holds silent info cards; clearing quiet offers them immediately,
-subject to the same reply-stream ordering. Privacy, meeting and media modes do not hold these visual cards:
+Only explicit `haild notify quiet on` holds silent info cards; clearing quiet offers them immediately.
+Privacy, meeting and media modes do not hold these visual cards:
 privacy protects people in the room from audio, and a meeting's other participants do not see the owner's cards.
 Source policy/binding, selection, capability, lifetime and exact-peer checks still apply. A card held without
 a recipient is retried when ambient listening supplies one, or admitted input establishes a last-input recipient.
+The current audience is checked again synchronously with transport enqueue. If it changed during preparation,
+the old device gets nothing; the held card is offered to the new recipient exactly once.
 Pending/admitted requests, finalized turns, device playback and owner speech do not delay silent cards.
+This is the host rule. The current app still suppresses card presentation while private or restoring a
+connection. Normal chat shows reply text on receipt, but its fallback panel without a selected thread follows
+the active audio reply and can hide newer text. These separate app follow-ups are recorded in the
+[read-only app findings](testing/session-update-immediate.md#read-only-app-findings).
 A configured spoken renderer keeps main's delivery and drain rules, including its privacy discard policy,
 quiet/media guards and held-on-submit info behavior in meeting mode. Action cards keep main's immediate path.
 The local session API still only permits sessions to turn quiet on; its owner-side flag-clear is tested directly,
 not exposed as a new `quiet_off` request or live CLI command by this change.
 
 Every enabled drain attempt emits the content-free event `session_update_drained` with detail
-`trigger=<asked|interaction|natural_pause|immediate|reply_end|hold_cleared|recipient_changed> count=N`; no target, card, transcript
+`trigger=<asked|interaction|natural_pause|immediate|hold_cleared|recipient_changed> count=N`; no target, card, transcript
 or reply text is included. The count records completed transport sends, not proof that a person saw or heard
 an update. See [synthetic verification](testing/session-update-immediate.md). These are local source changes;
 no installation or physical-device qualification is recorded.
