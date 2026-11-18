@@ -17,7 +17,11 @@ recipient becoming available retries held silent cards. An audience change durin
 peer at enqueue and offers the same card to the new device exactly once. See [host operations](host-operations.md#session-updates-opt-in-609)
 for scope. There is no settle setting. Configured speech keeps the existing rules. This change has synthetic
 verification only; it records no installation or physical-device proof.
-The historical merged-foundation inventory follows.
+The #1258 local source candidate follows the owner's 2026-11-18 decision: action cards, silent info cards and
+spoken updates have **no send budget by default**. The socket admission behavior and unchanged held bounds are described
+under [Rate limits and quiet hours](#rate-limits-and-quiet-hours). Its
+[verification is synthetic only](testing/1258-unlimited-session-updates.md); no live configuration, installation
+or physical delivery is claimed. The historical merged-foundation inventory follows.
 
 | Piece | State |
 | --- | --- |
@@ -366,7 +370,14 @@ answer and by `haild notify status`, stays as it is. An `info` update held for a
 
 ## Rate limits and quiet hours
 
-- The existing per-session limit stays: 6 updates an hour, 5 held, 20 in all, 4-hour lifetime.
+- **Session sends (#1258 owner decision, local source candidate): unlimited by default** for action cards, silent
+  info cards and spoken updates. `SessionUpdatePolicy.perSessionLimit == nil` disables send accounting and keeps
+  no send history. All session-update actions bypass and do not spend the shared local-reply 120/minute
+  bucket, so reply traffic cannot starve updates. Owner-only socket access and frame-size limits still apply;
+  other kinds keep their existing budgets.
+- **Held memory bounds stay:** 5 per session, 20 total, 4-hour lifetime. `full`/`expired` behavior and oldest-info
+  eviction are unchanged; unlimited sends do not allow unbounded held cards.
+- The push ladder and quiet-hours wiring below remain proposed; unlimited session sends do not implement APNs.
 - **Pushes:** at most 4 in any 60-minute window ending now, for the whole host, counting the summary. One update
   pushed to several keys counts once.
   - The first 3 in a window go individually.

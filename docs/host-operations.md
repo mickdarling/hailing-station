@@ -165,7 +165,13 @@ The following held-queue notes describe the historical foundation:
 - An `--action` update that a device could be told about prints `push: suggested`, so the session can raise its own notification. Quiet suppresses it.
 - `haild notify quiet on` turns on do-not-disturb until haild restarts. A session cannot turn it off; that is the user's own control.
 
-Each session may send 6 updates an hour and have 5 held. At most 20 are held in all, for up to 4 hours. These defaults are placeholders pending Mick's decision.
+The #1258 local source candidate follows the owner's 2026-11-18 decision: no send budget by default for
+**action cards, silent info cards or spoken updates**. Session-update requests (including status and quiet
+controls) bypass the shared local-reply 120/minute bucket and do not spend it. Reply traffic cannot block them;
+all other local kinds keep their existing admission budgets. Owner-only socket access and frame-size limits
+remain in force. Held memory bounds remain **5 per session, 20 total, 4 hours**; a queue full of action cards still
+refuses with `full`, and held expiry and oldest-info eviction are unchanged. These local changes have
+[synthetic verification only](testing/1258-unlimited-session-updates.md), with no install or live config change.
 
 Exit codes: 0 when held or for status; 75 when rate limited; 1 for other refusals (`unknown_target`, `full`, `not enabled`). Output gives counts and reasons only, never the words. Requests are audited as `local-update` with the action only.
 

@@ -4,8 +4,8 @@ import OSLog
 private let updateLogger = Logger(subsystem: "com.mickdarling.hailing-station", category: "local-update")
 
 extension LocalReplyEndpoint {
-    /// Same admission budget and fail-closed audit as an ambient request: `pushed(tool: "local-update")` with the
-    /// action token. Neither the target nor the update's text is logged or audited.
+    /// No socket send budget; fail-closed audit records `pushed(tool: "local-update")` with the action token.
+    /// Neither the target nor the update's text is logged or audited.
     func submitSessionUpdate(_ data: Data, from client: LocalReplyConnection) async {
         do {
             try Task.checkCancellation()

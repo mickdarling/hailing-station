@@ -68,8 +68,8 @@ public struct SessionUpdateAudience: Sendable, Equatable {
 /// The opt-in settings for unsolicited updates. Off unless the user turns it on.
 public struct SessionUpdatePolicy: Sendable, Equatable {
     public var enabled: Bool
-    /// Updates one session may send per `window`, whether spoken or held.
-    public var perSessionLimit: Int
+    /// Optional updates one session may send per `window`, whether spoken or held. Nil means unlimited.
+    public var perSessionLimit: Int?
     public var window: Duration
     /// Held updates kept at once; the oldest `info` is dropped first.
     public var capacity: Int
@@ -80,7 +80,7 @@ public struct SessionUpdatePolicy: Sendable, Equatable {
     public var lifetime: Duration
 
     public init(
-        enabled: Bool = false, perSessionLimit: Int = 6, window: Duration = .seconds(3_600), capacity: Int = 20,
+        enabled: Bool = false, perSessionLimit: Int? = nil, window: Duration = .seconds(3_600), capacity: Int = 20,
         lifetime: Duration = .seconds(4 * 3_600), perSessionHeld: Int = 5
     ) {
         (self.enabled, self.perSessionLimit, self.window) = (enabled, perSessionLimit, window)
