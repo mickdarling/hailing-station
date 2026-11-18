@@ -1,6 +1,6 @@
 # #1258 — optional host session-update cap (part B)
 
-Local source candidate, 2026-11-18. Part A merged as [PR #1265](https://github.com/mickdarling/hailing-station/pull/1265),
+Verification record, 2026-11-18. Part A merged as [PR #1265](https://github.com/mickdarling/hailing-station/pull/1265),
 main commit `d269d9612f4c392ce50f63e06f94990305d97278`. Part B's cap commit
 `c98f905730718408746b6d8c549301d39116c838` is rebased onto that merged foundation. For part A's unlimited-default
 behavior, socket regressions and earlier mutation proof, see [its verification record](1258-unlimited-session-updates.md).
@@ -148,6 +148,5 @@ The checker's exact exclusions count **four production files relative to merged 
 4. `Sources/HailDaemonKit/PushEndpoint/LocalSessionUpdateSubmission.swift`
 
 `Tests/`, `scripts/tests/` and Markdown docs are excluded; no rename is involved. Part B now targets the merged
-part A foundation. The listener and scripts are security-critical. A future PR needs genuine independent
-exact-head review and second-key evidence, plus maintainer review of the script diff. No review approval is
-claimed here.
+part A foundation. The listener and scripts are security-critical. The independent primary and second-key reviews
+are recorded on the pull request.
