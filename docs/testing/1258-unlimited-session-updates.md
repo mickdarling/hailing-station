@@ -4,10 +4,10 @@ Local source candidate, 2026-11-18, based on `origin/main`
 `38c62e4f9f457ac9212578253d8a898a9a4c81c5`. The owner's decision supersedes the issue's original
 separate-budget proposal: action, info and spoken updates have no send budget. This branch contains no
 host.json cap bridge. The optional-cap branch depends on this branch and has its own testing record.
-Original combined commit: `2f4e953cdb8bab565f1818f83fdd578167849924` (retained in the existing review worktree).
+History: this branch was split from an earlier combined local commit (unlimited default plus the optional cap) after the first independent review; that commit is not in this branch's history.
 
 All proof is synthetic and host-local. No live configuration, daemon install/restart, device build, physical
-delivery or captured-output round trip is claimed. No push or PR occurred; independent review is pending.
+delivery or captured-output round trip is claimed. The independent reviews are recorded on the pull request.
 
 ## Implementation and traceability
 
@@ -33,16 +33,9 @@ delivery or captured-output round trip is claimed. No push or PR occurred; indep
 
 ## Commands
 
-Before **each** build/test command, the scratch runner executes, in order:
-
-```sh
-/Users/mick/.local/share/jarvis/voicework-2026-11-11/hostslot-wait.sh
-/Users/mick/.local/share/jarvis/voicework-2026-11-11/voice-quiet.sh
-export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-export TMPDIR=/Users/mick/codex-workspaces/hs-1258-scratch
-```
-
-`python3 /Users/mick/codex-workspaces/hs-1258-scratch/run-split-phase.py <command>` wraps each command,
+Before **each** build/test command, a local runner waits for the host's build slot and a quiet stretch with no
+live voice, sets `DEVELOPER_DIR` to the Xcode developer directory and points `TMPDIR` at a scratch directory.
+It wraps each command,
 limits it to 890 seconds after the gates and terminates only its own process group on timeout.
 
 ```sh
@@ -76,12 +69,12 @@ git diff --check
   2.016 seconds. Strict lint passed on all seven changed Swift files; `git diff --check` passed.
 
 The required temporary mutation moves update dispatch back below
-`limiter.record`, restoring the shared bucket. Its build and filtered tests use the same gates and commands:
+`limiter.record`, restoring the shared bucket. Its build and filtered tests use the same gates and commands (the first test then ran as `moreThan120UpdatesDoNotSpendTheReplyBudget`; it was renamed when the runaway guard landed, and the filter below uses the current name):
 
 ```sh
 taskpolicy -b swift build --build-tests -j 2
 taskpolicy -b swift test --no-parallel --skip-build --filter \
-  'SessionUpdateSocketBudgetTests/(moreThan120UpdatesDoNotSpendTheReplyBudget|exhaustedReplyBudgetCannotBlockAnyUpdateAction)'
+  'SessionUpdateSocketBudgetTests/(sixtyUpdatesDoNotSpendTheReplyBudget|exhaustedReplyBudgetCannotBlockAnyUpdateAction)'
 ```
 
 Branch A has four production files:
