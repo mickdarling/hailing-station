@@ -57,6 +57,10 @@ It only names targets; each still needs its policy entry. It is read at start, s
 boolean) and "sessionUpdateSpeechRoot" (optional string) require "sessionUpdates": true. The speech root must
 be an existing absolute directory owned by you, mode 700, no symlink in any component and no extended ACL.
 The path must be normalized; one trailing slash is allowed. This ancestor preflight is stricter than haild's check.
+Session updates have no send cap by default (action cards, silent info and speech alike). Optional keys
+"sessionUpdatePerSessionLimit" (integer 1..10000) and "sessionUpdateWindowSeconds" (integer 1..86400) must be
+set together with "sessionUpdates": true; they cap accepted updates per session in a sliding window.
+Held bounds stay 5 per session, 20 total, 4 hours. These settings are read at start; restart after a change.
 These rate limits are cooperative: any local process can notify. Edit host.json, then restart to enable or roll back.
 USAGE
 }
@@ -94,6 +98,19 @@ read_string() {
 read_flag() {
   read_value "$1" bool
   [[ "$VALUE" == true ]]
+}
+
+# Optional startup-only send cap; absent means unlimited. Match the daemon's strict integer bounds (#1258).
+load_session_update_limit() {
+  local enabled="$1" limit seconds
+  read_value sessionUpdatePerSessionLimit integer; limit="$VALUE"
+  read_value sessionUpdateWindowSeconds integer; seconds="$VALUE"
+  [[ -n "$limit$seconds" ]] || return 0
+  if [[ "$enabled" != true || ! "$limit" =~ ^[0-9]{1,5}$ || ! "$seconds" =~ ^[0-9]{1,5}$ ]] \
+      || (( limit < 1 || limit > 10000 || seconds < 1 || seconds > 86400 )); then
+    fail 'host.json "sessionUpdatePerSessionLimit" (1..10000) and "sessionUpdateWindowSeconds" (1..86400) must both be positive integers and require "sessionUpdates": true'
+  fi
+  DAEMON_ARGS+=(--session-update-per-session-limit "$limit" --session-update-window-seconds "$seconds")
 }
 
 require_config() {
@@ -190,6 +207,7 @@ load_daemon_arguments() {
   # host.sh already passes --personal-terminal, required by all three proactive opt-ins (#609).
   local session_updates=false speech_root
   if read_flag sessionUpdates; then session_updates=true; DAEMON_ARGS+=(--session-updates); fi
+  load_session_update_limit "$session_updates"
   if read_flag taskProgress; then
     [[ "$session_updates" == true ]] || fail '"taskProgress" requires "sessionUpdates": true'
     DAEMON_ARGS+=(--task-progress)

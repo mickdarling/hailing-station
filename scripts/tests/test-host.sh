@@ -6,7 +6,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 # Canonical (no /var -> /private/var symlink), so resolved links compare equal to scratch paths; short, because a
 # Unix socket path is limited to 104 bytes.
-scratch="$(cd "$(mktemp -d /tmp/hst.XXXXXX)" && pwd -P)"
+scratch="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/hst.XXXXXX")" && pwd -P)"
 # Releases are read-only by design, so make the scratch tree writable before removing it.
 trap 'chmod -R u+w "$scratch" 2>/dev/null; rm -rf -- "$scratch"' EXIT
 
@@ -275,6 +275,42 @@ for key in sessionUpdates taskProgress sessionUpdateSpeechRoot; do
   done
 done
 
+# #1258: the cap is absent by default; valid pairs bridge unchanged to daemon startup arguments.
+for pair in '1 1' '6 3600' '10000 86400'; do
+  read -r limit seconds <<< "$pair"
+  update_config "\"sessionUpdates\": true, \"sessionUpdatePerSessionLimit\": $limit, \"sessionUpdateWindowSeconds\": $seconds"
+  "$host" plist > "$scratch/cap.plist"
+  [[ "$(plutil -extract ProgramArguments.8 raw -o - "$scratch/cap.plist")" == --session-update-per-session-limit &&
+     "$(plutil -extract ProgramArguments.9 raw -o - "$scratch/cap.plist")" == "$limit" &&
+     "$(plutil -extract ProgramArguments.10 raw -o - "$scratch/cap.plist")" == --session-update-window-seconds &&
+     "$(plutil -extract ProgramArguments.11 raw -o - "$scratch/cap.plist")" == "$seconds" ]] \
+    || fail "configured cap was not bridged to daemon startup"
+done
+for key in sessionUpdatePerSessionLimit sessionUpdateWindowSeconds; do
+  for invalid in 0 -1 1.0 1e0 1.5 100000 18446744073709551616 '"6"' true null '{}' '[]'; do
+    if [[ "$key" == sessionUpdatePerSessionLimit ]]; then
+      update_config "\"sessionUpdates\": true, \"$key\": $invalid, \"sessionUpdateWindowSeconds\": 3600"
+    else
+      update_config "\"sessionUpdates\": true, \"sessionUpdatePerSessionLimit\": 6, \"$key\": $invalid"
+    fi
+    if "$host" plist > "$scratch/cap.out" 2>&1; then fail "invalid cap accepted: $key=$invalid"; fi
+    # Values plutil cannot represent (such as null) fail the existing whole-config validation first.
+    grep -q '^error: ' "$scratch/cap.out" \
+      || fail "cap refusal lacks a clear error for $key=$invalid: $(cat "$scratch/cap.out")"
+  done
+done
+for config in '"sessionUpdatePerSessionLimit": 6' '"sessionUpdateWindowSeconds": 3600' \
+    '"sessionUpdatePerSessionLimit": 6, "sessionUpdateWindowSeconds": 3600'; do
+  update_config "$config"
+  expect_failure "incomplete cap or disabled updates" "$host" plist
+done
+for config in '"sessionUpdatePerSessionLimit": 10001, "sessionUpdateWindowSeconds": 3600' \
+    '"sessionUpdatePerSessionLimit": 6, "sessionUpdateWindowSeconds": 86401' \
+    '"sessionUpdatePerSessionLimit": 6' '"sessionUpdateWindowSeconds": 3600'; do
+  update_config "\"sessionUpdates\": true, $config"
+  expect_failure "out-of-bounds or incomplete enabled cap" "$host" plist
+done
+
 # A voice routes path with a space stays one argument, right after its flag.
 printf '%s\n' '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "/my routes.json"}' > "$HAIL_CONFIG_DIR/host.json"
 "$host" plist > "$scratch/agent.plist"
@@ -348,7 +384,8 @@ grep -q "running: $(release_dir one)/haild (running)" "$scratch/status" || fail 
 
 # Bad proactive settings fail preflight while the existing fake managed job is still running.
 cp "$HAIL_CONFIG_DIR/host.json" "$scratch/good-config.json"
-for config in '"taskProgress": true' "\"sessionUpdateSpeechRoot\": \"$speech_root\"" \
+for config in '"sessionUpdates": true, "sessionUpdatePerSessionLimit": 0, "sessionUpdateWindowSeconds": 3600' \
+    '"taskProgress": true' "\"sessionUpdateSpeechRoot\": \"$speech_root\"" \
     "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$scratch/open-speech\""; do
   update_config "$config"
   : > "$scratch/launchctl.calls"
