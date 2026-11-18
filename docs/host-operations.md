@@ -176,7 +176,7 @@ Owner-only socket access and frame-size limits remain in force. Held memory boun
 refuses with `full`, and held expiry and oldest-info eviction are unchanged. These local changes have
 [synthetic verification only](testing/1258-unlimited-session-updates.md), with no install or live config change.
 
-Exit codes: 0 when held or for status; 75 when rate limited; 1 for other refusals (`unknown_target`, `full`, `not enabled`). Output gives counts and reasons only, never the words. Requests are audited as `local-update` with the action only.
+Exit codes: 0 when held or for status; 75 only for `rate_limited`; 1 for other refusals, including `runaway_guard` and `control_rate_limited` (deliberately not 75, so a retry-on-75 wrapper does not loop into the guard), `unknown_target`, `full` and `not enabled`. Output gives counts and reasons only, never the words. Requests are audited as `local-update` with the action only.
 
 ## When replies stop arriving
 
