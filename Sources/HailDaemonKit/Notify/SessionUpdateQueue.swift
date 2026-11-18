@@ -40,15 +40,17 @@ public enum SessionUpdateDrainTrigger: Sendable, Equatable {
 ///   and pushed to the target device, except under quiet, which holds it without a push.
 /// - Drains: asking always delivers. An interaction delivers unless quiet is on. A natural pause delivers unless
 ///   quiet or media mode is on.
-/// - Each session has its own budget per window; refusals do not spend it. The session name is the budget key and
-///   the speaker label, so the caller must take it from an authenticated source (the registry's target id), never
+/// - An optional cap gives each session its own budget per window; refusals do not spend it. The session name
+///   is the budget key and speaker label, so the caller must take it from an authenticated source (the registry's target id), never
 ///   from text the caller supplied.
 public struct SessionUpdateQueue: Sendable, Equatable {
     public typealias Instant = ContinuousClock.Instant
 
-    public var policy: SessionUpdatePolicy
+    public var policy: SessionUpdatePolicy {
+        didSet { if policy.perSessionLimit == nil { sent.removeAll() } }
+    }
     public private(set) var held: [SessionUpdate] = []
-    private var sent: [String: [Instant]] = [:]
+    private(set) var sent: [String: [Instant]] = [:]
 
     public init(policy: SessionUpdatePolicy = .init()) { self.policy = policy }
 
@@ -147,14 +149,16 @@ public struct SessionUpdateQueue: Sendable, Equatable {
 
     /// Time until `session` may send again, or nil when it may send now. A nonpositive limit refuses for a window.
     public func retryAfter(session: String, now: Instant) -> Duration? {
-        guard policy.perSessionLimit > 0 else { return policy.window }
+        guard let limit = policy.perSessionLimit else { return nil }
+        guard limit > 0 else { return policy.window }
         let recent = (sent[session] ?? []).filter { $0.duration(to: now) < policy.window }.sorted()
-        guard recent.count >= policy.perSessionLimit else { return nil }
-        let blocking = recent[recent.count - policy.perSessionLimit]
+        guard recent.count >= limit else { return nil }
+        let blocking = recent[recent.count - limit]
         return max(.zero, policy.window - blocking.duration(to: now))
     }
 
     private mutating func spend(_ session: String, at now: Instant) {
+        guard policy.perSessionLimit != nil else { return }
         sent[session, default: []].append(now)
         for (key, stamps) in sent {
             let kept = stamps.filter { $0.duration(to: now) < policy.window }

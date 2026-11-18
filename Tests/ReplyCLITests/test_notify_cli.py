@@ -89,6 +89,10 @@ class NotifyCLITests(unittest.TestCase):
         cases = [
             (self.report("refused", reason="rate_limited", retryAfter=120), 75,
              "refused: rate_limited; try again in 120 s"),
+            (self.report("refused", reason="runaway_guard", retryAfter=60), 1,
+             "refused: runaway_guard; try again in 60 s"),
+            (self.report("refused", reason="control_rate_limited", retryAfter=42), 1,
+             "refused: control_rate_limited; try again in 42 s"),
             (self.report("refused", reason="unknown_target"), 1, "refused: unknown_target"),
             (self.report("refused", reason="full"), 1, "refused: full"),
             (self.report("not_enabled"), 1, "not enabled: haild is running without --session-updates"),

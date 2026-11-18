@@ -4,8 +4,35 @@ import OSLog
 private let updateLogger = Logger(subsystem: "com.mickdarling.hailing-station", category: "local-update")
 
 extension LocalReplyEndpoint {
-    /// Same admission budget and fail-closed audit as an ambient request: `pushed(tool: "local-update")` with the
-    /// action token. Neither the target nor the update's text is logged or audited.
+    /// Only the action is probed before admission; strict request decoding still follows.
+    private struct ActionProbe: Decodable { let action: String? }
+
+    /// Independent host-wide guards protect against a stuck local loop without a session send budget.
+    func admitSessionUpdate(_ data: Data, from client: LocalReplyConnection) async -> Bool {
+        let action = (try? JSONDecoder().decode(ActionProbe.self, from: data))?.action
+        let control = action == "status" || action == "quiet_on"
+        let bucket = control ? "local-session-update-control" : "local-session-update"
+        let reason = control ? "control_rate_limited" : "runaway_guard"
+        let now = clock.now
+        if let wait = limiter.retryAfter(for: bucket, now: now, limitPerMinute: control ? 120 : 60) {
+            let seconds = Int(wait.components.seconds) + (wait.components.attoseconds > 0 ? 1 : 0)
+            var report = LocalSessionUpdateReport(outcome: .refused, reason: reason)
+            report.retryAfter = seconds
+            let logKey = "session-update-refusal-log:" + reason
+            if limiter.retryAfter(for: logKey, now: now, limitPerMinute: 1) == nil {
+                limiter.record(logKey, at: now)
+                FileHandle.standardError.write(Data(
+                    "session_update_refused reason=\(reason) retry_after=\(seconds)\n".utf8))
+            }
+            await respond(.update(report), to: client)
+            return false
+        }
+        limiter.record(bucket, at: now)
+        return true
+    }
+
+    /// Admitted requests record `pushed(tool: "local-update")` with the action token.
+    /// Neither the target nor the update's text is logged or audited.
     func submitSessionUpdate(_ data: Data, from client: LocalReplyConnection) async {
         do {
             try Task.checkCancellation()

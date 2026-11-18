@@ -340,6 +340,11 @@ extension LocalReplyEndpoint {
         guard isDispatch || data.count <= PayloadLimits.defaultMaxFrameBytes else {
             return await respond(.init(delivered: 0, error: "frame too large"), to: client)
         }
+        // Updates have independent admission to protect against a stuck local loop.
+        if kind == LocalSessionUpdateRequest.kind {
+            guard await admitSessionUpdate(data, from: client) else { return }
+            return await submitSessionUpdate(data, from: client)
+        }
         // Cleanup has a small independent bucket, so publication cannot exhaust its budget.
         let release = kind == "reply-audio" && (try? Self.decodeReplyAudio(data))?.action == "release"
         let now = clock.now
@@ -359,7 +364,6 @@ extension LocalReplyEndpoint {
         if kind == "voice-guards" { return await submitVoiceGuards(data, from: client) }
         if isDispatch { return await submitDispatch(data, from: client) }
         if kind == LocalAmbientRequest.kind { return await submitAmbient(data, from: client) }
-        if kind == LocalSessionUpdateRequest.kind { return await submitSessionUpdate(data, from: client) }
         if kind == LocalTaskProgressRequest.kind { return await submitTaskProgress(data, from: client) }
         if kind == "reply-audio" { return await submitReplyAudio(data, from: client) }
         await submitReply(data, from: client)
