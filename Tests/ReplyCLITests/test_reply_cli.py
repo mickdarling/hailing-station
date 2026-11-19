@@ -518,9 +518,15 @@ class ReplyCLITests(unittest.TestCase):
         self.assertEqual(len(frames), 148)
         self.assertTrue(frames[-1][1]["payload"]["final"])
 
+    @staticmethod
+    def legacy_audio_queue(message, response):
+        return {"delivered": 0, "code": "decodeFailure",
+                "error": "reply refused [decodeFailure]: frame decode failure"}
+
     def test_a_request_reply_supersedes_an_older_reply_to_the_same_target(self):
-        # #467: the newer answer is what the user is waiting for; the older reply ends with its terminal marker.
-        with self.reply_server(lambda index: {"delivered": 1}) as (path, frames):
+        # #467 compatibility: a pre-queue daemon keeps same-target request supersession.
+        with self.reply_server(lambda index: {"delivered": 1},
+                               audio_queue=self.legacy_audio_queue) as (path, frames):
             older = self.run_reply(["--say", "older reply"], path, self.speech_environment(60))
             self.assertEqual(older.returncode, 0, older.stderr)
             newer = self.run_reply(
@@ -557,7 +563,7 @@ class ReplyCLITests(unittest.TestCase):
 
         older_environment = self.speech_environment(60)
         older_environment["HAILD_REPLY_PACING"] = "off"
-        with self.reply_server(respond) as (path, frames):
+        with self.reply_server(respond, audio_queue=self.legacy_audio_queue) as (path, frames):
             frames_seen = frames
             older = self.run_reply(["--say", "older reply"], path, older_environment)
             self.assertEqual(older.returncode, 0, older.stderr)

@@ -162,11 +162,13 @@ class QueuedReplyStopTests(unittest.TestCase):
                     return {"delivered": 0, "error": "rate limited"}
                 if action == "check":
                     return {"delivered": 0, "code": "requestPending"}
-            if action == "check":
-                # The check is after acquisition even without contention; the job owns this kernel lock.
+            # Waiting probes may precede acquisition (#1246). Every publication, and an uncontended check,
+            # must still own the turn lock. A contended probe need not hold it or wait for its release.
+            if action == "publish" or action == "check" and not contended:
                 with lock.open("r+") as observer:
                     with self.assertRaises(BlockingIOError):
                         fcntl.flock(observer, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if action == "check":
                 if mode == "stale":
                     return {"delivered": 0, "error": "invalid reply payload", "code": "invalidReplyPayload"}
                 return {"delivered": 0, "replyAudio": {"skipped": skipped, "reason": skip_reason if skipped else None}}
@@ -205,7 +207,8 @@ class QueuedReplyStopTests(unittest.TestCase):
                     self.assertEqual(frames[0][1]["payload"]["text"], "synthetic response")
                     self.assertEqual(frames[0][1]["payload"]["metadata"], "synthetic card")
                     if contended and mode not in ("legacy", "connection", "new_decode", "uncoded", "wrong_error"):
-                        self.rig.wait_for(lambda: self.waiter_registered(lock.with_name("reply-audio.waiters")), 10)
+                        self.rig.wait_for(lambda: self.waiter_registered(lock.with_name("reply-audio.waiters"))
+                                          or any(item["action"] == "check" for item in controls), 10)
                     fcntl.flock(holder, fcntl.LOCK_UN)
                     stdout, stderr = job.communicate(timeout=15)
                     self.assertEqual(job.returncode, 1 if mode in ("legacy", "stale", "connection", "new_decode",
@@ -220,7 +223,7 @@ class QueuedReplyStopTests(unittest.TestCase):
                     if skipped or mode == "publish_skip":
                         expected = {"stopped": b"reply audio skipped after a stop", "expired": b"reply audio expired",
                                     "wait_budget": b"reply audio skipped: stop wait budget"}[skip_reason]
-                        if contended:
+                        if contended and not skipped:
                             # Queue readiness releases stderr; later outcomes stay in the daemon's audit/events.
                             self.assertEqual(stderr, b"haild: reply audio queued behind another reply\n"
                                              b"haild: reply streaming in the background\n")
@@ -257,7 +260,7 @@ class QueuedReplyStopTests(unittest.TestCase):
                         self.assertEqual(len(frames), 1)
                         self.assertEqual([item["action"] for item in controls if item["action"] != "release"], ["enqueue", "check"])
                         return
-                    if contended:
+                    if contended and not skipped:
                         self.assertIn(b"reply audio queued behind another reply", stderr)
                     else:
                         self.assertNotIn(b"reply audio queued behind another reply", stderr)
@@ -281,8 +284,9 @@ class QueuedReplyStopTests(unittest.TestCase):
                     self.assertTrue(frames[-1][1]["payload"]["final"])
                 if mode == "retry":
                     self.assertEqual(attempts["enqueue"], 2)
-                    self.assertEqual(attempts["check"], 2)
+                    self.assertEqual(attempts["check"], 3 if contended else 2)
                     self.assertEqual(checks[0], checks[1])
+                    self.assertEqual(checks[-1], checks[0])
 
     @staticmethod
     def waiter_registered(path):

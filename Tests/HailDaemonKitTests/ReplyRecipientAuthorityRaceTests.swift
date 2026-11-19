@@ -32,7 +32,7 @@ import Testing
         let submitted = Mutex(0)
         clock.arm()
         let publication = Task(executorPreference: clock.executor) {
-            await session.enqueueHostReply(frame) { submitted.withLock { $0 += 1 }; return true }
+            await session.enqueueHostReply(frame) { commit in commit { submitted.withLock { $0 += 1 }; return true } }
         }
         var revoked = true
         do {
@@ -62,7 +62,7 @@ import Testing
         let submitted = Mutex(0)
         clock.arm()
         let publication = Task(executorPreference: clock.executor) {
-            await session.enqueueHostReply(frame) { submitted.withLock { $0 += 1 }; return true }
+            await session.enqueueHostReply(frame) { commit in commit { submitted.withLock { $0 += 1 }; return true } }
         }
         do {
             try await clock.gate.waitEntered()
@@ -92,7 +92,9 @@ import Testing
                 await rig.adapter.setTargets([AdapterTarget(name: "reply", binding: "reply-binding")])
             }
             let submitted = Mutex(0)
-            #expect(!(await session.enqueueHostReply(frame) { submitted.withLock { $0 += 1 }; return true }))
+            #expect(!(await session.enqueueHostReply(frame) { commit in
+                commit { submitted.withLock { $0 += 1 }; return true }
+            }))
             #expect(submitted.withLock { $0 } == 0)
         }
     }

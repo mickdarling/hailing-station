@@ -228,8 +228,6 @@ public actor HostSession {
         didSet { replyFlightRevision &+= 1 }
     }
     var stoppedReplies: [UUID] = []
-    /// Subset of in-flight replies with a segment boundary actually enqueued to this capable peer.
-    var segmentedReplies: Set<UUID> = []
     var recordStoppedReply: @Sendable (UUID) -> Void = { _ in }
     var replyEvent: @Sendable (WebSocketListenerEvent) -> Void = { _ in }
     let selectionWillChange: (@Sendable (UUID, Set<String>, String, UUID) -> Void)?
@@ -241,12 +239,18 @@ public actor HostSession {
     var overheardScope = "off"
     let connectionID = UUID()
     var selectionGeneration = UUID()
-    var replyRequests: [UUID: HostReplyRequest] = [:]
+    var replyRequests: [UUID: HostReplyRequest] = [:] {
+        didSet { trackQueuedReplyAuthority() }
+    }
+    /// Accepted audio-bearing text reserves a bounded pre-audio turn; publication still repeats every gate.
+    var queuedReplyDeadlines: [UUID: ContinuousClock.Instant] = [:]
+    var queuedReplyAuthorityTask: Task<Void, Never>?
     /// The late record each uncommitted request evicted at capacity (#430), keyed by that request, so a refusal
     /// before commit can give it back (#723). An entry lives only while its handoff is in flight.
     var evictedForHandoff: [UUID: (id: UUID, request: HostReplyRequest)] = [:]
     /// The listener's last-input ledger (#370), written only at an admitted, delivered handoff; nil records nothing.
     var lastInputLedger: LastInputLedger?
+    deinit { ReplyConnectionStopGate.forget(connectionID) }
 
     public init(
         host: HailHost, authorizer: any HostSessionAuthorizing = ConnectionProbeAuthorizer(),
@@ -351,7 +355,6 @@ public actor HostSession {
     ) -> HostSessionResult {
         if close {
             state = .closed
-            segmentedReplies.removeAll()
             replyRequests.removeAll()
             evictedForHandoff.removeAll() // Nothing can be restored into a closed session (#723).
         }

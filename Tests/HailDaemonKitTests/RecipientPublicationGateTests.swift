@@ -66,7 +66,7 @@ import Testing
         let submitted = Mutex(0)
         clock.arm()
         let publication = Task(executorPreference: clock.executor) {
-            await session.enqueueHostReply(frame) { submitted.withLock { $0 += 1 }; return true }
+            await session.enqueueHostReply(frame) { commit in commit { submitted.withLock { $0 += 1 }; return true } }
         }
         // No revocation and no release: admission must refuse solely because the harness timed out.
         #expect(!(await publication.value))
@@ -84,7 +84,9 @@ import Testing
             return true
         }
         #expect(issues.withLock { $0 } == 1)
-        #expect(!(await session.enqueueHostReply(frame) { submitted.withLock { $0 += 1 }; return true }))
+        #expect(!(await session.enqueueHostReply(frame) { commit in
+                commit { submitted.withLock { $0 += 1 }; return true }
+            }))
         #expect(submitted.withLock { $0 } == 0)
     }
 }

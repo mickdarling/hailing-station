@@ -87,8 +87,8 @@ advertised the command ([rightyo-input.md](rightyo-input.md)).
 
 P1 defines the wire vocabulary. P2 implements host-side segmentation and rendering in `haild reply --say`.
 P3 adds host listener support: the host advertises `reply_segments` (`ReplySegments.capability`) beside its
-other capabilities, strips `segmentEnd` for devices that did not advertise it, handles `reply_yield` and runs the
-backstop below. P4a adds device live-stream playback pauses and a callable local yield foundation, with synthetic
+other capabilities, strips `segmentEnd` for devices that did not advertise it, and handles `reply_yield`.
+P4a adds device live-stream playback pauses and a callable local yield foundation, with synthetic
 coverage only. P4b1 supplies the onset gate; P4b2 wires the device capture, yield, echo-tail handoff,
 transport and segmented bulk Replay. The device now advertises `reply_segments` beside `heard_turns`, making
 segment pauses and onset yield live in code with a P3 host. This is synthetic VM evidence, not a shipped build
@@ -148,16 +148,16 @@ This is host-local synthetic proof, not a live captured-output round trip or phy
   is sent: the device already stopped.
   Unknown, finished, already-stopped and other-connection replies do nothing and produce no response frame.
   `segment` is an informational count, never evidence of authority.
-- After input from this connection is handed off (a delivered phone final text or ambient dispatch, the #370
-  last-input condition), P3 stops every in-flight reply on that connection that has had a segment end enqueued.
-  This backstop runs only on connections whose peers advertised `reply_segments`; older devices retain their
-  existing behavior. Refused, held, unconfirmed and `.unowned` handoffs do not trigger it. It sends no
-  `stop_playback` and leaves unsegmented and other-connection replies alone.
-  Tracking is a subset of the existing 64-entry in-flight list, removed at final audio, stop or teardown. Stopped
-  ids enter the listener's 64-entry stop ledger synchronously, so disconnect cannot hand later frames elsewhere.
-- Content-free logs use `reply_yield` with `outcome=accepted|ignored|not_authorized` and `segment=<count>`, and
-  `reply_backstop` with `outcome=stopped count=<count>` only when at least one reply is stopped.
-  Neither reply ids nor request/reply text is logged by these events. Stop, dismiss and privacy still stop whole
+- An admitted owner request leaves the connection's playing segmented reply flowing through its terminal
+  (#1246). Queue-aware detached CLI jobs wait for the existing audio-turn lock without superseding the holder;
+  the new reply's text may arrive first, while its audio follows the current reply in order. The optional
+  `host.json` compatibility switch was dropped from this PR and may return in a follow-up if the owner wants it.
+  `didNoteLastInput` only emits `session_update_interaction`; it never stops a playing reply.
+  Device `reply_yield`, explicit stop controls/phrases, and addressed dismissal retain their existing paths.
+  This is local synthetic evidence, not installed or physically validated behavior; see
+  [the #1246 record](testing/1246-new-request-reply-queue.md).
+- Content-free yield logs use `reply_yield` with `outcome=accepted|ignored|not_authorized` and `segment=<count>`.
+  Neither reply ids nor request/reply text is logged by this event. Stop, dismiss and privacy still stop whole
   reply ids. Echo handling, acknowledgements and the not-sent clip retain their existing behavior.
 
 Device playback (P4a/P4b2, synthetic only; not shipped or physically validated): the live-stream controller schedules
@@ -715,9 +715,9 @@ exits 1 with `reply audio dropped: capacity; no text or card delivered`, without
 Doctor counts this as `replyAudioCapacity`, separately from `publicationFailed`.
 Other issuance errors still refuse audio. On lock acquisition it checks admission before
 reading/synthesizing audio, and wraps every later audio frame with its ticket. This includes jobs that take the
-lock without waiting, covering the preceding reply's device playout tail. Foreground publication stays unchanged.
+lock without waiting, covering the preceding reply's device playout tail. Foreground publication does not acquire a queue ticket.
 
-Each accepted playback stop marks its connection and every associated reply target with the current counter
+Each queue-marking playback stop marks its connection and every associated reply target with the current counter
 before retiring in-flight replies. Every stop source captures its position synchronously when accepted, before
 scheduling work or awaiting another actor. Delayed connection/target marks use `max(existing, captured)`; they
 never read a newer counter. Only live registered connections can apply marks, so late work cannot recreate
@@ -779,7 +779,8 @@ and whether first audio publication succeeded. Successful text delivery records 
 the 64-pin cache. Stops also mark every target whose outstanding text destination was that connection, even if
 its pin was evicted before the stop. **Q and L:** The record holds at most 1024 reservations. Capacity refuses
 new reservations without evicting an older job or raising a floor. Each reservation expires 26 hours after
-issuance (the CLI's 24-hour queue bound plus two hours for streaming/cleanup); access prunes expired jobs without
+issuance (compatible with older CLIs' 24-hour queue bound plus two hours for streaming/cleanup; current FIFO
+CLIs use the 45-minute bound below); access prunes expired jobs without
 raising a floor. Check/publish of an issued ticket whose record vanished returns an audio-only `expired` skip,
 including disappearance during routing. Text/cards and request ownership remain intact.
 
@@ -815,6 +816,69 @@ writes `reply audio skipped after a stop` to stderr. As with other post-readines
 stderr follows its existing redirection to `/dev/null` after releasing its caller; the daemon event is the durable
 observable diagnostic. There is no terminal audio marker for a job whose audio never started.
 
+Queue-aware jobs do not write a same-target supersession stop file when another reply holds the audio lock
+(#1246). They wait for its terminal and lock release. Admission is FIFO by daemon epoch and ticket position:
+a short `reply-audio.admission` lock serializes issuance/registration with admission, and only the lowest live
+`reply-audio.ticket-<epoch>-<position>` record may take `reply-audio.lock`. Each job holds its record's kernel
+lock until it takes the turn or exits. On each 250 ms admission pass a waiter inspects records from **any epoch**;
+an unlocked record is dead and is removed, including records left by a crash before a daemon restart. Locked
+historical records survive but do not affect current-epoch ordering. The lazy directory scan inspects at most
+4096 entries per pass and defers admission if it reaches that bound. Removing dead records permits later passes
+to progress. Cleanup holds the same admission lock as registration, so a newly created live record cannot be
+removed in the interval before its owner locks it. SIGKILL releases kernel locks; PID reuse is irrelevant.
+The admission lock covers ticket issuance too: a delayed earlier producer cannot register after a later producer
+has already started audio. The stream lock still covers every segment and its terminal.
+
+Queue waiting has a separate **45-minute** monotonic lifetime from ticket registration. This is one complete
+35-minute stream watchdog plus its maximum ten-minute shared-rate extension. The local
+`HAILD_REPLY_QUEUE_SECONDS` environment setting may shorten this to 1...2700 seconds; larger values are clamped.
+Queue time does not consume the waiting job's stream watchdog or its 40-second request-data idle budget.
+The latter restarts only after the turn is acquired and its final daemon check succeeds. While waiting, checks
+run immediately and every 20 seconds, under the queue lifetime even on rate-limit retries; they never publish
+probe audio. Explicit stop still wins both those checks and actual first-frame publication.
+
+For a ticketed job, accepted audio-bearing text binds the request to that exact queue job and records a
+pre-audio reservation with a fixed 45-minute deadline. Unticketed text never acquires reservation heartbeats. Every 20 seconds it renews **only an existing, still-current** committed request that has delivered
+that text and no audio. These pre-audio reservation heartbeats update the stream timing anchors (and an ended
+provider turn's grace anchor), while leaving descriptor, frame IDs, sequence, pins and flight state unchanged.
+First audio removes the reservation, so the ordinary 60-second stream-idle rule and 35-minute stream cap then
+apply, with the five-minute margin over the CLI's 30-minute maximum audio length. A lost heartbeat cannot revive
+expired authority. The original selection generation, binding lease and policy permit remain required; privacy
+and selection drops never recreate a record. Renewal checks that the original job still exists, its connection
+is live, and its own connection's accepted request cutoff does not cover it. Target-wide ticket tombstones
+only suppress queued audio; another connection's stop never retracts this request or its renewal, including
+when its ticket was issued before text or a later queue check runs. A read-only queue check for an already bound request uses the
+resolved/bound connection's own ticket cutoff; shared-target marks and eviction floors cannot return
+`stopped` for that check and retire its request. These checks also bypass pending target snapshots and their
+wait budgets; the resolved connection cutoff still applies. Actual audio publication and requestless queue
+checks retain target suppression. Release (including CLI job end/timeout), queue retirement,
+connection loss, its own connection's stop and privacy end renewal; dismissal removes the matching request.
+
+Every accepted playback stop captures the current monotonic request-admission cutoff for its connection,
+independently of ticket marking and before the session retirement hop. Spoken mute captures this cutoff even
+though it does not mark queue tickets. One synchronous stop gate checks that cutoff under the same mutex as
+**every correlated transport commit**: text or audio, reserved or unreserved, ticketed or unticketed, including
+continuation audio. A commit holding the gate completes before a stop can be accepted; acceptance first refuses
+the commit without submitting bytes. The lock order is policy/binding, privacy, optional ticket queue, request
+stop gate, then transport submission; no completion wait runs under these locks. Session retirement uses the
+captured cutoff and preserves requests admitted later, including ones with no ticket or descriptor. It never
+uses a target-wide ticket tombstone to revoke request ownership. These request gates are additional to the
+existing target-scoped queue suppression and grant no recipient, policy or media authority.
+The fixed deadline is checked both at candidate admission and inside the final publication gates, so first audio at 45 minutes + 1 ms is refused even
+before the next heartbeat sweep. First audio retains the ordinary stream rules after its reservation ends.
+
+Queue-lifetime exhaustion is `queue_timeout`, never ticket `expired`: the CLI writes the content-free unified-log
+message `reply_audio_skipped reason=queue_timeout` (subsystem `org.hailingstation.haild`, category `reply-audio`)
+and notes `reply audio skipped: queue timeout`. Its content-free job-end telemetry includes optional
+`audioSkipReason=queue_timeout`; existing daemon endpoints ignore that extra field and retain `reason=refused`.
+The owner also logs `reply_queue_authority reason=queue_timeout request=<UUID>` and retires authority
+when its full reservation deadline is reached. A shortened CLI-only deadline is observable in the CLI unified
+log, not as an earlier daemon reservation timeout. Stop skips retain `reason=stopped`, release their ticket and
+publish no audio. As before, post-readiness stderr is redirected; it is not the durable diagnostic.
+
+The legacy unticketed compatibility path retains its old same-target request supersession, unordered lock wait,
+and 40-second request deadline. It creates no FIFO ticket record. Newly admitted input never runs a host backstop.
+
 During install/restart version skew, legacy unticketed behavior is selected only for a zero-delivery **enqueue**
 response with code `decodeFailure`, error exactly `reply refused [decodeFailure]: frame decode failure`, and an
 **absent** `replyAudio` field. At both `f3f97bc7` and `cc36af90`, the older endpoint routes the unrecognized
@@ -825,5 +889,6 @@ The CLI logs `reply_audio_queue unsupported` once to stderr and keeps the ordina
 malformed acknowledgements, inexact/uncoded decode errors, connection failures, timeouts and stale tickets remain
 fail closed. The exact old signal during check or publication also remains fail closed: only initial enqueue can
 negotiate legacy operation. Legacy fallback cannot provide queue-stop ordering.
-Foreground (non-detached) jobs take no ticket and therefore have no queued-audio guarantee. A device
+Foreground (non-detached) jobs take no ticket and therefore have no queued-audio guarantee. Correlated
+publication still uses the connection's request-stop gate. A device
 `voice_stopped` ignored with `reason=no_active_stream` marks nothing.
