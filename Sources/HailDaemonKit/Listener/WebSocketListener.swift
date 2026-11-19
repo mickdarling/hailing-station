@@ -466,6 +466,7 @@ extension WebSocketListener {
         guard let peer = peers.removeValue(forKey: id) else { return }
         // Retire input authority before any asynchronous ambient cleanup or environment refresh.
         peer.replyTransport.retire()
+        ReplyConnectionStopGate.forget(peer.session.connectionID)
         transports[peer.session.connectionID] = nil
         heardTurns.removeValue(forKey: peer.session.connectionID)?.close()
         // Mark retirement before dropping associations: a pending snapshot must fail closed if it loses them.
@@ -609,26 +610,30 @@ extension WebSocketListener {
     /// `idle` (nothing mid-stream and no device stop), `coalesced` (a redundant device report), or `no_connection`.
     func stopReplyPlayback(
         connection: UUID, voiceStopAt: ContinuousClock.Instant? = nil, markQueuedAudio: Bool,
-        queueStop: ReplyAudioQueue.Stop? = nil
+        queueStop: ReplyAudioQueue.Stop? = nil, requestStop: ReplyConnectionStopGate.Control? = nil
     ) async -> String {
-        let stop = markQueuedAudio ? (queueStop ?? replyAudioQueue.captureStop(connection)) : nil
-        defer { if let stop { replyAudioQueue.resolve(stop, targets: nil) } }
         guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
+            resolvePlaybackStop(queueStop, control: queueStop?.control ?? requestStop)
             return "no_connection"
         }
-        // Revoke renderer admission before the first hop, including when no first audio frame exists yet.
-        // Mute and privacy announcements keep their existing contract; privacy has its own global retraction.
+        let stop = markQueuedAudio
+            ? (queueStop ?? replyAudioQueue.captureStop(connection, orderingControl: true)) : nil
+        let control = stop?.control ?? requestStop
+            ?? (markQueuedAudio ? nil : ReplyConnectionStopGate.captureControl(connection))
+        defer { resolvePlaybackStop(stop, control: control) }
+        // Request cutoff and control barrier are accepted before the first session hop, even for an unmarked stop.
         let cancellations = markQueuedAudio ? sessionUpdateFence.cancelProactive(connection: connection) : []
         let playbackStop = UUID()
         stopsInFlight[playbackStop] = peer.session
         await ReplyAudioEnqueueTesting.beforeStopSession?()
-        let result = await peer.session.stopReplyPlayback(voiceStopAt: voiceStopAt, queue: replyAudioQueue, stop: stop)
+        let result = await peer.session.stopReplyPlayback(
+            voiceStopAt: voiceStopAt, queue: replyAudioQueue, stop: stop, requestCutoff: control?.cutoff
+        )
         for id in result.stopped { stoppedReplyIDs.record(id) }
         stopsInFlight[playbackStop] = nil
-        // The first-frame barrier is already registered. Cut current playback before resolving targets.
         let outcome: String
         if result.coalesced { outcome = "coalesced" } else if let frame = result.frame,
-            await sendPlaybackStop(frame, on: peer) {
+            await sendPlaybackStop(frame, on: peer, control: control) {
             outcome = "stopped"
         } else { outcome = result.stopped.isEmpty ? "idle" : "cut" }
         for receipt in cancellations {
@@ -642,8 +647,26 @@ extension WebSocketListener {
         return outcome
     }
 
-    private func sendPlaybackStop(_ frame: Frame, on peer: WebSocketPeer) async -> Bool {
-        let sent = await peer.send(frame)
+    private func resolvePlaybackStop(_ stop: ReplyAudioQueue.Stop?, control: ReplyConnectionStopGate.Control?) {
+        ReplyConnectionStopGate.complete(control)
+        if let stop { replyAudioQueue.resolve(stop, targets: nil) }
+    }
+
+    private func sendPlaybackStop(
+        _ frame: Frame, on peer: WebSocketPeer, control: ReplyConnectionStopGate.Control?
+    ) async -> Bool {
+        guard let prepared = await peer.preparePlaybackStop(frame) else {
+            peer.replyTransport.retire()
+            return false
+        }
+        let enqueued = ReplyConnectionStopGate.complete(control) {
+            if prepared.enqueue() { return true }
+            // A failed control cannot release newer frames onto a transport that did not receive the stop.
+            peer.replyTransport.retire()
+            return false
+        }
+        let outcome = enqueued ? await prepared.result() : .refused
+        let sent = await peer.replySendSucceeded(outcome)
         await ReplyAudioEnqueueTesting.afterStopSend?()
         return sent
     }
@@ -1048,7 +1071,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             }
             let now = configuration.voiceStopClock()
             // Queue handoffs cannot acquire this router lock; transport completion runs outside that stack.
-            queueStop = state.listener?.value?.replyAudioQueue.captureStop(connection)
+            queueStop = state.listener?.value?.replyAudioQueue.captureStop(connection, orderingControl: true)
             state.deviceVoiceStops[connection] = now
             // Retire all pending clips, even if their async work resumes later.
             state.stopConfirmations[connection] = nil
@@ -1754,7 +1777,7 @@ extension AmbientRightyoRouter {
                 self?.emit("ambient_dismissed", detail: Self.describe(receipt, playback: "none"))
                 return
             }
-            let position = listener?.replyAudioQueue.captureStop(connection)
+            let position = listener?.replyAudioQueue.captureStop(connection, orderingControl: true)
             Task { [weak self] in
                 let playback = await listener?.stopReplyPlayback(
                     connection: connection, markQueuedAudio: true, queueStop: position
@@ -2763,7 +2786,7 @@ extension AmbientRightyoRouter {
     /// same step, after this entry's clip.
     func closePrivacyEntry(
         _ entry: Int, connection: UUID, target: String?
-    ) -> AmbientPrivacyClose<RightyoAmbientPipeline> {
+    ) -> (AmbientPrivacyClose<RightyoAmbientPipeline>, ReplyConnectionStopGate.Control?) {
         let (now, bound) = (privacyNow, configuration.privacyBound)
         return state.withLock { state in
             let listening = Set(Self.listening(connection, in: state).map(ObjectIdentifier.init))
@@ -2776,7 +2799,11 @@ extension AmbientRightyoRouter {
                                                                          connection: connection, target: target,
                                                                          listener: state.listener?.value))
             }
-            return close
+            let control: ReplyConnectionStopGate.Control?
+            if case .decided(let decision) = close, decision.clip != nil, state.listener?.value != nil {
+                control = ReplyConnectionStopGate.captureControl(connection)
+            } else { control = nil }
+            return (close, control)
         }
     }
 
@@ -2831,23 +2858,25 @@ extension AmbientRightyoRouter {
     func announceEntry(_ entry: AmbientPrivacyEntry, connection: UUID, target: String?,
                        listener: WebSocketListener?) async -> (String?, String) {
         guard let number = entry.entry else { return (nil, " withdrawn") }
-        let decision = await decideEntry(number, connection: connection, target: target)
+        let (decision, control) = await decideEntry(number, connection: connection, target: target)
+        defer { ReplyConnectionStopGate.complete(control) }
         await ReplyAudioEnqueueTesting.afterPrivacyDecision?()
         for pipeline in decision.refused { await pipeline.killRefused() }
         guard let clip = decision.clip else { return (nil, decision.tokens) }
         // Entry already captured and marked the queue synchronously. A delayed announcement cannot mark again.
         let playback = await listener?.stopReplyPlayback(
-            connection: connection, markQueuedAudio: false
+            connection: connection, markQueuedAudio: false, requestStop: control
         ) ?? "no_connection"
         return (clip, decision.tokens + " playback=\(playback)")
     }
 
     private func decideEntry(
         _ entry: Int, connection: UUID, target: String?
-    ) async -> AmbientPrivacyDecision<RightyoAmbientPipeline> {
+    ) async -> (AmbientPrivacyDecision<RightyoAmbientPipeline>, ReplyConnectionStopGate.Control?) {
         while true {
-            switch closePrivacyEntry(entry, connection: connection, target: target) {
-            case .decided(let decision): return decision
+            let (close, control) = closePrivacyEntry(entry, connection: connection, target: target)
+            switch close {
+            case .decided(let decision): return (decision, control)
             case .wait(let until):
                 await waitForPrivacy(entry, connection: connection,
                                      until: privacyEpoch.advanced(by: .milliseconds(Int64(until * 1_000) + 1)))
@@ -3189,7 +3218,7 @@ extension WebSocketListener {
             let checked = Mutex(false)
             let result = admit {
                 checked.withLock { $0 = true }
-                return prepared.allSatisfy { $0.enqueue() }
+                return ReplyConnectionStopGate.commit(connection) { prepared.allSatisfy { $0.enqueue() } }
             }
             if !checked.withLock({ $0 }) { suppressed.withLock { $0 = true } }
             return result
@@ -3213,15 +3242,16 @@ struct VoicePlaybackStopResult {
 extension HostSession {
     /// Retire on every report. Only the redundant outbound frame uses the last accepted stop's fixed window.
     func stopReplyPlayback(
-        voiceStopAt now: ContinuousClock.Instant?, queue: ReplyAudioQueue? = nil, stop: ReplyAudioQueue.Stop? = nil
+        voiceStopAt now: ContinuousClock.Instant?, queue: ReplyAudioQueue? = nil,
+        stop: ReplyAudioQueue.Stop? = nil, requestCutoff: UInt64? = nil
     ) -> VoicePlaybackStopResult {
-        guard let now else { return stopReplyPlayback(queue: queue, stop: stop) }
+        guard let now else { return stopReplyPlayback(queue: queue, stop: stop, requestCutoff: requestCutoff) }
         guard case .ready = state else { return VoicePlaybackStopResult(frame: nil, stopped: []) }
         let previous = acceptedVoiceStop
         let coalesced = previous.map {
             $0.at.duration(to: now) < .seconds(1) && $0.revision == replyFlightRevision
         } ?? false
-        let result = stopReplyPlayback(queue: queue, stop: stop)
+        let result = stopReplyPlayback(queue: queue, stop: stop, requestCutoff: requestCutoff)
         // Retirement also writes the ledger; retain its new revision without sliding the accepted timestamp.
         acceptedVoiceStop = (coalesced ? previous?.at ?? now : now, replyFlightRevision)
         return VoicePlaybackStopResult(frame: coalesced ? nil : result.frame,

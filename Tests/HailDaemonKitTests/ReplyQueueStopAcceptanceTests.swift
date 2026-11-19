@@ -62,7 +62,14 @@ struct ReplyQueueStopAcceptanceTests {
             let later = recipientDescriptor(laterContext, audio: true)
             let probe = recipientAudio(later, sequence: 0)
             let ticket = try #require(await rig.listener.replyAudio(.init(action: "enqueue", frame: probe)).ticket)
-            #expect(try await rig.listener.publish(recipientText(later)) == 1)
+            let waiting = VoiceStopConfirmationHold()
+            let text = publishLaterText(later, rig: rig, waiting: waiting)
+            await waiting.wait()
+            let unreserved = try await rig.recipient.submit(on: session)
+            release.release()
+            #expect(await stopping.value == "stopped")
+            #expect(try await recipientSocketReceive(on: rig.first.socket).payload == .control(.stopPlayback))
+            #expect(try await text.value == 1)
             _ = try await recipientSocketReceive(on: rig.first.socket)
             if streamingLater {
                 #expect(try await rig.listener.replyAudio(.init(action: "publish", ticket: ticket, frame: probe))
@@ -70,10 +77,6 @@ struct ReplyQueueStopAcceptanceTests {
                 _ = try await recipientSocketReceive(on: rig.first.socket)
             }
             let next = recipientAudio(later, sequence: streamingLater ? 1 : 0)
-            let unreserved = try await rig.recipient.submit(on: session)
-            release.release()
-            #expect(await stopping.value == "stopped")
-            _ = try await recipientSocketReceive(on: rig.first.socket)
             #expect(await session.replyRequests[try #require(old.requestID)] == nil)
             #expect(await session.replyRequests[laterContext.id] != nil,
                     "Stop accepted before this request existed must preserve its publication authority")
@@ -84,6 +87,16 @@ struct ReplyQueueStopAcceptanceTests {
             _ = try await recipientSocketReceive(on: rig.first.socket)
             #expect(await session.replyRequests[laterContext.id] != nil)
             #expect(!(await session.stoppedReplies.contains(later.id)))
+        }
+    }
+
+    private func publishLaterText(
+        _ reply: ReplyDescriptor, rig: ReplySegmentsRig, waiting: VoiceStopConfirmationHold
+    ) -> Task<Int, any Error> {
+        Task {
+            try await ReplyAudioEnqueueTesting.$waitingForControl.withValue({ waiting.release() }, operation: {
+                try await rig.listener.publish(recipientText(reply))
+            })
         }
     }
 
