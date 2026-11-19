@@ -859,11 +859,39 @@ independently of ticket marking and before the session retirement hop. Spoken mu
 though it does not mark queue tickets. One synchronous stop gate checks that cutoff under the same mutex as
 **every correlated transport commit**: text or audio, reserved or unreserved, ticketed or unticketed, including
 continuation audio. A commit holding the gate completes before a stop can be accepted; acceptance first refuses
-the commit without submitting bytes. The lock order is policy/binding, privacy, optional ticket queue, request
+a covered request's commit without submitting bytes. The lock order is policy/binding, privacy, optional ticket queue, request
 stop gate, then transport submission; no completion wait runs under these locks. Session retirement uses the
 captured cutoff and preserves requests admitted later, including ones with no ticket or descriptor. It never
 uses a target-wide ticket tombstone to revoke request ownership. These request gates are additional to the
 existing target-scoped queue suppression and grant no recipient, policy or media authority.
+
+A privacy announcement captures its cutoff under the router lock when its privacy decision is made, and
+carries it explicitly through the listener to session retirement. Delaying the announcement cannot accept a
+fresh stop covering a request admitted after privacy exit.
+
+Because `stop_playback` is unscoped on the wire, each accepted outbound stop also establishes a transient
+control barrier in the same connection gate. Newer correlated and routed/requestless publication waits
+asynchronously outside the locks, and final commit rechecks the barrier. Admission-only status and ticket
+checks do not wait and do not enqueue. A newer request refused solely by that final control barrier
+retains its record and retries after the control. The prepared stop is enqueued under the request-stop mutex
+before the barrier is released, so the device receives it before any newer reply's first frame, whether text
+or audio. Transport completion is awaited after unlocking. Failed control enqueue retires the transport;
+peer teardown releases waiters into a retired transport. These tokens order delivery and grant no authority.
+The shared prepared-frame boundary applies the same wait and final check to session-update cards (including
+task progress) and proactive speech. A control accepted after preparation refuses their final enqueue; their
+existing policy, privacy, binding and proactive-generation gates still decide whether the producer can try again.
+Routed/requestless delivery retries a control-only refusal after waiting and repeating its normal admission.
+Privacy-respecting host clips and stop-confirmation clips hold one final control check across their entire batch,
+so a stop cannot split their text from their audio. Ordinary acknowledgement frames use routed publication and
+retain stopped-reply checks between frames. The synchronous nested batch scope is private to the connection gate;
+it avoids relocking while the outer gate is held and grants no policy or request authority.
+
+Local station announcements have a device-local announcement identity, separate from host reply identities.
+Other direct controls (hello/state, heard/overheard, mode, route failure and update cancellation) do not introduce
+host reply text or audio and cannot create a new host first-audio claim. They therefore need no reply barrier.
+An older device's capability refusal and a coalesced device report retain their existing behavior. No device
+controller or wire format change is needed.
+
 The fixed deadline is checked both at candidate admission and inside the final publication gates, so first audio at 45 minutes + 1 ms is refused even
 before the next heartbeat sweep. First audio retains the ordinary stream rules after its reservation ends.
 
