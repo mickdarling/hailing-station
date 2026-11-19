@@ -218,11 +218,12 @@ class ReplySegmentCLITests(unittest.TestCase):
         self.assertFalse(any(frame["payload"].get("segmentEnd") for _, frame in frames))
         self.assert_outcome("failed")
 
-    def test_supersession_mid_reply_never_starts_later_segment(self):
+    def test_legacy_supersession_mid_reply_never_starts_later_segment(self):
         environment = self.environment("2880000")
         environment.pop("HAILD_REPLY_FOREGROUND")
         environment.pop("HAILD_REPLY_PACING")
-        with self.rig.reply_server(lambda index: {"delivered": 1}) as (path, frames):
+        with self.rig.reply_server(lambda index: {"delivered": 1},
+                                   audio_queue=self.rig.legacy_audio_queue) as (path, frames):
             older = self.rig.run_reply(["--say", "First. Second. Third.",
                                         "--renderer-output-root", str(self.root)], path, environment)
             self.assertEqual(older.returncode, 0, older.stderr)

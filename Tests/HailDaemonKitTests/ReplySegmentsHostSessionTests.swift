@@ -71,13 +71,12 @@ import Testing
         #expect(await session.selectedTarget == "tmux:synthetic")
         #expect(await session.repliesInFlight == [reply])
         #expect(await session.stoppedReplies.isEmpty)
-        #expect(await session.segmentedReplies.isEmpty)
         #expect(await adapter.deliveries.isEmpty)
         #expect(events.control.isEmpty)
         #expect(await session.receive(helloFrame()).frames.isEmpty)
     }
 
-    @Test func segmentTrackingIsBoundedAndClearedOnEndStopDismissAndTeardown() async throws {
+    @Test func inFlightTrackingIsBoundedAndClearedOnEndStopAndDismiss() async throws {
         let rig = try await RecipientTestRig.make()
         let session = HostSession(host: rig.host, authorizer: PersonalTerminalAuthorizer(), hostName: "mac-test")
         _ = await session.receive(helloFrame(capabilities: [ReplySegments.capability]))
@@ -89,27 +88,15 @@ import Testing
             #expect(await session.enqueueRequestlessReply(segmentAudio(reply, sequence: 0), enqueue: { true }))
             replies.append(reply)
         }
-        #expect(await session.segmentedReplies.count == HostSession.playbackStopLimit)
-        #expect(await session.segmentedReplies == Set(replies.dropFirst(2).map(\.id)))
+        #expect(await session.repliesInFlight == replies.dropFirst(2).map(\.id))
         let ended = replies[2], stopped = replies[3], yielded = replies[4]
         let final = recipientAudio(ended, sequence: 1, final: true)
         #expect(await session.enqueueRequestlessReply(final, enqueue: { true }))
         await session.stopHeldReply(stopped.id)
         _ = await session.receive(sessionFrame(payload: .control(.replyYield(reply: yielded.id, segment: 1))))
-        #expect(await session.segmentedReplies.count == HostSession.playbackStopLimit - 3)
-        #expect(!(await session.segmentedReplies.contains(ended.id)))
-        #expect(!(await session.segmentedReplies.contains(stopped.id)))
-        #expect(!(await session.segmentedReplies.contains(yielded.id)))
+        #expect(await session.repliesInFlight == replies.dropFirst(5).map(\.id))
         _ = await session.stopReplyPlayback()
-        #expect(await session.segmentedReplies.isEmpty)
         #expect(await session.repliesInFlight.isEmpty)
-        let last = try #require(replies.last)
-        let next = ReplyDescriptor(id: UUID(), hostID: last.hostID, targetID: last.targetID, audioStreamID: UUID())
-        #expect(await session.enqueueRequestlessReply(segmentAudio(next, sequence: 0), enqueue: { true }))
-        await session.endSegmentTracking()
-        #expect(await session.segmentedReplies.isEmpty)
-        // Existing in-flight ids stay available to a concurrent dismiss; only the new markers end here.
-        #expect(await session.repliesInFlight == [next.id])
     }
 }
 

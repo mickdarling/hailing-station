@@ -397,11 +397,6 @@ extension HostSession {
     }
 
     private func didNoteLastInput() {
-        if peerCapabilities.contains(ReplySegments.capability) {
-            let stopped = repliesInFlight.filter { segmentedReplies.contains($0) }
-            for reply in stopped { stopHeldReply(reply) }
-            if !stopped.isEmpty { logReplyEvent("reply_backstop", detail: "outcome=stopped count=\(stopped.count)") }
-        }
         replyEvent(WebSocketListenerEvent(event: "session_update_interaction", sessionID: connectionID))
     }
 
@@ -648,5 +643,80 @@ extension HostSession {
             guard let allowed = policy.targets[listed.info.id], allowed.binding == listed.binding else { return nil }
             return listed.info
         }
+    }
+}
+
+// Queue authority lives on the request owner; local socket ticket checks never mint or restore a request.
+extension HostSession {
+    /// Matches the CLI's 35-minute watchdog plus its maximum ten-minute rate-limit extension.
+    static let replyQueueLifetime: Duration = .seconds(45 * 60)
+
+    func trackQueuedReplyAuthority() {
+        queuedReplyDeadlines = queuedReplyDeadlines.filter { id, _ in
+            replyRequests[id].map(Self.awaitingReplyAudio) == true
+        }
+        for (id, request) in replyRequests where Self.awaitingReplyAudio(request) && queuedReplyDeadlines[id] == nil {
+            guard let textAt = request.firstFrameAt else { continue }
+            queuedReplyDeadlines[id] = textAt.advanced(by: Self.replyQueueLifetime)
+        }
+        guard !queuedReplyDeadlines.isEmpty else {
+            queuedReplyAuthorityTask?.cancel()
+            queuedReplyAuthorityTask = nil
+            return
+        }
+        guard queuedReplyAuthorityTask == nil else { return }
+        queuedReplyAuthorityTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(20)) } catch { return }
+                guard await self?.renewQueuedReplyAuthority() == true else { return }
+            }
+        }
+    }
+
+    private static func awaitingReplyAudio(_ request: HostReplyRequest) -> Bool {
+        request.queuedAudioAuthority != nil && request.committed && request.textDelivered
+            && request.descriptor?.audioStreamID != nil
+            && request.audioSequence == 0 && !request.audioFinished
+    }
+
+    /// Only existing, still-current records renew. Privacy/selection drops and revoked permits are irreversible.
+    /// No frame, sequence, descriptor, pin or in-flight state is fabricated by this reservation heartbeat.
+    @discardableResult func renewQueuedReplyAuthority() -> Bool {
+        let now = requestClock()
+        for (id, deadline) in queuedReplyDeadlines {
+            guard var request = replyRequests[id], Self.awaitingReplyAudio(request) else { continue }
+            if now >= deadline {
+                replyRequests[id] = nil
+                replyEvent(WebSocketListenerEvent(event: "reply_queue_authority",
+                    detail: "reason=queue_timeout request=\(id.uuidString)"))
+                continue
+            }
+            guard ReplyConnectionStopGate.permits(request),
+                  request.queuedAudioAuthority?.isCurrent() != false, request.isCurrent(at: now),
+                  request.generation == selectionGeneration,
+                  request.descriptor.map({ !stoppedReplies.contains($0.id) }) == true else {
+                replyRequests[id] = nil
+                continue
+            }
+            let renewed = request.withAuthority {
+                let heartbeat = requestClock()
+                guard heartbeat < deadline, ReplyConnectionStopGate.permits(request),
+                      request.queuedAudioAuthority?.isCurrent() != false,
+                      request.isCurrent(at: heartbeat) else { return false }
+                // Before first audio these are reservation heartbeats. The stream receives its full watchdog
+                // after the last heartbeat, with the same five-minute rendering margin as a new CLI stream.
+                request.firstFrameAt = heartbeat
+                request.lastFrameAt = heartbeat
+                if request.providerTurnEndedAt != nil { request.providerTurnEndedAt = heartbeat }
+                replyRequests[id] = request
+                return true
+            }
+            if renewed != true { replyRequests[id] = nil }
+        }
+        guard !queuedReplyDeadlines.isEmpty else {
+            queuedReplyAuthorityTask = nil
+            return false
+        }
+        return true
     }
 }

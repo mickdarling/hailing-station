@@ -131,7 +131,7 @@ extension RecipientContextAdapter {
 
 // Direct admission tests use a synthetic synchronous enqueue, never a production authorization Boolean.
 extension HostSession {
-    func acceptsHostReply(_ frame: Frame) -> Bool { enqueueHostReply(frame, enqueue: { true }) }
+    func acceptsHostReply(_ frame: Frame) -> Bool { enqueueHostReply(frame, enqueue: { commit in commit { true } }) }
 }
 
 struct RecipientTestRig {

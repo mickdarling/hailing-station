@@ -34,7 +34,7 @@ import Testing
             let request = try #require(reply.requestID)
             #expect(events.withLock { $0.filter { $0.event == "reply_audio_skipped" }.map(\.detail) }
                 == ["reason=stopped request=\(request.uuidString) ticket=\(ticket.position)"])
-            try await expectRetainedRequest(contextB, frame: audio, listener: listener)
+            try await expectRequestAuthority(contextB, frame: audio, listener: listener, retained: !stopOwner)
             try await pair.boundedBarrier(step: "scoped queue decision complete")
         } catch {
             await listener.stop(reason: "synthetic failure")
@@ -43,14 +43,14 @@ import Testing
         await listener.stop(reason: "synthetic complete")
     }
 
-    private func expectRetainedRequest(
-        _ context: ProviderTurnContext, frame: Frame, listener: WebSocketListener
+    private func expectRequestAuthority(
+        _ context: ProviderTurnContext, frame: Frame, listener: WebSocketListener, retained: Bool
     ) async throws {
         for peer in await listener.peers.values {
             let session = await peer.session
             if await session.connectionID == context.connectionID {
-                #expect(await session.replyRequests[context.id] != nil)
-                #expect(await session.replyPublicationStatus(frame) == .ready)
+                #expect(await (session.replyRequests[context.id] != nil) == retained)
+                #expect(await session.replyPublicationStatus(frame) == (retained ? .ready : .absent))
                 return
             }
         }

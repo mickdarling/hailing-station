@@ -24,7 +24,7 @@ class ReplyTicketReleaseTests(unittest.TestCase):
     def test_exhausted_check_retry_window_releases_ticket(self):
         self.exercise("retry")
 
-    def test_request_bound_waiter_gives_up_and_releases_ticket(self):
+    def test_queue_bound_waiter_skips_and_releases_ticket(self):
         self.exercise("request")
 
     def test_sigterm_before_ready_releases_ticket(self):
@@ -73,6 +73,7 @@ class ReplyTicketReleaseTests(unittest.TestCase):
                     args = [str(support.HAILD), "reply", "tmux:release", "--host", "mac-test",
                             "--socket", path]
                     if mode == "request":
+                        env["HAILD_REPLY_QUEUE_SECONDS"] = "1"
                         args += ["--request", "00000000-0000-4000-8000-000000000001"]
                     if mode == "bound":
                         pcm = Path(scratch) / "oversized.pcm"
@@ -90,7 +91,11 @@ class ReplyTicketReleaseTests(unittest.TestCase):
                         self.rig.wait_for(lambda: bool(select.select([job.stderr], [], [], 0)[0]), 10)
                         release.set()
                     _, stderr = job.communicate(timeout=50)
-                    self.assertNotEqual(job.returncode, 0, stderr)
+                    if mode == "request":
+                        self.assertEqual(job.returncode, 0, stderr)  # an audio-only skip keeps the delivered text
+                        self.assertEqual(self.rig.job_ends[-1]["audioSkipReason"], "queue_timeout")
+                    else:
+                        self.assertNotEqual(job.returncode, 0, stderr)
                 releases = [item for item in controls if item["action"] == "release"]
                 self.assertEqual(len(releases), 1, controls)
                 self.assertEqual(set(releases[0]), {"kind", "action", "ticket"})

@@ -7,6 +7,10 @@ P1 squash `b86b2fbf`. Initial implementation evidence below used P1 head
 no provider, network, other clone, install, upload, installed-build replacement or physical device was used.
 **P3 must merge before any haild deploy of P2.** The producer now emits `segmentEnd` locally; per-peer
 `reply_segments` capability stripping, `reply_yield` handling and the backstop belong to the listener in P3.
+Since #1246 the owner-request backstop is removed; its optional host switch was dropped from this PR and may
+return as a follow-up if the owner wants it;
+queue-aware CLI jobs wait behind the playing reply without same-target supersession. See
+[the current queue record](1246-new-request-reply-queue.md).
 P2 does not change `Sources/HailDaemonKit/Listener`, coaching speech, acknowledgement clips or Announcer.
 This is not live captured-output round-trip or physical playback proof. P4/P5 remain deferred.
 
