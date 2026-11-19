@@ -14,6 +14,7 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
     ]
     private var authorities: [String: ReplyPublicationAuthority] = [:]
     private(set) var contexts: [ProviderTurnContext] = []
+    nonisolated let contextEvents = AsyncStream<ProviderTurnContext>.makeStream()
     private(set) var legacy: [String] = []
     let legacyEvents = AsyncStream<String>.makeStream()
     private var legacyFailure: (any Error)?
@@ -59,6 +60,7 @@ actor RecipientContextAdapter: ProviderContextDelivering, ProviderReplyBindingLe
             throw AdapterError.rebound(target)
         }
         contexts.append(context)
+        contextEvents.continuation.yield(context)
         if held {
             entered = true
             let waiters = Array(arrivals.values)

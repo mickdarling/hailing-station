@@ -1,4 +1,5 @@
 #if os(macOS)
+import Darwin
 import Foundation
 import HailProtocol
 import Synchronization
@@ -81,11 +82,17 @@ func makeStopMuteFixture() throws -> FakeRightyo {
         .replacingOccurrences(of: "-e '$d'", with: "-e '1d;$d'")
     let script = """
     /usr/bin/head -1 events.jsonl | /usr/bin/sed "s/tool-demo/$7/g"
-    while [ ! -f release ]; do /bin/sleep 0.02; done
+    read -r release < release
     \(rest)
     """
     let fake = try FakeRightyo(script)
-    do { try fake.install(fixture: "tool-events.jsonl"); return fake } catch { fake.cleanUp(); throw error }
+    do {
+        try fake.install(fixture: "tool-events.jsonl")
+        guard mkfifo(fake.directory.appendingPathComponent("release").path, 0o600) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        return fake
+    } catch { fake.cleanUp(); throw error }
 }
 
 func startHeldUpdateStop(

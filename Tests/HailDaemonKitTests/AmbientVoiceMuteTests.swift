@@ -90,25 +90,24 @@ import Testing
         #expect(seen.withLock { $0 } == mutes)
     }
 
-    @Test func aCapableDeviceIsStoppedThenHearsMutedThenIsMuted() async throws {
+    @Test func aCapableDeviceIsStoppedThenMutedBeforeConfirmation() async throws {
         let caps = [PlaybackStop.capability, ReplyMute.capability]
         let details = try await run(saying: "Rightyo, mute.", capabilities: caps) { socket in
             #expect(try await receiveFrame(on: socket, step: "stop").payload == .control(.stopPlayback))
+            #expect(try await receiveFrame(on: socket, step: "mute").payload == .control(.setReplyMute(muted: true)))
             let text = try await receiveFrame(on: socket, step: "confirmation words")
             guard case .text(let words) = text.payload else {
                 Issue.record("expected the confirmation")
                 return
             }
             #expect(words.text == "Muted.")
-            // On the wire the clip's final audio frame precedes the mute, so the device is playing it when the mute
-            // arrives and applies the mute after it, not at once over a silent clip.
+            // The confirmation is retained silently under mute, alongside preserved answer audio.
             let clip = try await receiveFrame(on: socket, step: "confirmation clip")
             guard case .audio(let audio) = clip.payload else {
-                Issue.record("expected the clip before the mute")
+                Issue.record("expected the confirmation clip")
                 return
             }
             #expect(audio.isFinal && audio.bytes == Self.muted.pcm && audio.reply == words.reply)
-            #expect(try await receiveFrame(on: socket, step: "mute").payload == .control(.setReplyMute(muted: true)))
         }
         #expect(details == ["muted=true mute=sent playback=stopped confirm=confirmmuted/0:sent"])
     }
