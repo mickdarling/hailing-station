@@ -38,7 +38,9 @@ plain explanatory text, with no fabricated saved/effective values or inactive Ap
 - `AdvancedSettingsUITests` uses the real shell opt-in/relaunch path on an unconfigured owned simulator.
   It verifies the new toggle and old station toggle share state, visits existing tools, and checks AX5
   landscape navigation and width. Only the diagnostics opt-in is changed; no microphone, probe or route action
-  is tapped. Synthetic screenshots are retained in the UI results when executed.
+  is tapped. Typed section/link and named Back lookups wait to be hittable; rotation geometry is read on the
+  main actor, and bounded directional drags avoid reading nonexistent elements' frames. Synthetic screenshots
+  are retained in the UI results when executed.
 - Pending: native tests, iPhone/iPad UI tests, both app builds, existing diagnostics/shell regressions,
   lint and repository verification, then independent exact-head Codex and Claude reviews.
 - No build, test, lint, simulator, microphone, audio, service, network, push or external review was performed

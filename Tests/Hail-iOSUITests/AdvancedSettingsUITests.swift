@@ -23,7 +23,9 @@ final class AdvancedSettingsUITests: XCTestCase {
         XCTAssertEqual(toggle.value as? String, "1")
         XCTAssertTrue(status.label.contains("No connected Mac is collecting"))
         capture(app, named: "advanced-diagnostics-enabled-no-collector")
-        app.navigationBars["Advanced and diagnostics"].buttons.firstMatch.tap()
+        let back = app.navigationBars["Advanced and diagnostics"].buttons["Settings"]
+        waitUntilHittable(back)
+        back.tap()
         tapSection("station", in: app)
         let original = app.switches["station.diagnostics-toggle"]
         reveal(original, in: app)
@@ -49,10 +51,14 @@ final class AdvancedSettingsUITests: XCTestCase {
         XCTAssertEqual(toggle.value as? String, "0")
         capture(app, named: "advanced-largest-type")
         XCUIDevice.shared.orientation = .landscapeLeft
-        let wide = XCTNSPredicateExpectation(
-            predicate: NSPredicate { _, _ in app.windows.firstMatch.frame.width > app.windows.firstMatch.frame.height },
-            object: nil)
-        XCTAssertEqual(XCTWaiter().wait(for: [wide], timeout: 5), .completed)
+        // Keep XCTest geometry reads on the main actor; block predicates may run off that actor.
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            let frame = app.windows.firstMatch.frame
+            if frame.width > frame.height { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        XCTAssertGreaterThan(app.windows.firstMatch.frame.width, app.windows.firstMatch.frame.height)
         let build = app.staticTexts["settings.advanced.build"]
         reveal(build, in: app)
         XCTAssertTrue(build.label.hasPrefix("Version "))
@@ -60,7 +66,7 @@ final class AdvancedSettingsUITests: XCTestCase {
         XCTAssertGreaterThan(build.frame.width, 0)
         XCTAssertGreaterThanOrEqual(build.frame.minX, window.minX)
         XCTAssertLessThanOrEqual(build.frame.maxX, window.maxX)
-        XCTAssertTrue(app.navigationBars["Advanced and diagnostics"].buttons.firstMatch.isHittable)
+        waitUntilHittable(app.navigationBars["Advanced and diagnostics"].buttons["Settings"])
         XCTAssertFalse(app.descendants(matching: .any)["station.build-info"].firstMatch.exists,
                        "Settings does not expose the hidden Station footer identifier")
         capture(app, named: "advanced-largest-type-landscape")
@@ -112,7 +118,9 @@ final class AdvancedSettingsUITests: XCTestCase {
         link.tap()
         let bar = app.navigationBars[title]
         XCTAssertTrue(bar.waitForExistence(timeout: 5))
-        bar.buttons.firstMatch.tap()
+        let back = bar.buttons["Advanced and diagnostics"]
+        waitUntilHittable(back)
+        back.tap()
         XCTAssertTrue(app.navigationBars["Advanced and diagnostics"].waitForExistence(timeout: 5))
     }
 
@@ -126,17 +134,35 @@ final class AdvancedSettingsUITests: XCTestCase {
     @MainActor
     private func tapSection(_ name: String, in app: XCUIApplication) {
         let item = section(name, in: app)
-        XCTAssertTrue(item.waitForExistence(timeout: 5))
-        let shown = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: item)
-        XCTAssertEqual(XCTWaiter().wait(for: [shown], timeout: 5), .completed)
+        waitUntilHittable(item)
         item.tap()
     }
 
     @MainActor
+    private func waitUntilHittable(_ item: XCUIElement) {
+        XCTAssertTrue(item.waitForExistence(timeout: 5))
+        let shown = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: item)
+        XCTAssertEqual(XCTWaiter().wait(for: [shown], timeout: 5), .completed)
+        XCTAssertTrue(item.isHittable)
+    }
+
+    @MainActor
     private func reveal(_ element: XCUIElement, in app: XCUIApplication, towardTop: Bool = false) {
-        let limit = app.windows.firstMatch.frame.maxY - 120
-        for _ in 0..<8 where !(element.exists && element.isHittable && element.frame.maxY < limit) {
-            if towardTop { app.swipeDown() } else { app.swipeUp() }
+        let window = app.windows.firstMatch
+        for _ in 0..<8 {
+            let viewport = window.frame
+            let top = app.navigationBars.firstMatch.exists
+                ? app.navigationBars.firstMatch.frame.maxY : viewport.minY
+            let bottom = viewport.maxY - 120
+            let exists = element.exists
+            let frame = exists ? element.frame : .zero
+            if exists && element.isHittable && frame.minY >= top && frame.maxY <= bottom { break }
+            let moveDown = exists ? frame.minY < top : towardTop
+            let x = exists
+                ? min(max((frame.midX - viewport.minX) / viewport.width, 0.1), 0.9) : 0.5
+            let start = window.coordinate(withNormalizedOffset: CGVector(dx: x, dy: moveDown ? 0.35 : 0.65))
+            let end = window.coordinate(withNormalizedOffset: CGVector(dx: x, dy: moveDown ? 0.65 : 0.35))
+            start.press(forDuration: 0.01, thenDragTo: end)
         }
         XCTAssertTrue(element.waitForExistence(timeout: 5))
         XCTAssertTrue(element.isHittable)
