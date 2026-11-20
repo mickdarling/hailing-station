@@ -23,7 +23,8 @@ struct VoicesSettingsView<Tools: View>: View {
             } header: {
                 Text("Turn-taking")
             } footer: {
-                Text("Change the pause and sound level in Turn-taking. Sustained sound duration is shown for reference.")
+                Text("Change the pause and sound level in Turn-taking. "
+                     + "Sustained sound duration is shown for reference.")
             }
             Section("Voices on the Mac") {
                 Text("Reply voices are generated on the Mac. This app cannot read or edit host, target or update-type "
