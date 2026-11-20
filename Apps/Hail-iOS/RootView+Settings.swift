@@ -93,7 +93,8 @@ struct AdvancedSettingsOverview<Tools: View>: View {
 extension PrivacySettingsOwner {
     var privacySettingsOverview: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            PrivacySettingsView(state: privacySettingsState(now: context.date), send: performPrivacySettings)
+            PrivacySettingsView(
+                state: privacySettingsState(now: context.date), send: { performPrivacySettings($0) })
         }
     }
 
@@ -108,29 +109,31 @@ extension PrivacySettingsOwner {
             unavailableReason: privacyUnavailableReason(host: host, listening: listening, now: now),
             canStopListening: connections.ambientController?.isOn == true,
             showOverheard: settingsShowOverheard, whoseOverheard: settingsWhoseOverheard,
-            requestedScope: connections.overheardScope, failure: privacySettingsRequest.failure)
+            requestedScope: connections.overheardScope, failure: privacySettingsRequest.failure,
+            overheardFailure: privacySettingsRequest.overheardFailure)
     }
 
     func performPrivacySettings(_ intent: PrivacySettingsIntent) {
         switch intent {
         case .privacy(let on, let host, let generation):
-            let request = PrivacySettingsRequestState()
-            privacySettingsRequest = request
-            Task { await requestPrivacy(on, host: host, generation: generation, request: request.id) }
+            guard !privacySettingsState().privacy.pending else { return }
+            Task { await requestPrivacy(on, host: host, generation: generation) }
         case .showOverheard(let show):
             guard !show || ["owner", "everyone"].contains(settingsWhoseOverheard) else {
-                privacySettingsRequest.failure = "Choose whose remarks to show first."
+                privacySettingsRequest.overheardFailure = "Choose whose remarks to show first."
                 return
             }
             settingsShowOverheard = show
             connections.setOverheardScope(show ? settingsWhoseOverheard : "off")
+            privacySettingsRequest.overheardFailure = nil
         case .whoseOverheard(let whose):
             guard ["owner", "everyone"].contains(whose) else {
-                privacySettingsRequest.failure = "That overheard scope is not supported."
+                privacySettingsRequest.overheardFailure = "That overheard scope is not supported."
                 return
             }
             settingsWhoseOverheard = whose
             connections.setOverheardScope(settingsShowOverheard ? whose : "off")
+            privacySettingsRequest.overheardFailure = nil
         case .stopListening:
             if let controller = connections.ambientController, controller.isOn {
                 Task { await controller.turnOff() }
@@ -138,8 +141,11 @@ extension PrivacySettingsOwner {
         }
     }
 
-    private func requestPrivacy(_ on: Bool, host: HostEndpoint.Identifier, generation: UUID, request: UUID) async {
+    private func requestPrivacy(_ on: Bool, host: HostEndpoint.Identifier, generation: UUID) async {
         let current = privacySettingsState()
+        guard !current.privacy.pending else { return }
+        let request = UUID()
+        privacySettingsRequest.id = request
         let name = connections.snapshots[host]?.endpoint.name ?? "the previously selected Mac"
         guard current.host?.id == host, current.host?.connectionGeneration == generation,
               current.canRequestPrivacy else {
@@ -150,6 +156,7 @@ extension PrivacySettingsOwner {
         }
         do {
             try await connections.setPrivacy(on: on, host: host)
+            if privacySettingsRequest.id == request { privacySettingsRequest.failure = nil }
         } catch {
             if privacySettingsRequest.id == request {
                 privacySettingsRequest.failure = "Privacy request for \(name) failed: \(error.localizedDescription)"
