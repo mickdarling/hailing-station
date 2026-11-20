@@ -77,6 +77,7 @@ extension RootView {
             .navigationTitle(section.title)
         case .settings:
             List {
+                ShellAppearanceEntry()
                 NavigationLink { audioSettingsOverview } label: {
                     Label("Audio", systemImage: "waveform")
                 }
@@ -105,6 +106,20 @@ extension RootView {
             }
             .navigationTitle(section.title)
         }
+    }
+}
+
+/// Reuses the window-owned presenter added by #1281, outside the hidden station's navigation stack.
+private struct ShellAppearanceEntry: View {
+    @Environment(\.appearanceSettingsPresented) private var isPresented
+
+    var body: some View {
+        Button {
+            isPresented.wrappedValue = true
+        } label: {
+            Label("Appearance", systemImage: "textformat.size")
+        }
+        .accessibilityIdentifier("station.settings.appearance")
     }
 }
 
