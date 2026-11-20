@@ -88,11 +88,13 @@ extension RootView {
     }
     var stationTools: some View {
         GroupBox {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) { toolLinks }
-                VStack(spacing: 10) { toolLinks }
+            AppearanceSettingsEntry {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) { toolLinks }
+                    VStack(spacing: 10) { toolLinks }
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.bordered)
         } label: {
             Label("Station tools", systemImage: "slider.horizontal.3")
                 .font(.headline)
