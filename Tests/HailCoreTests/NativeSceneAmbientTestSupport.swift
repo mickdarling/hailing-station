@@ -10,6 +10,8 @@ import HailProtocol
 final class NativeSceneAmbientProbe {
     var toolShown = false
     var disappearances = 0
+    var appearances = 0
+    var stationHidden: Bool?
     @ObservationIgnored var root: StationRootView?
     private let binding: AmbientAudioBinding
 
@@ -28,6 +30,7 @@ final class NativeSceneAmbientProbe {
 struct NativeSceneStationContent: View {
     let root: StationRootView
     @Environment(NativeSceneAmbientProbe.self) private var probe: NativeSceneAmbientProbe?
+    @Environment(\.stationAccessibilityHidden) private var stationHidden
 
     var body: some View {
         Group {
@@ -36,13 +39,16 @@ struct NativeSceneStationContent: View {
                 if probe.toolShown {
                     Text("Station")
                 } else {
-                    root.ambientListeningSurface.onDisappear { probe.disappearances += 1 }
+                    root.ambientListeningSurface
+                        .onAppear { probe.appearances += 1 }
+                        .onDisappear { probe.disappearances += 1 }
                 }
             } else { Text("Station") }
         }
         .navigationDestination(isPresented: Binding(get: { probe?.toolShown == true },
                                                    set: { probe?.toolShown = $0 })) { Text("Station tool") }
         .onAppear { probe?.install(root) }
+        .onChange(of: stationHidden, initial: true) { _, hidden in probe?.stationHidden = hidden }
     }
 }
 
@@ -51,13 +57,14 @@ final class NativeSceneAmbientHost {
     private let hosting: NSHostingView<AnyView>
     private let window: NSWindow
 
-    init(resources: StationResources, probe: NativeSceneAmbientProbe) {
+    init(resources: StationResources, probe: NativeSceneAmbientProbe, width: CGFloat = 760) {
+        NativeShellLaunchContext.install()
         _ = NSApplication.shared
         hosting = NSHostingView(rootView: AnyView(StationRootView(selectionStore: RootSelectionStore(),
             makeResources: { resources }).environment(probe).environment(\.scenePhase, .active)
             .environment(\.accessibilityEnabled, true)
             .transaction { $0.disablesAnimations = true; $0.animation = nil }))
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 620),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 620),
                           styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = hosting

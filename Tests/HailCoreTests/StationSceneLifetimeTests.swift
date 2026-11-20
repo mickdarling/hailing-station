@@ -7,6 +7,8 @@ import Testing
 @Suite("Native station scene lifetime", .serialized)
 @MainActor
 struct StationSceneLifetimeTests {
+    init() { NativeShellLaunchContext.install() }
+
     @Test func discardedNativeRootInitializersDoNotConstructResources() {
         var count = 0
         for _ in 0..<17 {
