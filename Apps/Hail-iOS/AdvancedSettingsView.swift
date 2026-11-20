@@ -68,6 +68,7 @@ struct AdvancedSettingsView<Tools: View>: View {
         guard let collectingHostName else {
             return "On. No connected Mac is collecting diagnostics. Recent events are kept in memory on this device."
         }
-        return "On. \(collectingHostName) is ready to collect diagnostics. This does not confirm delivery of each event."
+        return "On. \(collectingHostName) is ready to collect diagnostics. "
+            + "This does not confirm delivery of each event."
     }
 }
