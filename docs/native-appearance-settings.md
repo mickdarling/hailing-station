@@ -11,10 +11,10 @@ Part of the native settings design in #1239. The first bounded slice adds a Sett
 
 ## Isolated verification
 
-The Debug-only `-appearance-preview` launch argument opens just this screen instead of constructing the station. Its isolated preference suite is separate from the real app settings; `-reset-appearance-preview` clears only that preview suite. Release builds ignore both arguments.
+The Debug-only `-appearance-preview` launch argument opens just this screen instead of constructing the station. Its isolated preference suite is separate from the real app settings; `-reset-appearance-preview` clears only that preview suite. `-appearance-entry-preview` additionally exercises the actual Settings button, its sheet and dismissal under an adaptive tools example, without constructing the station. Release builds ignore these arguments.
 
 The screen contains only authored example text. Simulator captures and a direct native Mac settings render are UI evidence, not physical-device, live-conversation or audio qualification.
 
-Focused tests cover persistence through preference-owner recreation, malformed saved data, independent settings profiles, the shared controls and accessibility-size reachability. The pure #1166 math remains covered by ConversationTextSizeTests and ConversationTextSizeSweepTests.
+Focused tests cover persistence through preference-owner recreation, malformed saved data, isolated preference suites, the shared controls and accessibility-size reachability. The pure #1166 math remains covered by ConversationTextSizeTests and ConversationTextSizeSweepTests.
 
 The complete configuration catalog, Favorites, remote authorization and the other #1239 settings groups remain design proposals.

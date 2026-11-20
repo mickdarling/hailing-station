@@ -1,5 +1,40 @@
+import CoreFoundation
+import Foundation
 import HailCore
+import Observation
 import SwiftUI
+
+/// The app owns one preference store, shared with its Settings window and sheets. No service or audio owner.
+@MainActor @Observable
+final class ConversationAppearancePreferences {
+    private let defaults: UserDefaults
+    private(set) var state: ConversationTextSize
+
+    init(defaults: UserDefaults = .standard, platform: ConversationTextSize.Platform = .currentAppearancePlatform) {
+        self.defaults = defaults
+        let number = defaults.object(forKey: ConversationTextSize.storageKey) as? NSNumber
+        let stored = number.flatMap { value -> Int? in
+            guard CFGetTypeID(value) != CFBooleanGetTypeID() else { return nil }
+            return Int(exactly: value.doubleValue)
+        }
+        state = ConversationTextSize(platform: platform, stored: stored)
+    }
+
+    func apply(_ intent: ConversationTextSize.Intent) {
+        state = state.applying(intent)
+        defaults.set(state.size, forKey: ConversationTextSize.storageKey)
+    }
+}
+
+extension ConversationTextSize.Platform {
+    static var currentAppearancePlatform: Self {
+        #if os(macOS)
+        .mac
+        #else
+        .touch
+        #endif
+    }
+}
 
 /// The "Aa" control (#1115): Smaller, Larger and Reset for the conversation's own text size, with the current value
 /// and a live preview. It renders a `ConversationTextSize` and emits its intents; the owner at the app root stores

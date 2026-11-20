@@ -43,7 +43,22 @@ struct HailApp: App {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-appearance-preview") {
             // An inert, synthetic settings scene for UI tests and screenshots. No station/audio resources exist.
-            NavigationStack { AppearanceSettingsView() }
+            if ProcessInfo.processInfo.arguments.contains("-appearance-entry-preview") {
+                AppearanceSettingsEntry(typeSize: .large) {
+                    ViewThatFits(in: .horizontal) {
+                        HStack {
+                            ForEach(0..<6) { _ in Text("Example tool").frame(width: 120) }
+                        }
+                        VStack {
+                            ForEach(0..<6) { _ in Text("Example tool").frame(height: 30) }
+                        }
+                    }
+                    .accessibilityIdentifier("appearance.example-tools")
+                }
+                .padding()
+            } else {
+                NavigationStack { AppearanceSettingsView() }
+            }
         } else {
             RootView()
         }

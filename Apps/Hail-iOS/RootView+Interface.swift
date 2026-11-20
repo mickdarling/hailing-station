@@ -88,11 +88,13 @@ extension RootView {
     }
     var stationTools: some View {
         GroupBox {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) { toolLinks }
-                VStack(spacing: 10) { toolLinks }
+            AppearanceSettingsEntry(typeSize: dynamicTypeSize) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) { toolLinks }
+                    VStack(spacing: 10) { toolLinks }
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.bordered)
         } label: {
             Label("Station tools", systemImage: "slider.horizontal.3")
                 .font(.headline)
@@ -102,7 +104,6 @@ extension RootView {
 
     @ViewBuilder
     var toolLinks: some View {
-        AppearanceSettingsEntry(typeSize: dynamicTypeSize)
         NavigationLink {
             ConnectivityLabView(store: connections, endpointsChanged: persist)
         } label: {

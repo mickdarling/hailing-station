@@ -58,6 +58,50 @@ final class AppearanceSettingsUITests: XCTestCase {
     }
 
     @MainActor
+    func testTheActualSettingsEntryPresentsAndDismissesTheIsolatedSheet() {
+        let app = launchEntryPreview()
+        XCTAssertTrue(element("appearance.example-tools", in: app).exists)
+        XCTAssertFalse(element("appearance.settings", in: app).exists)
+        app.buttons["station.settings"].tap()
+
+        assertValue("17 points, default", in: app)
+        XCTAssertTrue(element("appearance.conversation-preview", in: app).exists)
+        assertDoneVisible(in: app)
+        app.buttons["Done"].tap()
+
+        XCTAssertTrue(element("appearance.settings", in: app).waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["station.settings"].isHittable)
+        XCTAssertTrue(element("appearance.example-tools", in: app).exists)
+    }
+
+    @MainActor
+    func testTheActualSheetStaysOpenAcrossRotationAndFitsCompactLandscape() {
+        addTeardownBlock { @MainActor in XCUIDevice.shared.orientation = .portrait }
+        XCUIDevice.shared.orientation = .portrait
+        let app = launchEntryPreview()
+        app.buttons["station.settings"].tap()
+        assertValue("17 points, default", in: app)
+        app.buttons["appearance.text-size.larger"].tap()
+        assertValue("19 points", in: app)
+
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertGreaterThan(app.frame.width, app.frame.height)
+        XCTAssertTrue(element("appearance.settings", in: app).exists, "Rotation must keep the actual sheet open.")
+        assertValue("19 points", in: app)
+        assertDoneVisible(in: app)
+        attach(app, named: "appearance-entry-sheet-landscape")
+
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(element("appearance.settings", in: app).exists)
+        assertValue("19 points", in: app)
+        assertDoneVisible(in: app)
+        app.buttons["Done"].tap()
+        XCTAssertTrue(element("appearance.settings", in: app).waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["station.settings"].isHittable)
+        XCTAssertTrue(element("appearance.example-tools", in: app).exists)
+    }
+
+    @MainActor
     private func launch(reset: Bool = true, extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-appearance-preview"]
@@ -65,6 +109,24 @@ final class AppearanceSettingsUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(element("appearance.settings", in: app).waitForExistence(timeout: 10))
         return app
+    }
+
+    @MainActor
+    private func launchEntryPreview() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-appearance-preview", "-reset-appearance-preview", "-appearance-entry-preview"]
+        app.launch()
+        XCTAssertTrue(app.buttons["station.settings"].waitForExistence(timeout: 10))
+        XCTAssertFalse(element("station.connection", in: app).exists)
+        return app
+    }
+
+    @MainActor
+    private func assertDoneVisible(in app: XCUIApplication) {
+        let done = app.buttons["Done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 5))
+        XCTAssertTrue(done.isHittable, "Done must remain reachable without scrolling the sheet.")
+        XCTAssertTrue(app.frame.insetBy(dx: -1, dy: -1).contains(done.frame), "Done must fit inside the app viewport.")
     }
 
     @MainActor

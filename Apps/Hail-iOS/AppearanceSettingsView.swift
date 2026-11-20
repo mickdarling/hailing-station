@@ -1,40 +1,5 @@
-import CoreFoundation
-import Foundation
 import HailCore
-import Observation
 import SwiftUI
-
-/// The app owns one preference store, shared with its Settings window and sheets. No service or audio owner.
-@MainActor @Observable
-final class ConversationAppearancePreferences {
-    private let defaults: UserDefaults
-    private(set) var state: ConversationTextSize
-
-    init(defaults: UserDefaults = .standard, platform: ConversationTextSize.Platform = .currentAppearancePlatform) {
-        self.defaults = defaults
-        let number = defaults.object(forKey: ConversationTextSize.storageKey) as? NSNumber
-        let stored = number.flatMap { value -> Int? in
-            guard CFGetTypeID(value) != CFBooleanGetTypeID() else { return nil }
-            return Int(exactly: value.doubleValue)
-        }
-        state = ConversationTextSize(platform: platform, stored: stored)
-    }
-
-    func apply(_ intent: ConversationTextSize.Intent) {
-        state = state.applying(intent)
-        defaults.set(state.size, forKey: ConversationTextSize.storageKey)
-    }
-}
-
-extension ConversationTextSize.Platform {
-    static var currentAppearancePlatform: Self {
-        #if os(macOS)
-        .mac
-        #else
-        .touch
-        #endif
-    }
-}
 
 /// Native local Appearance settings, based on the #1239 frames. The conversation below is authored preview text.
 struct AppearanceSettingsView: View {
@@ -69,7 +34,7 @@ struct AppearanceSettingsView: View {
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.secondary)
             #if os(macOS)
-            Text("Appearance").font(.largeTitle.weight(.semibold))
+            Text("Appearance").font(.largeTitle.weight(.semibold)).accessibilityAddTraits(.isHeader)
             #endif
             Text("Make room for your conversation.")
                 .font(.title2.weight(.semibold))
@@ -85,12 +50,12 @@ struct AppearanceSettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .firstTextBaseline) {
-                        Text("Conversation text").font(.headline)
+                        Text("Conversation text").font(.headline).accessibilityAddTraits(.isHeader)
                         Spacer(minLength: 16)
                         value
                     }
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Conversation text").font(.headline)
+                        Text("Conversation text").font(.headline).accessibilityAddTraits(.isHeader)
                         value
                     }
                 }
@@ -116,7 +81,7 @@ struct AppearanceSettingsView: View {
     private var preview: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Conversation preview").font(.headline)
+                Text("Conversation preview").font(.headline).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 8)
                 Text("Example").font(.caption).foregroundStyle(.secondary)
             }
@@ -147,21 +112,34 @@ struct AppearanceSettingsView: View {
 }
 
 /// A sheet keeps the station mounted. Opening Settings never constructs another station or audio owner.
-struct AppearanceSettingsEntry: View {
+struct AppearanceSettingsEntry<Tools: View>: View {
     /// The root's OS setting, before StationLayout applies its deliberately denser conversation layout.
     let typeSize: DynamicTypeSize
+    private let tools: Tools
+    @Environment(ConversationAppearancePreferences.self) private var appearance
     @State private var isPresented = false
 
+    init(typeSize: DynamicTypeSize, @ViewBuilder tools: () -> Tools) {
+        self.typeSize = typeSize
+        self.tools = tools()
+    }
+
     var body: some View {
-        Button {
-            isPresented = true
-        } label: {
-            Label("Settings", systemImage: "gearshape")
-                .frame(maxWidth: .infinity)
+        // Own presentation above the adaptive tool row: swapping its horizontal/vertical layout cannot dismiss it.
+        VStack(spacing: 10) {
+            tools
+            Button {
+                isPresented = true
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityIdentifier("station.settings")
         }
-        .accessibilityIdentifier("station.settings")
         .sheet(isPresented: $isPresented) {
             AppearanceSettingsSheet(typeSize: typeSize) { isPresented = false }
+                .environment(appearance)
         }
     }
 }
@@ -181,6 +159,8 @@ struct AppearanceSettingsSheet: View {
                 }
         }
         .environment(\.dynamicTypeSize, typeSize)
+        #if os(macOS)
         .frame(minWidth: 300, minHeight: 420)
+        #endif
     }
 }
