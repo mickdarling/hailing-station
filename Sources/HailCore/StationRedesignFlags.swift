@@ -1,3 +1,6 @@
+import CoreFoundation
+import Foundation
+
 /// The native redesign's launch flags (#1115). Each adoption step ships behind one, off by default in every build,
 /// so a build with a step merged looks and behaves exactly like the one before until Mick turns that step on in
 /// Labs. Only merged steps are listed; each later step adds its own case.
@@ -25,7 +28,11 @@ public struct StationRedesignFlags: Equatable, Sendable {
     /// `stored` returns a step key's stored value. A step is on only when that value is exactly `true`; anything
     /// else, missing or of another type, leaves it off.
     public init(stored: (String) -> Any?) {
-        enabled = Set(StationRedesignStep.allCases.filter { stored($0.key) as? Bool == true })
+        enabled = Set(StationRedesignStep.allCases.filter { step in
+            guard let value = stored(step.key) as? NSNumber,
+                  CFGetTypeID(value) == CFBooleanGetTypeID() else { return false }
+            return value.boolValue
+        })
     }
 
     public func isOn(_ step: StationRedesignStep) -> Bool { enabled.contains(step) }
