@@ -48,8 +48,9 @@ reset/apply/undo and the rest of the catalog remain deferred under #1115 and the
 - Pending host checks: compile both app targets; run these focused native and simulator suites plus the existing
   shell and `AudioDiagnosticsLifetimeTests`; check source lint and the repository verification/traceability gates.
   The directory-based XcodeGen app/UI-test source entries and test-only Swift-package symlinks include these files.
-- Runtime results, screenshots and independent exact-head reviews are **pending**. No build, test, lint, simulator,
-  microphone, service, deployment or review service was executed while authoring this slice.
+- The PR's Verification and Review record sections hold current execution results, screenshots and exact-head
+  independent review evidence. Test names here define coverage, not a passing run. Initial authoring performed no
+  build, test, lint, simulator, microphone, service, deployment or review-service action.
 - `trace: partial`: #1115 still includes native component adoption beyond this overview, capture/listening survival
   on physical devices, physical VoiceOver and remaining settings catalog/authorization/activation work. Synthetic
   or simulator coverage does not establish hardware audio continuity. TestFlight stages and delivery authorization

@@ -45,20 +45,22 @@ import Testing
         rig.owner.performPrivacySettings(.whoseOverheard("all"))
         #expect(rig.owner.settingsWhoseOverheard == "everyone")
         #expect(rig.owner.connections.overheardScope == "everyone")
-        #expect(rig.owner.privacySettingsRequest.failure != nil)
+        #expect(rig.owner.privacySettingsRequest.overheardFailure != nil)
         rig.owner.performPrivacySettings(.showOverheard(false))
+        #expect(rig.owner.privacySettingsRequest.overheardFailure == nil)
         try await waitUntil { try await rig.scopes() == ["off", "everyone", "off"] }
         await rig.close()
         #expect(try await rig.scopes() == ["off", "everyone", "off"])
     }
 
     @Test func unknownOverheardPreferenceCannotBeEnabledImplicitly() {
-        let owner = PrivacySettingsFixture(connections: HostConnectionStore(), host: nil)
+        let owner = PrivacySettingsFixture(
+            connections: HostConnectionStore(connector: ScriptedConnector()), host: nil)
         owner.settingsWhoseOverheard = "unknown-future-scope"
         owner.preferenceWrites = []
         owner.performPrivacySettings(.showOverheard(true))
         #expect(!owner.settingsShowOverheard && owner.connections.overheardScope == "off")
-        #expect(owner.preferenceWrites.isEmpty && owner.privacySettingsRequest.failure != nil)
+        #expect(owner.preferenceWrites.isEmpty && owner.privacySettingsRequest.overheardFailure != nil)
         #expect(!owner.privacySettingsState().knowsWhose)
     }
 
