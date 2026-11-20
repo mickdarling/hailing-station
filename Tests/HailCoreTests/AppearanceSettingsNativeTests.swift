@@ -22,19 +22,27 @@ struct AppearanceSettingsNativeTests {
         window.orderBack(nil)
         defer { window.close() }
 
+        // This in-process host publishes selectable preview cells, not the static SwiftUI value label. Assert
+        // actual rendered growth/reset here; iOS UI covers value labels. Physical Mac VoiceOver remains unqualified.
         await render(host)
-        #expect(visibleText(host).joined(separator: " ").contains("14 points, default"))
+        #expect(preferences.state.size == 14)
+        let initial = try renderedPreviewFrame(host)
         try export(host, named: "appearance-mac-light-default")
 
         preferences.apply(.larger)
         await render(host)
-        #expect(visibleText(host).joined(separator: " ").contains("16 points"))
+        #expect(preferences.state.size == 16)
+        let larger = try renderedPreviewFrame(host)
+        #expect(larger.height > initial.height)
         try export(host, named: "appearance-mac-light-larger")
 
         preferences.apply(.reset)
         host.rootView = scene(preferences, scheme: .dark)
         await render(host)
-        #expect(visibleText(host).joined(separator: " ").contains("14 points, default"))
+        #expect(preferences.state.size == 14)
+        let reset = try renderedPreviewFrame(host)
+        #expect(abs(reset.height - initial.height) < 0.5)
+        print("Appearance preview heights: default=\(initial.height), larger=\(larger.height), reset=\(reset.height)")
         try export(host, named: "appearance-mac-dark-default")
     }
 
@@ -64,21 +72,24 @@ struct AppearanceSettingsNativeTests {
         try png.write(to: output.appendingPathComponent(name).appendingPathExtension("png"), options: .atomic)
     }
 
-    private func visibleText(_ value: Any) -> [String] {
+    private func renderedPreviewFrame(_ value: Any) throws -> NSRect {
         var traversal = AppearanceAccessibilityTraversal()
-        let text = traversal.read(value)
+        _ = traversal.read(value)
         if !traversal.diagnostics.isEmpty { print(traversal.diagnostics.joined(separator: "\n")) }
-        return text
+        let frame = try #require(traversal.previewFrame, "The actual authored preview sentence must be accessible.")
+        try #require(frame.width > 0 && frame.height > 0, "The rendered preview must have a nonempty frame.")
+        return frame
     }
 }
 
-/// NSHostingView exposes virtual SwiftUI elements through navigation-order children as well as backing NSViews.
-/// Some conform to NSObjectProtocol without subclassing NSObject. Walk both representations without duplicates.
+/// Walk navigation-order and backing children without requiring NSObject subclassing or counting duplicates.
+/// The observed in-process host exposes the selectable preview's native Cell, whose typed AX frame is measurable.
 @MainActor
 private struct AppearanceAccessibilityTraversal {
     private var seen: Set<ObjectIdentifier> = []
     private let diagnostic = ProcessInfo.processInfo.environment["HAIL_APPEARANCE_AX_DIAGNOSTIC"] == "1"
     private(set) var diagnostics: [String] = []
+    private(set) var previewFrame: NSRect?
 
     mutating func read(_ value: Any) -> [String] {
         guard let object = value as? any NSObjectProtocol else { return [] }
@@ -100,6 +111,9 @@ private struct AppearanceAccessibilityTraversal {
             contents = (attribute("accessibilityContents", on: object) as? [Any]) ?? []
         }
         let text = own.compactMap(Self.text)
+        if text.contains("Let's make this easier to read."), let full {
+            previewFrame = full.accessibilityFrame()
+        }
         if diagnostic, diagnostics.count < 64 {
             let summary = text.joined(separator: " | ").prefix(160)
             diagnostics.append("AX type=\(type(of: value)) full=\(full != nil) nav=\(navigation.count) "
