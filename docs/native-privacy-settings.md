@@ -4,6 +4,8 @@ This slice adds **Settings > Privacy** inside the existing default-off `station.
 It uses four production files: `PrivacySettingsView.swift`, `RootView+Settings.swift`, `RootView+Navigation.swift`
 and `RootView.swift`. The fourth file keeps shared device preferences and request-error state above navigation.
 There is no new feature flag or HailCore change. Old station controls remain in place.
+The shell's Settings list is a private computed view, preserving all rows/actions while keeping the section
+dispatch function bounded. Its title remains the existing Settings section title; no navigation owner moves.
 
 The native Form receives values and explicit intents from the current root. The selected Mac and connection are
 identified separately from this device's global Overheard preferences. Privacy reads the existing
@@ -11,6 +13,8 @@ identified separately from this device's global Overheard preferences. Privacy r
 timeouts, unknown/offline/unsupported states and **Privacy on · listening unavailable** remain distinct. A local
 one-second timeline re-evaluates expiry without making requests. When ambient audio is not streaming to this Mac,
 the page does not reuse wording that would claim recording or active listening merely from a privacy flag.
+The rendered reason collection omits a secondary sentence identical to the primary status detail. Pending still
+keeps its original unavailable reason and disables requests; the waiting sentence is published only once.
 
 An explicit privacy intent is rechecked against the displayed host, connection generation, existing capability
 and existing switch availability immediately before `setPrivacy`. It never optimistically confirms privacy.
@@ -43,6 +47,9 @@ Appearance remains separate. Native safe areas, inline iOS navigation, wrapping 
   request rejection; confirmation/pending/expiry/unavailable states; and a declined transport request retained as
   an error. No audio backend, permission request or real network socket is used. Native mounting checks effects;
   it does not claim that in-process static Form labels publish accessibility values or prove font scaling.
+  The full-frame baseline waits for both the initial Off scope and handshake list-targets command. Strict frame
+  equality and zero-write/scope assertions remain intact. Pending projection checks one rendered reason row while
+  retaining the raw disabling reason; distinct non-pending availability reasons remain visible.
 - `PrivacySettingsErrorTests` covers independent error retention/recovery and a held-send fixture. It checks that
   a retry retains the previous Privacy error until sending succeeds, that Overheard recovery cannot hide a Privacy
   error, and that a duplicate pending tap cannot invalidate the first send's eventual error or enqueue a second send.
