@@ -65,5 +65,4 @@ final class AudioSettingsOverviewUITests: XCTestCase {
         waitUntilHittable(app.navigationBars["Audio"].buttons["Settings"])
         capture(app, named: "audio-overview-largest-type-landscape")
     }
-
 }
