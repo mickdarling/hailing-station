@@ -91,6 +91,7 @@ private struct AppearanceEntryPreview: View {
                 tools
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("appearance.example-tools")
         .environment(\.dynamicTypeSize,
                      ProcessInfo.processInfo.arguments.contains("-appearance-dense-example") ? .xSmall : typeSize)
