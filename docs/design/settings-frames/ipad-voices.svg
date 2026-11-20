@@ -1,0 +1,158 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1194" height="1024" viewBox="0 0 1194 1024" role="img" aria-labelledby="title desc"><title id="title">ipad — Voices and replies — full-pane settings</title><desc id="desc">Original synthetic Revision B design study. Directly editable complete rows fill the pane. Reset, favorite and info sit by each control; technical details are in the optional inspector, closed. Page capacity is height-based. No live data or rendered/native verification.</desc><g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"><rect x="0" y="0" width="1194" height="1024" rx="12" fill="#eff1ee" stroke="#dce2da"/>
+<rect x="0" y="0" width="232" height="1024" rx="0" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="18" y="30" font-size="14" fill="#24312e" font-weight="400">Hailing Station</text>
+<text x="18" y="70" font-size="19" fill="#24312e" font-weight="650">Hailing Station</text>
+<text x="18" y="105" font-size="12" fill="#24312e" font-weight="400">Station    Sessions    Devices</text>
+<text x="18" y="146" font-size="11" fill="#606e67" font-weight="650">SETTINGS</text>
+<text x="20" y="182" font-size="14" fill="#196e5d" font-weight="600">☆  Favorites</text>
+<text x="20" y="224" font-size="13" fill="#606e67" font-weight="400">Listening and attention</text>
+<text x="20" y="269" font-size="13" fill="#606e67" font-weight="400">Privacy</text>
+<rect x="10" y="290" width="212" height="38" rx="8" fill="#e7f1e9" stroke="#dce2da"/>
+<text x="20" y="314" font-size="13" fill="#196e5d" font-weight="650">Voices and replies</text>
+<text x="20" y="359" font-size="13" fill="#606e67" font-weight="400">Notifications and updates</text>
+<text x="20" y="404" font-size="13" fill="#606e67" font-weight="400">Targets</text>
+<text x="20" y="449" font-size="13" fill="#606e67" font-weight="400">Audio</text>
+<text x="20" y="494" font-size="13" fill="#606e67" font-weight="400">Appearance</text>
+<text x="20" y="539" font-size="13" fill="#606e67" font-weight="400">Advanced and diagnostics</text>
+<text x="18" y="962" font-size="12" fill="#24312e" font-weight="400">Example host · synthetic</text>
+<text x="18" y="986" font-size="12" fill="#24312e" font-weight="400">Optional inspector: closed</text>
+<text x="18" y="1008" font-size="11" fill="#24312e" font-weight="400">No live configuration</text>
+<rect x="232" y="0" width="962" height="46" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="250" y="29" font-size="14" fill="#24312e" font-weight="650">Example target</text>
+<text x="955" y="29" font-size="12" fill="#606e67" font-weight="400">○ Mic off · demo     Aa     ⓘ</text>
+<text x="252" y="86" font-size="25" fill="#24312e" font-weight="650">Voices and replies</text>
+<rect x="849" y="59" width="185" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="858" y="80" font-size="12" fill="#196e5d" font-weight="600">All applicable scopes ⌄</text>
+<rect x="1047" y="59" width="127" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1056" y="80" font-size="12" fill="#196e5d" font-weight="600">Reset group…</text>
+<rect x="252" y="116" width="922" height="34" rx="7" fill="#f7f8f5" stroke="#dce2da"/>
+<text x="262" y="138" font-size="13" fill="#606e67" font-weight="400">Find a setting or exact key</text>
+<text x="252" y="172" font-size="12" fill="#606e67" font-weight="400">70 settings · owner · synthetic values</text>
+<rect x="252" y="183" width="922" height="78" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="202" font-size="14" fill="#24312e" font-weight="600">Allow single-terminal reply fallback</text>
+<text x="262" y="220" font-size="12" fill="#606e67" font-weight="400">Allows the single-terminal uncorrelated-reply fallback;</text>
+<text x="262" y="236" font-size="12" fill="#606e67" font-weight="400">owner</text>
+<text x="262" y="252" font-size="11" fill="#86531a" font-weight="400">Restart host · owner · high risk</text>
+<rect x="694" y="205" width="335" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="702" y="226" font-size="13" fill="#24312e" font-weight="400">Off</text>
+<rect x="1034" y="205" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="231" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="205" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="231" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="205" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="231" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="261" width="922" height="62" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="280" font-size="14" fill="#24312e" font-weight="600">Acknowledgement clips folder</text>
+<text x="262" y="298" font-size="12" fill="#606e67" font-weight="400">Prerecorded acknowledgement library; owner</text>
+<text x="262" y="314" font-size="11" fill="#606e67" font-weight="400">Restart host · owner · medium risk</text>
+<rect x="694" y="275" width="335" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="702" y="296" font-size="13" fill="#24312e" font-weight="400">Not configured</text>
+<rect x="1034" y="275" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="301" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="275" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="301" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="275" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="301" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="323" width="922" height="78" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="342" font-size="14" fill="#24312e" font-weight="600">Report reply timing to listening engine</text>
+<text x="262" y="360" font-size="12" fill="#606e67" font-weight="400">Sends playback start/end to RightyO over control FD so</text>
+<text x="262" y="376" font-size="12" fill="#606e67" font-weight="400">follow-up timing can anchor to reply end; owner</text>
+<text x="262" y="392" font-size="11" fill="#606e67" font-weight="400">Restart host · owner · medium risk</text>
+<rect x="694" y="345" width="335" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="702" y="366" font-size="13" fill="#24312e" font-weight="400">Off</text>
+<rect x="1034" y="345" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="371" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="345" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="371" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="345" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="371" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="401" width="922" height="80" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="420" font-size="14" fill="#24312e" font-weight="600">Reply bridge target names</text>
+<text x="262" y="438" font-size="12" fill="#606e67" font-weight="400">Max 8192 UTF-8 bytes, ≤16 unique safe nonempty names</text>
+<text x="262" y="454" font-size="11" fill="#606e67" font-weight="400">Next process · admin · medium risk</text>
+<text x="262" y="469" font-size="11" fill="#86531a" font-weight="400">Requires admin · unavailable</text>
+<rect x="694" y="424" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="445" font-size="13" fill="#606e67" font-weight="400">Edit structured value…</text>
+<rect x="1034" y="424" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="450" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="424" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="450" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="424" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="450" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="481" width="922" height="62" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="500" font-size="14" fill="#24312e" font-weight="600">Sentences per spoken segment</text>
+<text x="262" y="518" font-size="12" fill="#606e67" font-weight="400">1...20, ASCII digits; invalid warns/falls back</text>
+<text x="262" y="534" font-size="11" fill="#606e67" font-weight="400">Next process · owner · medium risk</text>
+<rect x="694" y="495" width="335" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="702" y="516" font-size="13" fill="#24312e" font-weight="400">2</text>
+<rect x="1034" y="495" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="521" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="495" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="521" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="495" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="521" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="543" width="922" height="62" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="562" font-size="14" fill="#24312e" font-weight="600">Words per spoken segment</text>
+<text x="262" y="580" font-size="12" fill="#606e67" font-weight="400">1...300, ASCII digits; invalid warns/falls back</text>
+<text x="262" y="596" font-size="11" fill="#606e67" font-weight="400">Next process · owner · medium risk</text>
+<rect x="694" y="557" width="335" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="702" y="578" font-size="13" fill="#24312e" font-weight="400">30</text>
+<rect x="1034" y="557" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="583" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="557" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="583" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="557" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="583" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="605" width="922" height="80" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="624" font-size="14" fill="#24312e" font-weight="600">Reply pacing override</text>
+<text x="262" y="642" font-size="12" fill="#606e67" font-weight="400">Exactly off disables detached reply audio pacing.</text>
+<text x="262" y="658" font-size="11" fill="#606e67" font-weight="400">Next process · dev · medium risk</text>
+<text x="262" y="673" font-size="11" fill="#86531a" font-weight="400">Requires dev · unavailable</text>
+<rect x="694" y="628" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="649" font-size="13" fill="#606e67" font-weight="400">Not configured</text>
+<rect x="1034" y="628" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="654" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="628" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="654" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="628" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="654" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="685" width="922" height="80" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="704" font-size="14" fill="#24312e" font-weight="600">Foreground reply job override</text>
+<text x="262" y="722" font-size="12" fill="#606e67" font-weight="400">Exactly 1 keeps a reply in the foreground.</text>
+<text x="262" y="738" font-size="11" fill="#606e67" font-weight="400">Next process · dev · medium risk</text>
+<text x="262" y="753" font-size="11" fill="#86531a" font-weight="400">Requires dev · unavailable</text>
+<rect x="694" y="708" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="729" font-size="13" fill="#606e67" font-weight="400">Not configured</text>
+<rect x="1034" y="708" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="734" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="708" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="734" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="708" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="734" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="765" width="922" height="96" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="262" y="784" font-size="14" fill="#24312e" font-weight="600">Reply background ownership</text>
+<text x="262" y="802" font-size="12" fill="#606e67" font-weight="400">Set by detachment parent/child machinery; not a user</text>
+<text x="262" y="818" font-size="12" fill="#606e67" font-weight="400">preference</text>
+<text x="262" y="834" font-size="11" fill="#606e67" font-weight="400">Next process · dev · medium risk</text>
+<text x="262" y="849" font-size="11" fill="#86531a" font-weight="400">App-managed · see details</text>
+<rect x="694" y="796" width="335" height="34" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="702" y="817" font-size="13" fill="#606e67" font-weight="400">Not configured</text>
+<rect x="1034" y="796" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1043" y="822" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="1087" y="796" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1096" y="822" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="1124" y="796" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1133" y="822" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="252" y="882" width="87" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="261" y="903" font-size="12" fill="#196e5d" font-weight="600">‹ Previous</text>
+<text x="573" y="904" font-size="12" fill="#606e67" font-weight="400">1–9 of 70 · Page 1/9</text>
+<rect x="1103" y="882" width="71" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="1112" y="903" font-size="12" fill="#196e5d" font-weight="600">Next ›</text>
+<rect x="232" y="928" width="962" height="44" rx="0" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="244" y="955" font-size="12" fill="#606e67" font-weight="400">No draft changes</text>
+<rect x="1047" y="933" width="135" height="34" rx="7" fill="#196e5d" stroke="#dce2da"/>
+<text x="1056" y="954" font-size="12" fill="#fff" font-weight="600">Review changes</text>
+<rect x="232" y="972" width="962" height="52" rx="0" fill="#fff" stroke="#dce2da"/>
+<rect x="244" y="977" width="862" height="40" rx="7" fill="#196e5d" stroke="#dce2da"/>
+<text x="253" y="1001" font-size="12" fill="#fff" font-weight="600">Tap to talk · simulation</text>
+<text x="1129" y="1001" font-size="16" fill="#196e5d" font-weight="400">♬   •••</text></g></svg>

@@ -5,7 +5,7 @@ import Testing
 
 @Suite(.serialized, .timeLimit(.minutes(1))) struct ReplySegmentsBackstopTests {
     @Test(arguments: [false, true])
-    func deliveredOwnerInputStopsOnlyItsSegmentedReplies(ambient: Bool) async throws {
+    func deliveredOwnerInputPreservesEveryReplyWithoutABackstop(ambient: Bool) async throws {
         try await ReplySegmentsRig.withDevices { rig in
             let segmented = try await rig.startReply(on: rig.first)
             let other = try await rig.startReply(on: rig.second)
@@ -27,16 +27,13 @@ import Testing
             }
             try await recipientSocketBarrier(on: rig.first.socket)
             try await recipientSocketBarrier(on: rig.second.socket)
-            #expect(await rig.first.session.repliesInFlight == [plain.id])
-            #expect(await rig.first.session.segmentedReplies.isEmpty)
+            #expect(await rig.first.session.repliesInFlight == [segmented.id, plain.id, sibling.id])
             #expect(await rig.second.session.repliesInFlight == [other.id])
-            #expect(await rig.listener.segmentTestStopped(segmented.id))
-            #expect(await rig.listener.segmentTestStopped(sibling.id))
-            #expect(rig.events.control.last?.event == "reply_backstop")
-            #expect(rig.events.control.last?.detail == "outcome=stopped count=2")
-            await #expect(throws: LocalReplyRefusal.replyStopped) {
-                try await rig.listener.publish(recipientAudio(segmented, sequence: 1))
-            }
+            #expect(!(await rig.listener.segmentTestStopped(segmented.id)))
+            #expect(!(await rig.listener.segmentTestStopped(sibling.id)))
+            #expect(rig.events.control.isEmpty)
+            #expect(try await rig.listener.publish(recipientAudio(segmented, sequence: 1)) == 1)
+            _ = try await recipientSocketReceive(on: rig.first.socket)
             let nextPlain = recipientAudio(plain, sequence: 1)
             guard case .delivered = await rig.first.peer.deliverRequestlessReply(nextPlain) else {
                 Issue.record("unsegmented reply was stopped")
@@ -62,21 +59,16 @@ import Testing
             }
             try await recipientSocketBarrier(on: rig.first.socket)
             #expect(await rig.first.session.repliesInFlight == [reply.id])
-            #expect(await rig.first.session.segmentedReplies.isEmpty)
             #expect(rig.events.control.isEmpty)
         }
     }
 
-    @Test(arguments: [false, true])
-    func legacyOwnerInputNeverCutsAReply(seededSegment: Bool) async throws {
+    @Test func legacyOwnerInputNeverCutsAReply() async throws {
         try await ReplySegmentsRig.withDevices(firstCapable: false) { rig in
             let reply = try await rig.startReply(on: rig.first)
-            // A synthetic marker proves the capability guard independently of legacy frame stripping.
-            if seededSegment { await rig.first.session.seedLegacySegmentForBackstopTest(reply.id) }
             _ = try await rig.recipient.submit(on: rig.first.session)
             try await recipientSocketBarrier(on: rig.first.socket)
             #expect(await rig.first.session.repliesInFlight == [reply.id])
-            #expect(await rig.first.session.segmentedReplies == (seededSegment ? [reply.id] : []))
             #expect(!(await rig.listener.segmentTestStopped(reply.id)))
             #expect(rig.events.control.isEmpty)
             try #require(await rig.listener.publish(recipientAudio(reply, sequence: 1)) == 1)
@@ -84,7 +76,7 @@ import Testing
         }
     }
 
-    @Test func refusedOrHeldInputDoesNotCutUntilACompleteHandoff() async throws {
+    @Test func refusedHeldAndCompleteHandoffsAllPreservePlayingReplies() async throws {
         try await ReplySegmentsRig.withDevices { rig in
             let reply = try await rig.startReply(on: rig.first)
             let before = rig.events.control.count
@@ -103,15 +95,9 @@ import Testing
             #expect(rig.events.control.count == before)
             await rig.recipient.adapter.releaseHandoff()
             #expect(await handoff.value.frames.isEmpty)
-            #expect(await rig.first.session.repliesInFlight.isEmpty)
-            #expect(await rig.listener.segmentTestStopped(reply.id))
+            #expect(await rig.first.session.repliesInFlight == [reply.id])
+            #expect(!(await rig.listener.segmentTestStopped(reply.id)))
             try await recipientSocketBarrier(on: rig.first.socket)
         }
-    }
-}
-
-private extension HostSession {
-    func seedLegacySegmentForBackstopTest(_ reply: UUID) {
-        segmentedReplies.insert(reply)
     }
 }

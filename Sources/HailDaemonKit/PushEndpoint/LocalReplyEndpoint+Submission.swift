@@ -12,6 +12,7 @@ public protocol HostReplyPublishing: Sendable {
     /// requestPending may be thrown only for a unique valid uncommitted request, before any enqueue.
     /// Later failures must not use that retryable code, even when delivery completion is unknown.
     func publish(_ frame: Frame) async throws -> Int
+    func replyAudio(_ request: LocalReplyAudioRequest) async throws -> LocalReplyAudioReport
     /// Runs the named connection's own ingress path for `request.text` (#188); the result is the committed
     /// request id, or nil when the target's adapter cannot own a reply. Refusals throw.
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID?
@@ -19,10 +20,82 @@ public protocol HostReplyPublishing: Sendable {
     func ambient(_ request: LocalAmbientRequest) async -> LocalAmbientReport
     /// `haild notify` (#609): applies the session update policy; the update's text is never logged.
     func sessionUpdate(_ request: LocalSessionUpdateRequest) async -> LocalSessionUpdateReport
+    func voiceGuardsStatus() async -> LocalVoiceGuardsReport?
     func taskProgress(_ request: LocalTaskProgressRequest) async -> LocalTaskProgressReport
 }
 
+/// Effective daemon policy, not a file snapshot. Unknown values fail decoding rather than defaulting to on.
+public struct LocalVoiceGuardsReport: Codable, Equatable, Sendable {
+    public enum Value: String, Codable, Sendable, CaseIterable { case on, off, unusable }
+    public let value: Value
+    public let enforced: Bool
+
+    public init(value: Value, enforced: Bool) {
+        self.value = value
+        self.enforced = enforced
+    }
+}
+
+/// Owner-only queue ordering; tickets have no authority to bypass ordinary reply admission.
+public struct LocalReplyAudioTicket: Codable, Equatable, Sendable {
+    public let epoch: UUID
+    public let position: UInt64
+    public let releaseKey: UUID?
+    public init(epoch: UUID, position: UInt64, releaseKey: UUID? = nil) {
+        self.epoch = epoch; self.position = position; self.releaseKey = releaseKey
+    }
+}
+
+public struct LocalReplyAudioRequest: Codable, Sendable {
+    public let kind: String
+    public let action: String
+    public let ticket: LocalReplyAudioTicket?
+    public let frame: Frame?
+    public init(action: String, ticket: LocalReplyAudioTicket? = nil, frame: Frame? = nil) {
+        kind = "reply-audio"
+        self.action = action; self.ticket = ticket; self.frame = frame
+    }
+}
+
+/// Content-free local job telemetry only; never forwarded to a device or used as reply authority.
+public struct LocalReplyJobEnd: Codable, Sendable {
+    public enum Reason: String, Codable, Sendable, CaseIterable {
+        case done, refused, bound, signal
+        case publicationFailed = "publication_failed"
+    }
+    public static let kind = "reply-job-ended"
+    public let kind: String
+    public let reason: Reason
+    public let frames: Int
+    public let audioMS: Int
+
+    public init(reason: Reason, frames: Int, audioMS: Int) {
+        kind = Self.kind
+        self.reason = reason; self.frames = frames; self.audioMS = audioMS
+    }
+
+    public var line: String? {
+        guard kind == Self.kind, frames >= 0, audioMS >= 0 else { return nil }
+        return "reply_job_ended reason=\(reason.rawValue) frames=\(frames) audio_ms=\(audioMS)"
+    }
+}
+
+public struct LocalReplyAudioReport: Codable, Equatable, Sendable {
+    public var ticket: LocalReplyAudioTicket?
+    public var skipped: Bool
+    public var reason: String?
+    public init(ticket: LocalReplyAudioTicket? = nil, skipped: Bool = false, reason: String? = nil) {
+        self.ticket = ticket; self.skipped = skipped; self.reason = reason
+    }
+}
+
 extension HostReplyPublishing {
+    public func replyAudio(_ request: LocalReplyAudioRequest) async throws -> LocalReplyAudioReport {
+        throw LocalReplyRefusal.invalidReplyPayload
+    }
+
+    public func voiceGuardsStatus() async -> LocalVoiceGuardsReport? { nil }
+
     /// A destination that cannot dispatch fails closed rather than publishing input anywhere.
     public func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
         throw LocalDispatchRefusal.unsupported
@@ -43,7 +116,9 @@ extension HostReplyPublishing {
     }
 }
 
-extension WebSocketListener: HostReplyPublishing {}
+extension WebSocketListener: HostReplyPublishing {
+    public func voiceGuardsStatus() async -> LocalVoiceGuardsReport? { await host.voiceGuardsStatus }
+}
 
 struct LocalReplyConnection: Sendable {
     var id: UUID
@@ -66,6 +141,10 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
     /// Session update answers (#609) only; every other response omits the key.
     public var update: LocalSessionUpdateReport?
     public var progress: LocalTaskProgressReport?
+    public var voiceGuards: LocalVoiceGuardsReport?
+    public var replyAudio: LocalReplyAudioReport?
+    /// Presence matters for version negotiation: an explicit null is not an older daemon response.
+    public private(set) var isReplyAudio = false
 
     public init(delivered: Int, error: String? = nil, code: LocalReplyRefusal? = nil) {
         self.delivered = delivered
@@ -99,7 +178,16 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         return response
     }
 
-    private enum CodingKeys: String, CodingKey { case delivered, error, code, request, ambient, update, progress }
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.delivered == rhs.delivered && lhs.error == rhs.error && lhs.code == rhs.code
+            && lhs.request == rhs.request && lhs.isDispatch == rhs.isDispatch && lhs.ambient == rhs.ambient
+            && lhs.update == rhs.update && lhs.progress == rhs.progress && lhs.voiceGuards == rhs.voiceGuards
+            && lhs.replyAudio == rhs.replyAudio
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case delivered, error, code, request, ambient, update, progress, voiceGuards, replyAudio
+    }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -111,6 +199,9 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         ambient = try container.decodeIfPresent(LocalAmbientReport.self, forKey: .ambient)
         update = try container.decodeIfPresent(LocalSessionUpdateReport.self, forKey: .update)
         progress = try container.decodeIfPresent(LocalTaskProgressReport.self, forKey: .progress)
+        voiceGuards = try container.decodeIfPresent(LocalVoiceGuardsReport.self, forKey: .voiceGuards)
+        isReplyAudio = container.contains(.replyAudio)
+        replyAudio = try container.decodeIfPresent(LocalReplyAudioReport.self, forKey: .replyAudio)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -122,6 +213,8 @@ public struct LocalReplyResponse: Codable, Equatable, Sendable {
         try container.encodeIfPresent(ambient, forKey: .ambient)
         try container.encodeIfPresent(update, forKey: .update)
         try container.encodeIfPresent(progress, forKey: .progress)
+        try container.encodeIfPresent(voiceGuards, forKey: .voiceGuards)
+        try container.encodeIfPresent(replyAudio, forKey: .replyAudio)
     }
 }
 
@@ -230,7 +323,7 @@ extension LocalReplyEndpoint {
     static let maxTerminalFramesPerMinute = 30
 
     /// Only the frame's type and `final` flag are read here; the full frame is decoded and checked as before.
-    private struct TerminalProbe: Decodable {
+    fileprivate struct TerminalProbe: Decodable {
         let type: String?
         let payload: TerminalProbePayload?
         static func isTerminalAudio(_ data: Data) -> Bool {
@@ -240,27 +333,132 @@ extension LocalReplyEndpoint {
     }
 
     func submit(_ data: Data, from client: LocalReplyConnection) async {
-        // Only the exact `dispatch`, `ambient` and `update` kinds leave the reply path; anything else is a reply.
+        // Only recognized local control kinds leave the reply path; anything else is a reply.
         let kind = (try? JSONDecoder().decode(LocalRequestKind.self, from: data))?.kind
         let isDispatch = kind == LocalDispatchRequest.kind
         // A reply frame keeps the pre-#200 line cap and answer; only a dispatch may use the larger line.
         guard isDispatch || data.count <= PayloadLimits.defaultMaxFrameBytes else {
             return await respond(.init(delivered: 0, error: "frame too large"), to: client)
         }
+        // Updates have independent admission to protect against a stuck local loop.
+        if kind == LocalSessionUpdateRequest.kind {
+            guard await admitSessionUpdate(data, from: client) else { return }
+            return await submitSessionUpdate(data, from: client)
+        }
+        // Cleanup has a small independent bucket, so publication cannot exhaust its budget.
+        let release = kind == "reply-audio" && (try? Self.decodeReplyAudio(data))?.action == "release"
         let now = clock.now
         let terminal = kind == nil && TerminalProbe.isTerminalAudio(data)
-        let (bucket, limit) = terminal ? ("local-reply-terminal", Self.maxTerminalFramesPerMinute)
+            || kind == "reply-audio" && QueuedTerminalProbe.isTerminalAudio(data)
+        let ended = kind == LocalReplyJobEnd.kind
+        let (bucket, limit) = ended ? ("local-reply-job-end", Self.maxFramesPerMinute)
+            : release ? ("local-reply-release", 20)
+            : terminal ? ("local-reply-terminal", Self.maxTerminalFramesPerMinute)
             : ("local-reply", Self.maxFramesPerMinute)
         guard limiter.retryAfter(for: bucket, now: now, limitPerMinute: limit) == nil else {
             await respond(.init(delivered: 0, error: "rate limited"), to: client)
             return
         }
         limiter.record(bucket, at: now)
+        if ended { return await submitJobEnd(data, from: client) }
+        if kind == "voice-guards" { return await submitVoiceGuards(data, from: client) }
         if isDispatch { return await submitDispatch(data, from: client) }
         if kind == LocalAmbientRequest.kind { return await submitAmbient(data, from: client) }
-        if kind == LocalSessionUpdateRequest.kind { return await submitSessionUpdate(data, from: client) }
         if kind == LocalTaskProgressRequest.kind { return await submitTaskProgress(data, from: client) }
+        if kind == "reply-audio" { return await submitReplyAudio(data, from: client) }
         await submitReply(data, from: client)
+    }
+
+    /// The socket already enforces owner-only access and a separate bounded telemetry budget.
+    private func submitJobEnd(_ data: Data, from client: LocalReplyConnection) async {
+        guard let report = try? JSONDecoder().decode(LocalReplyJobEnd.self, from: data),
+              let line = report.line else {
+            return await respond(.init(delivered: 0, error: "invalid job end"), to: client)
+        }
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+        await respond(.init(delivered: 0), to: client)
+    }
+
+    private static func decodeReplyAudio(_ data: Data) throws -> LocalReplyAudioRequest {
+        guard let fields = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            throw LocalReplyRefusal.decodeFailure
+        }
+        let action = fields["action"] as? String
+        let keys: Set<String> = action == "release" ? ["kind", "action", "ticket"] : action == "enqueue"
+            ? ["kind", "action"] : ["kind", "action", "ticket", "frame"]
+        guard Set(fields.keys) == keys || fields["action"] as? String == "enqueue"
+                && Set(fields.keys) == keys.union(["frame"]) else { throw LocalReplyRefusal.decodeFailure }
+        if let ticket = fields["ticket"] as? [String: Any],
+           !Set(ticket.keys).isSubset(of: ["epoch", "position", "releaseKey"]) {
+            throw LocalReplyRefusal.decodeFailure
+        }
+        // Check the envelope before Frame's provenance decoder can reject an absent target generically.
+        if fields["action"] as? String == "publish", let frame = fields["frame"] as? [String: Any],
+           frame["target"] == nil || frame["target"] is NSNull { throw LocalReplyRefusal.replyTargetMissing }
+        do { return try JSONDecoder().decode(LocalReplyAudioRequest.self, from: data) } catch {
+            throw LocalReplyRefusal.decodeFailure
+        }
+    }
+
+    private func submitReplyAudio(_ data: Data, from client: LocalReplyConnection) async {
+        var refusedTarget: String?
+        do {
+            let request = try Self.decodeReplyAudio(data)
+            try Task.checkCancellation()
+            guard !stopped, connections[client.id] != nil else { throw CancellationError() }
+            // Publication keeps the same audit-before-delivery boundary as an ordinary reply frame.
+            if request.action == "publish", let frame = request.frame {
+                guard let target = frame.target else { throw LocalReplyRefusal.replyTargetMissing }
+                refusedTarget = target
+                do {
+                    _ = try await audit.record(.pushed(tool: "local-reply", target: target,
+                                                      bytes: data.count))
+                } catch { throw LocalReplyRefusal.auditFailure }
+            }
+            try Task.checkCancellation()
+            guard !stopped, connections[client.id] != nil else { throw CancellationError() }
+            let report = try await destination.replyAudio(request)
+            if report.reason == "capacity" {
+                _ = try? await audit.record(.deliveryRefused(target: request.frame?.target ?? "unknown",
+                    device: "local-reply", reason: "replyAudioCapacity"))
+            }
+            guard !Task.isCancelled, !stopped, connections[client.id] != nil else { throw CancellationError() }
+            var response = LocalReplyResponse(delivered: request.action == "publish" && !report.skipped ? 1 : 0)
+            response.replyAudio = report
+            await respond(response, to: client)
+        } catch is CancellationError {
+            retire(client.id)
+        } catch {
+            let reason = LocalReplyRefusal(error)
+            replyLogger.error(
+                "Local reply refused (\(reason.rawValue)): \(String(reflecting: error), privacy: .private)"
+            )
+            if reason != .auditFailure, reason != .requestPending, reason != .replyStopped {
+                _ = try? await audit.record(.deliveryRefused(
+                    target: refusedTarget ?? "unknown", device: "local-reply", reason: reason.rawValue
+                ))
+            }
+            // Queue support is explicit on refusals too, so malformed requests never select legacy audio.
+            var response = LocalReplyResponse(delivered: 0, error: reason.message, code: reason)
+            response.replyAudio = LocalReplyAudioReport()
+            await respond(response, to: client)
+        }
+    }
+
+    /// Uses the same secured socket, frame bounds and admission budget as the other local status queries.
+    /// Unlike mutating requests, this read performs no audit or policy I/O and holds no admission lock.
+    private func submitVoiceGuards(_ data: Data, from client: LocalReplyConnection) async {
+        guard !Task.isCancelled, !stopped, connections[client.id] != nil else { return retire(client.id) }
+        guard let request = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+              request == ["kind": "voice-guards", "action": "status"] else {
+            return await respond(.init(delivered: 0, error: LocalReplyRefusal.decodeFailure.message,
+                                       code: .decodeFailure), to: client)
+        }
+        let report = await destination.voiceGuardsStatus()
+        guard !Task.isCancelled, !stopped, connections[client.id] != nil else { return retire(client.id) }
+        var response = LocalReplyResponse(delivered: 0)
+        response.voiceGuards = report
+        await respond(response, to: client)
     }
 
     private func submitReply(_ data: Data, from client: LocalReplyConnection) async {
@@ -340,5 +538,15 @@ private struct TerminalProbePayload: Decodable {
     private enum CodingKeys: String, CodingKey { case final }
     init(from decoder: any Decoder) throws {
         final = try decoder.container(keyedBy: CodingKeys.self).decodeIfPresent(Bool.self, forKey: .final) ?? false
+    }
+}
+
+/// Wrapped audio keeps the terminal frame's independent budget, including for a queued job.
+private struct QueuedTerminalProbe: Decodable {
+    let action: String
+    let frame: LocalReplyEndpoint.TerminalProbe?
+    static func isTerminalAudio(_ data: Data) -> Bool {
+        guard let probe = try? JSONDecoder().decode(Self.self, from: data) else { return false }
+        return probe.action == "publish" && probe.frame?.type == "audio" && probe.frame?.payload?.final == true
     }
 }

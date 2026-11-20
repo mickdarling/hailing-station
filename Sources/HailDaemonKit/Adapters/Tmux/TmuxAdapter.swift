@@ -193,10 +193,16 @@ extension TmuxAdapter {
         _ error: any Error, session: Session, control: TmuxDeliveryControl, typed: Bool
     ) throws -> Never {
         // Before the paste, failures leave the pane clean. Any possibly pasted text keeps the 4a sticky taint.
-        guard typed else { throw error }
-        tainted.insert(session.paneID)
-        if control.didEnter {
-            do { try control.authority?.requireCurrent() } catch { throw PolicyRetiredDelivery.possiblySubmitted }
+        if typed {
+            tainted.insert(session.paneID)
+            if control.didEnter {
+                do { try control.authority?.requireCurrent() } catch { throw PolicyRetiredDelivery.possiblySubmitted }
+            }
+        }
+        if let veto = error as? TmuxDialogVeto {
+            let effects: DialogBlock.Effects = control.didEnter ? .enterMayHaveExecuted
+                : typed ? .pasteMayHaveExecuted : .none
+            throw AdapterError.blockedByDialog(DialogBlock(cause: veto.cause, effects: effects))
         }
         throw error
     }

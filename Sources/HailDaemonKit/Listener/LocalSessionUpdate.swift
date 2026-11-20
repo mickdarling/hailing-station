@@ -75,11 +75,12 @@ public struct LocalSessionUpdateReport: Codable, Sendable, Equatable {
         /// answer. `not_enabled`: haild runs without `--session-updates`.
         case held, delivered, dropped, refused, status, notEnabled = "not_enabled"
     }
-
     public var outcome: Outcome
-    /// For `refused`: `disabled`, `rate_limited`, `full`, `expired`, `unknown_target`, `invalid` or `stopping`.
+    /// For `refused`: `disabled`, `rate_limited`, `runaway_guard`, `control_rate_limited`, `full`, `expired`,
+    /// `unknown_target`, `invalid` or `stopping`. Admission refusals carry no status: held, quiet and speech
+    /// fields are compatibility placeholders; only outcome, reason and retry time are meaningful.
     public var reason: String?
-    /// Whole seconds until the session may send again, for `rate_limited`.
+    /// Whole seconds until admission may resume, for `rate_limited`, `runaway_guard` or `control_rate_limited`.
     public var retryAfter: Int?
     /// A held `action` update with a device to tell: the caller may raise its own push notification too.
     public var push = false
@@ -88,7 +89,6 @@ public struct LocalSessionUpdateReport: Codable, Sendable, Equatable {
     /// Cards are available independently of spoken admission. This is capability status, never hearing proof.
     public var speechUnavailable: String? = "attention_signal_missing"
     public var speechStatus: String?
-
     public init(outcome: Outcome, reason: String? = nil) { (self.outcome, self.reason) = (outcome, reason) }
 }
 
@@ -114,7 +114,10 @@ extension WebSocketListener {
 
     private func sessionUpdate(carried request: LocalSessionUpdateRequest) async -> LocalSessionUpdateReport {
         let revision = SessionUpdatePrivacyScope.expectedRevision ?? replyHold.entryRevision
-        guard !sessionUpdatesPrivate else { return updateReport(.dropped, reason: "private") }
+        let taskReport = TaskProgressPublicationScope.authority != nil
+            || SessionUpdatePrivacyScope.expectedRevision != nil
+        var ordinarySilent = !taskReport && silentInfo(request.priority ?? .info)
+        guard ordinarySilent || !sessionUpdatesPrivate else { return updateReport(.dropped, reason: "private") }
         guard let target = request.target else { return updateReport(.refused, reason: "unknown_target") }
         let authority = await sessionUpdateAuthority(for: target)
         guard let listing = try? await host.registry.listing(),
@@ -128,7 +131,8 @@ extension WebSocketListener {
         ) else {
             return updateReport(.refused, reason: stopped ? "stopping" : "invalid")
         }
-        if revision != replyHold.entryRevision {
+        ordinarySilent = !taskReport && silentInfo(update.priority)
+        if !ordinarySilent, revision != replyHold.entryRevision {
             return updateReport(.dropped, reason: "private")
         }
         authority?.generation.observePolicy()
@@ -136,23 +140,26 @@ extension WebSocketListener {
               authority.binding == listing.first(where: { $0.info.id == target })?.binding else {
             return updateReport(.refused, reason: "retired_authority")
         }
-        guard !sessionUpdatesPrivate else { return updateReport(.dropped, reason: "private") }
+        guard ordinarySilent || !sessionUpdatesPrivate else { return updateReport(.dropped, reason: "private") }
         // Hold before delivery so a failed exact-peer hand-off cannot consume an update or spend its budget twice.
         var audience = updateAudience(for: target)
         (audience.lastActiveDevice, audience.listeningDevice) = (audience.target, nil)
         let decision = sessionUpdates.submit(update, audience: audience, now: now)
         guard case .held = decision else { return decided(decision) }
         sessionUpdateTaskAuthorities[update.id] = authority
-        // Routine information waits for a real interaction/playback pause. Action cards may be delivered now;
-        // neither path borrows a request reference or asks the uncorrelated reply router to choose a device.
-        // Explicit task enrollment requests cadence feedback. Send its card now; marked audio still waits for
-        // measured quiet at the device. Ordinary unrequested `info` remains held for an interaction.
-        let deliverCard = update.priority == .action || TaskProgressPublicationScope.authority?.taskFence != nil
-        let delivered = deliverCard
-            ? await drainSessionUpdates(.interaction, only: update.id).contains(update.id) : false
+        if taskReport { sessionUpdateTaskIDs.insert(update.id) }
+        let delivered = await deliverSubmittedCard(update)
         purgePrivateSessionUpdates()
         if sessionUpdates.held.contains(where: { $0.id == update.id }) { return decided(decision) }
         return updateReport(delivered ? .delivered : .dropped, reason: delivered ? nil : "private")
+    }
+
+    private func deliverSubmittedCard(_ update: SessionUpdate) async -> Bool {
+        let silent = silentInfo(update)
+        guard silent || update.priority == .action || TaskProgressPublicationScope.authority?.taskFence != nil
+            else { return false }
+        return await deliverSessionUpdates(.interaction, only: update.id,
+                                         reason: silent ? .immediate : nil).contains(update.id)
     }
 
     /// The listening device, else the device that last sent `target` input (#370), and that device's media mode.

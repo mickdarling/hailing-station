@@ -11,6 +11,9 @@ import Testing
 @Suite(.serialized) struct AmbientWiringOwnerReplyRoutingTests {
     /// Reports `owner` as the connection whose ambient stream feeds the active child.
     final class FakeWiring: AmbientListenerWiring {
+        func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {
+            Issue.record("unexpected device voice stop in unrelated wiring fixture")
+        }
         let owner = Mutex<UUID?>(nil)
         func attach(_ listener: WebSocketListener) {}
         func stop(connection: UUID) {}

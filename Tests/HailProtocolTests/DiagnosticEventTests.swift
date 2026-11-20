@@ -43,6 +43,36 @@ import Testing
         #expect(try FrameCoding.decode(FrameCoding.encode(frame)).payload == frame.payload)
     }
 
+    /// #1227: the same strict decoder used by haild accepts both new and old devices.
+    @Test(arguments: [false, true])
+    func playbackStreamFieldsDecodeWhenPresentOrAbsent(present: Bool) throws {
+        let details = present ? #","last_sequence":3,"expected_sequence":1,"gap":true,"received_frames":2"#
+            + #","scheduled_frames":1,"terminal":false,"last_frame_ms":21300"# : ""
+        let decoded = try FrameCoding.decode(frame(event(#""code":"stream_abandoned","ms":20000"# + details,
+                                                        name: "reply_playback_error")))
+        guard case .control(.diagnostic(let events)) = decoded.payload else {
+            Issue.record("expected diagnostics")
+            return
+        }
+        let fields = try #require(events.first).fields
+        #expect(fields[.code] == .token("stream_abandoned"))
+        #expect(fields[.lastSequence] == (present ? .integer(3) : nil))
+        #expect(Set(fields.keys).subtracting([.code, .ms])
+                == (present ? DiagnosticLimits.playbackStreamFields : []))
+        #expect(try FrameCoding.decode(FrameCoding.encode(decoded)) == decoded)
+    }
+
+    @Test func playbackStreamFieldsCannotCarryContent() {
+        for field in DiagnosticLimits.playbackStreamFields {
+            #expect(field.kind == .integer || field.kind == .boolean)
+            for text in ["synthetic private content", UUID().uuidString] {
+                #expect(throws: DiagnosticEventInvalid(field: field)) {
+                    try DiagnosticEvent(.replyPlaybackError, timestamp: 1, fields: [field: .token(text)])
+                }
+            }
+        }
+    }
+
     @Test func fieldsMayBeOmitted() throws {
         let decoded = try FrameCoding.decode(frame(#"{"ts":1,"name":"app_background"}"#))
         #expect(decoded.payload == .control(.diagnostic(events: [try DiagnosticEvent(.appBackground, timestamp: 1)])))

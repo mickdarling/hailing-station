@@ -4,7 +4,7 @@ Hailing Station is public while still early and security-sensitive. Issues, desi
 
 ## Code contributions
 
-External code contributions are not yet being accepted. The project is intended to remain available under AGPL-3.0-only while also supporting separately licensed official distributions. A contributor agreement that grants the necessary relicensing rights will be published before outside code is merged.
+External code contributions are not yet being accepted. The project is intended to remain available under AGPL-3.0-or-later while also supporting separately licensed official distributions. A contributor agreement that grants the necessary relicensing rights will be published before outside code is merged.
 
 Please do not submit code copied from another project or a pull request containing substantive implementation until that agreement is in place.
 
@@ -44,3 +44,62 @@ scripts/verify.sh sim
 ```
 
 Never commit credentials, Apple signing material, device identifiers, private network information, captured media, transcripts, generated Xcode projects, or local configuration.
+
+## Opt-in host-path guard
+
+Run `scripts/install-hooks.sh` to enable the pre-push hook for this clone. The installer is
+idempotent and refuses to replace a different `core.hooksPath`. It also refuses to bypass
+executable, non-`.sample` hooks in the clone's default hooks directory, listing their names;
+integrate those hooks manually or explicitly override that refusal with `--force`.
+The hook needs Python 3 and checks added lines and full messages in **every commit**
+being pushed, including intermediate commits later cleaned up. It rejects absolute
+macOS and Linux home paths, except for the exact documentation usernames `me` and `<you>`
+and the non-personal components listed below.
+Detection normalizes mixed plain and JSON-escaped separators and repeated slashes,
+and matches the home prefix without case sensitivity. Only a slash or line end
+ends a home-directory component; interior carriage returns remain part of it.
+Write documentation placeholders with a trailing slash, such as `/Users/me/` or
+`/Users/<you>/`, so closing quotes or punctuation cannot become part of the username.
+Standard system paths under `/Applications/`, `/usr/`, `/opt/homebrew/`, `/System/`,
+and `/Library/` are allowed when they contain no home-path match. The non-personal
+home components `/Users/Shared/`, `/home/linuxbrew/`, and `/home/runner/` are also
+allowed (exact components, case-insensitive). Any `..` component that climbs above the
+home component after normalization is rejected, including after a placeholder or
+non-personal component and intervening `.` or child components.
+Only GitHub API user endpoints are exempt: lower-case `users/<login>` directly after
+`https://api.github.com/`, `api.github.com/`, `gh api `, or `gh api /`. The exemption
+covers only that endpoint; all following text is checked. All other URLs, including
+`file://`, are checked.
+Binary or UTF-16 content is not scanned; deletions and
+unchanged lines are skipped. Untracked/ignored build products are not scanned, and build
+products must never be committed.
+
+New tests must use the `me` or `<you>` placeholders, or build synthetic home paths from
+parts. Existing synthetic names elsewhere are also flagged when a commit adds or changes
+a line containing them.
+
+For extra local rules, put one Python regex per line in
+`$(git rev-parse --git-common-dir)/info/host-path-patterns`. Blank lines and lines starting
+with `#` (after whitespace) are ignored. Keep this optional file untracked; never commit
+host-specific names. Regexes match added lines and full commit messages independently of
+the placeholder/non-personal allowlists and GitHub API exemption, against both the raw
+text and its normalized form.
+
+You can also run `scripts/check-host-paths.py <base>..<head>` directly. For a new remote
+branch, the hook uses the merge-base with the remote's locally known default branch,
+falling back to its `main` or `origin/main`; missing history fails the check without fetching.
+CI checks the PR's entire base-to-head commit range and runs the synthetic script tests.
+
+If a path is reported, clean the tree and **rewrite the branch** so none of its pushed
+commits contains it. For example, with a clean working tree and the intended parent in
+`base`, preserve a backup branch, then squash the cleaned tree into one commit:
+
+```sh
+git branch backup-before-host-path-rewrite
+clean_commit=$(git commit-tree 'HEAD^{tree}' -p "$base" -m "Describe the cleaned change")
+git reset --soft "$clean_commit"
+scripts/check-host-paths.py "$base..HEAD"
+```
+
+A squash merge does not remove intermediate commits from the PR's commit list. Fix the
+branch before pushing; deleting the path in a later commit is insufficient.

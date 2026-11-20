@@ -7,6 +7,16 @@ import Testing
 final class ReplySegmentsEvents: Sendable {
     private let events = Mutex<[WebSocketListenerEvent]>([])
     func record(_ event: WebSocketListenerEvent) { events.withLock { $0.append(event) } }
+    var queueTimeoutCount: Int {
+        events.withLock {
+            $0.filter {
+                $0.event == "reply_queue_authority" && $0.detail?.hasPrefix("reason=queue_timeout ") == true
+            }.count
+        }
+    }
+    var interactionCount: Int {
+        events.withLock { $0.filter { $0.event == "session_update_interaction" }.count }
+    }
     var control: [WebSocketListenerEvent] {
         events.withLock { $0.filter { ["reply_yield", "reply_backstop"].contains($0.event) } }
     }

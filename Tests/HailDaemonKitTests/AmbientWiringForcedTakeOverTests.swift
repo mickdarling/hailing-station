@@ -80,10 +80,11 @@ import Testing
 
     /// Router events driven directly, as the gate sends them: two retired children that ignore EOF and SIGTERM, then
     /// a third start. Their own stop would take 10 s; the forced one ends within about a second.
-    private func fillWithRetiredChildren(_ router: AmbientRightyoRouter) {
+    private func fillWithRetiredChildren(_ router: AmbientRightyoRouter, policy: TargetPolicyGeneration) {
         for _ in 0..<2 {
             let stream = UUID()
-            router.ambientAudio(.started(stream: stream, connection: UUID(), target: RecipientTestRig.target))
+            router.ambientAudio(.admittedStart(stream: stream, connection: UUID(), target: RecipientTestRig.target,
+                                     binding: "reply-binding", policy: policy))
             router.ambientAudio(.segment(stream: stream, sequence: 0, bytes: Data(count: 3_200)))
             router.ambientAudio(.ended(stream: stream, reason: .superseded))
         }
@@ -94,9 +95,10 @@ import Testing
         defer { fake.cleanUp() }
         let events = AmbientEventNames()
         let env = try await ambientRig(fake, timing: .init(eofGrace: 5, termGrace: 5), events: events)
-        fillWithRetiredChildren(env.router)
+        fillWithRetiredChildren(env.router, policy: env.admissionPolicy)
         let newest = UUID(), started = ContinuousClock.now
-        env.router.ambientAudio(.started(stream: newest, connection: UUID(), target: RecipientTestRig.target))
+        env.router.ambientAudio(.admittedStart(stream: newest, connection: UUID(), target: RecipientTestRig.target,
+                                     binding: "reply-binding", policy: env.admissionPolicy))
         env.router.ambientAudio(.segment(stream: newest, sequence: 0, bytes: Data(repeating: 7, count: 3_200)))
         #expect(await eventually { env.router.activeStream == newest })
         #expect(ContinuousClock.now - started < .seconds(TestTiming.bound(4)))
@@ -122,8 +124,9 @@ import Testing
         for round in 0..<20_000 {
             newest = UUID()
             if let previous { env.router.ambientAudio(.ended(stream: previous, reason: .superseded)) }
-            env.router.ambientAudio(.started(stream: newest, connection: connections[round % 2],
-                target: RecipientTestRig.target))
+            env.router.ambientAudio(.admittedStart(stream: newest, connection: connections[round % 2],
+                target: RecipientTestRig.target,
+                                     binding: "reply-binding", policy: env.admissionPolicy))
             env.router.ambientAudio(.segment(stream: newest, sequence: 0, bytes: Data([1, 2])))
             previous = newest
         }
@@ -145,8 +148,9 @@ import Testing
         defer { fake.cleanUp() }
         let events = AmbientEventNames()
         let env = try await ambientRig(fake, timing: .init(eofGrace: 5, termGrace: 5), events: events)
-        fillWithRetiredChildren(env.router)
-        env.router.ambientAudio(.started(stream: UUID(), connection: UUID(), target: RecipientTestRig.target))
+        fillWithRetiredChildren(env.router, policy: env.admissionPolicy)
+        env.router.ambientAudio(.admittedStart(stream: UUID(), connection: UUID(), target: RecipientTestRig.target,
+                                     binding: "reply-binding", policy: env.admissionPolicy))
         #expect(await eventually { events.all.contains("ambient_retired_forced") })
         let started = ContinuousClock.now
         await env.listener.stop(reason: "synthetic stop during a forced stop")
