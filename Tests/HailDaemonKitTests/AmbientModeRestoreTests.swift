@@ -154,7 +154,7 @@ import Testing
         let router = rig.router
         #expect(await eventually { router.status().liveChildren == 1 }, "dropped child reaped marker")
         await bounded("restored child reload") { #expect(await router.reload() == .reloaded) }
-        #expect(await eventually { rig.control(3) == RestoreRig.gate }, "reloaded restored child marker")
+        #expect(try await restoredReloadControl(rig) == RestoreRig.gate, "reloaded restored child marker")
         await rig.drainMeetingChanges()
         #expect(rig.changes.count == 3)
         await rig.finish()
@@ -178,5 +178,13 @@ import Testing
         router.state.withLock { $0.latest[gone] = nil }
         await rig.finish()
     }
+}
+/// Reload includes child retirement and respawn; wait for its exact observable control write for up to a minute.
+private func restoredReloadControl(_ rig: RestoreRig) async throws -> String? {
+    let deadline = ContinuousClock.now + .seconds(60)
+    while rig.control(3) != RestoreRig.gate, !Task.isCancelled, ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    return rig.control(3)
 }
 #endif

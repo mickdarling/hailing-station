@@ -69,7 +69,7 @@ The public repository intentionally contains no device identifiers, private netw
 
 ## License
 
-The public project is licensed under the [GNU Affero General Public License v3.0 only](LICENSE).
+Copyright (C) 2026 Mick Darling. The public project is licensed under the [GNU Affero General Public License](LICENSE), version 3 or (at your option) any later version (`AGPL-3.0-or-later`). There is no warranty.
 
 Alternative commercial licensing may be made available by the copyright holder. The commercial option permits distributions that cannot or do not wish to comply with the AGPL; it does not change the availability of this public source tree.
 

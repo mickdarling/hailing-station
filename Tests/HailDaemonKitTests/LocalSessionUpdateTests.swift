@@ -10,6 +10,9 @@ import Testing
 @Suite struct LocalSessionUpdateTests {
     /// A listening device and its media mode, as the ambient router would report them.
     final class ListeningWiring: AmbientListenerWiring {
+        func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {
+            Issue.record("unexpected device voice stop in unrelated wiring fixture")
+        }
         let listening = Mutex<UUID?>(nil)
         let media = Mutex(false)
         func attach(_ listener: WebSocketListener) {}
@@ -29,14 +32,15 @@ import Testing
     }
 
     private func withListener(
-        enabled: Bool = true, _ body: (WebSocketListener, ListeningWiring) async throws -> Void
+        enabled: Bool = true, policy: SessionUpdatePolicy = .init(enabled: true),
+        _ body: (WebSocketListener, ListeningWiring) async throws -> Void
     ) async throws {
         let rig = try await RecipientTestRig.make()
         let wiring = ListeningWiring()
         let listener = try WebSocketListener(bindAddress: "127.0.0.1", port: 0, host: rig.host,
                                              authorizer: PersonalTerminalAuthorizer(), hostName: "mac-test",
                                              ambient: wiring)
-        if enabled { await listener.enableSessionUpdates() }
+        if enabled { await listener.configureTestSessionUpdatePolicy(policy) }
         do { try await body(listener, wiring) } catch {
             await listener.stop(reason: "synthetic test failed")
             throw error
@@ -78,11 +82,11 @@ import Testing
         }
     }
 
-    @Test func everyUpdateSpendsTheSessionsBudget() async throws {
-        try await withListener { listener, wiring in
+    @Test func everyUpdateSpendsAnExplicitSessionsBudget() async throws {
+        let policy = SessionUpdatePolicy(enabled: true, perSessionLimit: 6)
+        try await withListener(policy: policy) { listener, wiring in
             wiring.listening.withLock { $0 = UUID() }
-            let policy = SessionUpdatePolicy()
-            for _ in 0..<policy.perSessionLimit {
+            for _ in 0..<6 {
                 #expect(await listener.sessionUpdate(request(.submit)).outcome == .held)
             }
             for priority in [SessionUpdatePriority.info, .action] {
@@ -147,6 +151,10 @@ import Testing
             try ConnectionProbeDaemon.options(base + ["--connection-probe", "--session-updates"])
         }
     }
+}
+
+extension WebSocketListener {
+    func configureTestSessionUpdatePolicy(_ policy: SessionUpdatePolicy) { sessionUpdates.policy = policy }
 }
 
 /// #609 over the owner-only socket: the `update` kind is answered and audited, never with the update's words.

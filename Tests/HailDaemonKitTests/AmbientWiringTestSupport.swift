@@ -4,7 +4,6 @@ import HailProtocol
 import Synchronization
 import Testing
 @testable import HailDaemonKit
-
 /// A loopback listener with ambient listening wired to a fake `rightyo` (#203). No idle sweeper: only the frame,
 /// failure, disconnect or stop under test can end a stream.
 struct AmbientWiringRig {
@@ -15,7 +14,6 @@ struct AmbientWiringRig {
     let connected: ConnectedPeerIDs
     let port: UInt16
 }
-
 func ambientRig(
     _ fake: FakeRightyo, timing: RightyoChildProcess.Timing, executable: URL? = nil,
     shutdownGrace: TimeInterval = AmbientRightyoRouter.defaultShutdownGrace, audit: AuditLog? = nil,
@@ -30,7 +28,11 @@ func ambientRig(
     acknowledgementHold: AcknowledgementHold? = nil, notSentQueued: NotSentQueued? = nil,
     notSentPlaying: NotSentPlaying? = nil,
     onEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil,
-    childMade: (@Sendable (UUID) -> Void)? = nil, privacy: PrivacyOffSettings = .init()
+    childMade: (@Sendable (UUID) -> Void)? = nil,
+    gapClock: (@Sendable () -> ContinuousClock.Instant)? = nil, privacy: PrivacyOffSettings = .init(),
+    ambientWired: Bool = true, admissionBinding: String? = nil,
+    voiceStopClock: (@Sendable () -> ContinuousClock.Instant)? = nil,
+    onListenerEvent: (@Sendable (WebSocketListenerEvent) -> Void)? = nil
 ) async throws -> AmbientWiringRig {
     let rig = try await RecipientTestRig.make(guardPatterns: guardPatterns)
     let connected = ConnectedPeerIDs()
@@ -48,19 +50,23 @@ func ambientRig(
     if let notSentQueued { configuration.notSentQueued = { notSentQueued.note($0) } }
     (configuration.notSentPlaying, configuration.childMade) = (notSentPlaying?.wait, childMade)
     (configuration.privacyProbeTimeout, configuration.offScoping) = (privacy.probeTimeout, privacy.offScoping)
+    configuration.gapClock = gapClock ?? { .now }
+    configuration.voiceStopClock = voiceStopClock ?? { .now }
     configuration.notes.shortcuts = shortcuts
     let router = AmbientRightyoRouter(configuration: configuration, log: { events?.record($0); onEvent?($0) })
-    let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: GuardClockAmbientSink(router: router),
-                                sweepInterval: nil)
+    let sink = GuardClockAmbientSink(router: router, admissionBinding: admissionBinding,
+                                     admissionPolicy: rig.host.targetPolicy.snapshot(for: RecipientTestRig.target))
+    let gate = AmbientAudioGate(target: RecipientTestRig.target, sink: sink,
+                                sweepInterval: nil, clock: gapClock ?? { .now })
     let listener = try WebSocketListener(
         bindAddress: "127.0.0.1", port: 0, host: rig.host,
         authorizer: PersonalTerminalAuthorizer(ambientAudio: gate).naming(routes), hostName: "mac-test",
-        singleTerminalReplyFallback: true, ambient: router, log: { connected.record($0) }
+        singleTerminalReplyFallback: true, ambient: ambientWired ? router : nil,
+        log: { connected.record($0); onListenerEvent?($0) }
     )
     return AmbientWiringRig(rig: rig, listener: listener, router: router, gate: gate, connected: connected,
                             port: try await boundedAmbientListenerStart(listener))
 }
-
 /// The next frame on `socket`, or a recorded issue naming `step` once `within` passes (#378). Every receive is now
 /// bounded the same way (#704); this keeps the ambient suites' named steps.
 func receiveFrame(
@@ -68,7 +74,6 @@ func receiveFrame(
 ) async throws -> Frame {
     try await recipientSocketReceive(on: socket, step: step, within: within)
 }
-
 /// `recipientSocketBarrier` with a bound: a ping, then its pong within `within`, else an issue naming `step`. A stray
 /// reply fails the test there, as it does unbounded.
 func barrier(on socket: URLSessionWebSocketTask, step: String, within: Duration = .seconds(15)) async throws {
@@ -77,7 +82,6 @@ func barrier(on socket: URLSessionWebSocketTask, step: String, within: Duration 
     let received = try await receiveFrame(on: socket, step: step, within: within).payload
     try #require(received == .control(.pong(nonce: nonce)), "Unexpected payload at \(step): \(received)")
 }
-
 /// The pair's waits with a bound (#636): `URLSessionWebSocketTask.receive()` ignores task cancellation, so a suite's
 /// time limit cannot end a wait for a frame that never comes. Each wait records an issue naming its step instead.
 extension FallbackSocketPair {
@@ -116,7 +120,6 @@ extension FallbackSocketPair {
         try await HailDaemonKitTests.barrier(on: sockets[index], step: "select \(target)")
     }
 }
-
 /// Waits, at most `within`, for every router run to return (#378); otherwise records an issue naming `step`, so a
 /// stuck run fails the test instead of hanging it.
 func settle(_ router: AmbientRightyoRouter, step: String, within: Duration = .seconds(30)) async {
@@ -124,7 +127,6 @@ func settle(_ router: AmbientRightyoRouter, step: String, within: Duration = .se
     while router.liveRuns != 0, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(50)) }
     if router.liveRuns != 0 { Issue.record("router still had \(router.liveRuns) runs after \(within) at: \(step)") }
 }
-
 /// Runs `work`, waiting for it at most `within` (#735 S-8 HS-C round 2): past it, records an issue naming `step` and
 /// returns, leaving the work to end on its own, so a hang fails the test fast instead of blocking the whole run.
 /// For waits that cannot be cancelled, such as `AmbientRightyoRouter.settle()` awaiting its runs' tasks.
@@ -155,7 +157,6 @@ final class BoundedWaitFlag: Sendable {
     var isSet: Bool { flag.withLock { $0 } }
     func set() { flag.withLock { $0 = true } }
 }
-
 /// Every listener event name, in emission order.
 final class AmbientEventNames: Sendable {
     private let names = Mutex<[String]>([])
@@ -167,7 +168,6 @@ func audio(_ stream: UUID, _ sequence: Int, final: Bool = false) -> Frame {
     sessionFrame(target: RecipientTestRig.target,
                  payload: .audio(ambientSegment(stream: stream, sequence: sequence, isFinal: final)))
 }
-
 func eventually(_ condition: @Sendable () async -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + .seconds(15)
     while !Task.isCancelled, ContinuousClock.now < deadline {

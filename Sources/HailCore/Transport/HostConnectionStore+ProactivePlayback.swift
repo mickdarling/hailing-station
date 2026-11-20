@@ -1,6 +1,7 @@
 import Foundation
 import HailProtocol
 import Observation
+import OSLog
 
 struct SessionUpdateSpeechReceipt {
     let endpoint: HostEndpoint.Identifier
@@ -10,18 +11,10 @@ struct SessionUpdateSpeechReceipt {
     let target: String
     var allowed: Bool
 }
-
 extension HostConnectionStore {
     func permitsSessionUpdate(_ event: HostReplyEvent) -> Bool {
-        guard let snapshot = snapshots[event.endpointID], snapshot.state == .ready,
-              snapshot.capabilities.contains(SessionUpdateCard.capability),
-              HostNoticeOrigin.generation == snapshot.connectionGeneration,
-              duckMode[event.endpointID]?.isOn() != true,
-              privacyLocal[event.endpointID]?.request?.on != true,
-              ambientController?.reconnect.isPending != true,
-              let target = event.frame.target,
-              snapshot.targets.contains(where: { $0.id == target && $0.alive }) else { return false }
-        return true
+        guard let snapshot = snapshots[event.endpointID], snapshot.state == .ready else { return false }
+        return SessionUpdateDisplayBuffer.matches(event, snapshot: snapshot, generation: HostNoticeOrigin.generation)
     }
 
     func recordSessionUpdateSpeech(_ event: HostReplyEvent, allowed: Bool) {
@@ -30,6 +23,9 @@ extension HostConnectionStore {
               snapshots[event.endpointID]?.connectionGeneration == generation,
               let target = event.frame.target else { return }
         let speechAllowed = allowed && ambientStreaming && mediaMode[event.endpointID]?.on != true
+            && duckMode[event.endpointID]?.isOn() != true
+            && privacyLocal[event.endpointID]?.request?.on != true
+            && ambientController?.reconnect.isPending != true
         if let index = proactiveSpeechReceipts.firstIndex(where: {
             $0.endpoint == event.endpointID && $0.update == update
         }) {
@@ -141,5 +137,64 @@ extension HostConnectionStore {
                 proactiveSpeechReceipts[index].allowed = false
             }
         }
+    }
+}
+/// Only current, negotiated cards can wait for readiness. No content or identities enter the eviction log.
+@MainActor
+struct SessionUpdateDisplayBuffer {
+    static let limit = ConversationLog.limit
+    private(set) var pending: [(event: HostReplyEvent, generation: UUID)] = []
+    var log: (String) -> Void = { message in
+        Logger(subsystem: "com.mickdarling.hailing-station", category: "session-update")
+            .notice("\(message, privacy: .public)")
+    }
+    static func matches(_ event: HostReplyEvent, snapshot: HostConnectionSnapshot, generation: UUID?) -> Bool {
+        snapshot.id == event.endpointID && generation == snapshot.connectionGeneration
+            && snapshot.capabilities.contains(SessionUpdateCard.capability)
+            && snapshot.targets.contains { $0.id == event.frame.target && $0.alive }
+    }
+    mutating func receive(_ event: HostReplyEvent, snapshot: HostConnectionSnapshot?,
+                          generation: UUID?, reconnecting: Bool) -> [HostReplyEvent] {
+        guard let snapshot, let generation, snapshot.id == event.endpointID,
+              generation == snapshot.connectionGeneration,
+              snapshot.capabilities.contains(SessionUpdateCard.capability),
+              let target = event.frame.target, !target.isEmpty else { return [] }
+        if snapshot.state == .ready, Self.matches(event, snapshot: snapshot, generation: generation) { return [event] }
+        guard reconnecting, snapshot.state != .ready || !snapshot.receivedTargetList else { return [] }
+        guard !pending.contains(where: {
+            $0.event.endpointID == event.endpointID && $0.event.frame.payload == event.frame.payload
+                && $0.event.frame.target == event.frame.target && $0.event.frame.source == event.frame.source
+                && $0.generation == generation
+        }) else { return [] }
+        if pending.count == Self.limit {
+            pending.removeFirst()
+            log("session_update_display_buffer evicted oldest card at capacity")
+        }
+        pending.append((event: event, generation: generation))
+        return []
+    }
+    mutating func ready(_ snapshot: HostConnectionSnapshot) -> [HostReplyEvent] {
+        var displayed: [HostReplyEvent] = []
+        let record = log
+        pending.removeAll { receipt in
+            guard receipt.event.endpointID == snapshot.id else { return false }
+            guard receipt.generation == snapshot.connectionGeneration else {
+                record("session_update_display_buffer dropped stale connection card")
+                return true
+            }
+            guard snapshot.state == .ready, snapshot.receivedTargetList else { return false }
+            if Self.matches(receipt.event, snapshot: snapshot, generation: receipt.generation) {
+                displayed.append(receipt.event)
+            } else {
+                record("session_update_display_buffer dropped unavailable target or capability card")
+            }
+            return true
+        }
+        return displayed
+    }
+    mutating func forget(_ endpoint: HostEndpoint.Identifier) {
+        let count = pending.count
+        pending.removeAll { $0.event.endpointID == endpoint }
+        if pending.count != count { log("session_update_display_buffer dropped retired connection card") }
     }
 }

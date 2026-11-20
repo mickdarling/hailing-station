@@ -6,7 +6,7 @@ are built directly in the tests. Only synthetic identities and loopback sockets 
 
 ## Implementation and acceptance coverage
 
-Production changes are limited to four files, all under the security-critical `Sources/HailDaemonKit/Listener/`
+The original P3 production changes were limited to four files, all under the security-critical `Sources/HailDaemonKit/Listener/`
 path: `HostSession.swift`, `HostReplyDelivery.swift`, `WebSocketPeer.swift` and `WebSocketListener.swift`.
 `HostSession` adds `reply_segments` to hello. Both built-in authorizers allow yield; the receiving session also
 requires its own ready state and peer capability, and still honors a custom authorizer's denial.
@@ -23,22 +23,19 @@ is no separate host replay send boundary. Echo observations still use the origin
 `segment` is logged as a count and never consulted for authority. Unknown, finished, already-stopped and
 other-connection ids are silent no-ops.
 
-The backstop runs in `didNoteLastInput` (after `recordLastInput` commits attribution): `handedOff` invokes it without suspension only after `.delivered` from phone
-final text or an ambient dispatch from this connection (the #370 last-input condition). A pending/held adapter,
-refusal, confirmation requirement, or handoff reported as `.unowned` never reaches it. On segment-capable
-connections it stops every segmented in-flight reply on that connection, without sending `stop_playback`.
-Unsegmented replies and other connections are unaffected. Legacy
-connections do not run the backstop. This does not change the upstream owner/voice admission rules.
+#1246 removes the owner-request backstop from `didNoteLastInput`, retaining the interaction event after
+attribution commits. Phone/ambient, refused/held/complete and legacy handoffs all preserve playing replies.
+The optional host switch was dropped from this PR and may return as a follow-up if the owner wants it.
+Explicit stop/dismiss and device `reply_yield` retain their paths. Historical commands/results below describe
+the earlier backstop implementation; current synthetic queue evidence is in [the #1246 record](1246-new-request-reply-queue.md).
 
-The session's `segmentedReplies` is a subset of the 64-entry `repliesInFlight` list. Oldest in-flight eviction
-also removes the segment marker; final audio, per-reply stop, dismiss and teardown clear the appropriate markers.
-The listener's stop ledger remains bounded to 64 ids, as does each session's `stoppedReplies`. Teardown clears
-only the new segment markers; existing in-flight ids stay available to a dismiss already waiting on the session.
+The existing 64-entry `repliesInFlight` ledger remains the authority for per-reply yield and playback stop.
+The unused segment-marker subset was removed in #1246 round 3.
 
 Logs use only the existing structured event fields and content-free details:
 
 - `reply_yield`: `outcome=accepted|ignored|not_authorized segment=<integer>`.
-- `reply_backstop`: `outcome=stopped count=<integer>`, only when at least one reply is stopped.
+- Historical `reply_backstop` events are no longer emitted by owner-request admission (#1246).
 
 These events contain no reply id, stream id, request text or reply text. The existing session identifier is used
 for connection attribution. Stop, dismiss and privacy still stop whole reply ids; acknowledgement/not-sent clips
@@ -50,12 +47,12 @@ and echo handling are unchanged.
 | Correlated forwarding, connection isolation, another in-flight reply untouched, no stop frame, idempotence, log counts, `replyStopped` publication refusal and absent publication candidate, stop surviving disconnect | `ReplySegmentsListenerTests.yieldIsScopedIdempotentAndStopsPublicationWithoutAStopFrame` |
 | Finished and unknown yield, no response or state change | `ReplySegmentsListenerTests.unknownAndFinishedYieldsDoNothing` |
 | Legacy unauthorized keep-open refusal followed by `recipientSocketBarrier` and a continued publish | `ReplySegmentsListenerTests.legacyPeerIsRefusedAndRemainsHealthy` |
-| Phone and ambient delivery stop multiple segmented replies; leave unsegmented/other-connection replies alone | `ReplySegmentsBackstopTests.deliveredOwnerInputStopsOnlyItsSegmentedReplies` |
+| Phone and ambient delivery preserve segmented, unsegmented and other-connection replies | `ReplySegmentsBackstopTests.deliveredOwnerInputPreservesEveryReplyWithoutABackstop` |
 | Delivered phone/ambient input with no segmented reply logs nothing | `ReplySegmentsBackstopTests.deliveredInputWithoutSegmentedRepliesDoesNotLog` |
-| No backstop on legacy peer (ordinary state and a synthetic segment marker to isolate the capability guard) | `ReplySegmentsBackstopTests.legacyOwnerInputNeverCutsAReply` |
-| Refused and held requests do not stop replies; complete released handoff does | `ReplySegmentsBackstopTests.refusedOrHeldInputDoesNotCutUntilACompleteHandoff` |
+| Legacy owner input preserves playing replies | `ReplySegmentsBackstopTests.legacyOwnerInputNeverCutsAReply` |
+| Refused, held and complete released handoffs preserve replies | `ReplySegmentsBackstopTests.refusedHeldAndCompleteHandoffsAllPreservePlayingReplies` |
 | Authorizer/capability matrix, pre-hello close without reply-state changes or yield log, custom denial | `ReplySegmentsHostSessionTests` |
-| 64-entry bound, oldest eviction, final, yield, privacy stop, dismiss, teardown | `ReplySegmentsHostSessionTests.segmentTrackingIsBoundedAndClearedOnEndStopDismissAndTeardown`, `ReplySegmentsListenerTests.peerTeardownClearsSegmentTracking` |
+| In-flight 64-entry bound, oldest eviction, final, yield and playback stop | `ReplySegmentsHostSessionTests.inFlightTrackingIsBoundedAndClearedOnEndStopAndDismiss` |
 
 ## Schema/decoder alignment
 

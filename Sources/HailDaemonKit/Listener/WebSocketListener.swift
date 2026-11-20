@@ -14,6 +14,44 @@ public enum WebSocketListenerError: Error, Sendable, Equatable {
     case failed(String)
 }
 
+/// Device wording depends only on typed delivery evidence and a configured spoken target name.
+struct DialogDeliveryNotice {
+    let block: DialogBlock
+    let earlierDelivered: Int
+
+    var untouched: Bool { block.effects == .none && earlierDelivered == 0 }
+
+    func message(target: String) -> String {
+        let first: String
+        switch block.cause {
+        case .known(let kind): first = "A \(kind.spokenName) is open on \(target)."
+        case .uninspectable: first = "Couldn't check \(target) for a dialog."
+        }
+        return first + " " + remainder
+    }
+
+    private var remainder: String {
+        guard earlierDelivered > 0 else {
+            switch block.effects {
+            case .none:
+                return "Nothing was sent."
+            case .pasteMayHaveExecuted:
+                return "Your words may be in the input box, but nothing was submitted."
+            case .enterMayHaveExecuted:
+                return "Your words may have gone through; check the Mac before resending."
+            }
+        }
+        let lines = earlierDelivered == 1 ? "1 earlier line" : "\(earlierDelivered) earlier lines"
+        switch block.effects {
+        case .none: return "\(lines) went through; the rest were not sent."
+        case .pasteMayHaveExecuted:
+            return "\(lines) went through. The next line may be in the input box; the rest were not submitted."
+        case .enterMayHaveExecuted:
+            return "\(lines) went through, and the next line may have too; check the Mac before resending."
+        }
+    }
+}
+
 enum PeerAmbientTeardownScope {
     /// Deterministic cleanup barrier for lifecycle tests; absent in production.
     @TaskLocal static var beforeEnd: (@Sendable () async -> Void)?
@@ -65,15 +103,26 @@ public actor WebSocketListener {
     /// until then, so its stop is seen even if its peer ends during the await.
     var stopped = false, stopsInFlight: [UUID: HostSession] = [:]
     let stoppedReplyIDs = ReplyStopLedger()
+    nonisolated let replyAudioQueue = ReplyAudioQueue()
     /// Opt-in ambient listening (#203): the sink of the authorizer's `AmbientAudioGate`. Nil by default.
     let ambient: (any AmbientListenerWiring)?
     /// Per target, the connection that most recently sent it admitted input (#370). Host-side only.
     /// `replyHold`: connections whose agent replies are refused while private (#735 S-2c); the ambient router sets it.
     let (lastInput, replyHold) = (LastInputLedger(), PrivateReplyHold())
     /// Sessions' unsolicited updates (#609): off unless `--session-updates`. The quiet switch lasts until restart.
-    var sessionUpdates = SessionUpdateQueue(), sessionUpdatesQuiet = false
+    var sessionUpdates = SessionUpdateQueue()
+    let silentUpdateGate = SilentSessionUpdateGate()
+    var sessionUpdatesQuiet = false {
+        didSet {
+            silentUpdateGate.setQuiet(sessionUpdatesQuiet)
+            if !sessionUpdatesQuiet { Task.detached { await self.drainSilentSessionUpdates(.holdCleared) } }
+        }
+    }
+    var silentUpdateDrainPending: SilentSessionUpdateDrainReason?
     var taskProgressController: ListenerTaskProgress?
     let taskProgressOwnerLifetime = TaskProgressOwnerLifetime()
+    var sessionUpdateTaskIDs: Set<UUID> = []
+    var sessionUpdateSending: [UUID: SessionUpdateSending] = [:]
     var sessionUpdateTaskAuthorities: [UUID: TaskProgressPublicationAuthority] = [:]
     var sessionUpdatesDelivering = false, sessionUpdatePrivacyRevision: UInt64 = 0
     let sessionUpdateFence = SessionUpdateFence()
@@ -150,6 +199,7 @@ extension WebSocketListener {
     public func stop(reason: String = "requested") async {
         guard !stopped else { return }
         stopped = true
+        silentUpdateGate.close()
         peers.values.forEach { $0.replyTransport.retire() }
         taskProgressOwnerLifetime.close()
         sessionUpdateFence.close()
@@ -207,15 +257,29 @@ extension WebSocketListener {
         }
     }
 
-    private func accept(_ connection: NWConnection) async {
+    private func makeSession() -> HostSession {
         // Attached before the admission checks, so no suspension separates them from the insertion below (#370).
-        let session = HostSession(host: host, authorizer: authorizer, hostName: hostName,
+        var deviceStop: (@Sendable (UUID, Int?) async -> Void)?
+        if ambient != nil {
+            deviceStop = { [weak self] connection, latency in
+                await self?.deviceVoiceStopped(connection: connection, latencyMs: latency)
+            }
+        }
+        return HostSession(host: host, authorizer: authorizer, hostName: hostName,
                                   sessionUpdatesEnabled: sessionUpdates.policy.enabled,
                                   modeSnapshot: { [ambient] in
             ambient?.modeSnapshot(connection: $0) ?? [.duckMode(on: false), .mediaMode(on: false)]
         }, snapshotPrivacyOff: { [weak self] in
             await self?.privacyOffFromSnapshot(connection: $0) ?? .refused
+        }, deviceVoiceStop: deviceStop,
+        selectionWillChange: { [replyAudioQueue] connection, retiring, target, generation in
+            replyAudioQueue.selectionWillChange(connection, retiring: retiring,
+                to: .init(target: target, generation: generation))
         })
+    }
+
+    private func accept(_ connection: NWConnection) async {
+        let session = makeSession()
         await session.attachLastInput(lastInput, recordStoppedReply: { [stoppedReplyIDs] id in
             stoppedReplyIDs.record(id)
         }, replyEvent: { [weak self, log] event in
@@ -241,6 +305,7 @@ extension WebSocketListener {
             Task { await self?.peerEnded(endedID) }
         }
         (peers[id], transports[session.connectionID]) = (peer, connection)
+        replyAudioQueue.register(session.connectionID)
         await peer.start()
     }
 
@@ -249,6 +314,10 @@ extension WebSocketListener {
     private func privacyOffFromSnapshot(connection: UUID) -> ModeSnapshotPrivacyOff {
         guard !stopped, peers.values.contains(where: { $0.session.connectionID == connection }) else { return .refused }
         return ambient?.privacyOffFromSnapshot(connection: connection) ?? .refused
+    }
+
+    private func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {
+        await ambient?.deviceVoiceStopped(connection: connection, latencyMs: latencyMs)
     }
 
     private func emit(_ event: WebSocketListenerEvent) { log(event) }
@@ -299,11 +368,15 @@ public protocol AmbientListenerWiring: AnyObject, Sendable {
     /// The connection whose ambient stream feeds the active child, or nil (#230): the device the user is listening on,
     /// the recipient of last resort for a reply with no request reference. The default has none.
     func activeConnection() -> UUID?
+    /// Content-free device report; only the reporting connection's active stream may stop playback.
+    func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async
     /// Whether the owner's spoken media mode (#551) is on for `connection`. The default has none.
     func mediaMode(connection: UUID) -> Bool
     /// Synchronous final enqueue gate for proactive updates. Unknown wiring fails closed. No callback may wait
     /// or re-enter the router: only a prepared transport hand-off runs while privacy/media state is locked.
     func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool
+    /// Identity-only gate for visual cards. Current audience and enqueue share the routing lock; no audio holds.
+    func withSilentSessionUpdateAudience(_ enqueue: @Sendable (UUID?) -> Bool) -> Bool
     func taskProgressAudience() -> TaskProgressAmbientAudience?
     func withTaskProgressPermission(_ audience: TaskProgressAmbientAudience, commit: @Sendable () -> Bool) -> Bool
     /// Identity-only final owner admission. The nonescaping commit changes pure cadence, never I/O or router state.
@@ -351,6 +424,7 @@ extension AmbientListenerWiring {
     public func mediaMode(connection: UUID) -> Bool { false }
     public func withSessionUpdatePermission(connection: UUID, enqueue: @Sendable () -> Bool) -> Bool { false }
     public var sessionUpdatesPrivate: Bool { true }
+    public func withSilentSessionUpdateAudience(_ enqueue: @Sendable (UUID?) -> Bool) -> Bool { false }
     public func taskProgressAudience() -> TaskProgressAmbientAudience? { nil }
     public func withTaskProgressPermission(
         _ audience: TaskProgressAmbientAudience, commit: @Sendable () -> Bool
@@ -392,11 +466,15 @@ extension WebSocketListener {
         guard let peer = peers.removeValue(forKey: id) else { return }
         // Retire input authority before any asynchronous ambient cleanup or environment refresh.
         peer.replyTransport.retire()
+        ReplyConnectionStopGate.forget(peer.session.connectionID)
         transports[peer.session.connectionID] = nil
         heardTurns.removeValue(forKey: peer.session.connectionID)?.close()
+        // Mark retirement before dropping associations: a pending snapshot must fail closed if it loses them.
+        replyAudioQueue.forget(peer.session.connectionID)
         lastInput.forget(connection: peer.session.connectionID)
         await endAmbient(of: peer)
         await refreshTaskProgressEnvironment()
+        await drainSilentSessionUpdates(.recipientChanged)
     }
 
     /// Ends every stream, then waits (bounded) for each ambient child to be reaped and each in-flight dispatch
@@ -527,20 +605,93 @@ extension WebSocketListener {
         return await peer.send(frame) ? "sent" : "failed"
     }
 
+    /// Hold publication across both controls: preserved audio must never start before the device is muted.
+    /// A peer without reply mute gets the same cancelling stop as an explicit stop.
+    func muteReplyPlayback(connection: UUID) async -> (playback: String, mute: String) {
+        guard await acceptsReplyMute(connection: connection) else {
+            return (await stopReplyPlayback(connection: connection, markQueuedAudio: true), "unsupported")
+        }
+        let barrier = ReplyConnectionStopGate.captureControl(connection, cancellingRequests: false)
+        defer { ReplyConnectionStopGate.complete(barrier) }
+        let playback = await stopReplyPlayback(connection: connection, markQueuedAudio: false,
+                                               preservingRequests: true)
+        let mute = await setReplyMute(true, connection: connection)
+        if mute != "sent" {
+            // Never release preserved replies onto a transport whose mute could not be delivered.
+            peers.values.first { $0.session.connectionID == connection }?.replyTransport.retire()
+        }
+        return (playback, mute)
+    }
+
     /// Stops reply playback for the dismissing connection (#309) and returns a fixed outcome token:
     /// `stopped` (sent to the device), `cut` (frames refused only: an older device, or the send failed),
-    /// `idle` (nothing mid-stream and no device stop), or `no_connection`.
-    func stopReplyPlayback(connection: UUID) async -> String {
+    /// `idle` (nothing mid-stream and no device stop), `coalesced` (a redundant device report), or `no_connection`.
+    func stopReplyPlayback(
+        connection: UUID, voiceStopAt: ContinuousClock.Instant? = nil, markQueuedAudio: Bool,
+        queueStop: ReplyAudioQueue.Stop? = nil, requestStop: ReplyConnectionStopGate.Control? = nil,
+        preservingRequests: Bool = false
+    ) async -> String {
+        precondition(!preservingRequests || (!markQueuedAudio && queueStop == nil && requestStop?.cutoff == nil),
+                     "A preserving mute must not accept a request cutoff")
         guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
+            resolvePlaybackStop(queueStop, control: queueStop?.control ?? requestStop)
             return "no_connection"
         }
-        let stop = UUID()
-        stopsInFlight[stop] = peer.session
-        let (frame, cut) = await peer.session.stopReplyPlayback()
-        for id in cut { stoppedReplyIDs.record(id) }
-        stopsInFlight[stop] = nil
-        if let frame, await peer.send(frame) { return "stopped" }
-        return cut.isEmpty ? "idle" : "cut"
+        let stop = markQueuedAudio
+            ? (queueStop ?? replyAudioQueue.captureStop(connection, orderingControl: true)) : nil
+        let control = stop?.control ?? requestStop
+            ?? (markQueuedAudio ? nil : ReplyConnectionStopGate.captureControl(
+                connection, cancellingRequests: !preservingRequests))
+        defer { resolvePlaybackStop(stop, control: control) }
+        // The control barrier precedes the session hop; mute preserves request authority.
+        let cancellations = markQueuedAudio ? sessionUpdateFence.cancelProactive(connection: connection) : []
+        let playbackStop = UUID()
+        stopsInFlight[playbackStop] = peer.session
+        await ReplyAudioEnqueueTesting.beforeStopSession?()
+        let result = await peer.session.stopReplyPlayback(
+            voiceStopAt: voiceStopAt, queue: replyAudioQueue, stop: stop, requestCutoff: control?.cutoff,
+            preservingRequests: preservingRequests
+        )
+        for id in result.stopped { stoppedReplyIDs.record(id) }
+        stopsInFlight[playbackStop] = nil
+        let outcome: String
+        if result.coalesced { outcome = "coalesced" } else if let frame = result.frame,
+            await sendPlaybackStop(frame, on: peer, control: control) {
+            outcome = "stopped"
+        } else { outcome = result.stopped.isEmpty ? "idle" : "cut" }
+        for receipt in cancellations {
+            emit(WebSocketListenerEvent(event: "session_update_speech_cancelled", sessionID: connection,
+                detail: "reason=stopped update=\(receipt.update) connection_scoped=true"))
+            await peer.cancelSessionUpdate(receipt)
+        }
+        if let stop {
+            await peer.session.markQueuedAudioStopped(replyAudioQueue, stop: stop, targets: result.targets)
+        }
+        return outcome
+    }
+
+    private func resolvePlaybackStop(_ stop: ReplyAudioQueue.Stop?, control: ReplyConnectionStopGate.Control?) {
+        ReplyConnectionStopGate.complete(control)
+        if let stop { replyAudioQueue.resolve(stop, targets: nil) }
+    }
+
+    private func sendPlaybackStop(
+        _ frame: Frame, on peer: WebSocketPeer, control: ReplyConnectionStopGate.Control?
+    ) async -> Bool {
+        guard let prepared = await peer.preparePlaybackStop(frame) else {
+            peer.replyTransport.retire()
+            return false
+        }
+        let enqueued = ReplyConnectionStopGate.complete(control) {
+            if prepared.enqueue() { return true }
+            // A failed control cannot release newer frames onto a transport that did not receive the stop.
+            peer.replyTransport.retire()
+            return false
+        }
+        let outcome = enqueued ? await prepared.result() : .refused
+        let sent = await peer.replySendSucceeded(outcome)
+        await ReplyAudioEnqueueTesting.afterStopSend?()
+        return sent
     }
 }
 
@@ -581,7 +732,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var executable: URL
         public var config: URL
         public var target: String
-        /// The target's binding, pinned when the daemon started; a rebind refuses dispatch rather than following.
+        /// Initial startup validation hint only. Stream dispatch uses the admission scope's binding.
         public var binding: String
         /// Admit turns that are not `live-microphone`. Tests only; the daemon leaves it false.
         public var allowSynthetic: Bool
@@ -607,8 +758,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var onMeetingChange: (@Sendable (MeetingChange) -> Void)?
         /// The wall clock that meeting and media expiries are fixed and restored on (MM-E). Tests only change it.
         var now: @Sendable () -> Date = { Date() }
-        /// Awaited by each acknowledgement just before its clip is sent. Nil in the daemon, so nothing waits: tests only
-        /// set it, to hold an acknowledgement and show a not-sent notice waits for it (#894 review).
+        /// Monotonic duplicate-stop window (#1212); injectable for deterministic boundary tests.
+        var voiceStopClock: @Sendable () -> ContinuousClock.Instant = { .now }
+        /// Awaited by each acknowledgement and stop confirmation before its clip is sent. Nil in the daemon;
+        /// tests hold clips to verify notice ordering (#894) and stop-confirmation retirement (#1212).
         var acknowledgementHold: (@Sendable () async -> Void)?
         /// Called with the connection once a "Nothing was sent." clip is queued on its privacy clip chain. Nil in the
         /// daemon: tests only set it, to change privacy at a known point between queuing and playing (#894 review).
@@ -632,6 +785,9 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var duckTimeout: TimeInterval = AmbientRightyoRouter.defaultDuckTimeout
         /// How long a child launched start-private (#735 S-2b) has to emit `started` before it is killed.
         public var startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline
+        var gapClock: @Sendable () -> ContinuousClock.Instant = { .now }
+        /// Production keeps the fixed notice bound; synthetic tests can control their wait independently.
+        var sessionChangeNoticeTimeout: TimeInterval = AmbientRightyoRouter.sessionChangeNoticeDeadline
         /// How long each child has to ack a `{"duck":true}` (#735 S-8). Not configurable: tests only shorten it.
         var ackDeadline: TimeInterval = RightyoAmbientPipeline.ackDeadline
         /// The bound on a privacy entry's announcement (#735 S-8 HS-C), nil for start + ack + margin (round 3: never a
@@ -678,6 +834,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     /// Runs at once, including those whose child is reaped but whose dispatch is still typing. A run stuck in a
     /// dispatch therefore blocks new starts only once this many are stuck.
     public static let maxRuns = 4
+    /// A fixed safety notice must never retain a run indefinitely behind a stalled acknowledgement.
+    static let sessionChangeNoticeDeadline: TimeInterval = 2
     /// A retired child forced out to make room for a new device's stream (#366) gets this long after EOF, then this
     /// long after SIGTERM, before SIGKILL: about a second, then it is reaped.
     public static let forcedStopGrace: TimeInterval = 0.5
@@ -695,6 +853,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// Each live connection's most recent started stream (one entry per connection, dropped when it ends),
         /// so a normally ended stream's late failure is still reported until the connection starts another.
         var latest: [UUID: UUID] = [:]
+        /// One timestamp per reporting live connection, removed at teardown; never persisted.
+        var deviceVoiceStops: [UUID: ContinuousClock.Instant] = [:]
+        var stopConfirmations: [UUID: Set<UUID>] = [:]
+        var voiceStopLogs: [UUID: VoiceStopLogWindow] = [:]
         /// Each connection's last child-admitted destination, for bookkeeping only; clips use session selection.
         /// Removed at teardown, like `inputRoutes`. A refused start never writes this snapshot.
         var streamTargets: [UUID: String] = [:]
@@ -836,7 +998,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
     /// resurrect an old stream, owner or task. Public starts do not depend on reply diagnostics being enabled.
     func taskProgressOwnerChanged() {
         guard let listener = state.withLock({ $0.listener?.value }) else { return }
-        taskProgressChanges.enqueue { await listener.refreshTaskProgressEnvironment() }
+        taskProgressChanges.enqueue {
+            await listener.refreshTaskProgressEnvironment()
+            await listener.drainSilentSessionUpdates(.recipientChanged)
+        }
     }
 
     /// Called in order from the gate's actor; only spawns, enqueues or signals, never awaits. A start that finds
@@ -851,8 +1016,14 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             // would still be dead.
             case .started(let stream, let connection, _):
                 state.latest[connection] = stream
-            // Taken over (#366): the old stream's late failure is not reported to its device as a stop.
-            case .ended(let stream, .superseded): state.latest = state.latest.filter { $0.value != stream }
+            // These ends already report a refusal, supersede the stream or tear down its peer. Revoke before
+            // queueing: a held notice must not outlive an ending even while the worker is making room.
+            case .ended(let stream, let reason) where reason != .final && reason != .idle:
+                state.latest = state.latest.filter { $0.value != stream }
+                for (id, run) in state.runs where run.stream == stream {
+                    state.runs[id]?.failureReported = true
+                    run.sessionChange?.finish()
+                }
             default: break
             }
             if case .started(let stream, _, _) = event { state.newestStart = stream }
@@ -909,13 +1080,55 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         }
     }
 
+    /// Same playback stop as a RightyO dismissal; no withdrawal, mode change, or spoken confirmation.
+    public func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {
+        var queueStop: ReplyAudioQueue.Stop?
+        let reason = state.withLock { state -> String? in
+            if state.duck[connection] != nil { return "private" }
+            guard !state.shuttingDown, !state.reloading, !state.closed.contains(connection),
+                  let active = state.active, state.latest[connection] == active.stream,
+                  state.runs[active.run]?.connection == connection,
+                  Self.ambientOwner(stream: active.stream, connection: connection,
+                                    newestStart: state.newestStart, queued: state.queue) == connection else {
+                return "no_active_stream"
+            }
+            let now = configuration.voiceStopClock()
+            // Queue handoffs cannot acquire this router lock; transport completion runs outside that stack.
+            queueStop = state.listener?.value?.replyAudioQueue.captureStop(connection, orderingControl: true)
+            state.deviceVoiceStops[connection] = now
+            // Retire all pending clips, even if their async work resumes later.
+            state.stopConfirmations[connection] = nil
+            return nil
+        }
+        if let reason {
+            await logVoiceStopIgnore(reason, connection: connection)
+            return
+        }
+        let listener = state.withLock { $0.listener?.value }
+        let playback = await listener?.stopReplyPlayback(
+            connection: connection, voiceStopAt: configuration.voiceStopClock(), markQueuedAudio: true,
+            queueStop: queueStop
+        ) ?? "no_connection"
+        if playback == "coalesced" {
+            await logVoiceStopIgnore("coalesced", connection: connection)
+            return
+        }
+        let latency = latencyMs.map { " latency_ms=\($0)" } ?? ""
+        emit("ambient_dismissed", detail: "reason=device-voice-stop scope=playback source=device"
+             + " withdrawn=0 delivered=0 playback=\(playback)" + latency)
+        // Device playback diagnostics already report the actual end to RightyO; do not synthesize another end.
+    }
+
     public func stop(connection: UUID) { stop(connection: connection, device: nil) }
 
-    /// Teardown parks a meeting or media mode still on (MM-E), or privacy (#941), before removing it, for the next start
+    /// Teardown parks a meeting or media mode still on (MM-E), or privacy (#941), before removing it, for next start
     /// to restore.
     public func stop(connection: UUID, device: AmbientPeerDevice?) {
         let streams = state.withLock { state -> [UUID] in
             (state.latest[connection], state.inputRoutes[connection], state.streamTargets[connection]) = (nil, nil, nil)
+            state.deviceVoiceStops[connection] = nil
+            state.stopConfirmations[connection] = nil
+            state.voiceStopLogs[connection] = nil
             park(connection: connection, device: device, in: &state)
             state.media.removeValue(forKey: connection)?.timer.cancel()
             endMeeting(connection: connection, reason: "connection", in: &state)
@@ -933,7 +1146,10 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             Self.pruneClosed(in: &state)
             return streams
         }
-        streams.forEach { retire($0) }
+        for id in streams {
+            state.withLock { $0.runs[id]?.sessionChange }?.finish()
+            retire(id)
+        }
         taskProgressOwnerChanged()
     }
 
@@ -949,6 +1165,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             state.active = nil
             state.latest = [:]
             state.streamTargets = [:]
+            for run in state.runs.values { run.sessionChange?.finish() }
             return state.runs.values.map(\.pipeline)
         }
         taskProgressOwnerChanged()
@@ -974,6 +1191,16 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             let connection = state.active.flatMap { state.runs[$0.run]?.connection }
             return Self.ambientOwner(stream: state.active?.stream, connection: connection,
                                      newestStart: state.newestStart, queued: state.queue)
+        }
+    }
+
+    public func withSilentSessionUpdateAudience(_ enqueue: @Sendable (UUID?) -> Bool) -> Bool {
+        state.withLock { state in
+            guard !state.shuttingDown else { return false }
+            let connection = state.active.flatMap { state.runs[$0.run]?.connection }
+            let listening = Self.ambientOwner(stream: state.active?.stream, connection: connection,
+                                             newestStart: state.newestStart, queued: state.queue)
+            return enqueue(listening)
         }
     }
 
@@ -1052,6 +1279,8 @@ extension AmbientRightyoRouter {
         var replaced = false
         /// Its child has ended and its end is being logged; a reload no longer replaces it (#405).
         var ending = false
+        var sessionChange: AmbientSessionChangeWait?
+        var failureReported = false
         /// Order of retirement (EOF sent), so the oldest retired child is the one forced out (#366).
         var retiredAt: Int?
         var forced = false
@@ -1059,11 +1288,16 @@ extension AmbientRightyoRouter {
         var gateEnd: AmbientStreamEndReason?
         var task: Task<Void, Never>?
     }
-    /// A stream destination retained across reloads (#327). PR 2 must resolve its binding before admission;
+    /// A stream destination retained across reloads. Its binding and owner grant are resolved before admission;
     /// the router never awaits binding resolution.
     struct Destination: Sendable {
         let target: String
         let binding: String
+        let policyGeneration: TargetPolicyGeneration?
+
+        init(target: String, binding: String, policyGeneration: TargetPolicyGeneration? = nil) {
+            (self.target, self.binding, self.policyGeneration) = (target, binding, policyGeneration)
+        }
     }
 
     /// The stream feeding audio now, retaining its destination and opening selection generation (#636).
@@ -1075,6 +1309,7 @@ extension AmbientRightyoRouter {
         let selection: UUID?
         let target: String
         let binding: String
+        let policyGeneration: TargetPolicyGeneration?
     }
 }
 
@@ -1113,11 +1348,8 @@ extension AmbientRightyoRouter {
                               reason: "target_binding_unavailable")
             }
             start(stream, connection: connection, destination: destination, selection: scope.selection)
-        case .segment(let stream, _, let bytes):
-            let pipeline = state.withLock { $0.active?.stream == stream ? $0.active?.pipeline : nil }
-            // Overload drops the oldest audio; it never blocks the gate. Refused input means the child is gone
-            // (its run may still be finishing a dispatch), so the stream ends instead of absorbing audio.
-            if let pipeline, !pipeline.send(audio: bytes) { inputClosed(stream, pipeline: pipeline) }
+        case .segment(let stream, let sequence, let bytes):
+            forward(stream: stream, sequence: sequence, bytes: bytes)
         case .ended(let stream, let reason):
             let run = state.withLock { state -> UUID? in
                 for (id, run) in state.runs where run.stream == stream { state.runs[id]?.gateEnd = reason }
@@ -1127,6 +1359,19 @@ extension AmbientRightyoRouter {
             }
             if let run { retire(run) }
         }
+    }
+
+    /// The sequence stays beside its PCM until the same ordered child enqueue accepts both.
+    private func forward(stream: UUID, sequence: Int, bytes: Data) {
+        let pipeline = state.withLock { state -> RightyoAmbientPipeline? in
+            guard let active = state.active, active.stream == stream,
+                  state.runs[active.run]?.ending == false else { return nil }
+            return active.pipeline
+        }
+        guard let pipeline else { return }
+        let result = pipeline.send(audio: bytes, sequence: sequence)
+        // Refused input means the child is gone; overload still drops oldest audio without blocking the gate.
+        if !result.accepted { inputClosed(stream, pipeline: pipeline) }
     }
 
     /// Handles queued events in order until none is left (#366), once any reload in progress is done (#405). A reload
@@ -1194,14 +1439,12 @@ extension AmbientRightyoRouter {
         state.peakQueue = max(state.peakQueue, state.queue.count)
     }
 
-    /// Configured starts always use the startup binding, ignoring the scope. Other starts require a binding
-    /// resolved before admission; no listing or asynchronous resolution belongs in this router.
+    /// Every start keeps its pre-admission binding. Configured streams also retain their original owner grant;
+    /// no startup hint, listing or asynchronous resolution belongs in this router.
     private func destination(for scope: AmbientStreamScope) -> Destination? {
-        if scope.target == configuration.target {
-            return Destination(target: scope.target, binding: configuration.binding)
-        }
         guard let binding = scope.binding, !binding.isEmpty else { return nil }
-        return Destination(target: scope.target, binding: binding)
+        guard scope.target != configuration.target || scope.policyGeneration != nil else { return nil }
+        return Destination(target: scope.target, binding: binding, policyGeneration: scope.policyGeneration)
     }
 
     /// Only a start able to spawn may make room. Refusals still queue behind work/reload already in flight.
@@ -1251,8 +1494,10 @@ extension AmbientRightyoRouter {
     func inputClosed(_ stream: UUID, pipeline: RightyoAmbientPipeline) {
         let closed = state.withLock { state -> (run: UUID, connection: UUID)? in
             guard let active = state.active, active.stream == stream, active.pipeline === pipeline,
+                  state.runs[active.run]?.ending == false,
                   let connection = state.runs[active.run]?.connection else { return nil }
             state.active = nil
+            state.runs[active.run]?.failureReported = true
             return (active.run, connection)
         }
         guard let (run, connection) = closed else { return }
@@ -1308,9 +1553,11 @@ extension AmbientRightyoRouter {
             if state.shuttingDown { return "stopping" }
             // Fail closed (#941): a child that may have been made public while privacy is parked never hears audio.
             if !Self.admitsPrivacy(connection, in: state) { return "private" }
-            let id = register(pipeline, stream: stream, connection: connection, target: destination.target, in: &state)
+            let id = register(pipeline, stream: stream, connection: connection, target: destination.target,
+                              selection: selection, in: &state)
             state.active = Active(stream: stream, run: id, pipeline: pipeline, since: Date(),
-                                  selection: selection, target: destination.target, binding: destination.binding)
+                                  selection: selection, target: destination.target, binding: destination.binding,
+                                  policyGeneration: destination.policyGeneration)
             // Under register's own lock (MM-E): a parked or stale-held mode reaches this child as its first mode write.
             carryModes(to: connection, stream: stream, pipeline: pipeline, in: &state)
             return nil
@@ -1337,6 +1584,8 @@ extension AmbientRightyoRouter {
             onDismiss: dismissed(on: connection, target: target, listener: listener),
             onAcknowledge: acknowledged(on: connection, target: target, listener: listener, notices: notices)
         )
+        settings.gapClock = configuration.gapClock
+        settings.onGapFill = { [weak self] in self?.emit("ambient_gap_filled", detail: $0) }
         (settings.replyControl, settings.onAcknowledgementSkipped) = (configuration.replyControl, skipped())
         settings.heardRequests = heardRequests(on: connection, target: target, listener: listener, notices: notices)
         settings.onOverheard = overheard(on: connection, target: target, listener: listener)
@@ -1361,13 +1610,48 @@ extension AmbientRightyoRouter {
         settings.routing = voiceRouting(listener)
         settings.onVoiceRouteRefused = voiceRouteRefused(on: connection, target: target,
                                                         listener: listener, notices: notices)
-        let pipeline = try RightyoAmbientPipeline(configuration: settings,
-                                                  dispatcher: AmbientListenerDispatcher(
-                                                      listener: listener, audit: configuration.audit,
-                                                      selection: selection, streamTarget: target
-                                                  ))
+        let dispatcher = dispatcher(for: destination, connection: connection, selection: selection,
+                                    listener: listener, notices: notices, mark: mark)
+        let pipeline = try RightyoAmbientPipeline(configuration: settings, dispatcher: dispatcher)
         mark.set(pipeline.privacyControl)
+        mark.pipeline = pipeline
         return pipeline
+    }
+
+    // swiftlint:disable:next function_parameter_count
+    private func dispatcher(
+        for destination: Destination, connection: UUID, selection: UUID?, listener: WebSocketListener,
+        notices: AmbientRefusalNotices, mark: AmbientRunMark
+    ) -> AmbientListenerDispatcher {
+        let refused = deliveryRefused(on: connection, target: destination.target, listener: listener, notices: notices)
+        let bindingChanged: @Sendable () async -> Void = { [weak self] in
+            let notice = AmbientSessionChangeWait(timeout: self?.configuration.sessionChangeNoticeTimeout
+                ?? AmbientRightyoRouter.sessionChangeNoticeDeadline)
+            // Claim the exact child before suspending. Input closure, microphone audio and reload now defer.
+            let claimed = self?.state.withLock { state -> UUID? in
+                guard let pipeline = mark.pipeline,
+                      let id = state.runs.first(where: { $0.value.pipeline === pipeline })?.key,
+                      state.runs[id]?.replaced == false, state.runs[id]?.ending == false,
+                      state.runs[id]?.failureReported == false else { return nil }
+                state.runs[id]?.ending = true
+                state.runs[id]?.sessionChange = notice
+                return id
+            }
+            guard let id = claimed else { return }
+            self?.retire(id)
+            await AmbientSessionChangeWait.$current.withValue(notice) {
+                let task = refused(nil, .bindingMismatch)
+                await notice.wait()
+                // Cancellation starts PreparedWebSocketReply's abandoned-send watchdog as well.
+                task.cancel()
+                notices.acknowledgement?.cancel()
+            }
+        }
+        let configured = destination.target == configuration.target
+        return AmbientListenerDispatcher(listener: listener, audit: configuration.audit, selection: selection,
+                                         streamTarget: destination.target, refusalNotices: notices,
+                                         binding: destination.binding, policyGeneration: destination.policyGeneration,
+                                         bindingChanged: configured ? bindingChanged : nil)
     }
 
     private func voiceRouting(_ listener: WebSocketListener) -> RightyoVoiceRouting? {
@@ -1390,13 +1674,17 @@ extension AmbientRightyoRouter {
     /// it always precedes that run's `ambient_ended`, even when a child exits at once beside another live run (#273).
     /// A reload's run (#405) emits `ambient_reloaded` first for the same reason: a new child that fails at once must
     /// leave its failure, not the reload, as the last event. A child whose connection was torn down while it was made
-    /// is registered like any other: `closed`, recorded by `stop(connection:)`, already refuses its mode entries (#735).
+    /// is registered like any other: `closed`, recorded by `stop(connection:)`, refuses its mode entries (#735).
     func register(_ pipeline: RightyoAmbientPipeline, stream: UUID, connection: UUID, target: String,
-                  reload: Bool = false,
+                  reload: Bool = false, selection: UUID? = nil,
                   in state: inout State) -> UUID {
         let id = UUID()
         state.runs[id] = Run(stream: stream, connection: connection, pipeline: pipeline)
-        if !state.shuttingDown, !state.closed.contains(connection) { state.streamTargets[connection] = target }
+        if !state.shuttingDown, !state.closed.contains(connection) {
+            state.streamTargets[connection] = target
+            // The session owns the current-selection mirror. A long-lived stream can carry an older
+            // opening generation and must never overwrite that mirror here.
+        }
         // A new or reloaded child starts with media mode off (#551). Told under the same lock `setMedia` changes it
         // under, so it can never miss a change made while it was starting.
         if state.media[connection] != nil || state.meeting[connection] != nil {
@@ -1477,7 +1765,7 @@ extension AmbientRightyoRouter {
         return AmbientHeardRequests(show: { [weak listener] request, text in
             await listener?.showAmbientHeard(connection: connection, target: target, text: text, request: request)
         }, finish: { [weak listener] request, refusal in
-            if let refusal { refused(request, refusal) } else if let request {
+            if let refusal { _ = refused(request, refusal) } else if let request {
                 await listener?.finishHeardRequest(request, connection: connection)
             }
         })
@@ -1512,22 +1800,21 @@ extension AmbientRightyoRouter {
                 self?.emit("ambient_dismissed", detail: Self.describe(receipt, playback: "none"))
                 return
             }
+            let position = listener?.replyAudioQueue.captureStop(connection, orderingControl: true)
             Task { [weak self] in
-                let playback = await listener?.stopReplyPlayback(connection: connection) ?? "no_connection"
+                let playback = await listener?.stopReplyPlayback(
+                    connection: connection, markQueuedAudio: true, queueStop: position
+                ) ?? "no_connection"
                 self?.emit("ambient_dismissed", detail: Self.describe(receipt, playback: playback))
                 await self?.confirmStop(receipt, playback: playback, on: connection, target: target, listener: listener)
             }
         }
     }
 
-    /// The owner's spoken "mute" or "unmute" (#404) on the connection that said it; it is never typed to the agent. A
-    /// mute stops the reply now playing, plays "Muted." and only then sends `set_reply_mute`, so the device lets the
-    /// confirmation finish before it goes quiet; an unmute sends it first, so "Unmuted." is heard. A device without
-    /// `reply_mute` is only stopped, and confirmed as a stop. Logs tokens only.
-    /// Ordering: the mute frame is sent only once `acknowledgeAmbient` has returned, which waits for the connection to
-    /// have processed every clip frame, its final audio frame last; one connection sends in order, so the device has
-    /// the clip before the mute and treats the mute as one to apply after it. Commands from one connection run one
-    /// at a time in the order said, so a quick "mute" then "unmute" ends unmuted.
+    /// The owner's spoken mute stops playback, then sends the mute flag while publication remains held.
+    /// Confirmation text/PCM follows under mute; it is retained silently for replay. Unmute sends its flag first.
+    /// A peer without reply mute gets a cancelling stop and an honest "Stopped." confirmation. Logs tokens only.
+    /// Voice mute/unmute commands on one connection run in the order said.
     private func voiceMuted(
         on connection: UUID, target: String, listener: WebSocketListener
     ) -> @Sendable (Bool) -> Void {
@@ -1546,12 +1833,16 @@ extension AmbientRightyoRouter {
         let supported = await listener?.acceptsReplyMute(connection: connection) ?? false
         var mute = supported ? "pending" : "unsupported"
         if !muted, supported { mute = await listener?.setReplyMute(false, connection: connection) ?? "" }
-        let playback = muted ? await listener?.stopReplyPlayback(connection: connection) ?? "no_connection" : "none"
+        var playback = "none"
+        if muted {
+            let result = await listener?.muteReplyPlayback(connection: connection)
+            playback = result?.playback ?? "no_connection"
+            mute = result?.mute ?? "no_connection"
+        }
         let persona = supported ? (muted ? AmbientStopConfirmation.muted : AmbientStopConfirmation.unmuted)
             : (muted ? AmbientStopConfirmation.stopped : nil)
         var confirm = "none"
         if let persona { confirm = await confirmVoiceMute(persona, on: connection, target: target, listener: listener) }
-        if muted, supported { mute = await listener?.setReplyMute(true, connection: connection) ?? "" }
         emit("ambient_voice_mute", detail: "muted=\(muted) mute=\(mute) playback=\(playback) confirm=\(confirm)")
     }
 
@@ -1574,11 +1865,23 @@ extension AmbientRightyoRouter {
     /// Plays the stop confirmation clip (#418) on the connection that said stop, through the same guarded path as an
     /// acknowledgement: only that connection, never the Mac, never the agent session. Once sent, its words are held
     /// as a host phrase, so hearing them back, however short, is echo rather than a request or an overheard turn; an
-    /// undelivered clip is never held. Logs tokens only.
-    private func confirmStop(
+    /// undelivered clip is never held. Final enqueue shares the device-stop lock; accepted reports retire pending
+    /// clips. A RightyO dismissal reaching this method before the report is recorded can already have enqueued
+    /// bytes that cannot be recalled. PR 3 must mitigate this bound by dropping host stop-confirmation clips on the
+    /// device shortly after its local stop; that device behavior is deferred. Logs tokens only.
+    func confirmStop(
         _ receipt: RightyoDismissReceipt, playback: String, on connection: UUID, target: String,
         listener: WebSocketListener?
     ) async {
+        let token = UUID()
+        let refusal = await listener?.withLiveConnection(connection: connection) { [self] in
+            registerStopConfirmation(token, connection: connection)
+        } ?? "connection_closed"
+        if let refusal {
+            emit("ambient_stop_confirmed", detail: "outcome=skipped reason=\(refusal)")
+            return
+        }
+        defer { removeStopConfirmation(token, connection: connection) }
         guard let library = configuration.acknowledgements else { return }
         if let reason = AmbientStopConfirmation.skipReason(for: receipt, playback: playback) {
             emit("ambient_stop_confirmed", detail: "outcome=skipped reason=\(reason)")
@@ -1589,13 +1892,36 @@ extension AmbientRightyoRouter {
             emit("ambient_stop_confirmed", detail: "outcome=skipped reason=no_clips")
             return
         }
-        let outcome = await listener?.acknowledgeAmbient(connection: connection, target: target,
-                                                         clip: pick.clip) ?? "no_connection"
+        await configuration.acknowledgementHold?()
+        let outcome = await listener?.confirmAmbientStop(
+            connection: connection, target: target, clip: pick.clip
+        ) { [self] enqueue in
+            state.withLock { state in
+                guard state.stopConfirmations[connection]?.contains(token) == true else { return false }
+                if let stopped = state.deviceVoiceStops[connection],
+                   stopped.duration(to: configuration.voiceStopClock()) < .seconds(10) { return false }
+                return enqueue()
+            }
+        } ?? "no_connection"
+        if let reason = stopConfirmationSkip(outcome, connection: connection) {
+            emit("ambient_stop_confirmed", detail: "outcome=skipped reason=\(reason)")
+            return
+        }
         hostPhrases.observe(pick.clip, outcome: outcome)
         emit("ambient_stop_confirmed", detail: "clip=\(pick.persona)/\(pick.index) outcome=\(outcome)")
     }
 
-    private func run(_ pipeline: RightyoAmbientPipeline, id: UUID, stream: UUID, connection: UUID) async {
+    private func stopConfirmationSkip(_ outcome: String, connection: UUID) -> String? {
+        if outcome == "no_connection" { return "connection_closed" }
+        guard outcome == "device_stopped" else { return nil }
+        return state.withLock {
+            $0.closed.contains(connection) || $0.latest[connection] == nil ? "connection_closed" : "device_stopped"
+        }
+    }
+
+    private func run(
+        _ pipeline: RightyoAmbientPipeline, id: UUID, stream: UUID, connection: UUID
+    ) async {
         var failure: String?
         let detail: String
         do {
@@ -1624,24 +1950,26 @@ extension AmbientRightyoRouter {
             return state.runs[id]?.replaced == true
         }
         emit("ambient_ended", detail: (replacedNow ? "replaced " : "") + detail)
-        let (stillActive, replaced, listener, waiters) = state.withLock { state in
-            let replaced = state.runs.removeValue(forKey: id)?.replaced ?? false
+        let (stillActive, replaced, reported, sessionChanged, listener, waiters) = state.withLock { state in
+            let run = state.runs.removeValue(forKey: id)
+            let replaced = run?.replaced ?? false
             Self.pruneClosed(in: &state)
             // By identity, not stream: after a reload (#405) the stream is the same but the active run is not.
             let active = state.active?.run == id
             if active { state.active = nil }
             let waiters = state.runs.isEmpty ? Array(state.drainWaiters.values) : []
             if state.runs.isEmpty { state.drainWaiters = [:] }
-            return (active, replaced, state.shuttingDown ? nil : state.listener?.value, waiters)
+            return (active, replaced, run?.failureReported == true, run?.sessionChange != nil,
+                    state.shuttingDown ? nil : state.listener?.value, waiters)
         }
         waiters.forEach { $0.resume() }
         if stillActive { taskProgressOwnerChanged() }
         // A clean run whose stream already ended is the normal path; anything else ends the stream and tells
         // the phone, even a refusal after the stream ended (for example confirmation required). A run a reload
         // replaced is only logged above: its stream lives on in the new child, so even a non-zero exit stays here.
-        guard !replaced, failure != nil || stillActive, let listener else { return }
-        await listener.ambientFailed(stream: stream, connection: connection,
-                                     message: "ambient stopped: \(failure ?? "listener exited")")
+        guard !replaced, !reported, failure != nil || stillActive, let listener else { return }
+        let message = sessionChanged ? AmbientSessionChange.stopped : "ambient stopped: \(failure ?? "listener exited")"
+        await listener.ambientFailed(stream: stream, connection: connection, message: message)
     }
 
     private func refuse(_ stream: UUID, connection: UUID, target: String, reason: String) {
@@ -1712,7 +2040,8 @@ extension AmbientRightyoRouter {
         let pipeline: RightyoAmbientPipeline
         do {
             pipeline = try makePipeline(connection: connection, stream: old.stream,
-                                        destination: Destination(target: old.target, binding: old.binding),
+                                        destination: Destination(target: old.target, binding: old.binding,
+                                                                 policyGeneration: old.policyGeneration),
                                         selection: old.selection, listener: listener)
         } catch {
             let reason = Self.describe(error)
@@ -1743,9 +2072,10 @@ extension AmbientRightyoRouter {
             state.retirements += 1
             state.runs[old.run]?.retiredAt = state.retirements
             let id = register(pipeline, stream: old.stream, connection: connection, target: old.target,
-                              reload: true, in: &state)
+                              reload: true, selection: old.selection, in: &state)
             state.active = Active(stream: old.stream, run: id, pipeline: pipeline, since: old.since,
-                                  selection: old.selection, target: old.target, binding: old.binding)
+                                  selection: old.selection, target: old.target, binding: old.binding,
+                                  policyGeneration: old.policyGeneration)
             return .reloaded
         }
         if outcome == .reloaded { taskProgressOwnerChanged() }
@@ -1773,10 +2103,23 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     let listener: WebSocketListener
     let audit: AuditLog?
     /// The selection generation the stream opened on (#636); every request it dispatches is pinned to it.
-    var selection: UUID?
+    let selection: UUID?
     /// The stream's own target (#636). A request its consumer routed to another target is dispatched bound to that
     /// route from this target; nil binds none.
-    var streamTarget: String?
+    let streamTarget: String?
+    let refusalNotices: AmbientRefusalNotices?
+    let binding: String?
+    let policyGeneration: TargetPolicyGeneration?
+    let bindingChanged: (@Sendable () async -> Void)?
+
+    init(listener: WebSocketListener, audit: AuditLog?, selection: UUID? = nil, streamTarget: String? = nil,
+         refusalNotices: AmbientRefusalNotices? = nil, binding: String? = nil,
+         policyGeneration: TargetPolicyGeneration? = nil, bindingChanged: (@Sendable () async -> Void)? = nil) {
+        (self.listener, self.audit, self.selection) = (listener, audit, selection)
+        (self.streamTarget, self.refusalNotices) = (streamTarget, refusalNotices)
+        (self.binding, self.policyGeneration) = (binding, policyGeneration)
+        self.bindingChanged = bindingChanged
+    }
 
     func dispatch(_ request: LocalDispatchRequest) async throws -> UUID? {
         try await dispatch(request, routed: false)
@@ -1789,14 +2132,38 @@ struct AmbientListenerDispatcher: RightyoAmbientDispatching {
     func dispatch(_ request: LocalDispatchRequest, routed: Bool) async throws -> UUID? {
         let (prepared, reference) = await listener.referenceAmbient(request)
         let from = streamTarget.flatMap { routed && $0 != prepared.target ? $0 : nil }
+        if from == nil, let binding, prepared.binding != binding {
+            await bindingChanged?()
+            throw LocalDispatchRefusal.bindingMismatch
+        }
         if let audit {
             do {
                 _ = try await audit.record(.pushed(tool: from == nil ? "ambient-dispatch" : "ambient-dispatch-routed",
                                                    target: prepared.target, bytes: prepared.text.utf8.count))
             } catch { throw LocalReplyRefusal.auditFailure }
         }
-        return try await listener.dispatchAmbient(prepared, reference: reference, selection: selection,
-                                                  routedFrom: from)
+        let change = AmbientBindingChange()
+        do {
+            let retained = RetainedDeliveryStages(generation: from == nil ? policyGeneration : nil)
+            return try await AmbientBindingChange.$current.withValue(change) {
+                try await HostSession.$ambientDeliveryStages.withValue(retained) {
+                    try await listener.dispatchAmbient(prepared, reference: reference, selection: selection,
+                                                       routedFrom: from)
+                }
+            }
+        } catch let refusal as LocalDispatchRefusal {
+            if refusal == .bindingMismatch, from == nil, change.isLiveChange { await bindingChanged?() }
+            if case .blockedByDialog = refusal {
+                let name: String
+                if let routedName = listener.authorizer.voiceRoutes?.route(for: prepared.target)?.name {
+                    name = routedName
+                } else {
+                    name = (try? await listener.host.targets().first { $0.id == prepared.target }?.name) ?? "the target"
+                }
+                refusalNotices?.dialogTarget(name)
+            }
+            throw refusal
+        }
     }
 }
 extension AmbientRightyoRouter {
@@ -1935,67 +2302,86 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// Own-target refusals (#894, #847), through the existing heard-turn and ordered, privacy-held notice path.
+    /// Per-request delivery refusals, through the existing heard-turn and ordered, privacy-held notice path.
     /// Capture sanitized rule tokens before the next request resets the per-run evidence. Never log text or turn ids.
-    fileprivate func deliveryRefused(
+    func deliveryRefused(
         on connection: UUID, target: String, listener: WebSocketListener, notices: AmbientRefusalNotices
-    ) -> @Sendable (UUID?, LocalDispatchRefusal) -> Void {
+    ) -> @Sendable (UUID?, LocalDispatchRefusal) -> Task<Void, Never> {
         return { [weak self, weak listener] request, refusal in
             let acknowledged = notices.acknowledgement
             let line: String, persona: String, event: String, token: String
-            switch refusal {
-            case .confirmationRequired:
-                line = "request requires confirmation at the Mac; nothing was sent"
-                persona = AmbientStopConfirmation.needsConfirmation
-                event = "ambient_request_refused"
-                token = "reason=confirmation_required rules=\(RightyoGuardRefusal.current?.ruleTokens ?? "none")"
-            case .capacityExceeded:
-                line = "request capacity reached; nothing was sent"
-                persona = AmbientStopConfirmation.notSent
-                event = "ambient_request_refused"
-                token = "reason=capacity_exceeded rules=none"
-            default:
-                line = HostDeliveryOutcome.inputPendingReason
+            let playNotSent: Bool
+            if case .blockedByDialog(let block, let earlier) = refusal {
+                let notice = DialogDeliveryNotice(block: block, earlierDelivered: earlier)
+                line = notice.message(target: notices.takeDialogTarget() ?? "the target")
+                playNotSent = notice.untouched
                 persona = AmbientStopConfirmation.notSent
                 event = "ambient_delivery_refused"
                 token = "reason=\(refusal.rawValue)"
+            } else {
+                playNotSent = refusal != .bindingMismatch
+                ((line, persona), (event, token)) = Self.deliveryRefusalMessage(refusal)
             }
-            notices.chain.enqueue { [weak self, weak listener] in
+            return notices.chain.queued { [weak self, weak listener] in
+                defer { AmbientSessionChangeWait.current?.finish() }
                 guard let self else { return }
                 let (shown, confirm) = await tellNotSent((line, target), after: acknowledged, on: connection,
                                                        listener: listener,
-                                                       request: request, persona: persona)
+                                                       request: request, persona: persona, playNotSent: playNotSent)
                 emit(event, connection: connection, detail: "\(token) shown=\(shown) confirm=\(confirm)")
             }
         }
     }
 
-    /// Tells the device that said a request that sent nothing (#636 slice 5c, #894), on its child's one notice chain:
+    private static func deliveryRefusalMessage(
+        _ refusal: LocalDispatchRefusal
+    ) -> ((String, String), (String, String)) {
+        switch refusal {
+        case .bindingMismatch:
+            return ((AmbientSessionChange.notice, AmbientStopConfirmation.notSent),
+                    ("ambient_delivery_refused", "reason=bindingMismatch"))
+        case .confirmationRequired:
+            return (("request requires confirmation at the Mac; nothing was sent",
+                     AmbientStopConfirmation.needsConfirmation),
+                    ("ambient_request_refused",
+                     "reason=confirmation_required rules=\(RightyoGuardRefusal.current?.ruleTokens ?? "none")"))
+        case .capacityExceeded:
+            return (("request capacity reached; nothing was sent", AmbientStopConfirmation.notSent),
+                    ("ambient_request_refused", "reason=capacity_exceeded rules=none"))
+        default:
+            return ((HostDeliveryOutcome.inputPendingReason, AmbientStopConfirmation.notSent),
+                    ("ambient_delivery_refused", "reason=\(refusal.rawValue)"))
+        }
+    }
+
+    /// Tells the device about a refused request on its child's one notice chain:
     /// after `acknowledgement`, the latest acknowledgement when the refusal came (an un-routed request is acknowledged
-    /// before it is typed, so the speaker hears the acknowledgement first), the refusal line, then "Nothing was sent.".
-    /// Returns the line's and the clip's outcome tokens. A connection already gone (`no_connection`) gets no clip either.
+    /// before it is typed, so the speaker hears the acknowledgement first), the refusal line, then an eligible clip.
+    /// Returns the line's and the clip's outcome tokens. A connection already gone (`no_connection`) gets no clip.
     private func tellNotSent(
         _ notice: (line: String, target: String), after acknowledgement: Task<Void, Never>?, on connection: UUID,
         listener: WebSocketListener?,
-        request: UUID? = nil, persona: String = AmbientStopConfirmation.notSent
+        request: UUID? = nil, persona: String = AmbientStopConfirmation.notSent, playNotSent: Bool = true
     ) async -> (shown: String, confirm: String) {
         let (line, target) = notice
         await acknowledgement?.value
+        guard AmbientSessionChangeWait.current?.isOpen != false else { return ("expired", "suppressed_effects") }
         let shown = await listener?.showRouteRefusal(line, target: target, connection: connection,
                                                       request: request)
             ?? "no_connection"
         guard shown != "no_connection" else { return (shown, shown) }
+        guard playNotSent else { return (shown, "suppressed_effects") }
         return (shown, await confirmNotSent(on: connection, target: target, listener: listener, persona: persona))
     }
 
     /// "Nothing was sent." unless the connection is private (#894, Jarvis: privacy wins). Queued on the connection's
-    /// privacy clip chain, so it can never follow a "Privacy on." decided before it. Privacy (`duck`, its internal name)
+    /// privacy clip chain, so it can never follow a "Privacy on." decided before it. Privacy (`duck`, its name)
     /// is read when it is queued and again just before it plays: `suppressed_privacy` if on at either. A privacy
     /// decision landing after that last check is caught by the connection's privacy reply hold (#913), which the entry
     /// sets with the decision and the clip's enqueue checks once, under the hold's own lock, for all its frames: none
     /// is sent once privacy is decided, also `suppressed_privacy`. A connection already marked torn down gets no clip
     /// and no chain: `no_connection`.
-    /// One whose teardown lands just before the chain is taken (its mark already pruned) gets a chain; once the clip has
+    /// One whose teardown lands before the chain is taken (its mark already pruned) gets a chain; once the clip has
     /// run, a connection with no peer left has that entry dropped, as `stop(connection:)` does, so none is left behind.
     /// A connection id never comes back, so no live connection loses its chain or a clip.
     private func confirmNotSent(
@@ -2083,7 +2469,7 @@ extension AmbientRightyoRouter {
     /// Turns duck mode on or off for `connection` (#735), as `setMedia` does, and returns how many children took it.
     /// Only a child whose RightyO advertised duck mode takes it; when none does (an older RightyO) duck mode is not
     /// entered at all, nothing else changes, and the caller tells the owner. An entry no child took while duck mode is
-    /// already on (a reloaded child not started yet) leaves it on, timeout unchanged. Duck mode taken leaves media mode.
+    /// already on (a reloaded child not started yet) leaves it on, same timeout. Duck mode taken leaves media mode.
     @discardableResult
     func setDuck(_ on: Bool, connection: UUID, reason: String, expected: UUID? = nil) -> Int {
         setDuck(on, connection: connection, reason: reason) { expected == nil || $0 == expected } ?? 0
@@ -2323,9 +2709,10 @@ extension AmbientRightyoRouter {
     /// From now on the agent's replies to `connection` are refused (S-2c), then its pending ones dropped, under the
     /// caller's lock: a privacy entry's, or a restore's (#941).
     func holdReplies(_ connection: UUID, listener: WebSocketListener?) {
+        let stop = listener?.replyAudioQueue.captureStop(connection)
         listener?.replyHold.set(true, connection: connection)
         mediaNotices.enqueue { [weak self, weak listener] in
-            let dropped = await listener?.dropPrivateReplies(connection: connection) ?? 0
+            let dropped = await listener?.dropPrivateReplies(connection: connection, stop: stop) ?? 0
             self?.emit("ambient_privacy_replies", connection: connection, detail: "dropped=\(dropped)")
         }
     }
@@ -2391,7 +2778,7 @@ extension AmbientRightyoRouter {
         state.withLock { $0.duck[connection] != nil && $0.privacy[connection]?.heardOn == true }
     }
 
-    /// Queues the clip `work` builds, given whether privacy is on, on `connection`'s chain, under the lock that reads it.
+    /// Queues the clip `work` builds, using the privacy state, on `connection`'s chain, under the lock that reads it.
     func enqueuePrivacyClip(_ connection: UUID, _ work: (Bool) -> @Sendable () async -> Void) {
         state.withLock { state in
             Self.clipChain(connection, in: &state).enqueue(work(state.duck[connection] != nil))
@@ -2420,7 +2807,7 @@ extension AmbientRightyoRouter {
     /// same step, after this entry's clip.
     func closePrivacyEntry(
         _ entry: Int, connection: UUID, target: String?
-    ) -> AmbientPrivacyClose<RightyoAmbientPipeline> {
+    ) -> (AmbientPrivacyClose<RightyoAmbientPipeline>, ReplyConnectionStopGate.Control?) {
         let (now, bound) = (privacyNow, configuration.privacyBound)
         return state.withLock { state in
             let listening = Set(Self.listening(connection, in: state).map(ObjectIdentifier.init))
@@ -2433,7 +2820,11 @@ extension AmbientRightyoRouter {
                                                                          connection: connection, target: target,
                                                                          listener: state.listener?.value))
             }
-            return close
+            let control: ReplyConnectionStopGate.Control?
+            if case .decided(let decision) = close, decision.clip != nil, state.listener?.value != nil {
+                control = ReplyConnectionStopGate.captureControl(connection)
+            } else { control = nil }
+            return (close, control)
         }
     }
 
@@ -2488,19 +2879,25 @@ extension AmbientRightyoRouter {
     func announceEntry(_ entry: AmbientPrivacyEntry, connection: UUID, target: String?,
                        listener: WebSocketListener?) async -> (String?, String) {
         guard let number = entry.entry else { return (nil, " withdrawn") }
-        let decision = await decideEntry(number, connection: connection, target: target)
+        let (decision, control) = await decideEntry(number, connection: connection, target: target)
+        defer { ReplyConnectionStopGate.complete(control) }
+        await ReplyAudioEnqueueTesting.afterPrivacyDecision?()
         for pipeline in decision.refused { await pipeline.killRefused() }
         guard let clip = decision.clip else { return (nil, decision.tokens) }
-        let playback = await listener?.stopReplyPlayback(connection: connection) ?? "no_connection"
+        // Entry already captured and marked the queue synchronously. A delayed announcement cannot mark again.
+        let playback = await listener?.stopReplyPlayback(
+            connection: connection, markQueuedAudio: false, requestStop: control
+        ) ?? "no_connection"
         return (clip, decision.tokens + " playback=\(playback)")
     }
 
     private func decideEntry(
         _ entry: Int, connection: UUID, target: String?
-    ) async -> AmbientPrivacyDecision<RightyoAmbientPipeline> {
+    ) async -> (AmbientPrivacyDecision<RightyoAmbientPipeline>, ReplyConnectionStopGate.Control?) {
         while true {
-            switch closePrivacyEntry(entry, connection: connection, target: target) {
-            case .decided(let decision): return decision
+            let (close, control) = closePrivacyEntry(entry, connection: connection, target: target)
+            switch close {
+            case .decided(let decision): return (decision, control)
             case .wait(let until):
                 await waitForPrivacy(entry, connection: connection,
                                      until: privacyEpoch.advanced(by: .milliseconds(Int64(until * 1_000) + 1)))
@@ -2586,17 +2983,85 @@ private struct DuckChange {
 /// and the state holds no pipeline, so nothing is kept alive.
 final class AmbientRunMark: Sendable {
     private let held = Mutex<AmbientDuckControl?>(nil)
+    private struct Child: Sendable { weak var pipeline: RightyoAmbientPipeline? }
+    private let child = Mutex(Child())
+    var pipeline: RightyoAmbientPipeline? {
+        get { child.withLock { $0.pipeline } }
+        set { child.withLock { $0.pipeline = newValue } }
+    }
 
     func set(_ duck: AmbientDuckControl) { held.withLock { $0 = duck } }
     var duck: AmbientDuckControl? { held.withLock { $0 } }
 }
 
-/// One child's notices of requests that sent nothing (#894 review): route refusals (#636) and pending input share one
-/// chain, so they are told in the order said, and each waits for the latest acknowledgement's task as it stood when
-/// the refusal came, so "Nothing was sent." never comes before its own request's acknowledgement.
+/// Per-dispatch evidence preserves the prior terminal refusal for unavailable targets.
+final class AmbientBindingChange: Sendable {
+    @TaskLocal static var current: AmbientBindingChange?
+    private let live = Mutex(true)
+    var isLiveChange: Bool { live.withLock { $0 } }
+    func unavailable() { live.withLock { $0 = false } }
+}
+
+/// One bounded notice attempt. Expiry revokes submission under the same lock used by peer.post, so a
+/// chain still waiting on an external acknowledgement cannot post a late notice after the ending.
+final class AmbientSessionChangeWait: Sendable {
+    @TaskLocal static var current: AmbientSessionChangeWait?
+    private struct State {
+        var open = true
+        var waiter: CheckedContinuation<Void, Never>?
+    }
+    private let state = Mutex(State())
+    private static let deadlines = DispatchQueue(label: "hail.ambient.session-change-deadline")
+    private let timeout: TimeInterval
+
+    init(timeout: TimeInterval = AmbientRightyoRouter.sessionChangeNoticeDeadline) { self.timeout = timeout }
+    var isOpen: Bool { state.withLock { $0.open } }
+
+    func submit(_ work: () -> Bool) -> Bool {
+        state.withLock { $0.open ? work() : false }
+    }
+
+    func wait() async {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let ended = state.withLock { state in
+                    guard state.open else { return true }
+                    state.waiter = continuation
+                    return false
+                }
+                if ended { continuation.resume() }
+                Self.deadlines.asyncAfter(deadline: .now() + timeout) {
+                    self.finish()
+                }
+            }
+        } onCancel: { self.finish() }
+    }
+
+    func finish() {
+        let waiter = state.withLock { state in
+            state.open = false
+            defer { state.waiter = nil }
+            return state.waiter
+        }
+        waiter?.resume()
+    }
+}
+
+/// One child's request refusals share one chain, so they are told in the order said. Each waits for the latest
+/// acknowledgement's task as it stood when the refusal came; an eligible not-sent clip follows its acknowledgement.
 final class AmbientRefusalNotices: Sendable {
     let chain = SerialTaskChain()
     private let latest = Mutex<Task<Void, Never>?>(nil)
+    // The serial consumer finishes each refused request before attempting another dispatch. Capture its spoken
+    // destination at the dispatcher, then consume it synchronously with the typed refusal and acknowledgement.
+    private let destination = Mutex<String?>(nil)
+    func dialogTarget(_ name: String) { destination.withLock { $0 = name } }
+    func takeDialogTarget() -> String? {
+        destination.withLock { name in
+            defer { name = nil }
+            return name
+        }
+    }
 
     func acknowledging(_ task: Task<Void, Never>) { latest.withLock { $0 = task } }
     var acknowledgement: Task<Void, Never>? { latest.withLock { $0 } }
@@ -2748,3 +3213,118 @@ final class ProbeAnswer: Sendable {
     }
 }
 #endif
+
+extension WebSocketListener {
+    /// Prepare the whole confirmation off the router lock, then recheck device-stop authority at the final enqueue.
+    func confirmAmbientStop(
+        connection: UUID, target: String, clip: AmbientAckClip,
+        admit: @Sendable (@Sendable () -> Bool) -> Bool
+    ) async -> String {
+        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
+            return "no_connection"
+        }
+        guard let frames = await peer.session.acknowledgementFrames(clip, target: target) else { return "not_ready" }
+        var tickets: [PreparedWebSocketReply] = []
+        for frame in frames {
+            guard let ticket = await peer.prepareReplyPublication(
+                frame, onLateSuccess: lateEchoObservation(frame)
+            ) else {
+                return "refused"
+            }
+            tickets.append(ticket)
+        }
+        let prepared = tickets
+        let suppressed = Mutex(false)
+        guard await peer.session.enqueueRequestlessClip(frames, enqueue: {
+            let checked = Mutex(false)
+            let result = admit {
+                checked.withLock { $0 = true }
+                return ReplyConnectionStopGate.commit(connection) { prepared.allSatisfy { $0.enqueue() } }
+            }
+            if !checked.withLock({ $0 }) { suppressed.withLock { $0 = true } }
+            return result
+        }) else { return suppressed.withLock { $0 } ? "device_stopped" : "refused" }
+        for (ticket, frame) in zip(prepared, frames) {
+            let result = await ticket.result()
+            guard await peer.replySendSucceeded(result) else { return "refused" }
+            ambient?.observeReply(frame)
+        }
+        return "sent"
+    }
+}
+
+struct VoicePlaybackStopResult {
+    let frame: Frame?
+    /// Whole-reply ledger entries; capable mute excludes retained requests with audio-only retirement.
+    let stopped: [UUID]
+    var targets: Set<String>?
+    var coalesced = false
+}
+
+extension HostSession {
+    /// Retire on every report. Only the redundant outbound frame uses the last accepted stop's fixed window.
+    func stopReplyPlayback(
+        voiceStopAt now: ContinuousClock.Instant?, queue: ReplyAudioQueue? = nil,
+        stop: ReplyAudioQueue.Stop? = nil, requestCutoff: UInt64? = nil, preservingRequests: Bool = false
+    ) -> VoicePlaybackStopResult {
+        guard let now else { return stopReplyPlayback(queue: queue, stop: stop, requestCutoff: requestCutoff,
+            preservingRequests: preservingRequests) }
+        guard case .ready = state else { return VoicePlaybackStopResult(frame: nil, stopped: []) }
+        let previous = acceptedVoiceStop
+        let coalesced = previous.map {
+            $0.at.duration(to: now) < .seconds(1) && $0.revision == replyFlightRevision
+        } ?? false
+        let result = stopReplyPlayback(queue: queue, stop: stop, requestCutoff: requestCutoff,
+            preservingRequests: preservingRequests)
+        // Retirement also writes the ledger; retain its new revision without sliding the accepted timestamp.
+        acceptedVoiceStop = (coalesced ? previous?.at ?? now : now, replyFlightRevision)
+        return VoicePlaybackStopResult(frame: coalesced ? nil : result.frame,
+                                       stopped: result.stopped, targets: result.targets, coalesced: coalesced)
+    }
+}
+
+extension WebSocketListener {
+    /// Membership and the synchronous state mutation share the listener's teardown actor boundary.
+    func withLiveConnection<Result: Sendable>(
+        connection: UUID, _ body: @Sendable () -> Result
+    ) -> Result? {
+        guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }),
+              !peer.replyTransport.isRetired else { return nil }
+        return body()
+    }
+}
+
+extension AmbientRightyoRouter {
+    private func logVoiceStopIgnore(_ reason: String, connection: UUID) async {
+        let listener = state.withLock { $0.listener?.value }
+        let detail = await listener?.withLiveConnection(connection: connection) { [self] in
+            state.withLock { state -> String? in
+                guard !state.closed.contains(connection) else { return nil }
+                return state.voiceStopLogs[connection, default: VoiceStopLogWindow()]
+                    .detail(reason: reason, at: configuration.voiceStopClock())
+            }
+        }
+        if let detail, let detail { emit("ambient_voice_stop_ignored", connection: connection, detail: detail) }
+    }
+}
+
+extension AmbientRightyoRouter {
+    private func registerStopConfirmation(_ token: UUID, connection: UUID) -> String? {
+        state.withLock { state in
+            guard !state.closed.contains(connection), state.latest[connection] != nil else {
+                return "connection_closed"
+            }
+            if let stopped = state.deviceVoiceStops[connection],
+               stopped.duration(to: configuration.voiceStopClock()) < .seconds(10) { return "device_stopped" }
+            state.stopConfirmations[connection, default: []].insert(token)
+            return nil
+        }
+    }
+
+    private func removeStopConfirmation(_ token: UUID, connection: UUID) {
+        state.withLock { state in
+            state.stopConfirmations[connection]?.remove(token)
+            if state.stopConfirmations[connection]?.isEmpty == true { state.stopConfirmations[connection] = nil }
+        }
+    }
+}

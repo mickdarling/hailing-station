@@ -147,6 +147,7 @@ final class PublisherCheckpoint: Sendable {
 }
 
 actor PublisherEndpointRecorder: HostReplyPublishing {
+    private let audioQueue = ReplyAudioQueue()
     private(set) var frames: [Frame] = []
     let blockAt: Int?
     private var continuation: CheckedContinuation<Void, Never>?
@@ -155,6 +156,25 @@ actor PublisherEndpointRecorder: HostReplyPublishing {
         frames.append(frame)
         if frames.count == blockAt { await withCheckedContinuation { continuation = $0 } }
         return 1
+    }
+    /// This fixture models the current endpoint contract without inventing audio during enqueue/check probes.
+    func replyAudio(_ request: LocalReplyAudioRequest) async throws -> LocalReplyAudioReport {
+        guard let frame = request.frame, case .audio = frame.payload else {
+            throw LocalReplyRefusal.invalidReplyPayload
+        }
+        if request.action == "enqueue", request.ticket == nil {
+            return .init(ticket: try audioQueue.ticket(frame: frame))
+        }
+        guard let ticket = request.ticket, audioQueue.valid(ticket) else {
+            throw LocalReplyRefusal.invalidReplyPayload
+        }
+        switch request.action {
+        case "check": return .init()
+        case "publish":
+            _ = try await publish(frame)
+            return .init()
+        default: throw LocalReplyRefusal.invalidReplyPayload
+        }
     }
     func release() { continuation?.resume(); continuation = nil }
 }

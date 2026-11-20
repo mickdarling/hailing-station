@@ -12,16 +12,29 @@ It does not add terminal authentication or TLS. The approved owner-key and APNs 
 push installation is supplied here. The queue alone, and a successful card send, are never hearing proof.
 
 The host chooses the live ambient connection, otherwise the exact target's current last-input connection.
-Capabilities, selection generation, current target policy, registry binding, global privacy, quiet and media
-are checked before publication and again at enqueue. Cooperative provider binding leases remain leases;
-legacy tmux binding validation remains a fresh listing snapshot, as in the existing requestless reply path.
+Capabilities, selection generation, current target policy, registry binding and quiet
+are checked before publication and again at enqueue. Global privacy also gates spoken/action output.
+Cooperative provider binding leases remain leases; legacy tmux binding validation remains a fresh listing
+snapshot, as in the existing requestless reply path.
 An ambiguous, missing, incapable or unavailable recipient leaves the update held. No voice request is borrowed.
 
 Cards enter the attributed session conversation once per host/update identity, with bounded receipts and history.
 Enrolled progress/completion cards also carry their exact task identifier as unspoken metadata.
-Private updates are dropped and held updates are purged. Privacy entry followed by exit cannot restore a delayed
-report or prepared frame. Ordinary `info` waits for an interaction or playback-pause drain; explicitly enrolled
-cadence reports can show their card without waiting for another owner request.
+With speech configured, private updates are dropped and held updates are purged; prepared frames cannot cross
+privacy epochs. With speech `not_configured`, #1249 delivers ordinary (non-task) silent info immediately in privacy,
+meeting and media modes. Task progress and completion reports keep their privacy epochs, purge rules and publication
+gates unchanged, with or without a renderer. Only explicit notify quiet holds it; clearing quiet retries delivery. Privacy protects the room's
+audio, and meeting participants do not see the owner's visual cards. A card held without a recipient retries
+when ambient listening supplies one or admitted input establishes a last-input recipient. Every submission
+attempts delivery immediately, including between a reply's audio frames. Visual content arrives independently
+of full, ordered voice playback. The final handoff validates the current audience while holding its routing
+locks through transport enqueue; an audience change retains the card for a fresh offer to the new device. Media, requests,
+finalized turns and owner speech do not hold these visual-only cards. Source authority and fresh final-enqueue
+recipient/policy checks remain mandatory. Action cards and configured speech keep main's existing mode rules.
+Every enabled drain attempt emits `session_update_drained` with
+`trigger=<asked|interaction|natural_pause|immediate|hold_cleared|recipient_changed> count=N`, including zero when blocked
+or empty. See [host operations](host-operations.md#session-updates-opt-in-609) and the
+[synthetic immediate-delivery record](testing/session-update-immediate.md). This is not installation or physical proof.
 
 ## Speech admission
 

@@ -75,6 +75,5 @@ extension HostSession {
     func seedStageOrderSegment(_ reply: UUID) {
         peerCapabilities.insert(ReplySegments.capability)
         repliesInFlight.append(reply)
-        segmentedReplies.insert(reply)
     }
 }

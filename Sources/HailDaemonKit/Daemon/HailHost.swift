@@ -3,13 +3,44 @@
 import Foundation
 import Synchronization
 public import HailProtocol
-public enum HostError: Error, Equatable, Sendable {
+public enum HostError: Error, Equatable, Sendable, CustomStringConvertible {
     case unknownTarget(String)
     case adapterUnavailable(kind: String, reason: String)
     case refused(SanitizeError)
     case denied(Denial)
-    case partial(delivered: [String], reason: String)
+    case partial(delivered: [String], reason: HostPartialReason)
     case policyUnavailable(String)
+
+    /// Retains source compatibility for existing literals, interpolations and String variables.
+    public static func partial(delivered: [String], reason: String) -> Self {
+        .partial(delivered: delivered, reason: .text(reason))
+    }
+
+    public var description: String {
+        switch self {
+        case .unknownTarget(let target): "unknownTarget(\(String(reflecting: target)))"
+        case .adapterUnavailable(let kind, let reason):
+            "adapterUnavailable(kind: \(String(reflecting: kind)), reason: \(String(reflecting: reason)))"
+        case .refused(let reason): "refused(\(String(reflecting: reason)))"
+        case .denied(let denial): "denied(\(denial))"
+        case .partial(let delivered, let reason):
+            "partial(delivered: \(delivered), reason: \(String(reflecting: reason.description)))"
+        case .policyUnavailable(let reason): "policyUnavailable(\(String(reflecting: reason)))"
+        }
+    }
+}
+
+/// Preserves structured adapter evidence while retaining the existing CLI representation.
+public enum HostPartialReason: Sendable, Equatable, CustomStringConvertible {
+    case text(String)
+    case dialog(DialogBlock)
+
+    public var description: String {
+        switch self {
+        case .text(let text): text
+        case .dialog(let block): "\(AdapterError.blockedByDialog(block))"
+        }
+    }
 }
 final class ObservationCleanup: Sendable {
     private let lease: Mutex<ProviderObservation?>
@@ -28,6 +59,7 @@ private struct HostDispatchRequest: Sendable {
     let confirmedHash: String?
     let expectedBinding: String?
     let turn: ProviderTurnContext?
+    let origin: DeliveryOrigin
     var policyGeneration: TargetPolicyGeneration?
     let heldScope = HeldSendScope.current
     let taskHandoff = TaskProgressWakeScope.beforeHandoff
@@ -82,6 +114,7 @@ public actor HailHost {
     nonisolated private let heldLockdown = Mutex(false)
     nonisolated let targetPolicy: TargetPolicyAuthority
     private let replyPublicationAuthority = ReplyPublicationAuthority()
+    private let voiceGuardLog: @Sendable (String) -> Void
     private var evaluator: PolicyEvaluator
     private var limiter = RateLimiter()
     private var pending: [String: ContinuousClock.Instant] = [:]
@@ -90,7 +123,8 @@ public actor HailHost {
     public init(
         registry: Registry, sanitizing: SanitizePolicy = SanitizePolicy(), store: any PolicyStore,
         confirmationWindow: Duration = HailHost.confirmationWindow,
-        requestNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
+        requestNow: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+        voiceGuardLog: (@Sendable (String) -> Void)? = nil
     ) throws {
         self.registry = registry
         self.sanitizing = sanitizing
@@ -102,6 +136,7 @@ public actor HailHost {
         window = confirmationWindow
         heldNoticeWindow = min(confirmationWindow, .seconds(3_600))
         self.requestNow = requestNow
+        self.voiceGuardLog = voiceGuardLog ?? { FileHandle.standardError.write(Data(($0 + "\n").utf8)) }
         var loaded = Policy()
         do {
             loaded = try store.load()
@@ -117,6 +152,13 @@ public actor HailHost {
     public func targets() async throws -> [TargetInfo] { try await registry.targets() }
     /// Kinds that failed to list on the most recent `targets()` call, with the reason.
     public func listingFailures() async -> [String: String] { await registry.lastFailures }
+    /// A single actor turn reads effective memory only; status never refreshes or admits delivery.
+    public var voiceGuardsStatus: LocalVoiceGuardsReport {
+        let value: LocalVoiceGuardsReport.Value = policyFailure != nil ? .unusable
+            : (policy.voiceGuards == .on ? .on : .off)
+        return LocalVoiceGuardsReport(value: value, enforced: true)
+    }
+
     public var currentPolicy: Policy { policy }
     public nonisolated var policySummary: String { store.summary }
     /// In-memory policy only, not a registry/binding lease or recipient grant. No suspension occurs
@@ -135,7 +177,8 @@ public actor HailHost {
         expectedBinding: String? = nil
     ) async throws -> SendOutcome {
         try await dispatch(text, request: HostDispatchRequest(
-            target: id, device: device, confirmedHash: confirmedHash, expectedBinding: expectedBinding, turn: nil
+            target: id, device: device, confirmedHash: confirmedHash,
+            expectedBinding: expectedBinding, turn: nil, origin: .ordinary
         ))
     }
 
@@ -145,7 +188,7 @@ public actor HailHost {
     ) async throws -> SendOutcome {
         try await dispatch(text, request: HostDispatchRequest(
             target: context.binding.targetID, device: device, confirmedHash: confirmedHash,
-            expectedBinding: context.binding.sessionID, turn: context
+            expectedBinding: context.binding.sessionID, turn: context, origin: .ordinary
         ))
     }
 
@@ -200,18 +243,22 @@ extension HailHost {
         try Task.checkCancellation()
         let guardLines = try screenPaste(&lines)
         var request = DeliveryRequest(
-            target: id, binding: listed.binding, lines: lines, device: dispatch.device, guardLines: guardLines
+            target: id, binding: listed.binding, lines: lines, device: dispatch.device, guardLines: guardLines,
+            origin: dispatch.origin
         )
         // No suspension from here to the first evaluation: the consumed token cannot go stale in between.
         let confirmed = HeldSendScope.current == nil ? consume(dispatch.confirmedHash, for: request) : false
         let confirmedRevision = policyRevision
         var delivered: [String] = []
+        var skipped: [GuardHit] = []
+        defer { logSkippedGuards(skipped) }
         for (index, line) in lines.enumerated() {
             try requireCurrentLine(delivered, index: index, policyGeneration: dispatch.policyGeneration)
             request.lines = Array(lines[index...])
             let evaluation = evaluator.evaluateWithEvidence(
                 request, lockdown: lockdown.isOn, limiter: limiter, now: requestNow()
             )
+            skipped.append(contentsOf: skippedGuards(in: evaluation, request: request))
             var decision = evaluation.decision
             let heldConfirmation: Bool
             if HeldSendScope.current != nil, case .confirm = decision {
@@ -245,6 +292,24 @@ extension HailHost {
         }
         return .delivered(delivered)
     }
+    private func skippedGuards(in evaluation: PolicyEvaluation, request: DeliveryRequest) -> [GuardHit] {
+        guard request.origin == .ambient, policy.voiceGuards == .off,
+              evaluation.decision == .deliver else { return [] }
+        return evaluation.guardOutcomes
+    }
+
+    /// One record per request, from existing evaluations only. Timeouts never claim a match.
+    private func logSkippedGuards(_ outcomes: [GuardHit]) {
+        guard !outcomes.isEmpty else { return }
+        let matches = Set(outcomes.filter { $0.outcome == .match }.map(\.name)).sorted()
+        let timeouts = Set(outcomes.filter { $0.outcome == .timeout }.map(\.name)).sorted()
+        var event: [String: Any] = ["event": "voice_guard_skipped", "rules": matches]
+        if !timeouts.isEmpty { event["timeout"] = true; event["timeoutRules"] = timeouts }
+        guard let data = try? JSONSerialization.data(withJSONObject: event, options: [.sortedKeys]),
+              let line = String(data: data, encoding: .utf8) else { return }
+        voiceGuardLog(line)
+    }
+
     private func confirms(_ evaluation: PolicyEvaluation, confirmed: Bool) -> Bool {
         guard confirmed, case .confirm = evaluation.decision else { return false }
         guard let previous = HeldSendScope.current?.entry.readBack.guardOutcomes else { return true }
@@ -260,12 +325,13 @@ extension HailHost {
 
     func sendAuthorized(
         _ text: String, policyGeneration: TargetPolicyGeneration, from device: String,
-        expectedBinding: String?, context: ProviderTurnContext?, confirmedHash: String? = nil
+        expectedBinding: String?, context: ProviderTurnContext?, confirmedHash: String? = nil,
+        origin: DeliveryOrigin = .ordinary
     ) async throws -> SendOutcome {
         try await dispatch(text, request: HostDispatchRequest(
             target: policyGeneration.target, device: device, confirmedHash: confirmedHash,
             expectedBinding: expectedBinding ?? policyGeneration.binding, turn: context,
-            policyGeneration: policyGeneration
+            origin: origin, policyGeneration: policyGeneration
         ))
     }
 
@@ -442,6 +508,9 @@ extension HailHost {
         }
         if error is CancellationError {
             return HostError.partial(delivered: delivered, reason: "delivery cancelled")
+        }
+        if case AdapterError.blockedByDialog(let block) = error {
+            return HostError.partial(delivered: delivered, reason: .dialog(block))
         }
         if error is AdapterError { return HostError.partial(delivered: delivered, reason: "\(error)") }
         return HostError.partial(delivered: delivered, reason: "adapter delivery failed")

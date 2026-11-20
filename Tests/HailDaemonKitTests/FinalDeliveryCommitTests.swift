@@ -69,9 +69,8 @@ import Testing
         #expect(events.withLock { $0.isEmpty })
         await rig.adapter.completion.resume()
         _ = try await delivery.value
-        #expect(events.withLock { $0 } == ["stopped", "reply_backstop", "session_update_interaction"])
-        #expect(await rig.session.segmentedReplies.isEmpty)
-        #expect(await rig.session.stoppedReplies.contains(reply))
+        #expect(events.withLock { $0 } == ["session_update_interaction"])
+        #expect(!(await rig.session.stoppedReplies.contains(reply)))
         await rig.listener.stop()
     }
 

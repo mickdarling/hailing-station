@@ -160,6 +160,9 @@ public final class RightyoAmbientPipeline: Sendable {
         /// How long a child has to emit `started` while privacy is wished for before it is killed (and, until then, it
         /// hears no audio).
         public var startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline
+        /// Monotonic gap accounting clock; tests advance it without waiting.
+        var gapClock: @Sendable () -> ContinuousClock.Instant = { .now }
+        var onGapFill: (@Sendable (String) -> Void)?
         /// How long a child has to ack each `{"duck":true}` (#735 S-8) before it is killed and refused. Not
         /// configurable: tests only shorten it.
         var ackDeadline: TimeInterval = RightyoAmbientPipeline.ackDeadline
@@ -185,6 +188,14 @@ public final class RightyoAmbientPipeline: Sendable {
     /// The producer session id handed to the child and required on every event: `hail-<lowercase uuid>`.
     public let session: String
     private let child: RightyoChildProcess
+    private struct GapProgress {
+        var last: Int?
+        var first: ContinuousClock.Instant?
+        var writtenDuration = Duration.zero
+    }
+    private let lastForwardedSequence = Mutex(GapProgress())
+    private let gapClock: @Sendable () -> ContinuousClock.Instant
+    private let gapLog: AmbientGapLog
     private let consumer: RightyoInputConsumer
     let requestOutcomes: AmbientRequestOutcomes
     private let onDismiss: (@Sendable (RightyoDismissReceipt) -> Void)?
@@ -244,6 +255,8 @@ public final class RightyoAmbientPipeline: Sendable {
         (self.duck, onDuckUnsupported) = (duck, configuration.onDuckUnsupported)
         (startDeadline, startsPrivate) = (configuration.startDeadline, configuration.startPrivate)
         ackDeadline = configuration.ackDeadline
+        gapClock = configuration.gapClock
+        gapLog = AmbientGapLog(emit: configuration.onGapFill)
         onVoiceDestination = configuration.onVoiceDestination
         (onVoiceRouteRefused, onDeliveryRefused) = (configuration.onVoiceRouteRefused, configuration.onDeliveryRefused)
         acknowledgement = relay
@@ -263,15 +276,15 @@ public final class RightyoAmbientPipeline: Sendable {
     @discardableResult public func reportMedia(_ on: Bool) -> Bool { child.reportMedia(on) }
 
     /// Ends the audio (EOF after queued audio is written); the child then emits `stopped` and `run` returns.
-    public func finishInput() { requestOutcomes.close(); child.closeInput() }
+    public func finishInput() { gapLog.flush(); requestOutcomes.close(); child.closeInput() }
 
     /// Tears the child down (EOF, then SIGTERM, then SIGKILL) and waits until it is reaped.
-    public func stop() async { requestOutcomes.close(); await child.stop() }
+    public func stop() async { gapLog.flush(); requestOutcomes.close(); await child.stop() }
 
     /// The same teardown with short graces (#366): EOF, SIGTERM after `grace`, SIGKILL after `grace` more. For a
     /// retired child that must make room for a new one at once; a dispatch it has not yet made is lost.
     public func stop(grace: TimeInterval) async {
-        requestOutcomes.close(); await child.stop(eofGrace: grace, termGrace: grace)
+        gapLog.flush(); requestOutcomes.close(); await child.stop(eofGrace: grace, termGrace: grace)
     }
 
     public var counters: RightyoChildProcess.Counters { child.counters }
@@ -285,6 +298,7 @@ extension RightyoAmbientPipeline {
     /// Consumes the child's events until it ends. Returns after a clean terminal session event and EOF; throws
     /// the first decode, consumer, dispatch or transport error. Either way the child is stopped and reaped.
     public func run() async throws -> Summary {
+        defer { gapLog.flush() }
         let deadline = armStartDeadline()
         // Ended before the ack deadlines close (#735 S-8): one already past its cancel check then finds the run over
         // and says no stray `unavailable` after it.
@@ -376,6 +390,29 @@ extension RightyoAmbientPipeline {
         return child.write(pcm)
     }
 
+    /// Sequence-aware ambient input only. Suppressed input advances nothing; a later gap remains bounded.
+    /// Confirmed-private input keeps its existing in-memory exit recognition, without synthesizing silence.
+    func send(audio pcm: Data, sequence: Int) -> (accepted: Bool, gap: AmbientGapFill?) {
+        let (result, detail) = lastForwardedSequence.withLock { progress ->
+            ((accepted: Bool, gap: AmbientGapFill?), String?) in
+            guard duck.mayHearAudio else { return ((true, nil), nil) }
+            let now = gapClock()
+            let elapsed = progress.first.map { now - $0 } ?? .zero
+            // Persist the three-second bucket depth, including on refused writes: old credit expires.
+            progress.writtenDuration = max(progress.writtenDuration, elapsed - .seconds(3))
+            let gap = duck.active ? nil : AmbientGapFill(after: progress.last, sequence: sequence,
+                                                        budget: elapsed - progress.writtenDuration)
+            guard child.input.write(pcm, leadingSilenceBytes: gap?.bytes ?? 0) else { return ((false, nil), nil) }
+            progress.first = progress.first ?? now
+            progress.writtenDuration += .nanoseconds(Int64(pcm.count + (gap?.bytes ?? 0)) * 31_250)
+            progress.last = max(progress.last ?? sequence, sequence)
+            let detail = gapLog.record(gap, at: now)
+            return ((true, gap.flatMap { $0.bytes > 0 ? $0 : nil }), detail)
+        }
+        if let detail { gapLog.emit?(detail) }
+        return result
+    }
+
     /// Sets meeting mode (#735 MM-D, rightyo#227) in this stream's RightyO over the same control descriptor, only for a
     /// child whose `started` advertised `"meeting": {"version": 1}`; true when that child now holds `on`. Asked before
     /// `started`, the wish is kept and written then, if advertised. False for any other child, before `started`, or
@@ -415,7 +452,7 @@ extension RightyoAmbientPipeline {
     @discardableResult public func reportDuck(_ on: Bool) -> Bool {
         requestOutcomes.setPrivate(on)
         return duck.report(on, write: { [child] on in child.reportDuck(on) }, written: armAckDeadline,
-                    restart: armFreshStartDeadline)
+                           restart: armFreshStartDeadline)
     }
 
     /// True once this child keeps the privacy wished for (#735 S-8: its ack came, or it started private); false when
@@ -1473,6 +1510,40 @@ final class AmbientOverheardRelay: Sendable {
             guard let index = state.held.firstIndex(where: { $0.0 == utterance }) else { return nil }
             return state.held.remove(at: index).1
         }
+    }
+}
+
+/// A separate log lock allows end-of-stream flushing without taking the send/sequence lock.
+final class AmbientGapLog: Sendable {
+    private struct State {
+        var since: ContinuousClock.Instant?
+        var fills = 0, missing = 0, milliseconds = 0, capped = 0
+        mutating func take() -> String? {
+            guard fills > 0 else { return nil }
+            defer { (fills, missing, milliseconds, capped) = (0, 0, 0, 0) }
+            return "fills=\(fills) missing=\(missing) filled_ms=\(milliseconds) capped=\(capped)"
+        }
+    }
+    private let state = Mutex(State())
+    let emit: (@Sendable (String) -> Void)?
+    init(emit: (@Sendable (String) -> Void)?) { self.emit = emit }
+    func record(_ gap: AmbientGapFill?, at now: ContinuousClock.Instant) -> String? {
+        state.withLock { state in
+            if state.since == nil { state.since = now }
+            if let gap, gap.bytes > 0 {
+                state.fills += 1
+                // Saturate hostile sequence totals, including repeated Int.max jumps through direct callers.
+                state.missing += min(gap.missing, Int.max - state.missing)
+                state.milliseconds += gap.segments * 100
+                if gap.segments < gap.missing { state.capped += 1 }
+            }
+            guard let since = state.since, now - since >= .seconds(1) else { return nil as String? }
+            state.since = now
+            return state.take()
+        }
+    }
+    func flush() {
+        if let detail = state.withLock({ $0.take() }) { emit?(detail) }
     }
 }
 #endif

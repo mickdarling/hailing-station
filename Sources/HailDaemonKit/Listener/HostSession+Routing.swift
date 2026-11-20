@@ -17,11 +17,18 @@ enum HostDeliveryOutcome: Sendable, Equatable {
     /// The target may have received the text, but no reply ownership survived the handoff.
     case unowned(String)
     case refused(ErrorCode, String)
+    case blockedByDialog(DialogBlock, earlierDelivered: Int)
     /// The target's input already holds unsent text (#894): nothing was handed off. Its own name and plain reason,
     /// never the text; on the wire it is still `not_allowed`, so the protocol is unchanged.
     case inputPending(reason: String)
 
     static let inputPendingReason = "the target's input already holds unsent text"
+}
+
+/// Fixed daemon safety wording; neither this notice nor a restart grants target authority.
+enum AmbientSessionChange {
+    static let notice = "The voice target's session changed. Reconnecting."
+    static let stopped = "ambient stopped: target session changed"
 }
 
 /// One input's reply owner. A contextual adapter receives `context` with the text. A host-minted ambient reference on
@@ -46,6 +53,9 @@ extension HostSession {
     /// ambient input, so a delivered handoff makes this connection its target's last input device. The local
     /// socket's `dispatch` kind and `haild rightyo --reply-to` never set it.
     @TaskLocal static var ambientInputDispatch = false
+
+    /// The stream's immutable admission authority, separate from unrelated task-progress contributions.
+    @TaskLocal static var ambientDeliveryStages: RetainedDeliveryStages?
 
     /// The originating session negotiated held requests; host evaluation may retain rate-limit read-backs.
     @TaskLocal static var ambientHeldRequests = false
@@ -84,11 +94,27 @@ extension HostSession {
         // Refresh before minting an opening grant; the gate still rechecks after the actor hop (#1028).
         if opening { host.targetPolicy.snapshot(for: gate.target).observePolicy() }
         let policyGeneration = host.targetPolicy.snapshot(for: gate.target)
-        // A child can refuse startup before admission returns; its error belongs to this attempt's grant.
-        if opening { ambientPolicyGeneration = policyGeneration.wasGranted ? policyGeneration : nil }
+        var binding: String?
+        if opening, target == gate.target, selection.target == gate.target,
+           AmbientAudioGate.hasAmbientShape(audio), policyGeneration.wasGranted {
+            // Resolve once for this admission, against the original owner grant; never use a startup hint.
+            let resolved = await ambientBinding(policyGeneration)
+            binding = resolved.binding
+            guard selection == AmbientSelection(target: selectedTarget, generation: selectionGeneration) else {
+                return failure(.notAllowed, AmbientAudioGate.reselectedMessage, close: false, version: version)
+            }
+            guard binding != nil else {
+                // Build this refusal under the opening grant without replacing an older child's authority.
+                ambientPolicyGeneration = policyGeneration
+                defer { ambientPolicyGeneration = retained }
+                return ambientBindingRefusal(changed: resolved.changed, version: version)
+            }
+            // A child can refuse startup before admission returns; its error belongs to this attempt's grant.
+            ambientPolicyGeneration = policyGeneration
+        }
         switch await gate.admission(
             audio, frameTarget: target, selection: selection, connection: connectionID, device: peerDeviceKind,
-            policyGeneration: policyGeneration
+            policyGeneration: policyGeneration, binding: binding
         ) {
         case .admitted:
             if opening { ambientPolicyStream = audio.streamID }
@@ -96,8 +122,7 @@ extension HostSession {
         case .tookOver(let from):
             ambientPolicyGeneration = policyGeneration
             ambientPolicyStream = audio.streamID
-            guard peerCapabilities.contains(AmbientTakeOver.capability) else { return HostSessionResult(frames: []) }
-            return HostSessionResult(frames: [response(.ambientMovedHere(from: from), version: version)])
+            return ambientTakeOver(from: from, version: version)
         case .refused(let code, let message):
             // Answer under the refused attempt's grant, then preserve any older child's retained authority.
             defer { if opening { ambientPolicyGeneration = retained } }
@@ -105,11 +130,48 @@ extension HostSession {
         }
     }
 
+    private func ambientBindingRefusal(changed: Bool, version: Int) -> HostSessionResult {
+        guard changed else {
+            return failure(.notAllowed, "ambient target is not allowed — run haild targets allow on the Mac",
+                           close: false, version: version)
+        }
+        return ambientSessionChanged(version: version)
+    }
+
+    private func ambientSessionChanged(version: Int) -> HostSessionResult {
+        // The peer awaits each frame of this response batch in order; no target voice authority is acquired.
+        var frames: [Frame] = []
+        if peerCapabilities.contains(RequestRefusals.capability) {
+            frames.append(response(.error(code: .voiceRouteRefused, message: AmbientSessionChange.notice),
+                                   version: version))
+        }
+        frames.append(response(.error(code: .notAllowed, message: AmbientSessionChange.stopped), version: version))
+        return HostSessionResult(frames: frames)
+    }
+
+    private func ambientTakeOver(from: String?, version: Int) -> HostSessionResult {
+        guard peerCapabilities.contains(AmbientTakeOver.capability) else { return HostSessionResult(frames: []) }
+        return HostSessionResult(frames: [response(.ambientMovedHere(from: from), version: version)])
+    }
+
+    /// One live listing for one opening grant. Admission still compares that original generation atomically.
+    private func ambientBinding(_ generation: TargetPolicyGeneration) async -> (binding: String?, changed: Bool) {
+        let listing = try? await host.registry.listing()
+        guard generation.wasGranted, let listed = listing?.first(where: { $0.info.id == generation.target }),
+              listed.info.alive, let binding = listed.binding, !binding.isEmpty else { return (nil, false) }
+        guard binding == generation.binding else {
+            // Retired or unreadable authority keeps its existing refusal, rather than suggesting a retry.
+            return (nil, generation.performIfCurrent { true } == true)
+        }
+        return (binding, false)
+    }
+
     private func deliver(_ input: consuming AuthorizedInput, version: Int) async -> HostSessionResult {
         // A request that carried a paste (#608) and was refused as not allowed or malformed is answered with
         // `paste_refused` to a device that takes request refusals, so it ends that request and keeps the connection;
         // the message is the plain reason. Lockdown, rate limits and unknown targets keep their own codes, as for
         // spoken text. Spoken text alone, and any device without the capability, is answered as before.
+        let target = input.target
         let carriesPaste = input.carriesPaste, takesRefusals = peerCapabilities.contains(RequestRefusals.capability)
         let refusal: (ErrorCode) -> ErrorCode = { code in
             Self.refusalCode(code, carriesPaste: carriesPaste, takesRequestRefusals: takesRefusals)
@@ -128,6 +190,10 @@ extension HostSession {
             return failure(.notAllowed, message, close: false, version: version)
         case .refused(let code, let message):
             return failure(refusal(code), message, close: false, version: version)
+        case .blockedByDialog(let block, let earlier):
+            let name = await dialogTargetName(target)
+            let message = DialogDeliveryNotice(block: block, earlierDelivered: earlier).message(target: name)
+            return failure(refusal(.notAllowed), message, close: false, version: version)
         case .inputPending(let reason):
             return failure(refusal(.notAllowed), reason, close: false, version: version)
         }
@@ -142,28 +208,30 @@ extension HostSession {
     /// handoff this connection's last input to the target (#370), recorded in the same actor turn that confirmed
     /// the captured selection. A refused, unconfirmed or ownerless handoff records nothing.
     func deliver(_ input: consuming AuthorizedInput, recordsLastInput: Bool = false) async -> HostDeliveryOutcome {
+        let ambient = Self.ambientInputDispatch
+        let origin: DeliveryOrigin = ambient ? .ambient : .ordinary
         let peer = Self.deliveryPeer
-        let recordsInput = recordsLastInput || Self.ambientInputDispatch
+        let recordsInput = recordsLastInput || ambient
         guard admitsInput(to: input.target) else {
             return .refused(.notAllowed, "select the destination before speaking")
         }
         // Local dispatch's final selection check relies on no suspension before this snapshot.
         let generation = selectionGeneration
-        let takesHolds = Self.ambientInputDispatch && peerCapabilities.contains(HeldRequests.capability)
+        let takesHolds = ambient && peerCapabilities.contains(HeldRequests.capability)
         let evidence = HeldReadBackEvidence()
         do {
             try await host.requireSendPreflight()
             try input.policyGeneration.requireCurrent()
+            try requireAmbientAdmission(input)
             let owner = try await replyOwnership(for: input, generation: generation)
             // Legacy generic input has no retained record, so the captured selection is checked here and
             // again after the handoff; a caller outside the peer's serialized receive loop can race `select`.
-            guard selects(input.target, generation: generation) else {
-                if let owner { dropUncommitted(owner.context.id) }
+            guard retainsDeliverySelection(input.target, owner: owner, generation: generation) else {
                 return .selectionChanged
             }
             let outcome = try await Self.$ambientHeldRequests.withValue(takesHolds) {
                 try await HeldReadBackEvidence.$current.withValue(evidence) {
-                    try await send(input, owner: owner)
+                    try await send(input, owner: owner, origin: origin)
                 }
             }
             switch outcome {
@@ -172,7 +240,7 @@ extension HostSession {
                                  recordsInput: recordsInput, peer: peer)
             case .needsConfirmation(let readBack):
                 if let owner { dropUncommitted(owner.context.id) }
-                guard Self.ambientInputDispatch else { return .confirmationRequired }
+                guard ambient else { return .confirmationRequired }
                 guard takesHolds else {
                     await host.cancel(readBack.hash)
                     return .confirmationRequired
@@ -182,6 +250,22 @@ extension HostSession {
         } catch {
             HeldSendScope.current?.failure.record(error)
             return deliveryRefusal(error)
+        }
+    }
+
+    private func retainsDeliverySelection(_ target: String, owner: HostReplyOwnership?, generation: UUID) -> Bool {
+        guard selects(target, generation: generation) else {
+            if let owner { dropUncommitted(owner.context.id) }
+            return false
+        }
+        return true
+    }
+
+    /// A queued ambient request cannot acquire a replacement grant, even just to issue a read-back.
+    private func requireAmbientAdmission(_ input: borrowing AuthorizedInput) throws {
+        if let admitted = Self.ambientDeliveryStages?.generation,
+           !admitted.isSameGeneration(as: input.policyGeneration) {
+            throw HostError.denied(.notAllowed(input.target))
         }
     }
 
@@ -214,11 +298,22 @@ extension HostSession {
         return .held(notice)
     }
 
+    private func dialogTargetName(_ target: String) async -> String {
+        #if os(macOS)
+        if let name = authorizer.voiceRoutes?.route(for: target)?.name { return name }
+        #endif
+        return (try? await host.targets().first { $0.id == target }?.name) ?? "the target"
+    }
+
     private func deliveryRefusal(_ error: any Error) -> HostDeliveryOutcome {
         switch error {
         case AdapterError.deliveryFailed(let message) where message == PastedContent.agentOnlyRefusal:
             // The tmux pane was not running an agent (#608): said plainly, as a paste refusal the device keeps.
             return .refused(.notAllowed, PastedContent.agentOnlyRefusal)
+        case AdapterError.blockedByDialog(let block):
+            return .blockedByDialog(block, earlierDelivered: 0)
+        case HostError.partial(let delivered, .dialog(let block)):
+            return .blockedByDialog(block, earlierDelivered: delivered.count)
         case AdapterError.inputPending:
             // Unsent input (#894) keeps its own refusal apart from policy, lockdown and rebind refusals.
             return .inputPending(reason: HostDeliveryOutcome.inputPendingReason)
@@ -302,15 +397,12 @@ extension HostSession {
     }
 
     private func didNoteLastInput() {
-        if peerCapabilities.contains(ReplySegments.capability) {
-            let stopped = repliesInFlight.filter { segmentedReplies.contains($0) }
-            for reply in stopped { stopHeldReply(reply) }
-            if !stopped.isEmpty { logReplyEvent("reply_backstop", detail: "outcome=stopped count=\(stopped.count)") }
-        }
         replyEvent(WebSocketListenerEvent(event: "session_update_interaction", sessionID: connectionID))
     }
 
-    private func send(_ input: borrowing AuthorizedInput, owner: HostReplyOwnership?) async throws -> SendOutcome {
+    private func send(
+        _ input: borrowing AuthorizedInput, owner: HostReplyOwnership?, origin: DeliveryOrigin
+    ) async throws -> SendOutcome {
         let (text, device) = (input.text, input.device)
         let expectedBinding = owner?.context.binding.sessionID ?? input.expectedBinding
         let policyGeneration = input.policyGeneration
@@ -323,7 +415,8 @@ extension HostSession {
                     try await host.sendAuthorized(
                         text, policyGeneration: policyGeneration, from: device, expectedBinding: expectedBinding,
                         context: owner.flatMap { $0.contextual ? $0.context : nil },
-                        confirmedHash: HeldSendScope.current.flatMap { $0.renewOnly ? nil : $0.entry.readBack.hash }
+                        confirmedHash: HeldSendScope.current.flatMap { $0.renewOnly ? nil : $0.entry.readBack.hash },
+                        origin: origin
                     )
                 }
             }
@@ -342,7 +435,7 @@ extension HostSession {
         let request = owner.flatMap { replyRequests[$0.context.id] }
         let clock = requestClock, requiresOwner = owner != nil, createdAt = request?.createdAt
         let refuse = RetainedDeliveryStages.refusal(target: target)
-        var retained = RetainedDeliveryStages()
+        var retained = Self.ambientDeliveryStages ?? RetainedDeliveryStages()
         if let permit = request?.policyPermit {
             retained.gates[.replyPermit] = RetainedDeliveryStages.gate({ permit.performIfCurrent($0) == true },
                                                                       refusal: refuse)
@@ -469,7 +562,9 @@ extension HostSession {
                 return failure(.notAllowed, "target is unavailable or not allowed", close: false, version: version)
             }
             if selectedTarget != targetID {
-                selectionGeneration = UUID()
+                let nextGeneration = UUID()
+                selectionWillChange?(connectionID, queuedAudioStopTargets() ?? [], targetID, nextGeneration)
+                selectionGeneration = nextGeneration
                 host.heldRequests.select(selectionGeneration, connection: connectionID)
                 replyRequests.removeAll()
                 evictedForHandoff.removeAll() // The old selection's evictions can never be restored (#723).
@@ -548,5 +643,80 @@ extension HostSession {
             guard let allowed = policy.targets[listed.info.id], allowed.binding == listed.binding else { return nil }
             return listed.info
         }
+    }
+}
+
+// Queue authority lives on the request owner; local socket ticket checks never mint or restore a request.
+extension HostSession {
+    /// Matches the CLI's 35-minute watchdog plus its maximum ten-minute rate-limit extension.
+    static let replyQueueLifetime: Duration = .seconds(45 * 60)
+
+    func trackQueuedReplyAuthority() {
+        queuedReplyDeadlines = queuedReplyDeadlines.filter { id, _ in
+            replyRequests[id].map(Self.awaitingReplyAudio) == true
+        }
+        for (id, request) in replyRequests where Self.awaitingReplyAudio(request) && queuedReplyDeadlines[id] == nil {
+            guard let textAt = request.firstFrameAt else { continue }
+            queuedReplyDeadlines[id] = textAt.advanced(by: Self.replyQueueLifetime)
+        }
+        guard !queuedReplyDeadlines.isEmpty else {
+            queuedReplyAuthorityTask?.cancel()
+            queuedReplyAuthorityTask = nil
+            return
+        }
+        guard queuedReplyAuthorityTask == nil else { return }
+        queuedReplyAuthorityTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(20)) } catch { return }
+                guard await self?.renewQueuedReplyAuthority() == true else { return }
+            }
+        }
+    }
+
+    private static func awaitingReplyAudio(_ request: HostReplyRequest) -> Bool {
+        request.queuedAudioAuthority != nil && request.committed && request.textDelivered
+            && request.descriptor?.audioStreamID != nil
+            && request.audioSequence == 0 && !request.audioFinished
+    }
+
+    /// Only existing, still-current records renew. Privacy/selection drops and revoked permits are irreversible.
+    /// No frame, sequence, descriptor, pin or in-flight state is fabricated by this reservation heartbeat.
+    @discardableResult func renewQueuedReplyAuthority() -> Bool {
+        let now = requestClock()
+        for (id, deadline) in queuedReplyDeadlines {
+            guard var request = replyRequests[id], Self.awaitingReplyAudio(request) else { continue }
+            if now >= deadline {
+                replyRequests[id] = nil
+                replyEvent(WebSocketListenerEvent(event: "reply_queue_authority",
+                    detail: "reason=queue_timeout request=\(id.uuidString)"))
+                continue
+            }
+            guard ReplyConnectionStopGate.permits(request),
+                  request.queuedAudioAuthority?.isCurrent() != false, request.isCurrent(at: now),
+                  request.generation == selectionGeneration,
+                  request.descriptor.map({ !stoppedReplies.contains($0.id) }) == true else {
+                replyRequests[id] = nil
+                continue
+            }
+            let renewed = request.withAuthority {
+                let heartbeat = requestClock()
+                guard heartbeat < deadline, ReplyConnectionStopGate.permits(request),
+                      request.queuedAudioAuthority?.isCurrent() != false,
+                      request.isCurrent(at: heartbeat) else { return false }
+                // Before first audio these are reservation heartbeats. The stream receives its full watchdog
+                // after the last heartbeat, with the same five-minute rendering margin as a new CLI stream.
+                request.firstFrameAt = heartbeat
+                request.lastFrameAt = heartbeat
+                if request.providerTurnEndedAt != nil { request.providerTurnEndedAt = heartbeat }
+                replyRequests[id] = request
+                return true
+            }
+            if renewed != true { replyRequests[id] = nil }
+        }
+        guard !queuedReplyDeadlines.isEmpty else {
+            queuedReplyAuthorityTask = nil
+            return false
+        }
+        return true
     }
 }

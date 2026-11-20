@@ -15,7 +15,7 @@ extension AmbientWiringVoiceMuteTests {
         let fake = try FakeRightyo(Self.fixture(saying: words))
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
-        let details = Mutex<[String]>([]), diagnosis = Mutex<[String]>([])
+        let outcome = ReplyMuteOutcome(), diagnosis = Mutex<[String]>([])
         let library = AmbientAckLibrary(clips: [
             "confirmstopped": [AmbientWiringStopConfirmationTests.stopped], "confirmmuted": [Self.muted],
             "confirmunmuted": [Self.unmuted]
@@ -26,7 +26,7 @@ extension AmbientWiringVoiceMuteTests {
                 if ["ambient_refused", "ambient_ended"].contains(event.event) {
                     diagnosis.withLock { if $0.count < 16 { $0.append("\(event.event): \(event.detail ?? "")") } }
                 }
-                if event.event == "ambient_voice_mute" { details.withLock { $0.append(event.detail ?? "") } }
+                outcome.record(event)
             }
         )
         do {
@@ -38,17 +38,18 @@ extension AmbientWiringVoiceMuteTests {
             try await greetMuteSocket(socket, capabilities: capabilities)
             let stream = UUID()
             try await recipientSocketSend(audio(stream, 0), on: socket)
-            try #require(await eventually { details.withLock { !$0.isEmpty } },
+            await outcome.completed.wait()
+            try #require(!outcome.details.isEmpty,
                          "No voice-mute outcome; authored lifecycle: \(diagnosis.withLock { $0 })")
             try await check(socket)
             try await recipientSocketSend(audio(stream, 1, final: true), on: socket)
-            await env.router.settle()
+            await outcome.ended.wait()
         } catch {
             await env.listener.stop(reason: "synthetic test failure")
             throw error
         }
         await env.listener.stop(reason: "synthetic test complete")
-        return details.withLock { $0 }
+        return outcome.details
     }
     private func greetMuteSocket(_ socket: URLSessionWebSocketTask, capabilities: [String]) async throws {
         try await recipientSocketSend(sessionFrame(payload: .control(.hello(HelloInfo(
