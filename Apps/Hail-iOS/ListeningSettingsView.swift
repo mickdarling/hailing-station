@@ -98,7 +98,7 @@ struct ListeningSettingsView: View {
 
     private var maskSection: some View {
         Section {
-            Toggle("Mask ambient microphone during replies", isOn: Binding(
+            Toggle("Mask mic while speaking", isOn: Binding(
                 get: { masksDuringReplies }, set: { send(.setMaskPreference($0)) }))
                 .accessibilityIdentifier("settings.listening.mask-preference")
         } header: {
