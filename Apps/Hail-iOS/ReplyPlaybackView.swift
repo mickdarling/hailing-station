@@ -5,11 +5,18 @@ struct ReplyPlaybackView: View {
     let reply: ReplyPresentation
     @Bindable var playback: ReplyPlaybackController
 
-    private var displayedReply: ReplyPresentation { playback.presentationForControls ?? reply }
+    private var displayedReply: ReplyPresentation { playback.presentationForDisplay ?? reply }
+
+    private var controlReply: ReplyPresentation { playback.presentationForControls ?? reply }
 
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 12) {
+                if playback.displayDiffersFromControls {
+                    Label(latestReplyLabel, systemImage: "text.bubble")
+                        .font(.caption.weight(.semibold))
+                        .accessibilityLabel(latestReplyLabel)
+                }
                 // A long reply scrolls inside the card, so the one-screen iPad station never overflows (#288).
                 ViewThatFits(in: .vertical) {
                     transcript
@@ -17,11 +24,11 @@ struct ReplyPlaybackView: View {
                 }
 
                 HStack {
-                    Label(playback.statusForControls, systemImage: playbackStatusImage)
+                    Label(controlStatus, systemImage: playbackStatusImage)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(displayedReply.host) · \(displayedReply.target)")
+                    Text("\(controlReply.host) · \(controlReply.target)")
                         .font(.caption.monospaced())
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
@@ -71,6 +78,15 @@ struct ReplyPlaybackView: View {
             )
                 .frame(maxWidth: .infinity)
         }
+    }
+
+    private var latestReplyLabel: String {
+        "Latest reply · \(displayedReply.host) · \(displayedReply.target) · \(playback.status(for: displayedReply))"
+    }
+
+    private var controlStatus: String {
+        let role = playback.isReplyAudioOutputBusy ? "Now playing" : "Playback"
+        return "\(role) · \(playback.statusForControls)"
     }
 
     private var playbackStatusImage: String {

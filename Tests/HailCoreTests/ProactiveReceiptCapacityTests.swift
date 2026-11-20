@@ -16,14 +16,15 @@ import Testing
             }
             rig.privacy(true)
             if !acceptedBeforePrivacy { rig.record(original) }
-            let visibleBeforePressure = rig.store.conversation.entries.count
+            #expect(rig.store.conversation.entries.count == 1)
             for _ in 0..<ConversationLog.limit { rig.record(rig.reply()) }
-            #expect(rig.store.conversation.entries.count == visibleBeforePressure, "private cards are dropped")
+            #expect(rig.store.conversation.entries.count == ConversationLog.limit, "private cards remain visible")
+            #expect(rig.store.conversation.entries.allSatisfy { !$0.spoken })
             #expect(rig.store.proactiveSpeechReceipts.count == ConversationLog.limit)
             #expect(rig.store.proactiveSpeechReceipts.contains { $0.update == original.id && !$0.allowed })
             rig.privacy(false)
             rig.record(original)
-            #expect(rig.store.conversation.entries.count == 1)
+            #expect(rig.store.conversation.entries.count == ConversationLog.limit)
             #expect(rig.entry(original)?.text == "Synthetic build finished.")
             assertNoSpeech(original, rig: rig)
             rig.ordinaryReply()

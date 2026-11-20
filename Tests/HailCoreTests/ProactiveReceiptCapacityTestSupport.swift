@@ -7,7 +7,7 @@ import Testing
 /// Real store and playback authorization, with a scripted socket, injected capture clock and silent fake player.
 @MainActor
 final class ProactiveReceiptCapacityRig {
-    let ready: HostConnectionStoreAmbientBindingTests.ReadyStore
+    let ready: CardsArrivalRig
     let generation: UUID
     let clock: TestInstantClock
     let player: IdlePlayer
@@ -16,24 +16,14 @@ final class ProactiveReceiptCapacityRig {
     var endpoint: String { ready.endpoint.id }
 
     static func make() async throws -> ProactiveReceiptCapacityRig {
-        let ready = try await HostConnectionStoreAmbientBindingTests().readyStore(capabilities: [
-            "ping", "receive_replies", SessionUpdateCard.capability, SessionUpdateCard.audioCapability
-        ])
-        do {
-            ready.store.ambientStreaming = true
-            try await ready.socket.push(.targets([
-                TargetInfo(id: "tmux:build", kind: "tmux", name: "Build", alive: true)
-            ]))
-            try await waitUntil { await MainActor.run { ready.store.snapshots[ready.endpoint.id]?.targets.count == 1 } }
-            let generation = try #require(ready.store.snapshots[ready.endpoint.id]?.connectionGeneration)
-            return try ProactiveReceiptCapacityRig(ready: ready, generation: generation)
-        } catch {
-            await ready.store.disconnect(ready.endpoint.id)
+        let rig = try await CardsArrivalRig.make()
+        do { return try ProactiveReceiptCapacityRig(ready: rig, generation: rig.generation) } catch {
+            await rig.store.disconnect(rig.endpoint.id)
             throw error
         }
     }
 
-    private init(ready: HostConnectionStoreAmbientBindingTests.ReadyStore, generation: UUID) throws {
+    private init(ready: CardsArrivalRig, generation: UUID) throws {
         self.ready = ready
         self.generation = generation
         let clock = TestInstantClock()
