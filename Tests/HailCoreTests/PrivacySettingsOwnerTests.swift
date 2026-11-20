@@ -11,6 +11,9 @@ import Testing
     @Test func mountingUpdatingAndLeavingDoNotApplySavedPreferencesOrSendPrivacy() async throws {
         let rig = try await PrivacySettingsRig.ready(capabilities: [AmbientOverheard.capability])
         try await waitUntil { try await rig.scopes() == ["off"] }
+        try await waitUntil {
+            try await rig.socket.sentFrames().contains { $0.payload == .control(.listTargets) }
+        }
         rig.owner.settingsShowOverheard = true
         rig.owner.settingsWhoseOverheard = "everyone"
         rig.owner.preferenceWrites = []
@@ -61,7 +64,9 @@ import Testing
         owner.performPrivacySettings(.showOverheard(true))
         #expect(!owner.settingsShowOverheard && owner.connections.overheardScope == "off")
         #expect(owner.preferenceWrites.isEmpty && owner.privacySettingsRequest.overheardFailure != nil)
-        #expect(!owner.privacySettingsState().knowsWhose)
+        let state = owner.privacySettingsState()
+        #expect(!state.knowsWhose)
+        #expect(state.privacyReasons.map(\.id) == ["status-detail", "unavailable"])
     }
 
     @Test func unsupportedAndStaleRequestsNeverReachTheTransport() async throws {
@@ -93,6 +98,10 @@ import Testing
         try await waitUntil { await MainActor.run { rig.owner.privacySettingsState().privacy.pending } }
         let waiting = rig.owner.privacySettingsState()
         #expect(!waiting.privacy.isPrivate && !waiting.canRequestPrivacy)
+        #expect(waiting.unavailableReason == waiting.privacyDetail, "The existing disabling reason remains intact")
+        #expect(waiting.privacyReasons == [
+            PrivacySettingsReason(id: "status-detail", text: "Waiting for the Mac to confirm.")
+        ], "The actual rendered reason collection must publish the pending sentence exactly once")
         #expect(rig.owner.privacySettingsState(now: Date().addingTimeInterval(11)).privacy.isPrivate)
         try await rig.socket.push(.duckMode(on: false, reason: "device"))
         try await waitUntil { await MainActor.run {
