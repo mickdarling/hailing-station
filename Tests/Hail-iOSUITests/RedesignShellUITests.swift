@@ -78,7 +78,12 @@ final class RedesignShellUITests: XCTestCase {
         let leaked = identifiers.filter { identifier in !shellOwn.contains { identifier.hasPrefix($0) } }
         XCTAssertEqual(leaked, [], "\(name): the hidden station is in the accessibility tree")
         let sensitive = ["microphone", "destination", "talk", "privacy", "private", "listening", "recording"]
-        let spoken = try captures(of: #"label: '([^']*)'"#, in: tree).filter { label in
+        // Privacy is now a legitimate Settings destination. Exempt only that exact row, never other privacy text
+        // or station identifiers. The full identifier sweep above still runs on the unmodified tree.
+        let withoutPrivacyDestination = tree.split(separator: "\n").filter {
+            !($0.contains("identifier: 'station.settings.privacy'") && $0.contains("label: 'Privacy'"))
+        }.joined(separator: "\n")
+        let spoken = try captures(of: #"label: '([^']*)'"#, in: withoutPrivacyDestination).filter { label in
             sensitive.contains { label.lowercased().contains($0) }
         }
         XCTAssertEqual(spoken, [], "\(name): the hidden station's wording is in the accessibility tree")
