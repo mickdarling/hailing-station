@@ -81,6 +81,10 @@ extension RootView {
                     Label("Audio", systemImage: "waveform")
                 }
                 .accessibilityIdentifier("station.settings.audio")
+                NavigationLink { advancedSettingsOverview } label: {
+                    Label("Advanced and diagnostics", systemImage: "gearshape")
+                }
+                .accessibilityIdentifier("settings.advanced.entry")
                 NavigationLink { CaptureSafeLabsView(audioSession: audioRoutes, playback: playback) } label: {
                     Label("Labs", systemImage: "wrench.and.screwdriver")
                 }
