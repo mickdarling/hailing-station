@@ -20,6 +20,23 @@ extension StationRootView {
     }
 
     #if !SWIFT_PACKAGE
+    var targetsSettingsOverview: some View {
+        TargetsSettingsOverview(
+            store: connections, availability: stationAvailability,
+            confirmed: destination.flatMap { destination in
+                connections.snapshots[destination.hostID].map { host in
+                    TargetsSettingsConfirmation(selection: DestinationSelection(
+                        hostID: destination.hostID, hostURL: destination.endpoint.url.absoluteString,
+                        targetID: destination.target.id, targetName: destination.target.name
+                    ), generation: host.connectionGeneration)
+                }
+            }, remembered: rememberedSelection,
+            send: { navigation.apply($0) }
+        ) {
+            ConnectivityLabView(store: connections, endpointsChanged: persist)
+        }
+    }
+
     var advancedSettingsOverview: some View {
         AdvancedSettingsOverview(
             diagnostics: diagnostics, collectingHostName: connections.diagnosticsCollectingHost?.endpoint.name,

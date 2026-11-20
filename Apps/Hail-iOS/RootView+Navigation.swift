@@ -85,6 +85,10 @@ extension RootView {
                     Label("Privacy", systemImage: "hand.raised")
                 }
                 .accessibilityIdentifier("station.settings.privacy")
+                NavigationLink { targetsSettingsOverview } label: {
+                    Label("Targets", systemImage: "scope")
+                }
+                .accessibilityIdentifier("settings.targets.entry")
                 NavigationLink { advancedSettingsOverview } label: {
                     Label("Advanced and diagnostics", systemImage: "gearshape")
                 }
