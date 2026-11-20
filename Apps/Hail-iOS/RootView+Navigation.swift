@@ -47,8 +47,8 @@ extension RootView {
         }
     }
 
-    /// The station is today's, unchanged. The other sections push the same tools the station's tool links do, so
-    /// each keeps its own back navigation; none holds state of its own.
+    /// The station is today's, unchanged. Other sections keep their own back navigation. Settings' Audio overview
+    /// reads the same scene-owned model as its existing tool; none of these destinations owns an audio session.
     @ViewBuilder
     func stationSection(_ section: StationSection) -> some View {
         switch section {
@@ -77,9 +77,10 @@ extension RootView {
             .navigationTitle(section.title)
         case .settings:
             List {
-                NavigationLink { AudioDiagnosticsView(model: audioRoutes) } label: {
+                NavigationLink { audioSettingsOverview } label: {
                     Label("Audio", systemImage: "waveform")
                 }
+                .accessibilityIdentifier("station.settings.audio")
                 NavigationLink { CaptureSafeLabsView(audioSession: audioRoutes, playback: playback) } label: {
                     Label("Labs", systemImage: "wrench.and.screwdriver")
                 }
