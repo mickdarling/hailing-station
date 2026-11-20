@@ -78,32 +78,76 @@ final class NativeAudioSettingsHost {
     }
 
     func rowText(_ name: String) -> String {
-        guard let row = find("settings.audio.\(name)", in: hosting) else { return "" }
-        return text(in: row).joined(separator: " ")
+        var search = AudioSettingsAccessibilityTraversal()
+        guard let row = search.find("settings.audio.\(name)", in: hosting) else { return "" }
+        var reading = AudioSettingsAccessibilityTraversal()
+        return reading.read(row).joined(separator: " ")
     }
 
     func hide() { hosting.rootView = AnyView(Text("Closed")) }
     func finish() { window.close() }
+}
 
-    private func attribute(_ name: String, of object: NSObject) -> AnyObject? {
+/// SwiftUI virtual nodes need not subclass NSObject. Match the established native Appearance traversal:
+/// typed AX getters, navigation-order/backing/contents children, attributed strings and bounded identity dedup.
+@MainActor
+private struct AudioSettingsAccessibilityTraversal {
+    private var seen: Set<ObjectIdentifier> = []
+
+    mutating func find(_ identifier: String, in value: Any) -> (any NSObjectProtocol)? {
+        guard let object = visit(value) else { return nil }
+        if Self.text(attribute("accessibilityIdentifier", on: object)) == identifier { return object }
+        for child in children(of: object) {
+            if let found = find(identifier, in: child) { return found }
+        }
+        return nil
+    }
+
+    mutating func read(_ value: Any) -> [String] {
+        guard let object = visit(value) else { return [] }
+        let own: [Any?]
+        if let full = object as? any NSAccessibilityProtocol {
+            own = [full.accessibilityLabel(), full.accessibilityValue(), full.accessibilityTitle(),
+                   full.accessibilityValueDescription()]
+        } else {
+            own = [attribute("accessibilityLabel", on: object), attribute("accessibilityValue", on: object),
+                   attribute("accessibilityTitle", on: object), attribute("accessibilityValueDescription", on: object)]
+        }
+        var result = own.compactMap(Self.text)
+        for child in children(of: object) { result += read(child) }
+        return result
+    }
+
+    private mutating func visit(_ value: Any) -> (any NSObjectProtocol)? {
+        guard let object = value as? any NSObjectProtocol,
+              seen.count < 512, seen.insert(ObjectIdentifier(object as AnyObject)).inserted else { return nil }
+        return object
+    }
+
+    private func children(of object: any NSObjectProtocol) -> [Any] {
+        let navigation: [Any], regular: [Any], contents: [Any]
+        if let full = object as? any NSAccessibilityProtocol {
+            navigation = (full.accessibilityChildrenInNavigationOrder() ?? []).map { $0 as Any }
+            regular = full.accessibilityChildren() ?? []
+            contents = full.accessibilityContents() ?? []
+        } else {
+            navigation = (attribute("accessibilityChildrenInNavigationOrder", on: object) as? [Any]) ?? []
+            regular = (attribute("accessibilityChildren", on: object) as? [Any]) ?? []
+            contents = (attribute("accessibilityContents", on: object) as? [Any]) ?? []
+        }
+        return navigation + regular + contents
+    }
+
+    private func attribute(_ name: String, on object: any NSObjectProtocol) -> AnyObject? {
         let selector = NSSelectorFromString(name)
         guard object.responds(to: selector) else { return nil }
+        // Every selected getter returns an object; do not use perform(_:) for struct-valued AX getters.
         return object.perform(selector)?.takeUnretainedValue()
     }
 
-    private func children(of object: NSObject) -> [NSObject] {
-        ((attribute("accessibilityChildren", of: object) as? [Any]) ?? []).compactMap { $0 as? NSObject }
-    }
-
-    private func find(_ identifier: String, in object: NSObject) -> NSObject? {
-        if attribute("accessibilityIdentifier", of: object) as? String == identifier { return object }
-        return children(of: object).lazy.compactMap { find(identifier, in: $0) }.first
-    }
-
-    private func text(in object: NSObject) -> [String] {
-        let own = [attribute("accessibilityLabel", of: object) as? String,
-                   attribute("accessibilityValue", of: object) as? String].compactMap { $0 }
-        return own + children(of: object).flatMap { text(in: $0) }
+    private static func text(_ value: Any?) -> String? {
+        if let text = value as? String { return text }
+        return (value as? NSAttributedString)?.string
     }
 }
 #endif

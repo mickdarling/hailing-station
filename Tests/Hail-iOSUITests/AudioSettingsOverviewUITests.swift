@@ -29,7 +29,7 @@ final class AudioSettingsOverviewUITests: XCTestCase {
         app.navigationBars["Audio"].buttons.firstMatch.tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
         XCTAssertTrue(element("station.settings.audio", in: app).isHittable)
-        section("station", in: app).tap()
+        tapSection("station", in: app)
         XCTAssertTrue(element("station.tools", in: app).waitForExistence(timeout: 5))
     }
 
@@ -90,7 +90,7 @@ final class AudioSettingsOverviewUITests: XCTestCase {
 
     @MainActor
     private func openOverview(_ app: XCUIApplication) {
-        section("settings", in: app).tap()
+        tapSection("settings", in: app)
         let audio = element("station.settings.audio", in: app)
         XCTAssertTrue(audio.waitForExistence(timeout: 5))
         audio.tap()
@@ -113,8 +113,20 @@ final class AudioSettingsOverviewUITests: XCTestCase {
 
     @MainActor
     private func section(_ name: String, in app: XCUIApplication) -> XCUIElement {
-        let prefix = UIDevice.current.userInterfaceIdiom == .pad ? "station.section." : "station.tab."
-        return element(prefix + name, in: app)
+        // The sidebar icon shares its identifier with the title but is not hittable.
+        UIDevice.current.userInterfaceIdiom == .pad
+            ? app.staticTexts["station.section.\(name)"].firstMatch
+            : app.buttons["station.tab.\(name)"].firstMatch
+    }
+
+    @MainActor
+    private func tapSection(_ name: String, in app: XCUIApplication) {
+        let item = section(name, in: app)
+        XCTAssertTrue(item.waitForExistence(timeout: 5))
+        let shown = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: item)
+        XCTAssertEqual(XCTWaiter().wait(for: [shown], timeout: 5), .completed)
+        XCTAssertTrue(item.isHittable)
+        item.tap()
     }
 
     @MainActor

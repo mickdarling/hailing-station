@@ -34,9 +34,13 @@ reset/apply/undo and the rest of the catalog remain deferred under #1115 and the
   confirmed input, a matching preference, an active session without reported routes, and zero controller
   reads/subscriptions/mutations on mounting, updates
   or removal. Large and AX3 text categories exercise the inactive reading. No hardware backend is used.
+  Its bounded, deduplicated accessibility walk follows the native Appearance fixture's typed getters and
+  navigation-order/backing/contents children. Static Form-label publication still needs runtime qualification;
+  unavailable rendered values must fail the assertions, not become a model-only substitute.
 - `AudioSettingsOverviewUITests` follows the existing Labs opt-in/relaunch path on an unconfigured simulator,
   reads the real overview, visits and leaves the unchanged Audio session tool, and returns to Settings/Station.
   It also checks AX5 text, landscape width and reachable navigation/tools. It taps no audio or permission action.
+  Sidebar sections use their tappable static-text titles, phone tabs use buttons, and both wait to be hittable.
   Future runs retain synthetic screenshots in their test results. The existing `RedesignShellUITests` remains the
   default-off/launch-only/hidden-Station regression gate.
 - Pending host checks: compile both app targets; run these focused native and simulator suites plus the existing
