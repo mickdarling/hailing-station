@@ -21,7 +21,8 @@ final class NotificationsSettingsUITests: XCTestCase {
         let check = app.buttons["settings.notifications.check"]
         revealNotifications(check, in: app)
         check.tap()
-        let read = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label != %@", "Not checked"), object: status)
+        let read = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label != %@", "Not checked"), object: status)
         XCTAssertEqual(XCTWaiter().wait(for: [read], timeout: 5), .completed)
         let snapshot = status.label
         XCTAssertTrue(["Not determined", "Denied", "Authorized", "Provisional", "Temporary access",

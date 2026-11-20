@@ -25,7 +25,7 @@ enum NativeSettingsGalleryPage: String, CaseIterable {
         case .targets:
             AnyView(TargetsSettingsView(state: .resolve(
                 hosts: [], availability: .unconfigured, confirmed: nil, remembered: nil
-            ), send: { _ in intents.record() }) { Text("Synthetic Mac Setup destination") })
+            ), send: { _ in intents.record() }, setup: { Text("Synthetic Mac Setup destination") }))
         case .listening:
             AnyView(ListeningSettingsView(state: ListeningSettingsState(controller: nil),
                                           masksDuringReplies: false, send: { _ in intents.record() }))
@@ -59,8 +59,8 @@ enum NativeSettingsGalleryPage: String, CaseIterable {
             diagnosticsEnabled: false, bufferedEvents: 0, collectingHostName: nil,
             buildInfo: StationBuildInfo(infoDictionary: [
                 "CFBundleShortVersionString": "1.2.3", "CFBundleVersion": "456"
-            ]), send: { _ in intents.record() }
-        ) { tools(["Labs", "Turn-taking"]) })
+            ]), send: { _ in intents.record() }, tools: { tools(["Labs", "Turn-taking"]) }
+        ))
     }
 
     @MainActor

@@ -67,7 +67,8 @@ import UserNotifications
 
     @Test func knownSDKStatusesMapWithoutPerformingAnOSRead() {
         let cases: [(UNAuthorizationStatus, NotificationAccessStatus)] = [
-            (.notDetermined, .notDetermined), (.denied, .denied), (.authorized, .authorized), (.provisional, .provisional)
+            (.notDetermined, .notDetermined), (.denied, .denied),
+            (.authorized, .authorized), (.provisional, .provisional)
         ]
         for (system, expected) in cases { #expect(SystemNotificationAccessReader.map(system) == expected) }
     }

@@ -3,6 +3,12 @@ import AppKit
 import SwiftUI
 import Testing
 
+struct NativeSettingsGalleryImage {
+    let data: Data
+    let pixelsWide: Int
+    let pixelsHigh: Int
+}
+
 /// Native NSHostingView content only, never a normal station window, audio owner or application bootstrap.
 @MainActor
 final class NativeSettingsGalleryHost {
@@ -33,14 +39,14 @@ final class NativeSettingsGalleryHost {
         }
     }
 
-    func png() throws -> (data: Data, pixelsWide: Int, pixelsHigh: Int) {
+    func png() throws -> NativeSettingsGalleryImage {
         let bounds = hosting.bounds
         try #require(bounds.width > 0 && bounds.height > 0, "The native fixture must have visible content bounds")
         let bitmap = try #require(hosting.bitmapImageRepForCachingDisplay(in: bounds))
         hosting.cacheDisplay(in: bounds, to: bitmap)
         let png = try #require(bitmap.representation(using: .png, properties: [:]))
         #expect(bitmap.pixelsWide > 0 && bitmap.pixelsHigh > 0 && !png.isEmpty)
-        return (png, bitmap.pixelsWide, bitmap.pixelsHigh)
+        return NativeSettingsGalleryImage(data: png, pixelsWide: bitmap.pixelsWide, pixelsHigh: bitmap.pixelsHigh)
     }
 
     func finish() { window.close() }
