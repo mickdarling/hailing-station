@@ -57,6 +57,16 @@ final class RedesignShellUITests: XCTestCase {
         // In the shell a station tool opens its section instead of pushing under the station.
         let labs = openStationTool("Labs", in: app, opens: app.navigationBars["Settings"])
         try assertNoStation(in: app, named: "settings-shown")
+        try openAndDismissAppearance(in: app)
+        section("station", in: app, isPad: isPad).tap()
+        // The station comes back where it was left, scrolled down to its tools, since it was never remounted. So the
+        // tool just tapped is reachable again, not the header that scrolled away.
+        waitUntilHittable(labs, in: app, named: "station-restored-from-settings")
+        assertStationBack(in: app, named: "station-restored-from-settings")
+    }
+
+    @MainActor
+    private func openAndDismissAppearance(in app: XCUIApplication) throws {
         let appearance = app.buttons["station.settings.appearance"]
         XCTAssertTrue(appearance.waitForExistence(timeout: 5))
         waitUntilHittable(appearance, in: app, named: "appearance-entry")
@@ -70,11 +80,6 @@ final class RedesignShellUITests: XCTestCase {
         XCTAssertTrue(appearanceScreen.waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.navigationBars["Settings"].exists)
         try assertNoStation(in: app, named: "settings-after-appearance")
-        section("station", in: app, isPad: isPad).tap()
-        // The station comes back where it was left, scrolled down to its tools, since it was never remounted. So the
-        // tool just tapped is reachable again, not the header that scrolled away.
-        waitUntilHittable(labs, in: app, named: "station-restored-from-settings")
-        assertStationBack(in: app, named: "station-restored-from-settings")
     }
 
     /// Nothing of the station is in the accessibility tree: no identifier in its namespace beyond the shell's own, and
