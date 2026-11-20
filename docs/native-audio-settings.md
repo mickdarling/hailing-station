@@ -41,6 +41,8 @@ reset/apply/undo and the rest of the catalog remain deferred under #1115 and the
   reads the real overview, visits and leaves the unchanged Audio session tool, and returns to Settings/Station.
   It also checks AX5 text, landscape width and reachable navigation/tools. It taps no audio or permission action.
   Sidebar sections use their tappable static-text titles, phone tabs use buttons, and both wait to be hittable.
+  Tapped links and Back buttons use typed, named controls. Rotation geometry is read on the main actor; bounded
+  short drags choose their direction from the row's current frame to recover from accessibility-size overscroll.
   Future runs retain synthetic screenshots in their test results. The existing `RedesignShellUITests` remains the
   default-off/launch-only/hidden-Station regression gate.
 - Pending host checks: compile both app targets; run these focused native and simulator suites plus the existing
