@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import HailCore
 
@@ -21,6 +22,25 @@ struct StationRedesignFlagsTests {
     func aStepIsOnOnlyWhenItsValueIsExactlyTrue(stored: Stored, on: Bool) {
         let flags = StationRedesignFlags { $0 == StationRedesignStep.shell.key ? stored.value : nil }
         #expect(flags.isOn(.shell) == on)
+    }
+
+    @Test func numericPreferencesNeverEnableTheShellAfterUserDefaultsBridging() throws {
+        let suite = "StationRedesignFlagsTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let key = StationRedesignStep.shell.key
+
+        for value in [NSNumber(value: 1), NSNumber(value: 1.0)] {
+            defaults.set(value, forKey: key)
+            let numeric = StationRedesignFlags { defaults.object(forKey: $0) }
+            #expect(!numeric.isOn(.shell))
+        }
+        defaults.set(true, forKey: key)
+        let optedIn = StationRedesignFlags { defaults.object(forKey: $0) }
+        #expect(optedIn.isOn(.shell))
+        defaults.set(false, forKey: key)
+        let optedOut = StationRedesignFlags { defaults.object(forKey: $0) }
+        #expect(!optedOut.isOn(.shell))
     }
 
     @Test func keysAreNamespacedPerStep() {
