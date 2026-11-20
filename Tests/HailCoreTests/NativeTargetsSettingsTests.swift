@@ -17,8 +17,9 @@ import Testing
         var setupAppearances = 0
         let page = TargetsSettingsOverview(
             store: store, availability: .offline, confirmed: nil, remembered: nil,
-            send: { _ in destinationRequests += 1 }
-        ) { Text("Existing Mac Setup").onAppear { setupAppearances += 1 } }
+            send: { _ in destinationRequests += 1 },
+            setup: { Text("Existing Mac Setup").onAppear { setupAppearances += 1 } }
+        )
         #expect(page.store === store)
         let host = NativeStationToolHost(page)
         defer { host.finish() }
@@ -42,8 +43,8 @@ import Testing
         var intents: [StationNavigationIntent] = []
         let page = TargetsSettingsOverview(
             store: store, availability: .unconfigured, confirmed: nil, remembered: nil,
-            send: { intents.append($0) }
-        ) { Text("Existing Mac Setup") }
+            send: { intents.append($0) }, setup: { Text("Existing Mac Setup") }
+        )
         let original = store.hosts
         page.apply(.chooseDestinationInStation)
         #expect(intents == [.select(.station)])
