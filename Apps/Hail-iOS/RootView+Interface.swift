@@ -102,6 +102,7 @@ extension RootView {
 
     @ViewBuilder
     var toolLinks: some View {
+        AppearanceSettingsEntry()
         NavigationLink {
             ConnectivityLabView(store: connections, endpointsChanged: persist)
         } label: {

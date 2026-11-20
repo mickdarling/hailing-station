@@ -45,7 +45,6 @@ struct ConversationTextSizeControl: View {
 private struct ConversationTextSizePanel: View {
     let state: ConversationTextSize
     let onIntent: (ConversationTextSize.Intent) -> Void
-    @Environment(\.dynamicTypeSize) private var typeSize
     @ScaledMetric(relativeTo: .body) private var bodyScale: CGFloat = 1
 
     var body: some View {
@@ -63,7 +62,7 @@ private struct ConversationTextSizePanel: View {
                     }
                 }
                 .accessibilityElement(children: .combine)
-                actions
+                ConversationTextSizeActions(state: state, onIntent: onIntent)
                 Text("What you say and Haili's replies appear at this size.")
                     .font(.system(size: state.pointSize(bodyScale: bodyScale)))
                     .fixedSize(horizontal: false, vertical: true)
@@ -73,16 +72,25 @@ private struct ConversationTextSizePanel: View {
         }
         .frame(minWidth: 280)
     }
+}
 
-    private var actions: some View {
+/// Shared native actions for the Aa popover and Settings > Appearance.
+struct ConversationTextSizeActions: View {
+    let state: ConversationTextSize
+    let onIntent: (ConversationTextSize.Intent) -> Void
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             let row = typeSize.isAccessibilitySize
                 ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 8))
             row {
                 Button("Smaller", systemImage: "textformat.size.smaller") { onIntent(.smaller) }
                     .disabled(!state.canShrink)
+                    .accessibilityIdentifier("appearance.text-size.smaller")
                 Button("Larger", systemImage: "textformat.size.larger") { onIntent(.larger) }
                     .disabled(!state.canGrow)
+                    .accessibilityIdentifier("appearance.text-size.larger")
             }
             .buttonStyle(.bordered)
             if let note = state.boundNote {
@@ -90,6 +98,7 @@ private struct ConversationTextSizePanel: View {
             }
             Button("Reset to app default") { onIntent(.reset) }
                 .disabled(state.isDefault)
+                .accessibilityIdentifier("appearance.text-size.reset")
         }
     }
 }
