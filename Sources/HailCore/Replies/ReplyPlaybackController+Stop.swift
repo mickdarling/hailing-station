@@ -47,29 +47,6 @@ extension ReplyPlaybackController {
         status = "Stopped"
         drain()
     }
-    /// A new reply arriving while playback is paused supersedes what was paused (#321): the user paused the
-    /// last answer and asked again, so the newest reply plays. The paused reply and anything queued before the
-    /// new one are skipped and marked complete, so their later frames are ignored instead of starting them.
-    func supersedePausedReplies() {
-        guard isPaused else { return }
-        let skipped = Set(playbackOrder).union(queue).union(firstAudio.keys)
-            .union(cancelledFirstAudio).union(expiredFirstAudio)
-        cancelFirstAudio(for: skipped)
-        expiredFirstAudio.subtract(skipped)
-        if !skipped.isEmpty {
-            player.cancel()
-            playbackGeneration &+= 1
-        }
-        for key in skipped {
-            setPresentationStatus("Skipped", for: key)
-            streams[key] = nil
-            completed.insert(key)
-        }
-        queue.removeAll()
-        playbackOrder.removeAll()
-        activeKey = nil
-        isPaused = false
-    }
 }
 // First-audio arrival watches share the idle clock, scheduler and deadline (#825), independently of the player head.
 extension ReplyPlaybackController {
@@ -150,6 +127,7 @@ struct ReplyStreamKey: Hashable {
 struct ReplyStreamState {
     var segments: [Int: AudioPayload] = [:]
     var nextSequence = 0
+    var audioNotKeptWhilePaused = false
 }
 
 extension ReplyStreamKey {
@@ -165,8 +143,10 @@ extension ReplyPlaybackController {
         if undeliveredLosses.count > firstAudioClaimLimit { undeliveredLosses.removeFirst() }
         presentationStatuses[key.presentationID] = Self.abandonedStatus
     }
-    /// The recorded status of every reply whose audio did not play, by presentation id, observably.
-    var lostAudioStatuses: [String: String] { presentationStatuses.filter { Self.audioProblem($0.value) != nil } }
+    /// Losses for the audio-failure announcer. A deliberate retention refusal has its own chat label.
+    var lostAudioStatuses: [String: String] {
+        presentationStatuses.filter { $0.value != Self.pausedAudioNotKept && Self.audioProblem($0.value) != nil }
+    }
     /// Queues a local announcement behind any reply (#825 S4b). It plays through the same player, so it shares the
     /// echo canceller, pause and mute, and playback reports it as assistant speech like a reply; it is never a reply
     /// entry, and never what Replay replays.

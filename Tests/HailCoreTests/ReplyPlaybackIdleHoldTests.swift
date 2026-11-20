@@ -18,7 +18,10 @@ import Testing
         rig.player.completeReply()
         rig.controller.replayLatest() // 21 x 1.25 s = 26.25 s
         rig.controller.ingest(idleAudio(next, sequence: 0, final: false, byte: 30))
-        rig.advance(by: .seconds(46)) // 26.25 s replay + 1.25 s of its own + most of the 20 s timeout
+        rig.advance(by: .seconds(46)) // Even a stalled Replay still owns the turn.
+        #expect(rig.status(of: next) == "Queued")
+        rig.player.completeReply()
+        rig.advance(by: .seconds(21)) // 1.25 s of its own + most of the 20 s timeout
         #expect(rig.status(of: next) != ReplyPlaybackController.abandonedStatus)
         rig.advance(by: .seconds(2))
         #expect(rig.status(of: next) == ReplyPlaybackController.abandonedStatus)
@@ -91,7 +94,9 @@ import Testing
         rig.controller.replayLatest()
         rig.controller.replayLatest() // 26.25 s again, not 52.5 s
         rig.controller.ingest(idleAudio(next, sequence: 0, final: false, byte: 30))
-        rig.advance(by: .seconds(49))
+        rig.advance(by: .seconds(27))
+        rig.player.completeReply() // Only the replacement Replay owns this callback.
+        rig.advance(by: .seconds(22))
         #expect(rig.status(of: next) == ReplyPlaybackController.abandonedStatus)
     }
 
@@ -108,7 +113,9 @@ import Testing
         rig.controller.ingest(idleAudio(next, sequence: 1, final: false, byte: 30)) // a gap: queued, nothing plays
         rig.advance(by: .seconds(60))
         rig.controller.replayLatest() // 1.25 s
-        rig.advance(by: .seconds(23))
+        rig.advance(by: .seconds(2))
+        rig.player.completeReply()
+        rig.advance(by: .seconds(21))
         #expect(rig.status(of: next) == ReplyPlaybackController.abandonedStatus)
     }
 }
