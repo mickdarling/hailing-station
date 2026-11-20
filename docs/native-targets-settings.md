@@ -5,8 +5,9 @@ It uses three production files: `TargetsSettingsView.swift`, `RootView+Settings.
 `RootView+Navigation.swift`. There is no new flag, HailCore change, selection owner or connection/persistence task.
 
 The root supplies its current `destination`, availability, saved selection and the same `HostConnectionStore`.
-The immutable projection uses `DestinationControlState` and additionally checks the displayed confirmation's
-connection generation, exact saved host identity/URL and target ID/name against the current ready target list.
+The root's `destination` already validates the connection generation. The immutable projection uses
+`DestinationControlState` and checks the exact saved host identity/URL and target ID/name against the current
+ready target list. Its supplied generation comes from that current snapshot, not an independent authority.
 Only a live matching target can be displayed as current. A saved identity remains **Saved · not confirmed**
 through an unavailable/connecting/restoring state. An edited/removed Mac address does not borrow the new Mac's
 name or adopt its targets. A friendly host-name change does not change the stored endpoint identity.

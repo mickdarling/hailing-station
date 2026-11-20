@@ -134,7 +134,8 @@ struct TargetsSettingsView<Setup: View>: View {
                     .accessibilityIdentifier("settings.targets.offered.\(host.id).\(target.id)")
                 }
             } else {
-                Text(host.state == .ready ? "Waiting for target list." : "Targets are not confirmed on this connection.")
+                Text(host.state == .ready ? "Waiting for target list."
+                     : "Targets are not confirmed on this connection.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }

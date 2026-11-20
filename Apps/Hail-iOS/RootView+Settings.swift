@@ -42,10 +42,9 @@ extension StationRootView {
                     ), generation: host.connectionGeneration)
                 }
             }, remembered: rememberedSelection,
-            send: { navigation.apply($0) }
-        ) {
-            ConnectivityLabView(store: connections, endpointsChanged: persist)
-        }
+            send: { navigation.apply($0) },
+            setup: { ConnectivityLabView(store: connections, endpointsChanged: persist) }
+        )
     }
 
     var advancedSettingsOverview: some View {

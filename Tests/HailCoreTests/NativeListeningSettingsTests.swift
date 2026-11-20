@@ -54,19 +54,22 @@ import Testing
     }
 
     @Test func aRequestedStartDoesNotBecomeStreamingOrClaimTheMicrophoneIsOff() async throws {
-        #expect(ListeningSettingsState(controller: nil).activity == .unavailable)
+        let absent = ListeningSettingsState(controller: nil)
+        #expect(absent.request == .notReported && absent.activity == .unavailable)
         let probe = ListeningSettingsAmbientProbe()
-        #expect(ListeningSettingsState(controller: probe.controller).activity == .off)
-        probe.permissionDecision = nil
+        let off = ListeningSettingsState(controller: probe.controller)
+        #expect(off.request == .off && off.activity == .off)
+        probe.permissionDecision = .hold
         let start = Task { await probe.controller.turnOn(for: ListeningSettingsAmbientProbe.binding) }
         defer { probe.resolvePermission(false) }
         try await waitUntil { await MainActor.run { probe.permissionRequests == 1 } }
         let state = ListeningSettingsState(controller: probe.controller)
-        #expect(state.requestedOn == true && state.activity == .requested)
+        #expect(state.request == .on && state.activity == .requested)
         #expect(!probe.controller.isListening && probe.capture.startCount == 0 && probe.streamerCreations == 0)
         probe.resolvePermission(false)
         await start.value
-        #expect(ListeningSettingsState(controller: probe.controller).activity == .off)
+        let denied = ListeningSettingsState(controller: probe.controller)
+        #expect(denied.request == .off && denied.activity == .off)
     }
 
     @Test func mountingAndLeavingPreserveAnAlreadyStreamingSyntheticOwner() async throws {
