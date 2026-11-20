@@ -8,8 +8,12 @@ import SwiftUI
 /// Owns only synthetic collaborators. No OS permission, audio session, real capture or socket is used.
 @MainActor
 final class ListeningSettingsAmbientProbe {
+    enum PermissionDecision {
+        case grant, deny, hold
+    }
+
     let capture = FakeAudioCapture()
-    var permissionDecision: Bool? = true
+    var permissionDecision: PermissionDecision = .grant
     private(set) var permissionRequests = 0
     private(set) var streamerCreations = 0
     private(set) var releases = 0
@@ -29,12 +33,15 @@ final class ListeningSettingsAmbientProbe {
 
     private func requestPermission() async -> Bool {
         permissionRequests += 1
-        if let permissionDecision { return permissionDecision }
-        return await withCheckedContinuation { permission = $0 }
+        switch permissionDecision {
+        case .grant: return true
+        case .deny: return false
+        case .hold: return await withCheckedContinuation { permission = $0 }
+        }
     }
 
     func resolvePermission(_ allowed: Bool) {
-        permissionDecision = allowed
+        permissionDecision = allowed ? .grant : .deny
         let waiting = permission
         permission = nil
         waiting?.resume(returning: allowed)

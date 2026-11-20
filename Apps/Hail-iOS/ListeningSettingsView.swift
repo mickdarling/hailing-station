@@ -8,6 +8,18 @@ enum ListeningSettingsIntent {
 
 /// Ambient-owner state only. It cannot establish the capture engine or Talk microphone's state.
 struct ListeningSettingsState {
+    enum Request: Equatable {
+        case notReported, on, off
+
+        var label: String {
+            switch self {
+            case .notReported: "Not reported"
+            case .on: "On"
+            case .off: "Off"
+            }
+        }
+    }
+
     enum Activity: Equatable {
         case unavailable, off, requested, streaming, paused, reconnecting, movedAway
 
@@ -24,18 +36,19 @@ struct ListeningSettingsState {
         }
     }
 
-    let requestedOn: Bool?
+    let request: Request
     let activity: Activity
     let detail: String?
 
     @MainActor
     init(controller: AmbientListeningController?) {
-        requestedOn = controller?.isOn
         guard let controller else {
+            request = .notReported
             activity = .unavailable
             detail = "Use Station to review the ambient listening controls."
             return
         }
+        request = controller.isOn ? .on : .off
         if controller.reconnect.isPending {
             activity = .reconnecting
             detail = "Ambient capture may continue while the connection restores. Delivery is not confirmed."
@@ -64,7 +77,7 @@ struct ListeningSettingsView: View {
     var body: some View {
         Form {
             Section {
-                valueRow("Ambient request", value: requestLabel, id: "request")
+                valueRow("Ambient request", value: state.request.label, id: "request")
                 valueRow("Reported activity", value: state.activity.label, id: "activity")
                 if let detail = state.detail {
                     Text(detail).fixedSize(horizontal: false, vertical: true)
@@ -90,10 +103,6 @@ struct ListeningSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .accessibilityIdentifier("settings.listening.overview")
-    }
-
-    private var requestLabel: String {
-        state.requestedOn.map { $0 ? "On" : "Off" } ?? "Not reported"
     }
 
     private var maskSection: some View {
