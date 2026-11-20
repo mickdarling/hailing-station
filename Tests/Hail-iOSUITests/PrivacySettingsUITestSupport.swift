@@ -2,6 +2,26 @@ import XCTest
 
 extension PrivacySettingsUITests {
     @MainActor
+    func privacyOverheardReading(_ app: XCUIApplication) throws -> [String] {
+        let show = app.switches["settings.privacy.overheard-show"]
+        revealPrivacyElement(show, in: app)
+        let preference = try XCTUnwrap(show.value as? String)
+        let scope = privacyElement("settings.privacy.overheard-requested", in: app)
+        revealPrivacyElement(scope, in: app)
+        XCTAssertFalse(scope.label.isEmpty)
+        return [preference, scope.label]
+    }
+
+    @MainActor
+    func closePrivacyToSettings(_ app: XCUIApplication) {
+        let back = app.navigationBars["Privacy"].buttons["Settings"]
+        waitForPrivacyElement(back)
+        back.tap()
+        XCTAssertTrue(app.navigationBars["Privacy"].waitForNonExistence(timeout: 5))
+        waitForPrivacyElement(app.buttons["station.settings.privacy"])
+    }
+
+    @MainActor
     func launchPrivacyShell(_ app: XCUIApplication, arguments: [String] = []) {
         if UIDevice.current.userInterfaceIdiom == .pad { XCUIDevice.shared.orientation = .landscapeLeft }
         addTeardownBlock { @MainActor in

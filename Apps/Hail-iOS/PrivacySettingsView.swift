@@ -11,6 +11,7 @@ enum PrivacySettingsIntent: Equatable {
 struct PrivacySettingsRequestState {
     var id = UUID()
     var failure: String?
+    var overheardFailure: String?
 }
 
 struct PrivacySettingsState {
@@ -23,6 +24,7 @@ struct PrivacySettingsState {
     let whoseOverheard: String
     let requestedScope: String
     let failure: String?
+    let overheardFailure: String?
 
     var knowsWhose: Bool { ["owner", "everyone"].contains(whoseOverheard) }
     var canRequestPrivacy: Bool { unavailableReason == nil }
@@ -59,7 +61,7 @@ struct PrivacySettingsState {
 /// Immutable observations and explicit owner intents. Opening or leaving performs no request or preference write.
 struct PrivacySettingsView: View {
     let state: PrivacySettingsState
-    let send: (PrivacySettingsIntent) -> Void
+    let send: @MainActor (PrivacySettingsIntent) -> Void
 
     var body: some View {
         Form {
@@ -89,7 +91,7 @@ struct PrivacySettingsView: View {
             }
             overheardSection
             if let failure = state.failure {
-                Section("Request not completed") {
+                Section("Privacy request not completed") {
                     Text(failure).accessibilityIdentifier("settings.privacy.failure")
                 }
             }
@@ -136,6 +138,9 @@ struct PrivacySettingsView: View {
             LabeledContent("Current request scope", value: state.requestedScopeDescription)
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("settings.privacy.overheard-requested")
+            if let failure = state.overheardFailure {
+                Text(failure).accessibilityIdentifier("settings.privacy.overheard-failure")
+            }
         } header: {
             Text("This device · overheard remarks")
         } footer: {

@@ -15,6 +15,10 @@ the page does not reuse wording that would claim recording or active listening m
 An explicit privacy intent is rechecked against the displayed host, connection generation, existing capability
 and existing switch availability immediately before `setPrivacy`. It never optimistically confirms privacy.
 The owner retains request errors across navigation; an older request cannot overwrite a newer request's result.
+Privacy callbacks explicitly retain main-actor isolation. A duplicate pending tap leaves the active request ID
+intact. Privacy-send errors and Overheard-validation errors are separate: a completed Privacy send clears only
+the Privacy error; an accepted Overheard change clears only its validation error. A completed send still waits
+for the host's confirmation before the page can claim privacy.
 Stop listening delegates only to the existing ambient owner's `turnOff`, when on. It does not imply deletion or
 turning off every possible microphone user. No start/resume action is added.
 
@@ -39,15 +43,21 @@ Appearance remains separate. Native safe areas, inline iOS navigation, wrapping 
   request rejection; confirmation/pending/expiry/unavailable states; and a declined transport request retained as
   an error. No audio backend, permission request or real network socket is used. Native mounting checks effects;
   it does not claim that in-process static Form labels publish accessibility values or prove font scaling.
+- `PrivacySettingsErrorTests` covers independent error retention/recovery and a held-send fixture. It checks that
+  a retry retains the previous Privacy error until sending succeeds, that Overheard recovery cannot hide a Privacy
+  error, and that a duplicate pending tap cannot invalidate the first send's eventual error or enqueue a second send.
 - `PrivacySettingsUITests` is read-only navigation on an owned, unconfigured simulator. It checks the real disabled
   unknown privacy control, disabled Stop, unchanged Overheard preference/request scope, return navigation, AX5 and
   landscape reachability. Typed links/sidebar/tab queries, hittability waits, named Back controls and bounded
-  directional drags follow the corrected Audio harness. Planned screenshots remain synthetic simulator evidence.
+  directional drags follow the corrected Audio harness. Preference comparisons use the current values on that
+  simulator; `-reset-station-state` does not reset Overheard preferences. The in-process fixture proves zero writes
+  on initial opening. Simulator screenshots qualify layout only, not physical-device behavior.
 - `RedesignShellUITests` retains its full hidden-Station identifier sweep. Its sensitive-word sweep exempts only
   the new exact `station.settings.privacy` row labelled **Privacy**; every other sensitive label remains checked.
-- Pending host gates: iOS/Mac compile, source lint, focused native/UI suites, existing privacy switch/unavailable/
-  Overheard suites and shell tests, then required repository verification and exact-head independent reviews.
-  No build, test, lint, simulator, service, microphone, network, deployment or review service was executed here.
+- Verification includes iOS/Mac compile, source lint, focused native/UI suites, existing privacy switch/unavailable/
+  Overheard suites and shell tests, required repository checks and exact-head independent reviews. The PR's
+  **Verification** section records current commands, results, captures and reviews. Initial source authoring and
+  source-review repairs ran no builds, tests, lint, simulators, services, microphone, network or deployment actions.
 - `trace: partial`: #1115's remaining native adoption, full authorized settings catalog, physical VoiceOver and
-  physical capture/listening continuity remain deferred. No runtime pass, hardware proof, delivery, A/B/C stage
-  definition or flag flip is claimed by this source-only slice.
+  physical capture/listening continuity require separate qualification. This slice defines no TestFlight delivery,
+  A/B/C stage or automatic flag change.
