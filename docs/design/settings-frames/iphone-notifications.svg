@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="430" height="932" viewBox="0 0 430 932" role="img" aria-labelledby="title desc"><title id="title">iphone — Notifications and updates — full-pane settings</title><desc id="desc">Original synthetic Revision B design study. Directly editable complete rows fill the pane. Reset, favorite and info sit by each control; technical details are in the optional inspector, closed. Page capacity is height-based. No live data or rendered/native verification.</desc><g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"><rect x="0" y="0" width="430" height="932" rx="12" fill="#eff1ee" stroke="#dce2da"/>
+<rect x="0" y="0" width="430" height="46" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="18" y="29" font-size="14" fill="#24312e" font-weight="650">Example target</text>
+<text x="250" y="29" font-size="12" fill="#606e67" font-weight="400">○ Mic off    Aa   ⓘ</text>
+<text x="12" y="89" font-size="21" fill="#24312e" font-weight="650">Notifications and updates</text>
+<rect x="12" y="122" width="156" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="21" y="143" font-size="12" fill="#196e5d" font-weight="600">All applicable scopes ⌄</text>
+<rect x="299" y="122" width="119" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="308" y="143" font-size="12" fill="#196e5d" font-weight="600">Reset group…</text>
+<rect x="12" y="166" width="406" height="34" rx="7" fill="#f7f8f5" stroke="#dce2da"/>
+<text x="22" y="188" font-size="13" fill="#606e67" font-weight="400">Find a setting or exact key</text>
+<text x="12" y="222" font-size="12" fill="#606e67" font-weight="400">36 settings · owner · synthetic values</text>
+<rect x="12" y="233" width="406" height="123" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="22" y="252" font-size="14" fill="#24312e" font-weight="600">Enable session updates</text>
+<text x="22" y="270" font-size="13" fill="#606e67" font-weight="400">Enables local unsolicited session updates; owner</text>
+<text x="22" y="287" font-size="11" fill="#606e67" font-weight="400">Restart host · owner · medium risk</text>
+<rect x="22" y="306" width="258" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="30" y="327" font-size="13" fill="#24312e" font-weight="400">Off</text>
+<rect x="285" y="306" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="294" y="332" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="338" y="306" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="347" y="332" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="375" y="306" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="384" y="332" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="12" y="356" width="406" height="123" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="22" y="375" font-size="14" fill="#24312e" font-weight="600">Enable task progress</text>
+<text x="22" y="393" font-size="13" fill="#606e67" font-weight="400">Enables explicitly enrolled task cadence; owner</text>
+<text x="22" y="410" font-size="11" fill="#606e67" font-weight="400">Restart host · owner · medium risk</text>
+<rect x="22" y="429" width="258" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="30" y="450" font-size="13" fill="#24312e" font-weight="400">Off</text>
+<rect x="285" y="429" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="294" y="455" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="338" y="429" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="347" y="455" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="375" y="429" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="384" y="455" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="12" y="479" width="406" height="158" rx="0" fill="#fff" stroke="#dce2da"/>
+<text x="22" y="498" font-size="14" fill="#24312e" font-weight="600">Update speech folder</text>
+<text x="22" y="516" font-size="13" fill="#606e67" font-weight="400">Private renderer output folder for update speech;</text>
+<text x="22" y="533" font-size="13" fill="#606e67" font-weight="400">admin</text>
+<text x="22" y="550" font-size="11" fill="#86531a" font-weight="400">Restart host · admin · high risk</text>
+<text x="22" y="565" font-size="11" fill="#86531a" font-weight="400">Requires admin · unavailable</text>
+<rect x="22" y="587" width="258" height="44" rx="7" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="30" y="608" font-size="13" fill="#606e67" font-weight="400">Not configured</text>
+<rect x="285" y="587" width="48" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="294" y="613" font-size="12" fill="#196e5d" font-weight="600">Reset</text>
+<rect x="338" y="587" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="347" y="613" font-size="12" fill="#196e5d" font-weight="600">☆</text>
+<rect x="375" y="587" width="32" height="44" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="384" y="613" font-size="12" fill="#196e5d" font-weight="600">ⓘ</text>
+<rect x="12" y="738" width="87" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="21" y="759" font-size="12" fill="#196e5d" font-weight="600">‹ Previous</text>
+<text x="111" y="760" font-size="11" fill="#606e67" font-weight="400">1–3 of 36 · 1/12</text>
+<rect x="347" y="738" width="71" height="34" rx="7" fill="#fff" stroke="#dce2da"/>
+<text x="356" y="759" font-size="12" fill="#196e5d" font-weight="600">Next ›</text>
+<rect x="0" y="786" width="430" height="44" rx="0" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="12" y="813" font-size="12" fill="#606e67" font-weight="400">No draft changes</text>
+<rect x="283" y="791" width="135" height="34" rx="7" fill="#196e5d" stroke="#dce2da"/>
+<text x="292" y="812" font-size="12" fill="#fff" font-weight="600">Review changes</text>
+<rect x="0" y="830" width="430" height="48" rx="0" fill="#fff" stroke="#dce2da"/>
+<rect x="12" y="835" width="330" height="38" rx="7" fill="#196e5d" stroke="#dce2da"/>
+<text x="21" y="858" font-size="12" fill="#fff" font-weight="600">Tap to talk · simulation</text>
+<text x="365" y="859" font-size="16" fill="#196e5d" font-weight="400">♬   •••</text>
+<rect x="0" y="878" width="430" height="54" rx="0" fill="#f5f6f3" stroke="#dce2da"/>
+<text x="17" y="909" font-size="12" fill="#606e67" font-weight="400">Station</text>
+<text x="123" y="909" font-size="12" fill="#606e67" font-weight="400">Sessions</text>
+<text x="229" y="909" font-size="12" fill="#606e67" font-weight="400">Devices</text>
+<text x="335" y="909" font-size="12" fill="#196e5d" font-weight="650">Settings</text></g></svg>

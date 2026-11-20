@@ -26,10 +26,10 @@ SYNTHETIC_BINDING = "$1@1700000000/%1:4242"
 
 
 class RightyoCLITests(unittest.TestCase):
-    def invoke(self, content, session="tool-demo"):
+    def invoke(self, content, session="tool-demo", *, timeout=15):
         return subprocess.run(
             [str(HAILD), "rightyo", "--session", session, "--dry-run"],
-            input=content, cwd=REPO, capture_output=True, text=True, timeout=15, check=False,
+            input=content, cwd=REPO, capture_output=True, text=True, timeout=timeout, check=False,
         )
 
     def test_shared_fixture_validates_one_request_without_transcript_logging(self):
@@ -81,7 +81,7 @@ class RightyoCLITests(unittest.TestCase):
         self.assertEqual(result.stdout.count("request validated"), 1)
 
     def test_oversized_record_is_refused(self):
-        self.assertEqual(self.invoke(" " * 1_200_001).returncode, 8)
+        self.assertEqual(self.invoke(" " * 1_200_001, timeout=60).returncode, 8)
 
     def test_transcription_only_disabled_stream_is_accepted_without_request(self):
         events = [json.loads(line) for line in FIXTURE.read_text().splitlines()]

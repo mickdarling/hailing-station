@@ -1,8 +1,8 @@
 public import Foundation
 
 /// Reply refusals by reason over the last 15 minutes and the last hour, from the audit log's
-/// `delivery_refused` records (#247). Reasons are `LocalReplyRefusal` codes; anything else counts as `other`,
-/// so the report never repeats text from the log.
+/// `delivery_refused` records (#247). Reasons are `LocalReplyRefusal` codes or `replyAudioCapacity`; others are
+/// `other`, so the report never repeats text from the log.
 public struct RefusalSummary: Codable, Sendable, Equatable {
     public struct Count: Codable, Sendable, Equatable {
         public var reason: String
@@ -31,7 +31,7 @@ public struct RefusalSummary: Codable, Sendable, Equatable {
                   case .string(let raw)? = record.fields["reason"] else { continue }
             let age = now.timeIntervalSince(at)
             guard age >= 0, age <= 3_600 else { continue }
-            let reason = LocalReplyRefusal(rawValue: raw) == nil ? "other" : raw
+            let reason = LocalReplyRefusal(rawValue: raw) == nil && raw != "replyAudioCapacity" ? "other" : raw
             var count = tally[reason] ?? Count(reason: reason, last15Minutes: 0, lastHour: 0)
             count.lastHour += 1
             if age <= 900 { count.last15Minutes += 1 }

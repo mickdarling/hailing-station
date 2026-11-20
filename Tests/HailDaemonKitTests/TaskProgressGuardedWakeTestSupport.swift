@@ -7,6 +7,9 @@ import Testing
 @testable import HailDaemonKit
 
 final class TaskProgressGuardedWiring: AmbientListenerWiring {
+    func deviceVoiceStopped(connection: UUID, latencyMs: Int?) async {
+        Issue.record("unexpected device voice stop in unrelated wiring fixture")
+    }
     private struct State { var audience: TaskProgressAmbientAudience?; var media = false }
     private let state = Mutex(State())
     func attach(_ listener: WebSocketListener) {}
@@ -42,12 +45,13 @@ struct TaskProgressGuardedWakeRig {
     let finished = AsyncStream<Void>.makeStream()
 
     static func make(
-        adapter: any Adapter, name: String = "a", binding: String = "binding-a"
+        adapter: any Adapter, name: String = "a", binding: String = "binding-a",
+        policy: Policy = Policy(guardPatterns: [.init(name: "synthetic guard", regex: "^synthetic guarded command$")])
     ) async throws -> Self {
         let registry = Registry()
         try await registry.register(adapter)
         let target = Registry.id(kind: adapter.kind, name: name)
-        var policy = Policy(guardPatterns: [.init(name: "synthetic guard", regex: "^synthetic guarded command$")])
+        var policy = policy
         try policy.allow(target, binding: binding, tier: .open)
         let host = try HailHost(registry: registry, store: InMemoryPolicyStore(policy))
         let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(), hostName: "synthetic-host")

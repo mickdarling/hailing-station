@@ -102,14 +102,104 @@ haild notify status
 haild notify quiet on
 ```
 
-It is off unless `haild run` gets `--personal-terminal --session-updates`. The target must be a live target from `haild targets`. That target is also the name the update is shown under and the key for its rate limit. Any local process can name any live target, so these limits are cooperative, not a security boundary.
+The managed LaunchAgent opts in through `host.json`. To enable, merge these optional keys into your existing
+config, using an absolute path to a directory you have created privately for update speech:
+
+```json
+{
+  "sessionUpdates": true,
+  "taskProgress": true,
+  "sessionUpdateSpeechRoot": "/absolute/path/to/private-update-speech"
+}
+```
+
+Then run `scripts/host.sh restart`. `sessionUpdates` adds `--session-updates`; `taskProgress` independently adds
+`--task-progress`; `sessionUpdateSpeechRoot` independently adds `--session-update-speech-root <dir>`. The latter
+two require `sessionUpdates: true`; omit either to leave that feature off. `sessionUpdates` and `taskProgress`
+are JSON booleans; the root is a string naming an existing absolute directory owned by your user, with mode 700,
+no symlink in any component and no extended ACL. The path must already be normalized: no `.` or `..`
+components or repeated slashes; one trailing slash is allowed. This host.sh preflight is stricter than haild's
+unchanged ancestor handling. Invalid values are refused before the running daemon is stopped. Absent keys
+add no arguments.
+
+The local #1249 candidate sends `info` cards immediately on submit while speech status is `not_configured`.
+Display content as it arrives; speech keeps its full, ordered playback. Silent cards have no reply-stream
+ordering: a `session_update` frame can arrive between a reply's audio frames. There is no settle timer or setting.
+
+Only explicit `haild notify quiet on` holds silent info cards; clearing quiet offers them immediately.
+Privacy, meeting and media modes do not hold these visual cards:
+privacy protects people in the room from audio, and a meeting's other participants do not see the owner's cards.
+Source policy/binding, selection, capability, lifetime and exact-peer checks still apply. A card held without
+a recipient is retried when ambient listening supplies one, or admitted input establishes a last-input recipient.
+The current audience is checked again synchronously with transport enqueue. If it changed during preparation,
+the old device gets nothing; the held card is offered to the new recipient exactly once.
+Pending/admitted requests, finalized turns, device playback and owner speech do not delay silent cards.
+This is the host rule. The current app still suppresses card presentation while private or restoring a
+connection. Normal chat shows reply text on receipt, but its fallback panel without a selected thread follows
+the active audio reply and can hide newer text. These separate app follow-ups are recorded in the
+[read-only app findings](testing/session-update-immediate.md#read-only-app-findings).
+A configured spoken renderer keeps main's delivery and drain rules, including its privacy discard policy,
+quiet/media guards and held-on-submit info behavior in meeting mode. Action cards keep main's immediate path.
+The local session API still only permits sessions to turn quiet on; its owner-side flag-clear is tested directly,
+not exposed as a new `quiet_off` request or live CLI command by this change.
+
+Every enabled drain attempt emits the content-free event `session_update_drained` with detail
+`trigger=<asked|interaction|natural_pause|immediate|hold_cleared|recipient_changed> count=N`; no target, card, transcript
+or reply text is included. The count records completed transport sends, not proof that a person saw or heard
+an update. See [synthetic verification](testing/session-update-immediate.md). These are local source changes;
+no installation or physical-device qualification is recorded.
+
+To roll back, remove all three keys (or set both booleans to `false` and remove the speech-root key), then run
+`scripts/host.sh restart` again. To disable only progress or speech, remove its corresponding key and restart.
+These steps assume the staged haild already supports these options; they do not install a release or a device build.
+
+This remains the **experimental personal-terminal boundary**: host.sh already passes `--personal-terminal`.
+The listener has no TLS or peer authentication. Any local process can notify as any live target, so rate limits
+are cooperative, not a security boundary. The target must be live in `haild targets`; its ID identifies the
+update and its rate limit. See the [connected task/update candidate](proactive-task-candidate.md) for current
+card, task and speech admission and the remaining physical-device qualification. Configuring these keys is not
+proof of delivery or hearing, and does not enable APNs.
+
+The following held-queue notes describe the historical foundation:
 - **For now every update is held. Nothing is spoken yet:** speaking waits for haild to deliver to the device it chose itself, and held updates are not yet delivered to a device. That comes with the update card and drain work.
 - An `--action` update that a device could be told about prints `push: suggested`, so the session can raise its own notification. Quiet suppresses it.
 - `haild notify quiet on` turns on do-not-disturb until haild restarts. A session cannot turn it off; that is the user's own control.
 
-Each session may send 6 updates an hour and have 5 held. At most 20 are held in all, for up to 4 hours. These defaults are placeholders pending Mick's decision.
+The #1258 local source candidate follows the owner's 2026-11-18 decision: no send budget by default for
+**action cards, silent info cards or spoken updates**. Protection against a stuck local loop uses an independent
+**60 submissions/minute per host** runaway guard that normal use never reaches. Status and quiet-on controls
+share a separate **120 requests/minute per host** bucket. Neither bucket spends the local-reply bucket, and
+reply traffic cannot block updates or controls. All other local kinds keep their existing admission budgets.
+A refusal reports `runaway_guard` or `control_rate_limited` with `retry_after` seconds; `haild notify` prints the
+reason and retry time. Each reason produces at most one content-free refusal log line per minute.
+Owner-only socket access and frame-size limits remain in force. Held memory bounds remain **5 per session, 20 total, 4 hours**; a queue full of action cards still
+refuses with `full`, and held expiry and oldest-info eviction are unchanged. These local changes have
+[synthetic verification only](testing/1258-unlimited-session-updates.md), with no install or live config change.
 
-Exit codes: 0 when held or for status; 75 when rate limited; 1 for other refusals (`unknown_target`, `full`, `not enabled`). Output gives counts and reasons only, never the words. Requests are audited as `local-update` with the action only.
+To opt into a send cap, add both flat keys alongside `"sessionUpdates": true`:
+
+```json
+{
+  "sessionUpdates": true,
+  "sessionUpdatePerSessionLimit": 6,
+  "sessionUpdateWindowSeconds": 3600
+}
+```
+
+`sessionUpdatePerSessionLimit` must be a JSON integer from **1 to 10000**; `sessionUpdateWindowSeconds` must be
+a JSON integer from **1 to 86400**. Neither key is present by default. Both must be set together and require
+`sessionUpdates: true`. Zero, negative, fractional, wrong-type, incomplete and out-of-range values are refused
+with a clear validation error before plist generation/restart can stop a running daemon. `scripts/host.sh` passes
+`--session-update-per-session-limit N --session-update-window-seconds S` in the LaunchAgent's `ProgramArguments`;
+`ConnectionProbeDaemon.options` validates them again and `configureProactive` applies the policy at startup.
+The existing `HAIL_CONFIG_DIR` environment bridge continues to identify the host config directory; the cap uses
+arguments, not additional environment variables. Remove both cap keys to restore unlimited session sends;
+the separate socket runaway guard still applies. Settings are read at start and need a restart to take effect.
+A configured cap retains the queue's sliding-window `rate_limited` refusal and `retry_after`; refusals spend no
+queue budget. These local changes have
+[synthetic verification only](testing/1258-session-update-cap.md), with no install or live config change.
+
+Exit codes: 0 when held or for status; 75 only for `rate_limited` (the optional send cap above); 1 for other refusals, including `runaway_guard` and `control_rate_limited` (deliberately not 75, so a retry-on-75 wrapper does not loop into the guard), `unknown_target`, `full` and `not enabled`. Output gives counts and reasons only, never the words. Requests are audited as `local-update` with the action only.
 
 ## When replies stop arriving
 

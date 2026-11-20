@@ -32,16 +32,19 @@ import Testing
         await Self.select(VoiceRouteRig.scratch, on: session)
         let (connection, first, second) = (await session.connectionID, UUID(), UUID())
         let opened = await session.selectionGeneration
+        let policy = rig.host.targetPolicy.snapshot(for: VoiceRouteRig.scratch)
         #expect(await session.receive(Self.audio(first)).frames.isEmpty)
         await Self.select(VoiceRouteRig.other, on: session)
         await Self.select(VoiceRouteRig.scratch, on: session)
         let reopened = await session.selectionGeneration
         #expect(await session.receive(Self.audio(second)).frames.isEmpty)
         let starts = sink.events.filter { if case .started = $0 { true } else { false } }
-        #expect(starts == [.started(stream: first, connection: connection,
-            target: VoiceRouteRig.scratch, selection: opened),
-                           .started(stream: second, connection: connection,
-                               target: VoiceRouteRig.scratch, selection: reopened)])
+        let opening = AmbientStreamScope(target: VoiceRouteRig.scratch, selection: opened, binding: "s",
+                                         policyGeneration: policy)
+        let reopening = AmbientStreamScope(target: VoiceRouteRig.scratch, selection: reopened, binding: "s",
+                                           policyGeneration: policy)
+        #expect(starts == [.started(stream: first, connection: connection, scope: opening),
+                          .started(stream: second, connection: connection, scope: reopening)])
         #expect(opened != reopened)
     }
 

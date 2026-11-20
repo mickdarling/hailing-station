@@ -175,11 +175,11 @@ actor WebSocketPeer {
         guard !ended else { return }
         // Complete invalidation before closure returns. Previously prepared replies cannot enqueue later.
         ingress.stop()
+        ReplyConnectionStopGate.forget(session.connectionID)
         ended = true
         helloTimer?.cancel()
         helloTimer = nil
         connection.cancel()
-        Task { await session.endSegmentTracking() }
         emit("session_disconnected", detail: reason)
         onEnd(id)
     }
@@ -198,21 +198,24 @@ extension WebSocketPeer {
 
     /// Preparation is not an enqueue grant; its transport permit must remain current at final admission.
     func prepareReplyPublication(
-        _ frame: Frame, onLateSuccess: (@Sendable () -> Void)? = nil
+        _ frame: Frame, onLateSuccess: (@Sendable () -> Void)? = nil, waitForControl: Bool = true
     ) async -> PreparedWebSocketReply? {
+        if waitForControl { await ReplyConnectionStopGate.waitForControl(session.connectionID) }
         let frame = await session.replyFrameForPeer(frame)
         guard !ended, !closing, !Task.isCancelled, let data = try? FrameCoding.encode(frame),
               let permit = replyTransport.issuePermit() else { return nil }
         // Synthetic completion control; all production and injected sends retain the same final transport gate.
         if let submitReply {
             return PreparedWebSocketReply(
-                permit: permit, submit: submitReply, onLateSuccess: onLateSuccess, cancel: { [weak self] reason in
+                permit: permit, orderingConnection: session.connectionID, submit: submitReply,
+                onLateSuccess: onLateSuccess, cancel: { [weak self] reason in
                     Task { await self?.finish(reason: reason) }
                 }
             )
         }
         return PreparedWebSocketReply(
-            data: data, connection: connection, permit: permit, onLateSuccess: onLateSuccess
+            data: data, connection: connection, permit: permit, orderingConnection: session.connectionID,
+            onLateSuccess: onLateSuccess
         ) { [weak self] reason in
             Task { await self?.finish(reason: reason) }
         }
@@ -227,6 +230,15 @@ extension WebSocketPeer {
         case .refused: break
         }
         return false
+    }
+
+    /// Prepare a stop control for synchronous enqueue under the connection's request-stop gate.
+    func preparePlaybackStop(_ frame: Frame) -> PreparedWebSocketReply? {
+        guard !ended, !closing, !Task.isCancelled, let data = try? FrameCoding.encode(frame),
+              let permit = replyTransport.issuePermit() else { return nil }
+        return PreparedWebSocketReply(data: data, connection: connection, permit: permit) { [weak self] reason in
+            Task { await self?.finish(reason: reason) }
+        }
     }
 
     func send(_ frame: Frame) async -> Bool {
@@ -258,12 +270,15 @@ extension WebSocketPeer {
               let permit = replyTransport.issuePermit() else { return false }
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(identifier: "hail.frame", metadata: [metadata])
-        return permit.performIfCurrent {
-            connection.send(
-                content: data, contentContext: context, isComplete: true, completion: .contentProcessed { _ in }
-            )
-            return true
-        } ?? false
+        let submit = {
+            permit.performIfCurrent {
+                self.connection.send(
+                    content: data, contentContext: context, isComplete: true, completion: .contentProcessed { _ in }
+                )
+                return true
+            } ?? false
+        }
+        return AmbientSessionChangeWait.current.map { $0.submit(submit) } ?? submit()
     }
 }
 
@@ -364,6 +379,7 @@ final class PreparedWebSocketReply: Sendable {
     }
     private let state = Mutex(State())
     private let permit: ReplyTransportPermit
+    private let orderingConnection: UUID?
     private let submit: @Sendable (@escaping @Sendable (NWError?) -> Void) -> Void
     private let cancel: @Sendable (String) -> Void
     /// Completion-queue callback, outside the state lock, only for an abandoned send's first success.
@@ -372,10 +388,10 @@ final class PreparedWebSocketReply: Sendable {
     private let stallGrace: Duration
 
     convenience init(
-        data: Data, connection: NWConnection, permit: ReplyTransportPermit,
+        data: Data, connection: NWConnection, permit: ReplyTransportPermit, orderingConnection: UUID? = nil,
         onLateSuccess: (@Sendable () -> Void)? = nil, cancel: @escaping @Sendable (String) -> Void
     ) {
-        self.init(permit: permit, submit: { completion in
+        self.init(permit: permit, orderingConnection: orderingConnection, submit: { completion in
             let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
             let context = NWConnection.ContentContext(identifier: "hail.frame", metadata: [metadata])
             connection.send(
@@ -387,7 +403,7 @@ final class PreparedWebSocketReply: Sendable {
 
     /// Internal DI keeps lifecycle tests synthetic; only WebSocketPeer supplies production transport.
     init(
-        permit: ReplyTransportPermit,
+        permit: ReplyTransportPermit, orderingConnection: UUID? = nil,
         submit: @escaping @Sendable (@escaping @Sendable (NWError?) -> Void) -> Void,
         onLateSuccess: (@Sendable () -> Void)? = nil,
         cancel: @escaping @Sendable (String) -> Void = { _ in },
@@ -395,6 +411,7 @@ final class PreparedWebSocketReply: Sendable {
         stallGrace: Duration = PreparedWebSocketReply.abandonedSendGrace
     ) {
         self.permit = permit
+        self.orderingConnection = orderingConnection
         self.submit = submit
         self.cancel = cancel
         self.onLateSuccess = onLateSuccess
@@ -404,6 +421,13 @@ final class PreparedWebSocketReply: Sendable {
 
     /// Success is enqueue only; result() receives the later outcome. Never await completion under a gate.
     func enqueue() -> Bool {
+        if let orderingConnection {
+            return ReplyConnectionStopGate.commit(orderingConnection) { enqueueTransport() }
+        }
+        return enqueueTransport()
+    }
+
+    private func enqueueTransport() -> Bool {
         let enqueued = permit.performIfCurrent {
             guard !Task.isCancelled, state.withLock({ state in
                 guard !state.submitted, state.outcome == nil else { return false }

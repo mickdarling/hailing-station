@@ -85,10 +85,24 @@ class NotifyCLITests(unittest.TestCase):
             "push: unavailable (APNs delivery is not configured)",
         ])
 
+    def test_admission_refusals_print_no_placeholder_status(self):
+        for reason in ("runaway_guard", "control_rate_limited"):
+            with self.subTest(reason=reason):
+                response = self.report("refused", reason=reason, retryAfter=30,
+                                       speechUnavailable="attention_signal_missing")
+                result, _ = self.run_notify(["status"], response)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(result.stdout, f"refused: {reason}; try again in 30 s\n")
+                self.assertEqual(result.stderr, "")
+
     def test_refusals_map_to_lines_and_exit_codes(self):
         cases = [
             (self.report("refused", reason="rate_limited", retryAfter=120), 75,
              "refused: rate_limited; try again in 120 s"),
+            (self.report("refused", reason="runaway_guard", retryAfter=60), 1,
+             "refused: runaway_guard; try again in 60 s"),
+            (self.report("refused", reason="control_rate_limited", retryAfter=42), 1,
+             "refused: control_rate_limited; try again in 42 s"),
             (self.report("refused", reason="unknown_target"), 1, "refused: unknown_target"),
             (self.report("refused", reason="full"), 1, "refused: full"),
             (self.report("not_enabled"), 1, "not enabled: haild is running without --session-updates"),

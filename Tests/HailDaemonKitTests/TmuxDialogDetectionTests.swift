@@ -2,11 +2,26 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite struct TmuxDialogDetectionTests {
+    @Test func kindNamesAreBoundedAndPinned() {
+        for kind in DialogKind.allCases {
+            #expect(!kind.title.isEmpty)
+            #expect(!kind.spokenName.isEmpty)
+        }
+        #expect(DialogKind.allCases.map(\.title) == [
+            "Computer Use needs macOS permissions", "Computer Use wants to control these apps",
+            "a tool permission dialog", "a dialog"
+        ])
+        #expect(DialogKind.allCases.map(\.spokenName) == [
+            "Computer Use permissions dialog", "Computer Use app approval dialog",
+            "tool permission dialog", "dialog"
+        ])
+    }
+
     @Test(arguments: [
-        ("Computer Use needs macOS permissions", TmuxDialogKind.computerUsePermissions),
-        ("Computer Use wants to control these apps", TmuxDialogKind.computerUseAppApproval)
+        ("Computer Use needs macOS permissions", DialogKind.computerUsePermissions),
+        ("Computer Use wants to control these apps", DialogKind.computerUseAppApproval)
     ])
-    func knownTitles(_ title: String, _ kind: TmuxDialogKind) {
+    func knownTitles(_ title: String, _ kind: DialogKind) {
         #expect(TmuxAdapter.classifyDialog(visibleScreen: title) == .dialog(kind: kind, title: title))
     }
 

@@ -28,6 +28,7 @@ import Testing
         #expect(advertised.contains(DiagnosticLimits.capability))
         // It accepts the stream_abandoned code (#469), so it says so; a device sends that token only then.
         #expect(advertised.contains(DiagnosticLimits.streamAbandonedCapability))
+        #expect(advertised.contains(DiagnosticLimits.playbackStreamCapability))
         let frame = sessionFrame(payload: .control(.diagnostic(events: try diagnosticEvents(2))))
         let result = await session.receive(frame)
         #expect(result == HostSessionResult(frames: []))
@@ -35,6 +36,31 @@ import Testing
         #expect(text.split(separator: "\n").count == 2)
         #expect(text.contains("\"device\":\"\(DiagnosticLog.deviceToken("test"))\""))
         #expect(await adapter.deliveries.isEmpty)
+    }
+
+    /// #1227: decode at the host wire boundary, then verify both optional shapes survive storage.
+    @Test func playbackStreamFieldsAndLegacyAbsenceAreStored() async throws {
+        defer { cleanUp() }
+        let (host, _) = try await sessionHost()
+        let authorizer = PersonalTerminalAuthorizer(diagnostics: DiagnosticLog(directory: scratch))
+        let session = HostSession(host: host, authorizer: authorizer)
+        _ = try await capabilities(session)
+        let fields: [DiagnosticField: DiagnosticValue] = [
+            .code: .token("stream_abandoned"), .ms: .integer(20_000),
+            .lastSequence: .integer(2), .expectedSequence: .integer(1), .gap: .boolean(true),
+            .receivedFrames: .integer(2), .scheduledFrames: .integer(1), .terminal: .boolean(true),
+            .lastFrameMs: .integer(21_300)
+        ]
+        let events = [try DiagnosticEvent(.replyPlaybackError, timestamp: 1, fields: fields),
+                      try DiagnosticEvent(.replyPlaybackError, timestamp: 2,
+                                          fields: [.code: .token("stream_abandoned"), .ms: .integer(20_000)])]
+        let encoded = try FrameCoding.encode(sessionFrame(payload: .control(.diagnostic(events: events))))
+        #expect(await session.receive(try FrameCoding.decode(encoded)) == HostSessionResult(frames: []))
+        let text = try String(contentsOf: scratch.appendingPathComponent(DiagnosticLog.fileName), encoding: .utf8)
+        let stored = try text.split(separator: "\n").map {
+            try JSONDecoder().decode(DiagnosticRecord.self, from: Data($0.utf8)).event
+        }
+        #expect(stored == events)
     }
 
     @Test func withoutASinkNothingIsAdvertisedAcceptedOrWritten() async throws {
@@ -45,6 +71,7 @@ import Testing
             let advertised = try await capabilities(session)
             #expect(!advertised.contains(DiagnosticLimits.capability))
             #expect(!advertised.contains(DiagnosticLimits.streamAbandonedCapability))
+            #expect(!advertised.contains(DiagnosticLimits.playbackStreamCapability))
             let frame = sessionFrame(payload: .control(.diagnostic(events: try diagnosticEvents(1))))
             let result = await session.receive(frame)
             guard case .error(let code, _, _) = try onlyControl(result) else {

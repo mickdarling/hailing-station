@@ -31,8 +31,6 @@ import Testing
             let expected = deviceFrame(frame, capable: false)
             #expect(try legacyBytes == FrameCoding.encode(expected))
             #expect(try FrameCoding.decode(legacyBytes) == expected)
-            #expect(await rig.first.session.segmentedReplies == [reply.id])
-            #expect(await rig.second.session.segmentedReplies.isEmpty)
         }
     }
 
@@ -54,7 +52,6 @@ import Testing
             try await rig.first.yield(reply.id, segment: 7)
             try await recipientSocketBarrier(on: rig.first.socket) // Also proves no stop_playback was sent.
             #expect(await rig.listener.segmentTestStopped(reply.id))
-            #expect(await rig.first.session.segmentedReplies.isEmpty)
             #expect(await rig.first.session.repliesInFlight == [sibling.id])
             #expect(await rig.second.session.repliesInFlight == [other.id])
             await #expect(throws: LocalReplyRefusal.replyStopped) {
@@ -86,20 +83,10 @@ import Testing
             try await rig.first.yield(UUID())
             try await recipientSocketBarrier(on: rig.first.socket)
             #expect(await rig.first.session.repliesInFlight.isEmpty)
-            #expect(await rig.first.session.segmentedReplies.isEmpty)
             #expect(await rig.first.session.stoppedReplies.isEmpty)
             #expect(!(await rig.listener.segmentTestStopped(reply.id)))
             #expect(rig.events.control.filter { $0.event == "reply_yield" }.map(\.detail)
                 == ["outcome=ignored segment=1", "outcome=ignored segment=1"])
-        }
-    }
-
-    @Test func peerTeardownClearsSegmentTracking() async throws {
-        try await ReplySegmentsRig.withDevices { rig in
-            _ = try await rig.startReply(on: rig.first)
-            #expect(await rig.first.session.segmentedReplies.count == 1)
-            rig.first.close()
-            #expect(await eventually { await rig.first.session.segmentedReplies.isEmpty })
         }
     }
 

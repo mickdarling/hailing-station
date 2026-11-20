@@ -4,25 +4,14 @@ import Testing
 @testable import HailCore
 
 @MainActor
-@Suite struct HostConnectionSessionUpdateTests {
-    private let rig = HostConnectionStoreAmbientBindingTests()
-
+@Suite(.timeLimit(.minutes(1))) struct HostConnectionSessionUpdateTests {
     private func event(endpoint: String, target: String? = "tmux:build", update: UUID = UUID()) -> HostReplyEvent {
         HostReplyEvent(endpointID: endpoint, frame: Frame(timestamp: 1, target: target, source: "host",
             payload: .control(.sessionUpdate(update: update, session: "Build", priority: "action",
                                              text: "Build passed.", card: "Tests passed."))))
     }
 
-    private func ready() async throws -> HostConnectionStoreAmbientBindingTests.ReadyStore {
-        let ready = try await rig.readyStore(capabilities: [
-            "ping", SessionUpdateCard.capability, DuckMode.privacySwitchCapability
-        ])
-        try await ready.socket.push(.targets([
-            TargetInfo(id: "tmux:build", kind: "tmux", name: "Build", alive: true)
-        ]))
-        try await waitUntil { await MainActor.run { ready.store.snapshots[ready.endpoint.id]?.targets.count == 1 } }
-        return ready
-    }
+    private func ready() async throws -> CardsArrivalRig { try await CardsArrivalRig.make() }
 
     @Test func capableSocketDeliversOneCardAndNeverTouchesPlaybackIngress() async throws {
         let ready = try await ready()
@@ -36,7 +25,7 @@ import Testing
         try await socket.push(FrameCoding.encode(update.frame))
         try await socket.push(FrameCoding.encode(update.frame))
         try await socket.push(.targets([])) // Receive-loop barrier behind both cards.
-        try await waitUntil { await MainActor.run { store.snapshots[endpoint.id]?.targets.isEmpty == true } }
+        await socket.flush()
         #expect(store.conversation.entries.count == 1)
         #expect(store.conversation.entries.first?.source == "Build")
         #expect(store.replyFrames.isEmpty && played == 0)
@@ -61,45 +50,45 @@ import Testing
         #expect(store.conversation.entries.isEmpty)
     }
 
-    @Test func privateCardsAreDroppedAndDuplicateAfterPublicIsNotMarkedReceived() async throws {
+    @Test func privateCardsDisplayOnceAndDuplicateAfterPublicRemainsOneCard() async throws {
         let ready = try await ready()
         let (store, socket, endpoint) = (ready.store, ready.socket, ready.endpoint)
         let update = event(endpoint: endpoint.id)
         try await socket.push(.duckMode(on: true, reason: "device"))
         try await socket.push(FrameCoding.encode(update.frame))
         try await socket.push(.duckMode(on: false, reason: "device"))
-        try await waitUntil { await MainActor.run { store.duckMode[endpoint.id]?.on == false } }
-        #expect(store.conversation.entries.isEmpty)
+        await socket.flush()
+        #expect(store.conversation.entries.count == 1)
+        #expect(store.conversation.entries.first?.spoken == false)
         try await socket.push(FrameCoding.encode(update.frame))
-        try await waitUntil { await MainActor.run { store.conversation.entries.count == 1 } }
+        await socket.flush() // Next receive begins only after the duplicate's store callback completes.
+        #expect(store.conversation.entries.count == 1)
+        #expect(store.conversation.entries.first?.spoken == false)
         await store.disconnect(endpoint.id)
     }
 
-    @Test func pendingPrivacyOnSuppressesCardsBeforeHostConfirmation() async throws {
+    @Test func pendingPrivacyOnDisplaysCardsBeforeHostConfirmation() async throws {
         let ready = try await ready()
         let (store, socket, endpoint) = (ready.store, ready.socket, ready.endpoint)
         await socket.holdSends()
         let request = Task { try await store.setPrivacy(on: true, host: endpoint.id) }
-        try await waitUntil {
-            try await socket.sentFrames().contains { $0.payload == .control(.setPrivacy(on: true)) }
-        }
+        await arrivalObserved { store.privacyLocal[endpoint.id]?.request?.on == true }
         try await socket.push(FrameCoding.encode(event(endpoint: endpoint.id).frame))
         try await socket.push(.mediaMode(on: true, reason: "voice"))
-        try await waitUntil { await MainActor.run { store.mediaMode[endpoint.id]?.on == true } }
-        #expect(store.conversation.entries.isEmpty)
+        await socket.flush()
+        #expect(store.conversation.entries.count == 1)
+        #expect(store.conversation.entries.first?.spoken == false)
         await socket.releaseSends()
         try await request.value
         await store.disconnect(endpoint.id)
     }
 
     @Test func unnegotiatedUpdatesFailClosed() async throws {
-        let ready = try await rig.readyStore(capabilities: ["ping"])
+        let ready = try await CardsArrivalRig.make(capabilities: ["ping"])
         try await ready.socket.push(FrameCoding.encode(event(endpoint: ready.endpoint.id).frame))
-        try await waitUntil {
-            await MainActor.run {
-                if case .failed = ready.store.snapshots[ready.endpoint.id]?.state { return true }
-                return false
-            }
+        await arrivalObserved {
+            if case .failed = ready.store.snapshots[ready.endpoint.id]?.state { return true }
+            return false
         }
         #expect(ready.store.conversation.entries.isEmpty)
         await ready.store.disconnect(ready.endpoint.id)

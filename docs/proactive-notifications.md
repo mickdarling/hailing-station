@@ -10,7 +10,18 @@ beyond what Status lists**, and implementation waits for Mick's answers to the o
 
 The connected task/update source candidate is described in [proactive-task-candidate.md](proactive-task-candidate.md).
 It does not install or enable delivery, qualify physical hearing, or implement the approved-key/APNs ladder below.
-The historical merged-foundation inventory follows.
+The local #1249 candidate delivers silent info immediately, including between reply audio frames, with
+only an explicit notify quiet hold and content-free drain events. Privacy, meeting and media do not hold silent
+cards: room audio privacy and a meeting's participants do not restrict the owner's visual updates. A missing
+recipient becoming available retries held silent cards. An audience change during preparation refuses the old
+peer at enqueue and offers the same card to the new device exactly once. See [host operations](host-operations.md#session-updates-opt-in-609)
+for scope. There is no settle setting. Configured speech keeps the existing rules. This change has synthetic
+verification only; it records no installation or physical-device proof.
+The #1258 default behavior merged in PR #1265 follows the owner's 2026-11-18 decision: action cards, silent info cards and
+spoken updates have **no send budget by default**. Socket admission, the optional host cap and unchanged held
+bounds are described under [Rate limits and quiet hours](#rate-limits-and-quiet-hours). Its
+[verification is synthetic only](testing/1258-unlimited-session-updates.md); no live configuration, installation
+or physical delivery is claimed. The historical merged-foundation inventory follows.
 
 | Piece | State |
 | --- | --- |
@@ -27,7 +38,10 @@ On `main` today:
 - An `action` update prints `push: suggested` only when a target device is *connected* and quiet is off
   (`SessionUpdateQueue.push`, `NotifyCommand.swift`). Nothing is pushed when no device is connected. This design
   reverses that (rule 7 below).
-- `scripts/host.sh` does not pass `--session-updates`.
+- `scripts/host.sh` can pass `--session-updates` through the optional `sessionUpdates` boolean in `host.json`;
+  `taskProgress` and `sessionUpdateSpeechRoot` add the separate task and speech opt-ins, both requiring
+  `sessionUpdates: true`. All remain off when absent. See [host operations](host-operations.md#session-updates-opt-in-609)
+  for enable and rollback steps; this does not enable the proposed owner-key/APNs ladder.
 - Privacy is Part 10's, merged: #807, #808 and #813 on the host, and the switch in #815 to #817 (S-6a to S-6c). It
   is per connection, in memory, never auto-ending (Mick: no auto-end), with replies dropped. A fresh connection
   starts public. `set_privacy {on}` is acted on only while the connection has an active stream, and fails closed to
@@ -356,7 +370,27 @@ answer and by `haild notify status`, stays as it is. An `info` update held for a
 
 ## Rate limits and quiet hours
 
-- The existing per-session limit stays: 6 updates an hour, 5 held, 20 in all, 4-hour lifetime.
+- **Session sends (#1258 owner decision, merged in PR #1265): unlimited by default** for action cards, silent
+  info cards and spoken updates. `SessionUpdatePolicy.perSessionLimit == nil` disables send accounting and keeps
+  no send history. Protection against a stuck local loop uses a **60 submissions/minute per host** runaway
+  guard that normal use never reaches. Status and quiet-on requests share a separate **120/minute per host**
+  control bucket. Both are independent of the local-reply bucket, so replies and updates cannot spend or block
+  each other's admission. Refusals report `runaway_guard` or `control_rate_limited` and `retry_after` seconds;
+  `haild notify` prints the reason and retry time. Content-free refusal logs appear at most once per minute
+  per reason. Owner-only socket access and frame-size limits still apply; other kinds keep their existing budgets.
+- **Optional host cap:** flat `host.json` keys `sessionUpdatePerSessionLimit` (JSON integer **1..10000**) and
+  `sessionUpdateWindowSeconds` (JSON integer **1..86400**) must appear together with `sessionUpdates: true`.
+  Both absent means unlimited. `scripts/host.sh` validates them before generating startup arguments; haild
+  validates the arguments again and applies the cap at start. Invalid values refuse generation/startup with a
+  clear error. Changes need a restart; remove both keys to restore unlimited session sends. The independent
+  socket runaway guard still applies. A configured cap preserves the queue's `rate_limited` refusal,
+  `retry_after`, and refusals spending no queue budget. See the
+  [host settings](host-operations.md#session-updates-opt-in-609) for an example and argument names and the
+  [cap verification record](testing/1258-session-update-cap.md) for synthetic proof. The cap candidate builds
+  on the unlimited-default and socket-admission change merged in PR #1265.
+- **Held memory bounds stay:** 5 per session, 20 total, 4-hour lifetime. `full`/`expired` behavior and oldest-info
+  eviction are unchanged; unlimited sends do not allow unbounded held cards.
+- The push ladder and quiet-hours wiring below remain proposed; unlimited session sends do not implement APNs.
 - **Pushes:** at most 4 in any 60-minute window ending now, for the whole host, counting the summary. One update
   pushed to several keys counts once.
   - The first 3 in a window go individually.

@@ -157,6 +157,7 @@ struct SessionUpdateListenerRig {
         let connectionID = await session.connectionID
         let generation = await session.selectionGeneration
         await listener.enableSessionUpdates()
+        await listener.configureSessionUpdateSpeech(UnusedUpdateSpeech())
         await listener.installSessionUpdateTestPeer(peer, connectionID: connectionID, generation: generation)
         return Self(hostRig: hostRig, session: session, connectionID: connectionID, listener: listener, peer: peer)
     }

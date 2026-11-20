@@ -11,8 +11,8 @@ import HailDaemonKit
 // unavailable or adapter error, 5 unbound, 6 partial, 7 denied by policy, 8 confirmation needed or cancelled,
 // 9 policy file unusable, 64 usage, 75 `ambient reload` busy or stopping (try again). `targets flush` adds 4 refused
 // (nothing cleared) and 6 text still shown afterwards (FlushCommand.swift). A `rightyo --reply-to`
-// dispatch the daemon refuses keeps the direct path's code where the outcome is the same (8 confirmation needed, 7 rebound); every other dispatch or
-// socket refusal exits 1 with the daemon's reason, as `haild reply` does.
+// dispatch the daemon refuses keeps the direct path's code for 8 confirmation needed and 7 rebound; every other
+// dispatch or socket refusal exits 1 with the daemon's reason, as `haild reply` does.
 
 // A launchd job often inherits only the system PATH, which omits Homebrew on Apple Silicon and Intel.
 // Keep an explicit override for nonstandard installations, then try the two standard Homebrew prefixes.
@@ -199,12 +199,17 @@ func send(_ host: HailHost, id: String, text: String) async throws {
 func status(_ host: HailHost) async throws {
     print(DaemonInfo.banner)
     let failure = await host.policyFailure
+    let configured = failure == nil ? await host.currentPolicy.voiceGuards.rawValue : "unusable"
     if let failure {
         print("policy: UNUSABLE, delivery refused: \(failure)")
     } else {
         let policy = await host.currentPolicy
         print("policy: \(host.policySummary), \(policy.targets.count) allowed")
     }
+    print("voice guards configured: \(configured)")
+    let live = await liveVoiceGuards()
+    print("voice guards effective: \(voiceGuardsDetail(live))")
+    if let mismatch = voiceGuardsMismatch(configured: configured, live: live) { print(mismatch) }
     print("targets: \(try await host.targets().count)")
     await reportListingFailures(host)
     if failure != nil { exit(9) }
@@ -358,10 +363,10 @@ do {
     case "status":
         switch arguments.dropFirst().first {
         case nil: try await status(try await makeHost())
-        case "--json" where arguments.count == 2: try statusJSON()
+        case "--json" where arguments.count == 2: try await statusJSON()
         default: usage()
         }
-    case "doctor" where arguments.count == 1: doctor()
+    case "doctor" where arguments.count == 1: await doctor()
     case "reply": try await reply(arguments.dropFirst())
     case "ambient": try await ambient(arguments.dropFirst())
     case "notify": try await notify(arguments.dropFirst())

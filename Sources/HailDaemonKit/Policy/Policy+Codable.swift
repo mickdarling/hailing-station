@@ -3,6 +3,10 @@ public import Foundation
 /// The on-disk form of `Policy` (#41 item 1): versioned, unknown keys refused, default guard list omitted,
 /// sorted keys. The signature (host key, #39) covers these bytes.
 extension Policy {
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case version, targets, guardPatterns, deliveriesPerMinute, voiceGuards
+    }
+
     /// The encoder for the signed file: sorted keys, stable output.
     public static func encoder() -> JSONEncoder {
         let encoder = JSONEncoder()
@@ -19,6 +23,7 @@ extension Policy {
             throw PolicyFormatError.missingVersion
         }
         guard version == Self.version else { throw PolicyFormatError.unsupportedVersion(version) }
+        voiceGuards = try Self.decodeVoiceGuards(from: known)
         targets = try known.decodeIfPresent([String: TargetPolicy].self, forKey: .targets) ?? [:]
         if known.contains(.guardPatterns) {
             guardPatterns = try known.decode([GuardPattern].self, forKey: .guardPatterns)
@@ -35,9 +40,20 @@ extension Policy {
         _ = try PolicyEvaluator(policy: self)
     }
 
+    /// Presence is deliberate: null and every non-string value fail closed rather than choosing a default.
+    private static func decodeVoiceGuards(from container: KeyedDecodingContainer<CodingKeys>) throws -> VoiceGuards {
+        guard container.contains(.voiceGuards) else { return .on }
+        guard let raw = try? container.decode(String.self, forKey: .voiceGuards),
+              let setting = VoiceGuards(rawValue: raw) else {
+            throw PolicyFormatError.invalidVoiceGuards("expected exactly the string \"on\" or \"off\"")
+        }
+        return setting
+    }
+
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(Self.version, forKey: .version)
+        if voiceGuards == .off { try container.encode(voiceGuards, forKey: .voiceGuards) }
         try container.encode(targets, forKey: .targets)
         if guardPatterns != DangerousPatternGuard.defaults {
             try container.encode(guardPatterns, forKey: .guardPatterns)

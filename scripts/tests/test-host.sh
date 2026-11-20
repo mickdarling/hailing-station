@@ -6,7 +6,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 # Canonical (no /var -> /private/var symlink), so resolved links compare equal to scratch paths; short, because a
 # Unix socket path is limited to 104 bytes.
-scratch="$(cd "$(mktemp -d /tmp/hst.XXXXXX)" && pwd -P)"
+scratch="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/hst.XXXXXX")" && pwd -P)"
 # Releases are read-only by design, so make the scratch tree writable before removing it.
 trap 'chmod -R u+w "$scratch" 2>/dev/null; rm -rf -- "$scratch"' EXIT
 
@@ -127,6 +127,13 @@ fi
 
 # Config validation, all before anything runs.
 bad_config() { printf '%s\n' "$2" > "$HAIL_CONFIG_DIR/host.json"; expect_failure "$1" "$host" plist; }
+bad_string_config() {
+  local key="$1" expected
+  printf '%s\n' "$2" > "$HAIL_CONFIG_DIR/host.json"
+  if "$host" plist > "$scratch/string.out" 2>&1; then fail "string guard accepted $key"; fi
+  expected="error: host.json \"$key\" must not contain control characters or start with '-'"
+  [[ "$(cat "$scratch/string.out")" == "$expected" ]] || fail "wrong string guard message: $(cat "$scratch/string.out")"
+}
 bad_config "missing port" '{"bind": "127.0.0.1"}'
 bad_config "out-of-range port" '{"bind": "127.0.0.1", "port": 70000}'
 bad_config "missing bind" '{"port": 8765}'
@@ -198,8 +205,111 @@ bad_config "target that is a flag" \
   '{"bind": "127.0.0.1", "port": 8765, "singleTerminalReplyFallback": true,
     "ambient": {"rightyo": "/r", "config": "/c", "target": "--reply-socket"}}'
 bad_config "relative voice routes path" '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "routes.json"}'
-bad_config "voice routes that is a flag" '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "--port"}'
-bad_config "voice routes with a newline" '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "/r\n--port"}'
+bad_string_config voiceRoutes '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "--port"}'
+bad_string_config voiceRoutes '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "/r\n--port"}'
+bad_string_config voiceRoutes '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "/r.json\n"}'
+
+# Proactive opt-ins (#609) use the same scratch config and never reach the real launchctl.
+speech_root="$scratch/update speech"
+mkdir -m 700 "$speech_root"
+mkdir -m 700 "$speech_root/child"
+ln -s "$speech_root" "$scratch/speech-link"
+ln -s "$scratch" "$scratch/parent-link"
+touch "$scratch/speech-file"
+mkdir -m 755 "$scratch/open-speech"
+update_config() {
+  printf '{"bind": "127.0.0.1", "port": 8765, %s}\n' "$1" > "$HAIL_CONFIG_DIR/host.json"
+}
+expect_update_arguments() {
+  local config="$1"; shift
+  update_config "$config"
+  "$host" plist > "$scratch/updates.plist"
+  python3 -I - "$scratch/updates.plist" "$(release_dir one)/haild" "$@" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as source:
+    actual = plistlib.load(source)["ProgramArguments"]
+expected = [sys.argv[2], "run", "--bind", "127.0.0.1", "--port", "8765", "--personal-terminal"] + sys.argv[3:]
+assert actual == expected, (actual, expected)
+PY
+}
+expect_update_arguments '"sessionUpdates": false, "taskProgress": false'
+expect_update_arguments '"sessionUpdates": true' --session-updates
+expect_update_arguments '"sessionUpdates": true, "taskProgress": true' --session-updates --task-progress
+expect_update_arguments "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$speech_root\"" \
+  --session-updates --session-update-speech-root "$speech_root"
+expect_update_arguments "\"sessionUpdates\": true, \"taskProgress\": true, \"sessionUpdateSpeechRoot\": \"$speech_root\"" \
+  --session-updates --task-progress --session-update-speech-root "$speech_root"
+expect_update_arguments "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$speech_root/child\"" \
+  --session-updates --session-update-speech-root "$speech_root/child"
+expect_update_arguments "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$speech_root/child/\"" \
+  --session-updates --session-update-speech-root "$speech_root/child/"
+for enabled in '' '"sessionUpdates": false,'; do
+  bad_config "task progress without session updates" "{\"bind\": \"127.0.0.1\", \"port\": 8765, $enabled \"taskProgress\": true}"
+  bad_config "speech without session updates" \
+    "{\"bind\": \"127.0.0.1\", \"port\": 8765, $enabled \"sessionUpdateSpeechRoot\": \"$speech_root\"}"
+done
+# Real directories behind these paths ensure the refusals exercise symlinks and normalization, not missing paths.
+# Dash/control guard coverage uses bad_string_config above, rather than redundant invalid speech-root paths.
+for root in "$scratch/parent-link/update speech" "$scratch/speech-link/." "$scratch/speech-link/child/.." \
+    "$speech_root//child" "$speech_root/./child" "$speech_root/child/.." "$speech_root//" './x' \
+    relative "$scratch/missing" "$scratch/speech-file" "$scratch/open-speech" \
+    "$scratch/speech-link" "$scratch/speech-link/" ''; do
+  update_config "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$root\""
+  expect_failure "invalid speech root: $root" "$host" plist
+done
+bad_string_config sessionUpdateSpeechRoot \
+  "{\"bind\": \"127.0.0.1\", \"port\": 8765, \"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$speech_root\n\"}"
+# Mode 700 alone is insufficient when an extended ACL grants another account access.
+chmod +a 'everyone allow read' "$speech_root"
+update_config "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$speech_root\""
+expect_failure "speech root with an extended ACL" "$host" plist
+chmod -N "$speech_root"
+for key in sessionUpdates taskProgress sessionUpdateSpeechRoot; do
+  if [[ "$key" == sessionUpdateSpeechRoot ]]; then type=string; else type=bool; fi
+  for wrong in '"true"' 1 false '{}' '[]'; do
+    [[ "$type:$wrong" == 'string:"true"' || "$type:$wrong" == bool:false ]] && continue
+    update_config "\"$key\": $wrong"
+    if "$host" plist > "$scratch/type.out" 2>&1; then fail "wrong type accepted for $key"; fi
+    grep -q "host.json \"$key\" must be a $type, not a " "$scratch/type.out" \
+      || fail "wrong type message for $key: $(cat "$scratch/type.out")"
+  done
+done
+
+# #1258: the cap is absent by default; valid pairs bridge unchanged to daemon startup arguments.
+for pair in '1 1' '6 3600' '10000 86400'; do
+  read -r limit seconds <<< "$pair"
+  update_config "\"sessionUpdates\": true, \"sessionUpdatePerSessionLimit\": $limit, \"sessionUpdateWindowSeconds\": $seconds"
+  "$host" plist > "$scratch/cap.plist"
+  [[ "$(plutil -extract ProgramArguments.8 raw -o - "$scratch/cap.plist")" == --session-update-per-session-limit &&
+     "$(plutil -extract ProgramArguments.9 raw -o - "$scratch/cap.plist")" == "$limit" &&
+     "$(plutil -extract ProgramArguments.10 raw -o - "$scratch/cap.plist")" == --session-update-window-seconds &&
+     "$(plutil -extract ProgramArguments.11 raw -o - "$scratch/cap.plist")" == "$seconds" ]] \
+    || fail "configured cap was not bridged to daemon startup"
+done
+for key in sessionUpdatePerSessionLimit sessionUpdateWindowSeconds; do
+  for invalid in 0 -1 1.0 1e0 1.5 100000 18446744073709551616 '"6"' true null '{}' '[]'; do
+    if [[ "$key" == sessionUpdatePerSessionLimit ]]; then
+      update_config "\"sessionUpdates\": true, \"$key\": $invalid, \"sessionUpdateWindowSeconds\": 3600"
+    else
+      update_config "\"sessionUpdates\": true, \"sessionUpdatePerSessionLimit\": 6, \"$key\": $invalid"
+    fi
+    if "$host" plist > "$scratch/cap.out" 2>&1; then fail "invalid cap accepted: $key=$invalid"; fi
+    # Values plutil cannot represent (such as null) fail the existing whole-config validation first.
+    grep -q '^error: ' "$scratch/cap.out" \
+      || fail "cap refusal lacks a clear error for $key=$invalid: $(cat "$scratch/cap.out")"
+  done
+done
+for config in '"sessionUpdatePerSessionLimit": 6' '"sessionUpdateWindowSeconds": 3600' \
+    '"sessionUpdatePerSessionLimit": 6, "sessionUpdateWindowSeconds": 3600'; do
+  update_config "$config"
+  expect_failure "incomplete cap or disabled updates" "$host" plist
+done
+for config in '"sessionUpdatePerSessionLimit": 10001, "sessionUpdateWindowSeconds": 3600' \
+    '"sessionUpdatePerSessionLimit": 6, "sessionUpdateWindowSeconds": 86401' \
+    '"sessionUpdatePerSessionLimit": 6' '"sessionUpdateWindowSeconds": 3600'; do
+  update_config "\"sessionUpdates\": true, $config"
+  expect_failure "out-of-bounds or incomplete enabled cap" "$host" plist
+done
 
 # A voice routes path with a space stays one argument, right after its flag.
 printf '%s\n' '{"bind": "127.0.0.1", "port": 8765, "voiceRoutes": "/my routes.json"}' > "$HAIL_CONFIG_DIR/host.json"
@@ -228,6 +338,25 @@ expected=("$(release_dir one)/haild" run --bind 127.0.0.1 --port 8765 --personal
 [[ "${arguments[*]}" == "${expected[*]}" ]] || fail "unexpected arguments: ${arguments[*]}"
 [[ "$(plutil -extract EnvironmentVariables.HAIL_HOST_ID raw -o - "$scratch/agent.plist")" == studio.local ]] \
   || fail "host ID not in the environment"
+# Freeze the complete pre-#609 fixture, not just a joined argument string: absent new keys must leave every
+# byte of its generated plist unchanged. Canonicalize the independently authored legacy fields with plutil.
+python3 -I - "$scratch/legacy.plist" "$HAIL_LOG_DIR" "$HAIL_CONFIG_DIR" "${expected[@]}" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "wb") as output:
+    plistlib.dump({
+        "Label": "com.hailingstation.haild", "ProgramArguments": sys.argv[4:],
+        "RunAtLoad": True, "KeepAlive": True, "ProcessType": "Interactive",
+        "StandardOutPath": sys.argv[2] + "/haild.out.log",
+        "StandardErrorPath": sys.argv[2] + "/haild.err.log",
+        "EnvironmentVariables": {"HAIL_HOST_ID": "studio.local", "HAIL_CONFIG_DIR": sys.argv[3]},
+    }, output)
+PY
+plutil -convert xml1 "$scratch/legacy.plist"
+cmp -s "$scratch/legacy.plist" "$scratch/agent.plist" || fail "absent update keys changed the legacy plist bytes"
+
+# Argument coverage above uses the full fixture; lifecycle cases need only the listener's minimal config.
+# Keep their repeated plist writes small enough for serial background-policy runs on a busy host.
+printf '%s\n' '{"bind": "127.0.0.1", "port": 8765}' > "$HAIL_CONFIG_DIR/host.json"
 
 # A failed first migration has nothing to restore; the failed agent is set aside so it cannot load at login.
 mode never-ready
@@ -252,6 +381,19 @@ printf '%s\n' "bootout $domain/com.mickdarling.hailing-station-session" "bootout
 [[ "$(readlink -f "$HAIL_BIN_DIR/haild")" == "$(release_dir one)/haild" ]] || fail "PATH haild is not the running release"
 "$host" status > "$scratch/status" || fail "healthy status exited non-zero"
 grep -q "running: $(release_dir one)/haild (running)" "$scratch/status" || fail "status did not report the daemon"
+
+# Bad proactive settings fail preflight while the existing fake managed job is still running.
+cp "$HAIL_CONFIG_DIR/host.json" "$scratch/good-config.json"
+for config in '"sessionUpdates": true, "sessionUpdatePerSessionLimit": 0, "sessionUpdateWindowSeconds": 3600' \
+    '"taskProgress": true' "\"sessionUpdateSpeechRoot\": \"$speech_root\"" \
+    "\"sessionUpdates\": true, \"sessionUpdateSpeechRoot\": \"$scratch/open-speech\""; do
+  update_config "$config"
+  : > "$scratch/launchctl.calls"
+  expect_failure "invalid proactive settings before stop" "$host" restart
+  ! grep -q '^bootout' "$scratch/launchctl.calls" || fail "invalid proactive settings stopped a job"
+  [[ "$(cat "$jobs/com.hailingstation.haild")" == "$(release_dir one)/haild" ]] || fail "preflight changed the job"
+done
+mv "$scratch/good-config.json" "$HAIL_CONFIG_DIR/host.json"
 
 # Staging a new release changes nothing running and is reported as staged, not as drift.
 "$host" install --binary "$scratch/haild-two" >/dev/null

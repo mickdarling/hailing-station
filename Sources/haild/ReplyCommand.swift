@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import HailDaemonKit
 import HailProtocol
+import OSLog
 import Synchronization
 
 // Parsing, static PCM submission, and the streaming vbsay adapter stay together to share reply identity.
@@ -117,6 +118,7 @@ private struct PCMReplyContext {
     var frameLimit: Int?
     /// A spoken reply's delivery timing (#737), logged once when it ends.
     var timing: ReplyTimingRecorder?
+    var maxPCMBytes = 60_000
 }
 
 func reply(_ arguments: ArraySlice<String>) async throws {
@@ -138,7 +140,9 @@ func reply(_ arguments: ArraySlice<String>) async throws {
     let pacing = ReplyStreamPacing(paced: audio && !pacingOff)
     guard audio else { return try await streamReply(options, rendererRoot: rendererRoot, pacing: pacing) }
     guard ReplyBackground.isDetachedJob else { try ReplyBackground.detach() }
-    try await ReplyBackground.bounded { try await streamReply(options, rendererRoot: rendererRoot, pacing: pacing) }
+    try await ReplyBackground.run(socket: options.socket) {
+        try await streamReply(options, rendererRoot: rendererRoot, pacing: pacing)
+    }
 }
 
 /// Checked before any text is sent. A paced static file must also fit its frames into the paced sending time: at a
@@ -184,26 +188,89 @@ private func requireTextFrameFits(_ options: ReplyOptions) throws {
     }
 }
 
+private struct ReplyAudioSkipped: Error {
+    let reason: String
+    var note: String {
+        switch reason {
+        case "queue_timeout": "reply audio skipped: queue timeout"
+        case "expired": "reply audio expired"
+        case "wait_budget": "reply audio skipped: stop wait budget"
+        case "terminal_only": "reply audio skipped: terminal only"
+        default: "reply audio skipped after a stop"
+        }
+    }
+}
+private struct ReplyAudioCapacity: Error {}
+private struct ReplyAudioUnsupported: Error {}
+
 private func streamReply(_ options: ReplyOptions, rendererRoot: URL, pacing: ReplyStreamPacing) async throws {
+    do {
+        try await streamReplyAudio(options, rendererRoot: rendererRoot, pacing: pacing)
+    } catch let skipped as ReplyAudioSkipped {
+        ReplyBackground.recordAudioSkip(skipped.reason)
+        ReplyBackground.endReason(.refused)
+        note(skipped.note)
+    } catch is ReplyAudioCapacity {
+        ReplyBackground.endReason(.refused)
+        note("reply audio dropped: capacity")
+    }
+}
+
+private func streamReplyAudio(_ options: ReplyOptions, rendererRoot: URL, pacing: ReplyStreamPacing) async throws {
     let streamID = (options.pcm16 != nil || options.say != nil) ? UUID() : nil
     let descriptor = ReplyDescriptor(
         id: UUID(), hostID: options.host, targetID: options.target, audioStreamID: streamID,
         requestID: options.requestID
     )
-    var frames = 0, deliveries = 0
+    let probe = streamID.map { stream in
+        Frame(timestamp: replyTimestamp(), target: options.target, source: options.host,
+            payload: .audio(AudioPayload(codec: .pcm16, sampleRate: options.sampleRate, channels: 1,
+                sequence: 0, streamID: stream, isFinal: false, bytes: Data([0, 0]), reply: descriptor)))
+    }
+    // Ordering precedes text; a failed ticket still leaves the text/card delivered before audio fails closed.
     RequestKeepAlive.begin(requestBound: options.requestID != nil)
+    let entry = await ReplyBackground.requestAudioTicket(probe: probe, socket: options.socket)
+    do {
+        try await streamTicketedReply(options, rendererRoot: rendererRoot, pacing: pacing,
+                                      job: ReplyQueuedJob(descriptor: descriptor, streamID: streamID,
+                                                          probe: probe, entry: entry))
+        await ReplyBackground.releaseAudioTicket(entry, socket: options.socket)
+    } catch {
+        await ReplyBackground.releaseAudioTicket(entry, socket: options.socket)
+        throw error
+    }
+}
+
+private struct ReplyQueuedJob {
+    let descriptor: ReplyDescriptor
+    let streamID: UUID?
+    let probe: Frame?
+    let entry: Result<LocalReplyAudioTicket?, any Error>
+}
+
+private func streamTicketedReply(
+    _ options: ReplyOptions, rendererRoot: URL, pacing: ReplyStreamPacing,
+    job: ReplyQueuedJob
+) async throws {
+    let descriptor = job.descriptor, streamID = job.streamID, probe = job.probe, entry = job.entry
+    var frames = 0, deliveries = 0
     if let frame = textFrame(options, descriptor: descriptor) {
         try await admit(audioBytes: 0, sampleRate: options.sampleRate, pacing: pacing)
         deliveries += try await ReplyBackground.submit(frame, socketURL: options.socket)
         frames += 1
     }
-    guard let streamID else { return printSubmitted(frames: frames, deliveries: deliveries) }
-    try await ReplyBackground.awaitAudioTurn(socket: options.socket, target: options.target)
+    guard let streamID, let probe else { return printSubmitted(frames: frames, deliveries: deliveries) }
+    if case .failure(let error) = entry, error is ReplyAudioCapacity, deliveries == 0 {
+        throw ReplyCommandError.invalid("reply audio dropped: capacity; no text or card delivered")
+    }
+    try await ReplyBackground.awaitAudioTurn(socket: options.socket, target: options.target, probe: probe,
+                                            ticket: entry.get())
     let context = PCMReplyContext(
         sampleRate: options.sampleRate, streamID: streamID, descriptor: descriptor,
         socket: options.socket, pacing: pacing,
         frameLimit: ReplyBackground.isDetachedJob ? nil
-            : LocalReplyEndpoint.maxFramesPerMinute - (options.text == nil ? 0 : 1)
+            : LocalReplyEndpoint.maxFramesPerMinute - (options.text == nil ? 0 : 1),
+        maxPCMBytes: try QueuedAudioEncoding.pcmCapacity(frame: probe, ticket: ReplyBackground.audioTicket)
     )
     if let file = options.pcm16 {
         let result = try await sendPCM(file, context: context)
@@ -277,7 +344,8 @@ private func sendPCM(
 private func requireSendable(_ url: URL, context: PCMReplyContext, from start: Int, marksFinal: Bool) throws {
     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
     let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
-    let segments = (size + pcmSegmentBytes - 1) / pcmSegmentBytes
+    let segmentBytes = min(pcmSegmentBytes, context.maxPCMBytes)
+    let segments = (size + segmentBytes - 1) / segmentBytes
     guard size > 0, size.isMultiple(of: 2), segments > 0 else {
         throw ReplyCommandError.invalid("PCM16 reply is empty or has a partial sample")
     }
@@ -292,7 +360,7 @@ private func sendPCMFile(
 ) async throws {
     let startingSequence = progress.sequence
     try requireSendable(url, context: context, from: startingSequence, marksFinal: marksFinal)
-    let segmentBytes = pcmSegmentBytes
+    let segmentBytes = min(pcmSegmentBytes, context.maxPCMBytes)
     let handle = try FileHandle(forReadingFrom: url)
     defer { try? handle.close() }
     var current = try handle.read(upToCount: segmentBytes) ?? Data()
@@ -319,6 +387,7 @@ private func sendPCMFile(
             current = next
         }
     } catch {
+        ReplyBackground.recordFailure(error)
         // A static reply that stops partway still ends its stream, so the phone's queue moves on (#467).
         if marksFinal, progress.sequence > startingSequence {
             _ = try? await sendFinalPCM(sequence: progress.sequence, context: context, paced: false)
@@ -366,6 +435,7 @@ private func streamVBSay(
         }
         return (progress.sequence + 1, progress.deliveries)
     } catch {
+        ReplyBackground.recordFailure(error)
         try? await progress.finish(context: context, recovering: true)
         if outcome == "failed", ReplyBackground.isSuperseded {
             outcome = "superseded"
@@ -400,6 +470,7 @@ private func renderReplySegment(
         if segment.final { outcome = "played" }
         try await renderer.waitForCleanup()
     } catch {
+        ReplyBackground.recordFailure(error)
         try? await progress.finish(context: context, recovering: true)
         renderer.retire(cancel: true)
         await renderer.waitForCancellationSignals()
@@ -413,6 +484,7 @@ private func renderReplySegment(
 }
 
 private func speechReplyFailure(_ error: any Error, cleanupDeferred: Bool) -> any Error {
+    if error is ReplyAudioSkipped { return error }
     if error is CancellationError { return OwnedReplyRendererError.cancelled }
     if error is OwnedReplyRendererError { return error }
     if let command = error as? ReplyCommandError {
@@ -427,9 +499,10 @@ private func submitSpeechAudio(_ frame: Frame, socketURL: URL) async throws -> I
         ReplyBackground.ready() // A detached job's first accepted audio lets `haild reply` return (#430).
         return delivered
     } catch {
-        if error is CancellationError { throw error }
+        if error is CancellationError || error is ReplyAudioSkipped { throw error }
         // Local refusal/lost acknowledgement remains the primary category, not a renderer cleanup
         // failure. Never forward raw endpoint/NW errors or restart the whole accepted-text command.
+        ReplyBackground.recordFailure(error)
         throw OwnedReplyRendererError.publicationFailed
     }
 }
@@ -448,8 +521,8 @@ private func publishRenderer(
     for try await bytes in renderer.audio {
         if !bytes.isEmpty, !observedPCM { context.timing?.mark(.pcm); observedPCM = true }
         pending.append(bytes)
-        while pending.count >= StreamedReplyFrames.bytes(sequence: progress.sequence) {
-            let size = StreamedReplyFrames.bytes(sequence: progress.sequence)
+        while pending.count >= StreamedReplyFrames.bytes(sequence: progress.sequence, maximum: context.maxPCMBytes) {
+            let size = StreamedReplyFrames.bytes(sequence: progress.sequence, maximum: context.maxPCMBytes)
             if segmentEnd, pending.count == size { break }
             context.timing?.mark(.frameReady)
             progress.deliveries += try await sendStreamedPCM(
@@ -483,12 +556,13 @@ private func publishRenderer(
 /// fewer of the endpoint's per-minute frames. Each frame is generated at ~2.5x realtime, well before the one ahead
 /// of it finishes playing; `ReplyStreamPacing` holds the rest back to stay a bounded lead ahead of playback.
 enum StreamedReplyFrames {
-    static func bytes(sequence: Int) -> Int {
-        switch sequence {
+    static func bytes(sequence: Int, maximum: Int = 60_000) -> Int {
+        let preferred = switch sequence {
         case 0: 24_000 // 0.5 s at 24 kHz s16 mono
         case 1: 36_000 // 0.75 s
         default: 60_000 // 1.25 s, under PayloadLimits.maxAudioBytes
         }
+        return min(preferred, maximum)
     }
 }
 
@@ -636,9 +710,23 @@ enum ReplyClient {
         }
     }
 
-    static func submit(_ frame: Frame, socketURL: URL) async throws -> Int {
+    private static func requireAudioResponse(_ response: LocalReplyResponse, queued: Bool) throws {
+        if response.code == .publicationFailed {
+            throw ReplyClientError.failed(response.error ?? LocalReplyRefusal.publicationFailed.message)
+        }
+        if let error = response.error { throw ReplyClientError.refused(error) }
+        guard queued else { return }
+        guard let report = response.replyAudio else {
+            throw ReplyClientError.failed("daemon did not acknowledge queued reply audio")
+        }
+        if report.skipped { throw ReplyAudioSkipped(reason: report.reason ?? "stopped") }
+    }
+
+    static func submit(
+        _ frame: Frame, socketURL: URL, ticket: LocalReplyAudioTicket? = nil
+    ) async throws -> Int {
         try requireOwnerSocket(socketURL)
-        var request = try FrameCoding.encode(frame)
+        var request = try QueuedAudioEncoding.encode(frame, ticket: ticket)
         guard request.count <= PayloadLimits.defaultMaxFrameBytes else {
             throw ReplyClientError.failed("frame too large")
         }
@@ -662,7 +750,7 @@ enum ReplyClient {
                 ReplyResends.note()
                 continue
             }
-            if let error = response.error { throw ReplyClientError.refused(error) }
+            try requireAudioResponse(response, queued: ticket != nil)
             guard response.code == nil, response.delivered == 1 else {
                 throw ReplyClientError.refused("reply requires exactly one recipient")
             }
@@ -913,16 +1001,117 @@ private struct ReplyAudioTurn {
 extension ReplyBackground {
     /// This job's audio-turn lock and the stop file that supersedes it (#467), once it holds the turn.
     private static let turn = Mutex<ReplyAudioTurn?>(nil)
+    private static let queuedTicket = Mutex<LocalReplyAudioTicket?>(nil)
+    private static let waiterRecord = Mutex<(descriptor: Int32, url: URL)?>(nil)
+    // One full 35-minute watchdog plus its ten-minute shared-rate extension, independent of the stream clock.
+    static let queueLifetime: Duration = wallClockBound + maxExtension
+    private static let queueStarted = Mutex(ContinuousClock.now)
+    private static let queueWaiting = Mutex(false)
+    private static let queueLog = Logger(subsystem: "org.hailingstation.haild", category: "reply-audio")
+    private static let skipReason = Mutex<String?>(nil)
+    static func recordAudioSkip(_ reason: String) { skipReason.withLock { $0 = reason } }
+
+    /// Hosts may shorten the queue lifetime, never extend the fixed safety cap. Also permits fast timeout probes.
+    private static var queueLimit: Duration {
+        let seconds = ProcessInfo.processInfo.environment["HAILD_REPLY_QUEUE_SECONDS"].flatMap(Int.init)
+        return seconds.map { .seconds(max(1, min(2_700, $0))) } ?? queueLifetime
+    }
+    static var audioTicket: LocalReplyAudioTicket? { queuedTicket.withLock { $0 } }
+
+    private static func audioRequest(
+        _ request: LocalReplyAudioRequest, socket: URL
+    ) async throws -> LocalReplyAudioReport {
+        var line = try JSONEncoder().encode(request)
+        line.append(UInt8(ascii: "\n"))
+        let retryWindow = CorrelatedReplyRetryWindow()
+        var attempt = 0
+        while true {
+            let response = try await ReplyClient.transact(line, socketURL: socket)
+            if response.code == .requestPending, response.delivered == 0 {
+                guard try await retryWindow.waitForRetry(after: attempt) else {
+                    throw ReplyClientError.refused("reply request did not become ready within the retry budget")
+                }
+                attempt += 1
+                continue
+            }
+            if response.error == "rate limited" {
+                try await waitForAudioQueueBudget()
+                continue
+            }
+            // Pre-queue daemons decode this unknown kind as a Frame. Queue-aware daemons always
+            // include replyAudio, even on decode refusals; its absence is the older-daemon indicator.
+            if request.action == "enqueue", response.delivered == 0, response.code == .decodeFailure,
+               response.error == "reply refused [decodeFailure]: frame decode failure", !response.isReplyAudio {
+                throw ReplyAudioUnsupported()
+            }
+            if let error = response.error { throw ReplyClientError.refused(error) }
+            guard let report = response.replyAudio, response.code == nil else {
+                throw ReplyClientError.refused("daemon does not support queued reply audio")
+            }
+            return report
+        }
+    }
+
+    private static func waitForAudioQueueBudget() async throws {
+        if queueWaiting.withLock({ $0 }) {
+            try requireQueueTime()
+        } else if let latest = RequestKeepAlive.latest(final: false) {
+            guard ContinuousClock.now.advanced(by: .seconds(2)) < latest else {
+                throw ReplyClientError.refused("rate limited")
+            }
+        } else { extendBound(by: .seconds(2)) }
+        try await Task.sleep(for: .seconds(2))
+    }
 
     /// One detached reply's audio at a time per reply socket (#430). The phone plays replies one after another, so a
     /// second reply sent alongside the first would sit almost whole in the phone's queue, and two paced jobs would
     /// share the endpoint's per-minute frames. A queued job tells its caller and waits; its text has already gone.
     /// The lock is a file beside the owner-only socket, held open for the job's life: the kernel drops it at exit.
     ///
-    /// A request-bound reply (#467) answers what the user just said, so it supersedes an older reply still playing
+    /// On legacy daemons only, a request-bound reply (#467) supersedes an older reply still playing
     /// to the same target: it leaves a stop file named for that job, which ends at its next frame with its terminal
     /// marker. It waits only while its own request stays current; past that its audio is skipped before any starts.
-    static func awaitAudioTurn(socket: URL, target: String) async throws {
+    static func requestAudioTicket(
+        probe: Frame?, socket: URL
+    ) async -> Result<LocalReplyAudioTicket?, any Error> {
+        guard isDetachedJob, let probe else { return .success(nil) }
+        do {
+            let directory = socket.deletingLastPathComponent()
+            let admission = try openAudioLock("reply-audio.admission", directory: directory)
+            defer { close(admission) }
+            try await takeAdmissionLock(admission)
+            defer { _ = flock(admission, LOCK_UN) }
+            let report = try await audioRequest(.init(action: "enqueue", frame: probe), socket: socket)
+            if report.reason == "capacity" { throw ReplyAudioCapacity() }
+            guard let ticket = report.ticket, !report.skipped else {
+                throw ReplyClientError.refused("daemon did not issue an audio queue ticket")
+            }
+            do { try registerWaiter(ticket, directory: directory) } catch {
+                await releaseAudioTicket(.success(ticket), socket: socket)
+                throw error
+            }
+            queueStarted.withLock { $0 = .now }
+            return .success(ticket)
+        } catch is ReplyAudioUnsupported {
+            note("reply_audio_queue unsupported")
+            return .success(nil)
+        } catch { return .failure(error) }
+    }
+
+    static func releaseAudioTicket(_ entry: Result<LocalReplyAudioTicket?, any Error>, socket: URL) async {
+        guard case .success(let ticket?) = entry else { return }
+        removeWaiter()
+        // Cleanup owns an uncancelled task even when the stream's time bound cancelled its parent.
+        await Task.detached {
+            var line = try? JSONEncoder().encode(LocalReplyAudioRequest(action: "release", ticket: ticket))
+            line?.append(UInt8(ascii: "\n"))
+            if let line { _ = try? await ReplyClient.transact(line, socketURL: socket) }
+        }.value
+    }
+
+    static func awaitAudioTurn(
+        socket: URL, target: String, probe: Frame, ticket: LocalReplyAudioTicket?
+    ) async throws {
         guard isDetachedJob else { return }
         let directory = socket.deletingLastPathComponent()
         let lock = try openAudioLock("reply-audio.lock", directory: directory)
@@ -931,28 +1120,14 @@ extension ReplyBackground {
             close(lock)
             throw error
         }
-        var queued = false, ownsTurn = false, superseding: URL?
+        var ownsTurn = false, superseding: URL?
         defer { if !ownsTurn { close(lock); close(waiters) } }
         defer { _ = flock(waiters, LOCK_UN) } // queued signal ends on acquisition, failure or cancellation
         defer { restartBound() } // a queued job gets the whole bound for its own stream (Codex P1)
         defer { if let superseding { try? FileManager.default.removeItem(at: superseding) } } // on every exit
-        while flock(lock, LOCK_EX | LOCK_NB) != 0 {
-            guard errno == EWOULDBLOCK || errno == EINTR else {
-                throw ReplyCommandError.invalid("cannot take the reply audio lock")
-            }
-            if superseding == nil { superseding = requestSupersession(lock, target: target, directory: directory) }
-            if !queued {
-                try signalAudioWaiter(waiters)
-                queued = true
-                suspendBound()
-                note("reply audio queued behind another reply")
-                ready()
-            }
-            if let latest = RequestKeepAlive.latest(final: false), ContinuousClock.now >= latest {
-                throw ReplyCommandError.invalid("another reply is still playing; this reply's audio was skipped")
-            }
-            try await Task.sleep(for: .milliseconds(250))
-        }
+        try await waitForAudioTurn((lock, waiters), ticket: ticket, probe: probe,
+                                   socket: socket, superseding: &superseding)
+        removeWaiter()
         ownsTurn = true
         let id = UUID()
         let record = Data("\(id.uuidString) \(target)\n".utf8)
@@ -960,6 +1135,156 @@ extension ReplyBackground {
         _ = record.withUnsafeBytes { pwrite(lock, $0.baseAddress, $0.count, 0) }
         let stop = directory.appendingPathComponent("reply-audio.stop-\(id.uuidString)")
         turn.withLock { $0 = ReplyAudioTurn(id: id, stop: stop, waiters: waiters) }
+    }
+
+    private static func waitForAudioTurn(
+        _ locks: (turn: Int32, waiters: Int32), ticket: LocalReplyAudioTicket?, probe: Frame,
+        socket: URL, superseding: inout URL?
+    ) async throws {
+        let (lock, waiters) = locks
+        queueWaiting.withLock { $0 = ticket != nil }
+        defer { queueWaiting.withLock { $0 = false } }
+        let directory = socket.deletingLastPathComponent()
+        var waiting = false
+        var nextCheck = ContinuousClock.now
+        while true {
+            if ticket != nil { try requireQueueTime() }
+            if try await takeAudioTurn(lock, ticket: ticket, directory: directory) { break }
+            if let ticket, ContinuousClock.now >= nextCheck {
+                try await checkQueuedAudio(ticket, probe: probe, socket: socket)
+                nextCheck = .now.advanced(by: .seconds(20))
+            }
+            if !waiting { try beginAudioWait(waiters: waiters); waiting = true }
+            try legacyAudioWait(lock, ticket: ticket, target: probe.target ?? "", directory: directory,
+                                superseding: &superseding)
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        if let ticket {
+            try await checkQueuedAudio(ticket, probe: probe, socket: socket)
+            try requireQueueTime() // a delayed socket acknowledgement must not admit audio past the queue bound
+            RequestKeepAlive.accepted() // the stream's idle budget begins after the queue, not after its text
+        }
+    }
+
+    private static func legacyAudioWait(
+        _ lock: Int32, ticket: LocalReplyAudioTicket?, target: String, directory: URL, superseding: inout URL?
+    ) throws {
+        guard ticket == nil else { return }
+        if superseding == nil { superseding = requestSupersession(lock, target: target, directory: directory) }
+        if let latest = RequestKeepAlive.latest(final: false), ContinuousClock.now >= latest {
+            throw ReplyCommandError.invalid("another reply is still playing; this reply's audio was skipped")
+        }
+    }
+
+    private static func requireQueueTime() throws {
+        guard ContinuousClock.now < queueStarted.withLock({ $0.advanced(by: queueLimit) }) else {
+            skipReason.withLock { $0 = "queue_timeout" }
+            queueLog.notice("reply_audio_skipped reason=queue_timeout")
+            throw ReplyAudioSkipped(reason: "queue_timeout")
+        }
+    }
+
+    private static func takeAdmissionLock(_ descriptor: Int32, queued: Bool = false) async throws {
+        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            if queued { try requireQueueTime() }
+            guard errno == EWOULDBLOCK || errno == EINTR else {
+                throw ReplyCommandError.invalid("cannot order reply audio admission")
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    /// Serialize issuance and registration with admission: a later ticket can never miss an earlier live record.
+    private static func registerWaiter(_ ticket: LocalReplyAudioTicket, directory: URL) throws {
+        let name = "reply-audio.ticket-\(ticket.epoch.uuidString)-\(ticket.position)"
+        let descriptor = try openAudioLock(name, directory: directory)
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            close(descriptor)
+            throw ReplyCommandError.invalid("cannot register reply audio waiter")
+        }
+        waiterRecord.withLock { $0 = (descriptor, directory.appendingPathComponent(name)) }
+    }
+
+    private static func removeWaiter() {
+        waiterRecord.withLock { record in
+            guard let entry = record else { return }
+            try? FileManager.default.removeItem(at: entry.url)
+            close(entry.descriptor)
+            record = nil
+        }
+    }
+
+    private static func takeAudioTurn(
+        _ lock: Int32, ticket: LocalReplyAudioTicket?, directory: URL
+    ) async throws -> Bool {
+        if let ticket {
+            let admission = try openAudioLock("reply-audio.admission", directory: directory)
+            defer { close(admission) }
+            try await takeAdmissionLock(admission, queued: true)
+            defer { _ = flock(admission, LOCK_UN) }
+            guard try isFirstLiveWaiter(ticket, directory: directory) else { return false }
+            return try takeTurnLock(lock)
+        }
+        return try takeTurnLock(lock)
+    }
+
+    private static func takeTurnLock(_ lock: Int32) throws -> Bool {
+        if flock(lock, LOCK_EX | LOCK_NB) == 0 { return true }
+        guard errno == EWOULDBLOCK || errno == EINTR else {
+            throw ReplyCommandError.invalid("cannot take the reply audio lock")
+        }
+        return false
+    }
+
+    /// Registration and this scan hold admission: no new file can be unlinked before its owner locks it.
+    /// Inspect at most 4096 entries per pass, fail closed at the bound, then resume after dead records are removed.
+    private static func isFirstLiveWaiter(_ ticket: LocalReplyAudioTicket, directory: URL) throws -> Bool {
+        guard let entries = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil,
+                                                         options: [.skipsSubdirectoryDescendants]) else {
+            throw ReplyCommandError.invalid("cannot scan reply audio waiters")
+        }
+        let prefix = "reply-audio.ticket-\(ticket.epoch.uuidString)-"
+        var first = true
+        for _ in 0..<4096 {
+            guard let url = entries.nextObject() as? URL else { return first }
+            guard url.lastPathComponent.hasPrefix("reply-audio.ticket-") else { continue }
+            let live = try inspectWaiter(url)
+            if live, url.lastPathComponent.hasPrefix(prefix),
+               let position = UInt64(url.lastPathComponent.dropFirst(prefix.count)), position < ticket.position {
+                first = false
+            }
+        }
+        return false
+    }
+
+    private static func inspectWaiter(_ url: URL) throws -> Bool {
+        let descriptor = open(url.path, O_RDWR | O_CLOEXEC | O_NOFOLLOW)
+        if descriptor < 0 {
+            if errno == ENOENT { return false }
+            throw ReplyCommandError.invalid("cannot inspect reply audio waiter")
+        }
+        defer { close(descriptor) }
+        if flock(descriptor, LOCK_EX | LOCK_NB) == 0 {
+            try? FileManager.default.removeItem(at: url)
+            return false
+        }
+        guard errno == EWOULDBLOCK else { throw ReplyCommandError.invalid("cannot inspect reply audio waiter") }
+        return true
+    }
+
+    private static func beginAudioWait(waiters: Int32) throws {
+        try signalAudioWaiter(waiters)
+        suspendBound()
+        note("reply audio queued behind another reply")
+        ready()
+    }
+
+    private static func checkQueuedAudio(_ ticket: LocalReplyAudioTicket, probe: Frame, socket: URL) async throws {
+        let report = try await audioRequest(
+            LocalReplyAudioRequest(action: "check", ticket: ticket, frame: probe), socket: socket
+        )
+        if report.skipped { throw ReplyAudioSkipped(reason: report.reason ?? "stopped") }
+        queuedTicket.withLock { $0 = ticket }
     }
 
     private static func openAudioLock(_ name: String, directory: URL) throws -> Int32 {
@@ -1022,8 +1347,12 @@ extension ReplyBackground {
         let final = if case .audio(let audio) = frame.payload { audio.isFinal } else { false }
         while true {
             do {
-                let delivered = try await ReplyClient.submit(frame, socketURL: socketURL)
+                let ticket: LocalReplyAudioTicket? = if case .audio = frame.payload {
+                    queuedTicket.withLock { $0 }
+                } else { nil }
+                let delivered = try await ReplyClient.submit(frame, socketURL: socketURL, ticket: ticket)
                 RequestKeepAlive.accepted()
+                accepted(frame)
                 return delivered
             } catch let error {
                 guard isDetachedJob, case ReplyClientError.refused("rate limited") = error else { throw error }
@@ -1065,5 +1394,90 @@ enum RequestKeepAlive {
     /// The latest a request-bound frame may go; nil for a target-only reply, which has no request to keep.
     static func latest(final: Bool) -> ContinuousClock.Instant? {
         state.withLock { $0.bound ? $0.last.advanced(by: final ? finalBudget : dataBudget) : nil }
+    }
+}
+
+/// Base64 has a content-independent length with the canonical encoder: no slash can add an escape byte.
+/// Measure the actual envelope (including its queue ticket), reserving the longest sequence/timestamp and
+/// segment-end flag, then fit whole base64 quads and whole PCM16 samples. No speculative encode/split loop.
+enum QueuedAudioEncoding {
+    static func encode(_ frame: Frame, ticket: LocalReplyAudioTicket?) throws -> Data {
+        if let ticket {
+            let request = LocalReplyAudioRequest(action: "publish", ticket: ticket, frame: frame)
+            return try FrameCoding.encoder().encode(request)
+        }
+        return try FrameCoding.encode(frame)
+    }
+
+    static func pcmCapacity(frame: Frame, ticket: LocalReplyAudioTicket?) throws -> Int {
+        var envelope = frame
+        guard case .audio(var audio) = envelope.payload else { throw ReplyCommandError.invalid("expected audio") }
+        audio.bytes = Data()
+        audio.sequence = Int.max
+        audio.isFinal = false
+        audio.isSegmentEnd = true
+        envelope.payload = .audio(audio)
+        envelope.timestamp = Int64.max
+        let available = PayloadLimits.defaultMaxFrameBytes - (try encode(envelope, ticket: ticket).count)
+        guard available >= 4 else { throw ReplyClientError.failed("frame too large") }
+        let capacity = min(PayloadLimits.maxAudioBytes, available / 4 * 3)
+        return capacity - capacity % 2
+    }
+}
+
+extension ReplyBackground {
+    private static let jobEnd = Mutex((reason: LocalReplyJobEnd.Reason.done, frames: 0, audio: 0.0))
+
+    static func endReason(_ reason: LocalReplyJobEnd.Reason) {
+        jobEnd.withLock { if $0.reason == .done { $0.reason = reason } }
+    }
+
+    static func accepted(_ frame: Frame) {
+        guard isDetachedJob else { return }
+        jobEnd.withLock { state in
+            state.frames += 1
+            if case .audio(let audio) = frame.payload, !(audio.isFinal && audio.bytes.count == 2) {
+                state.audio += Double(audio.bytes.count) / Double(audio.sampleRate * audio.channels * 2)
+            }
+        }
+    }
+
+    /// Record before recovery/cleanup so a secondary terminal refusal cannot replace the primary failure.
+    static func recordFailure(_ error: any Error) {
+        if error is CancellationError || error as? OwnedReplyRendererError == .cancelled {
+            endReason(.signal)
+        } else if error is ReplyAudioSkipped || error is ReplyAudioCapacity || error is ReplyCommandError {
+            endReason(.refused)
+        } else if case ReplyClientError.refused = error {
+            endReason(.refused)
+        } else {
+            endReason(.publicationFailed)
+        }
+    }
+
+    static func run(socket: URL, job: @escaping @Sendable () async throws -> Void) async throws {
+        do { try await bounded(job) } catch {
+            recordFailure(error)
+            await reportEnd(socket: socket)
+            throw error
+        }
+        await reportEnd(socket: socket)
+    }
+
+    private static func reportEnd(socket: URL) async {
+        let report = jobEnd.withLock {
+            LocalReplyJobEnd(reason: $0.reason, frames: $0.frames, audioMS: Int(($0.audio * 1_000).rounded()))
+        }
+        // Stderr is released at ready. The owner-only daemon socket owns the log, even after job cancellation.
+        // One transaction, no retry after an ambiguous acknowledgement: never duplicate the end line.
+        await Task.detached {
+            guard let encoded = try? FrameCoding.encoder().encode(report),
+                  var fields = (try? JSONSerialization.jsonObject(with: encoded)) as? [String: Any] else { return }
+            // Optional diagnostic is ignored by older endpoints; the CLI also writes the reason to unified logging.
+            fields["audioSkipReason"] = skipReason.withLock { $0 }
+            guard var line = try? JSONSerialization.data(withJSONObject: fields) else { return }
+            line.append(UInt8(ascii: "\n"))
+            _ = try? await ReplyClient.transact(line, socketURL: socket)
+        }.value
     }
 }

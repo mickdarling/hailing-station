@@ -1054,7 +1054,8 @@ extension RightyoInputConsumer {
 
     /// Types the prompt, its reply block naming `address.target`. A routed request the host refuses before its
     /// handoff (any `LocalDispatchRefusal`: offline, rebound, policy, lockdown, rate) is a route refusal that ends
-    /// nothing. Pending input, confirmation and capacity on the own target leave `lastDeliveryRefusal` and continue.
+    /// nothing. Dialog refusals on either target, and pending input, confirmation and capacity on the own target,
+    /// leave `lastDeliveryRefusal` and continue.
     /// Any other failure (another refusal of the stream's own target, a refusal after handoff, audit, size,
     /// cancellation, listener stop) ends the consumer, as before.
     func deliver(
@@ -1074,6 +1075,7 @@ extension RightyoInputConsumer {
         } catch RightyoInputError.confirmationRequired {
             return refuse(.confirmationRequired, at: address)
         } catch let refusal as LocalDispatchRefusal where !refusal.handedOff {
+            if case .blockedByDialog = refusal { return refuse(refusal, at: address) }
             if address.route != nil || [.inputPending, .confirmationRequired, .capacityExceeded].contains(refusal) {
                 return refuse(refusal, at: address)
             }
@@ -1093,7 +1095,9 @@ extension RightyoInputConsumer {
             default: break
             }
         }
-        if let route = address.route {
+        if case .blockedByDialog = refusal {
+            lastDeliveryRefusal = refusal
+        } else if let route = address.route {
             lastRouteRefusal = .notDelivered(route.name)
         } else {
             lastDeliveryRefusal = refusal
