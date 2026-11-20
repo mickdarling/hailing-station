@@ -85,6 +85,10 @@ extension RootView {
                     Label("Privacy", systemImage: "hand.raised")
                 }
                 .accessibilityIdentifier("station.settings.privacy")
+                NavigationLink { voicesSettingsOverview } label: {
+                    Label("Voices and replies", systemImage: "quote.bubble")
+                }
+                .accessibilityIdentifier("settings.voices.entry")
                 NavigationLink { targetsSettingsOverview } label: {
                     Label("Targets", systemImage: "scope")
                 }
