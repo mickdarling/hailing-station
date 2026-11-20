@@ -27,6 +27,8 @@ actor PrivacySettingsTransport: WebSocketTransport {
     let socket: ScriptedSocket
     let declinePrivacy: Bool
     private(set) var privacyAttempts = 0
+    private var holdsPrivacySends = false
+    private var heldPrivacySends: [CheckedContinuation<Void, Never>] = []
 
     init(socket: ScriptedSocket, declinePrivacy: Bool) {
         self.socket = socket
@@ -36,12 +38,23 @@ actor PrivacySettingsTransport: WebSocketTransport {
     func send(_ data: Data) async throws {
         if case .control(.setPrivacy) = try FrameCoding.decode(data).payload {
             privacyAttempts += 1
+            if holdsPrivacySends { await withCheckedContinuation { heldPrivacySends.append($0) } }
             if declinePrivacy { throw SocketTestError.unavailable }
         }
         await socket.send(data)
     }
+    func holdPrivacySends() { holdsPrivacySends = true }
+    func releasePrivacySends() {
+        holdsPrivacySends = false
+        let pending = heldPrivacySends
+        heldPrivacySends = []
+        pending.forEach { $0.resume() }
+    }
     func receive() async throws -> Data { try await socket.receive() }
-    func close() async { await socket.close() }
+    func close() async {
+        releasePrivacySends()
+        await socket.close()
+    }
 }
 
 @MainActor

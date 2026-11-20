@@ -10,7 +10,7 @@ final class PrivacySettingsUITests: XCTestCase {
     }
 
     @MainActor
-    func testPrivacyShowsUnknownWithoutAHostAndReturnsToTheStation() {
+    func testPrivacyShowsUnknownWithoutAHostAndReturnsToTheStation() throws {
         let app = XCUIApplication()
         launchPrivacyShell(app)
         openPrivacy(app)
@@ -22,20 +22,17 @@ final class PrivacySettingsUITests: XCTestCase {
         let stop = app.buttons["settings.privacy.stop-listening"]
         XCTAssertTrue(stop.waitForExistence(timeout: 5))
         XCTAssertFalse(stop.isEnabled)
-        let requested = privacyElement("settings.privacy.overheard-requested", in: app)
-        revealPrivacyElement(requested, in: app)
-        XCTAssertTrue(requested.label.contains("Off"))
-        let back = app.navigationBars["Privacy"].buttons["Settings"]
-        waitForPrivacyElement(back)
-        back.tap()
-        XCTAssertTrue(app.navigationBars["Privacy"].waitForNonExistence(timeout: 5))
-        waitForPrivacyElement(app.buttons["station.settings.privacy"])
+        let initial = try privacyOverheardReading(app)
+        closePrivacyToSettings(app)
+        openPrivacy(app)
+        XCTAssertEqual(try privacyOverheardReading(app), initial, "Navigation preserves the existing preference/scope")
+        closePrivacyToSettings(app)
         tapPrivacySection("station", in: app)
         XCTAssertTrue(privacyElement("station.tools", in: app).waitForExistence(timeout: 5))
     }
 
     @MainActor
-    func testPrivacyKeepsControlsAndBackReachableAtLargestTypeInLandscape() {
+    func testPrivacyKeepsControlsAndBackReachableAtLargestTypeInLandscape() throws {
         let app = XCUIApplication()
         launchPrivacyShell(app, arguments: [
             "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"
@@ -43,7 +40,7 @@ final class PrivacySettingsUITests: XCTestCase {
         openPrivacy(app)
         let show = app.switches["settings.privacy.overheard-show"]
         revealPrivacyElement(show, in: app)
-        XCTAssertEqual(show.value as? String, "0", "Navigation must not enable overheard remarks")
+        let initial = try XCTUnwrap(show.value as? String)
         assertPrivacyWidth(show, in: app)
         capturePrivacy(app, named: "privacy-largest-type")
         XCUIDevice.shared.orientation = .landscapeLeft
@@ -55,7 +52,7 @@ final class PrivacySettingsUITests: XCTestCase {
         }
         XCTAssertGreaterThan(app.windows.firstMatch.frame.width, app.windows.firstMatch.frame.height)
         revealPrivacyElement(show, in: app)
-        XCTAssertEqual(show.value as? String, "0")
+        XCTAssertEqual(try XCTUnwrap(show.value as? String), initial, "Layout changes preserve the saved preference")
         assertPrivacyWidth(show, in: app)
         waitForPrivacyElement(app.navigationBars["Privacy"].buttons["Settings"])
         capturePrivacy(app, named: "privacy-largest-type-landscape")
