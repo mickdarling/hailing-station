@@ -113,34 +113,47 @@ struct AppearanceSettingsView: View {
 
 /// A sheet keeps the station mounted. Opening Settings never constructs another station or audio owner.
 struct AppearanceSettingsEntry<Tools: View>: View {
-    /// The root's OS setting, before StationLayout applies its deliberately denser conversation layout.
-    let typeSize: DynamicTypeSize
     private let tools: Tools
-    @Environment(ConversationAppearancePreferences.self) private var appearance
-    @State private var isPresented = false
+    @Environment(\.appearanceSettingsPresented) private var isPresented
 
-    init(typeSize: DynamicTypeSize, @ViewBuilder tools: () -> Tools) {
-        self.typeSize = typeSize
-        self.tools = tools()
-    }
+    init(@ViewBuilder tools: () -> Tools) { self.tools = tools() }
 
     var body: some View {
-        // Own presentation above the adaptive tool row: swapping its horizontal/vertical layout cannot dismiss it.
         VStack(spacing: 10) {
             tools
             Button {
-                isPresented = true
+                isPresented.wrappedValue = true
             } label: {
-                Label("Settings", systemImage: "gearshape")
-                    .frame(maxWidth: .infinity)
+                Label("Settings", systemImage: "gearshape").frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
             .accessibilityIdentifier("station.settings")
         }
-        .sheet(isPresented: $isPresented) {
-            AppearanceSettingsSheet(typeSize: typeSize) { isPresented = false }
-                .environment(appearance)
-        }
+    }
+}
+
+private struct AppearancePresentationKey: EnvironmentKey {
+    static var defaultValue: Binding<Bool> { .constant(false) }
+}
+
+extension EnvironmentValues {
+    var appearanceSettingsPresented: Binding<Bool> {
+        get { self[AppearancePresentationKey.self] }
+        set { self[AppearancePresentationKey.self] = newValue }
+    }
+}
+
+/// Window-scoped presentation survives every branch inside the station, without sharing flags between windows.
+struct AppearanceSettingsPresentation: ViewModifier {
+    @State private var isPresented = false
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(ConversationAppearancePreferences.self) private var appearance
+
+    func body(content: Content) -> some View {
+        content.environment(\.appearanceSettingsPresented, $isPresented)
+            .sheet(isPresented: $isPresented) {
+                AppearanceSettingsSheet(typeSize: typeSize) { isPresented = false }.environment(appearance)
+            }
     }
 }
 
@@ -148,11 +161,21 @@ struct AppearanceSettingsEntry<Tools: View>: View {
 struct AppearanceSettingsSheet: View {
     let typeSize: DynamicTypeSize
     let onDismiss: () -> Void
+    @Environment(ConversationAppearancePreferences.self) private var appearance
 
     var body: some View {
         NavigationStack {
             AppearanceSettingsView()
                 .toolbar {
+                    #if DEBUG
+                    if ProcessInfo.processInfo.arguments.contains("-appearance-preview"),
+                       ProcessInfo.processInfo.arguments.contains("-appearance-entry-preview") {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Change example layout") { appearance.previewAlternateLayout.toggle() }
+                                .accessibilityIdentifier("appearance.example-layout")
+                        }
+                    }
+                    #endif
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Done", action: onDismiss)
                     }

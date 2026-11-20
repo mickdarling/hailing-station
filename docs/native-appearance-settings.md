@@ -1,6 +1,6 @@
 # Native Appearance settings (#1115)
 
-Part of the native settings design in #1239. The first bounded slice adds a Settings entry to Station tools and a native Mac Settings window (Command-comma). Both use the same app-owned preference store and existing #1166 text-size state/actions. Opening the settings sheet keeps the station mounted. No station, connection, capture or playback owner is created by the settings screen.
+Part of the native settings design in #1239. The first bounded slice adds a Settings entry to Station tools and a native Mac Settings window (Command-comma). Both use the same app-owned preference store and existing #1166 text-size state/actions. The settings sheet is presented above the station layout, so replacing or resizing its branches cannot dismiss Settings. Opening the sheet keeps the station mounted. No station, connection, capture or playback owner is created by the settings screen.
 
 ## Current scope
 
@@ -11,7 +11,7 @@ Part of the native settings design in #1239. The first bounded slice adds a Sett
 
 ## Isolated verification
 
-The Debug-only `-appearance-preview` launch argument opens just this screen instead of constructing the station. Its isolated preference suite is separate from the real app settings; `-reset-appearance-preview` clears only that preview suite. `-appearance-entry-preview` additionally exercises the actual Settings button, its sheet and dismissal under an adaptive tools example, without constructing the station. Release builds ignore these arguments.
+The Debug-only `-appearance-preview` launch argument opens just this screen instead of constructing the station. Its isolated preference suite is separate from the real app settings; `-reset-appearance-preview` clears only that preview suite. `-appearance-entry-preview` additionally exercises the actual Settings button, its sheet and dismissal under an adaptive tools example, without constructing the station. Its Debug-only layout control replaces the outer example branch while Settings is open to exercise presentation lifetime. Release builds ignore these arguments.
 
 The screen contains only authored example text. Simulator captures and a direct native Mac settings render are UI evidence, not physical-device, live-conversation or audio qualification.
 

@@ -9,6 +9,7 @@ import SwiftUI
 final class ConversationAppearancePreferences {
     private let defaults: UserDefaults
     private(set) var state: ConversationTextSize
+    var previewAlternateLayout = false // Inert Debug fixture only; never persisted.
 
     init(defaults: UserDefaults = .standard, platform: ConversationTextSize.Platform = .currentAppearancePlatform) {
         self.defaults = defaults

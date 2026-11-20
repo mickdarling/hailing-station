@@ -38,24 +38,17 @@ struct HailApp: App {
         #endif
     }
 
-    @ViewBuilder
     private var stationWindow: some View {
+        stationContent.modifier(AppearanceSettingsPresentation())
+    }
+
+    @ViewBuilder
+    private var stationContent: some View {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-appearance-preview") {
             // An inert, synthetic settings scene for UI tests and screenshots. No station/audio resources exist.
             if ProcessInfo.processInfo.arguments.contains("-appearance-entry-preview") {
-                AppearanceSettingsEntry(typeSize: .large) {
-                    ViewThatFits(in: .horizontal) {
-                        HStack {
-                            ForEach(0..<6) { _ in Text("Example tool").frame(width: 120) }
-                        }
-                        VStack {
-                            ForEach(0..<6) { _ in Text("Example tool").frame(height: 30) }
-                        }
-                    }
-                    .accessibilityIdentifier("appearance.example-tools")
-                }
-                .padding()
+                AppearanceEntryPreview()
             } else {
                 NavigationStack { AppearanceSettingsView() }
             }
@@ -83,3 +76,31 @@ struct HailApp: App {
         return ConversationAppearancePreferences()
     }
 }
+
+#if DEBUG
+/// Replaces an outer layout branch under the real window-owned settings presenter; no station resources exist.
+private struct AppearanceEntryPreview: View {
+    @Environment(ConversationAppearancePreferences.self) private var appearance
+
+    var body: some View {
+        Group {
+            if appearance.previewAlternateLayout {
+                ScrollView { tools }
+            } else {
+                tools
+            }
+        }
+        .accessibilityIdentifier("appearance.example-tools")
+    }
+
+    private var tools: some View {
+        AppearanceSettingsEntry {
+            ViewThatFits(in: .horizontal) {
+                HStack { ForEach(0..<6) { _ in Text("Example tool").frame(width: 120) } }
+                VStack { ForEach(0..<6) { _ in Text("Example tool").frame(height: 30) } }
+            }
+        }
+        .padding()
+    }
+}
+#endif

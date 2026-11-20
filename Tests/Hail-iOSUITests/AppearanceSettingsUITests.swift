@@ -85,13 +85,14 @@ final class AppearanceSettingsUITests: XCTestCase {
         assertValue("19 points", in: app)
 
         XCUIDevice.shared.orientation = .landscapeLeft
-        XCTAssertGreaterThan(app.frame.width, app.frame.height)
+        waitForOrientation(landscape: true, in: app)
         XCTAssertTrue(element("appearance.settings", in: app).exists, "Rotation must keep the actual sheet open.")
         assertValue("19 points", in: app)
         assertDoneVisible(in: app)
         attach(app, named: "appearance-entry-sheet-landscape")
 
         XCUIDevice.shared.orientation = .portrait
+        waitForOrientation(landscape: false, in: app)
         XCTAssertTrue(element("appearance.settings", in: app).exists)
         assertValue("19 points", in: app)
         assertDoneVisible(in: app)
@@ -102,59 +103,26 @@ final class AppearanceSettingsUITests: XCTestCase {
     }
 
     @MainActor
-    private func launch(reset: Bool = true, extra: [String] = []) -> XCUIApplication {
-        let app = XCUIApplication()
-        app.launchArguments = ["-appearance-preview"]
-            + (reset ? ["-reset-appearance-preview"] : []) + extra
-        app.launch()
-        XCTAssertTrue(element("appearance.settings", in: app).waitForExistence(timeout: 10))
-        return app
-    }
+    func testTheWindowOwnedSheetSurvivesReplacingItsEntireSettingsEntry() {
+        let app = launchEntryPreview()
+        app.buttons["station.settings"].tap()
+        assertValue("17 points, default", in: app)
+        app.buttons["appearance.text-size.larger"].tap()
+        assertValue("19 points", in: app)
 
-    @MainActor
-    private func launchEntryPreview() -> XCUIApplication {
-        let app = XCUIApplication()
-        app.launchArguments = ["-appearance-preview", "-reset-appearance-preview", "-appearance-entry-preview"]
-        app.launch()
-        XCTAssertTrue(app.buttons["station.settings"].waitForExistence(timeout: 10))
-        XCTAssertFalse(element("station.connection", in: app).exists)
-        return app
-    }
-
-    @MainActor
-    private func assertDoneVisible(in app: XCUIApplication) {
-        let done = app.buttons["Done"]
-        XCTAssertTrue(done.waitForExistence(timeout: 5))
-        XCTAssertTrue(done.isHittable, "Done must remain reachable without scrolling the sheet.")
-        XCTAssertTrue(app.frame.insetBy(dx: -1, dy: -1).contains(done.frame), "Done must fit inside the app viewport.")
-    }
-
-    @MainActor
-    private func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
-        app.descendants(matching: .any).matching(identifier: identifier).firstMatch
-    }
-
-    @MainActor
-    private func assertValue(_ expected: String, in app: XCUIApplication) {
-        let value = app.descendants(matching: .any).matching(identifier: "appearance.text-size.value")
-            .matching(NSPredicate(format: "value == %@", expected)).firstMatch
-        XCTAssertTrue(value.waitForExistence(timeout: 5), "Expected the conversation size value \(expected).")
-    }
-
-    @MainActor
-    private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
-        let scroll = app.scrollViews.firstMatch
-        for _ in 0..<5 {
-            guard !element.isHittable else { return }
-            if element.frame.maxY < app.frame.midY { scroll.swipeDown() } else { scroll.swipeUp() }
+        let changeLayout = app.buttons["appearance.example-layout"]
+        XCTAssertTrue(changeLayout.waitForExistence(timeout: 5))
+        for _ in 0..<2 {
+            XCTAssertTrue(changeLayout.isHittable)
+            changeLayout.tap()
+            XCTAssertTrue(element("appearance.settings", in: app).exists,
+                          "Replacing the entire entry's layout branch must not dismiss its window-owned sheet.")
+            assertValue("19 points", in: app)
+            assertDoneVisible(in: app)
         }
-    }
-
-    @MainActor
-    private func attach(_ app: XCUIApplication, named name: String) {
-        let screenshot = XCTAttachment(screenshot: app.screenshot())
-        screenshot.name = name
-        screenshot.lifetime = .keepAlways
-        add(screenshot)
+        app.buttons["Done"].tap()
+        XCTAssertTrue(element("appearance.settings", in: app).waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["station.settings"].isHittable)
+        XCTAssertTrue(element("appearance.example-tools", in: app).exists)
     }
 }
