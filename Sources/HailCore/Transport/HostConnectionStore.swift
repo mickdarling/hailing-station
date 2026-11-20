@@ -28,6 +28,8 @@ public final class HostConnectionStore {
     @ObservationIgnored var segmentWiring: ReplySegmentDeviceWiring?
     /// The station chat (#288): requests as they are sent and replies as they arrive, in the background too.
     public let conversation = ConversationLog()
+    /// Connection-bound cards waiting for readiness; speech permits are never renewed when they drain.
+    @ObservationIgnored var sessionUpdateDisplay = SessionUpdateDisplayBuffer()
     /// First bounded speech identities, including denials, survive policy changes and reconnects without eviction.
     /// At capacity, new cards remain visible but their unknown speech is declined for this store's lifetime.
     @ObservationIgnored var proactiveSpeechReceipts: [SessionUpdateSpeechReceipt] = []
@@ -148,6 +150,7 @@ public final class HostConnectionStore {
 extension HostConnectionStore {
     public func upsert(_ endpoint: HostEndpoint) async {
         if snapshots[endpoint.id]?.endpoint == endpoint { return }
+        sessionUpdateDisplay.forget(endpoint.id)
         let restoring = ambientController?.reconnect.refreshEndpoint(
             endpoint, previous: snapshots[endpoint.id], store: self
         ) == true
@@ -210,6 +213,7 @@ extension HostConnectionStore {
         await connections[id]?.connect()
     }
     public func disconnect(_ id: HostEndpoint.Identifier) async {
+        sessionUpdateDisplay.forget(id)
         revokeProactiveSpeech(id)
         ambientController?.reconnect.veto(.explicitDisconnect, host: id)
         forgetSelection(id)
@@ -268,6 +272,7 @@ extension HostConnectionStore {
     }
 
     public func remove(_ id: HostEndpoint.Identifier) async {
+        sessionUpdateDisplay.forget(id)
         ambientController?.reconnect.veto(.endpointChanged, host: id)
         conversation.forgetHeardTurns(id)
         tokens[id] = nil
@@ -311,6 +316,7 @@ extension HostConnectionStore {
             conversation.forgetHeardTurns(snapshot.id)
         }
         snapshots[snapshot.id] = snapshot
+        for card in sessionUpdateDisplay.ready(snapshot) { conversation.noteSessionUpdate(card) }
         recordDiagnostics(from: previous, to: snapshot.state)
         if snapshot.state == .ready, previous != .ready { hostBecameReady(snapshot.id) }
         if snapshot.state != .ready { forgetModes(snapshot.id) }
@@ -357,12 +363,18 @@ extension HostConnectionStore {
 /// Proactive cards do not grant input/reply authority and never enter the audio player's ingress history.
 extension HostConnectionStore {
     /// A socket's TaskLocal provenance survives the actor hop; a replaced or disconnected socket cannot publish.
-    /// Pending privacy-on and transport restoration suppress cards before a later host confirmation can arrive.
+    /// Privacy, duck and media affect only speech; reconnect-held cards are rechecked at readiness.
     func receiveSessionUpdate(_ event: HostReplyEvent) -> Bool {
         guard case .control(.sessionUpdate) = event.frame.payload else { return false }
         let allowed = permitsSessionUpdate(event)
         recordSessionUpdateSpeech(event, allowed: allowed)
-        if allowed { conversation.noteSessionUpdate(event) }
+        if allowed {
+            conversation.noteSessionUpdate(event)
+        } else if snapshots[event.endpointID]?.receivedTargetList == false
+            || ambientController?.reconnect.isPending == true {
+            _ = sessionUpdateDisplay.receive(event, snapshot: snapshots[event.endpointID],
+                generation: HostNoticeOrigin.generation, reconnecting: true)
+        }
         return true
     }
 }
