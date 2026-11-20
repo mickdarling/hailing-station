@@ -57,6 +57,19 @@ final class RedesignShellUITests: XCTestCase {
         // In the shell a station tool opens its section instead of pushing under the station.
         let labs = openStationTool("Labs", in: app, opens: app.navigationBars["Settings"])
         try assertNoStation(in: app, named: "settings-shown")
+        let appearance = app.buttons["station.settings.appearance"]
+        XCTAssertTrue(appearance.waitForExistence(timeout: 5))
+        waitUntilHittable(appearance, in: app, named: "appearance-entry")
+        appearance.tap()
+        let appearanceScreen = app.descendants(matching: .any)
+            .matching(identifier: "appearance.settings").firstMatch
+        XCTAssertTrue(appearanceScreen.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)
+            .matching(identifier: "appearance.text-size.value").firstMatch.exists)
+        app.buttons["Done"].tap()
+        XCTAssertTrue(appearanceScreen.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Settings"].exists)
+        try assertNoStation(in: app, named: "settings-after-appearance")
         section("station", in: app, isPad: isPad).tap()
         // The station comes back where it was left, scrolled down to its tools, since it was never remounted. So the
         // tool just tapped is reachable again, not the header that scrolled away.

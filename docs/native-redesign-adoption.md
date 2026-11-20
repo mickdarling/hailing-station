@@ -54,6 +54,11 @@ Mick took both recommendations: option A with the accessibility split, and the o
 2. **Order: as proposed.** The rail (step 2) as the first visible change, because it's safety-relevant, and the viewport (step 4) as the first "more text" win. The shell (step 1) goes first but looks nearly the same.
 
 ## Step 1 as built
+- **Appearance is shared with #1281.** The shell Settings list opens the existing window-owned Appearance sheet,
+  using its existing app preference store and presentation binding. It creates no second owner and never pushes
+  the sheet under the hidden Station stack. The shell regression test opens and dismisses it, then repeats the
+  hidden-Station accessibility sweep before returning to Station. This integration is source-only until the fresh
+  coordinated shell checks run; the earlier #1281 results do not qualify this new route.
 - **Flags are read once per launch.** `StationRedesignLaunch.flags` is a `static let`, not a read in `RootView`'s init or body. SwiftUI can create the root view's value again at any time, and a fresh read after a Labs toggle would swap the whole station mid-session, which ends a capture. A step is on only when its stored value is a Boolean `true`.
 - **Sections.** Station is today's page, kept mounted across tab and sidebar switches (#1148). Devices and Settings list the tools (Mac Setup; Audio, Labs and Turn-taking), each pushed onto that visible section, so each keeps its own back navigation. Sessions is a placeholder until step 3, so there's still one place to choose a destination. The inspector and dock are empty until their steps.
 - **The station's tool links open their section in the shell (#1189).** With the shell on, the station's Mac Setup, Set up a Mac and Mac Setup (beside "Check Mac connection") links open Devices, and its Audio, Labs and Turn-taking links open Settings. Nothing is pushed under a station that hides while another section shows. With the shell off, every link pushes exactly as today.
