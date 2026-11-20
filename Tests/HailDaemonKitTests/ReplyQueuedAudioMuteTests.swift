@@ -1,7 +1,6 @@
 #if os(macOS)
 import Foundation
 import HailProtocol
-import Synchronization
 import Testing
 @testable import HailDaemonKit
 
@@ -10,12 +9,10 @@ import Testing
         let fake = try FakeRightyo(AmbientWiringVoiceMuteTests.fixture(saying: "Rightyo, mute."))
         defer { fake.cleanUp() }
         try fake.install(fixture: "tool-events.jsonl")
-        let outcomes = Mutex<[String]>([])
+        let outcome = ReplyMuteOutcome()
         let library = AmbientAckLibrary(clips: ["confirmmuted": [AmbientWiringVoiceMuteTests.muted]])
         let env = try await ambientRig(fake, timing: .init(eofGrace: 2, termGrace: 2), acknowledgements: library,
-            onEvent: { event in
-                if event.event == "ambient_voice_mute" { outcomes.withLock { $0.append(event.detail ?? "") } }
-            })
+            onEvent: { outcome.record($0) })
         do {
             let pair = try await FallbackSocketPair.boundedConnect(port: env.port,
                 selecting: [RecipientTestRig.target], capabilities: [PlaybackStop.capability, ReplyMute.capability])
@@ -26,14 +23,15 @@ import Testing
             #expect(try await receiveFrame(on: socket, step: "queued text") == text)
             let ticket = try await queuedAudioTicket(env.listener)
             try await recipientSocketSend(audio(UUID(), 0), on: socket)
-            try #require(await eventually { !outcomes.withLock { $0 }.isEmpty })
+            await outcome.completed.wait()
+            try #require(!outcome.details.isEmpty)
             #expect(try await receiveFrame(on: socket, step: "mute stop").payload == .control(.stopPlayback))
+            #expect(try await receiveFrame(on: socket, step: "mute").payload == .control(.setReplyMute(muted: true)))
             let words = try await receiveFrame(on: socket, step: "mute confirmation")
             guard case .text(let confirmation) = words.payload else { throw QueuedMuteTestError.expectedText }
             #expect(confirmation.text == "Muted.")
             let clip = try await receiveFrame(on: socket, step: "mute confirmation audio")
             guard case .audio = clip.payload else { throw QueuedMuteTestError.expectedAudio }
-            #expect(try await receiveFrame(on: socket, step: "mute").payload == .control(.setReplyMute(muted: true)))
             #expect(try await env.listener.replyAudio(.init(action: "check", ticket: ticket, frame: frame))
                 == LocalReplyAudioReport())
             #expect(try await env.listener.replyAudio(.init(action: "publish", ticket: ticket, frame: frame))

@@ -252,6 +252,30 @@ decoder and the schema refuse any other key, and it grants no authority. A devic
 not advertise it, because an older device refuses an unknown command as malformed. The host sends it when the owner
 says "mute" or "unmute". To cut the reply now playing, it sends `stop_playback` first.
 
+Adopted owner behavior (#1246): spoken mute silences audio only on a device advertising `reply_mute`;
+it preserves requests already admitted on that connection. Their later answers still deliver spoken text and
+Markdown cards. For a retained request whose audio was in flight, mute persists `audioStopped` in the request
+record and excludes its reply ID from both whole-reply stop ledgers. Pending final text and its `metadata` card
+therefore deliver immediately, while further audio for that request is refused even after ledger eviction or
+unmute. Text and card are fields of one final-text frame, not independently arriving frames. Pending requests
+whose audio has not started still deliver audio under the device's existing mute flag, silently and with replay.
+
+Requestless or uncorrelated in-flight replies have no request record in which to persist audio retirement.
+They retain the existing bounded whole-reply stop ledgers: while recorded, later audio and text for those reply
+IDs are refused. This is a deliberate conservative fallback for those flights, not cancellation of retained
+correlated requests; fresh reply IDs still use ordinary routing and publication authority.
+
+Mute keeps the connection's transport control barrier through `stop_playback` and `set_reply_mute(true)`, so both
+controls precede any waiting answer's first frame. Confirmation text and PCM follow the mute flag; the confirmation
+is retained silently for replay. Failed mute delivery retires the transport before preserved publication resumes.
+Capable mute accepts no request cutoff and does not mark queued-audio tickets. Without `reply_mute`, spoken mute uses a cancelling stop:
+pre-stop pending requests are retracted, queued-audio tickets are stopped, proactive session-update
+speech is cancelled, no mute flag is sent, and the confirmation says "Stopped."
+Unmute lets later replies play normally. The device's own mute remains terminal-local. Explicit stop,
+voice stop, dismissal and privacy retain their existing request cancellation behavior. This follow-up has
+local synthetic evidence only; the adopted behavior is not a claim of shipping or physical-device proof. See the
+[mute verification record](testing/1246-mute-silences.md).
+
 ## Ambient take-over (#366)
 
 The most recent device to start ambient listening on a host takes it over. There is no "ambient busy" refusal.
@@ -737,7 +761,8 @@ the daemon epoch; newer tickets remain playable.
 Both a RightyO playback-scope dismissal and an accepted device `voice_stopped` mark the queue, including repeated
 reports whose outbound `stop_playback` is coalesced. Privacy entry also marks the queue: its unconditional pending
 reply drop resolves the entry's captured stop before any exit releases the hold, even if no entry clip is announced.
-Spoken mute explicitly does not mark the queue. Privacy's separate delivery hold still prevents text and audio
+Spoken mute on a peer advertising `reply_mute` does not mark the queue; its unsupported-peer fallback
+marks it exactly like an explicit stop. Privacy's separate delivery hold still prevents text and audio
 publication while private.
 
 Acceptance registers a pending-stop token (id, connection, cutoff) under the same mutex as ticket issuance and
@@ -854,9 +879,12 @@ wait budgets; the resolved connection cutoff still applies. Actual audio publica
 checks retain target suppression. Release (including CLI job end/timeout), queue retirement,
 connection loss, its own connection's stop and privacy end renewal; dismissal removes the matching request.
 
-Every accepted playback stop captures the current monotonic request-admission cutoff for its connection,
-independently of ticket marking and before the session retirement hop. Spoken mute captures this cutoff even
-though it does not mark queue tickets. One synchronous stop gate checks that cutoff under the same mutex as
+Every accepted cancelling playback stop captures the current monotonic request-admission cutoff for its
+connection, independently of ticket marking and before the session retirement hop. Under the adopted owner
+behavior, spoken mute for a `reply_mute` peer instead holds a transport control barrier through the mute flag:
+pending request authority is retained and no session fallback accepts a cutoff. Unsupported peers use the
+cancelling cutoff instead. One synchronous stop gate checks accepted cancellation
+cutoffs under the same mutex as
 **every correlated transport commit**: text or audio, reserved or unreserved, ticketed or unticketed, including
 continuation audio. A commit holding the gate completes before a stop can be accepted; acceptance first refuses
 a covered request's commit without submitting bytes. The lock order is policy/binding, privacy, optional ticket queue, request
@@ -870,11 +898,11 @@ carries it explicitly through the listener to session retirement. Delaying the a
 fresh stop covering a request admitted after privacy exit.
 
 Because `stop_playback` is unscoped on the wire, each accepted outbound stop also establishes a transient
-control barrier in the same connection gate. Newer correlated and routed/requestless publication waits
+control barrier in the same connection gate. Correlated and routed/requestless publication waits
 asynchronously outside the locks, and final commit rechecks the barrier. Admission-only status and ticket
 checks do not wait and do not enqueue. A newer request refused solely by that final control barrier
 retains its record and retries after the control. The prepared stop is enqueued under the request-stop mutex
-before the barrier is released, so the device receives it before any newer reply's first frame, whether text
+before the barrier is released, so the device receives it before any waiting reply's first frame, whether text
 or audio. Transport completion is awaited after unlocking. Failed control enqueue retires the transport;
 peer teardown releases waiters into a retired transport. These tokens order delivery and grant no authority.
 The shared prepared-frame boundary applies the same wait and final check to session-update cards (including

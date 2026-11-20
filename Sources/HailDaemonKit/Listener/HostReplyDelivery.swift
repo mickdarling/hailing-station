@@ -11,7 +11,7 @@ enum ReplyConnectionStopGate {
     struct Control: Sendable {
         let id = UUID()
         let connection: UUID
-        let cutoff: UInt64
+        let cutoff: UInt64?
     }
     private struct Waiter: Sendable {
         let connection: UUID
@@ -33,11 +33,11 @@ enum ReplyConnectionStopGate {
             return state.position
         }
     }
-    /// A transport barrier, not additional request authority. Cutoff and barrier are accepted together.
-    static func captureControl(_ connection: UUID) -> Control {
+    /// A transport barrier; mute orders playback without accepting a request cutoff.
+    static func captureControl(_ connection: UUID, cancellingRequests: Bool = true) -> Control {
         state.withLock { state in
-            let control = Control(connection: connection, cutoff: state.position)
-            state.cutoffs[connection] = control.cutoff
+            let control = Control(connection: connection, cutoff: cancellingRequests ? state.position : nil)
+            if let cutoff = control.cutoff { state.cutoffs[connection] = cutoff }
             state.controls[control.id] = control
             return control
         }
@@ -745,6 +745,8 @@ struct HostReplyRequest {
     var textDelivered = false
     var audioSequence = 0
     var audioFinished = false
+    /// Retirement belongs to the request, beyond the bounded reply-ID stop ledgers.
+    var audioStopped = false
     var frames: Set<UUID> = []
     /// Minted on a session whose provider turn ends are reported (#430); otherwise the ordinary lifetime applies.
     var awaitsTurnEnd = false
@@ -810,7 +812,7 @@ struct HostReplyRequest {
             guard text.isFinal, !textDelivered else { return false }
             textDelivered = true
         case .audio(let audio):
-            guard !audioFinished, audio.streamID == reply.audioStreamID, audio.streamID != nil,
+            guard !audioStopped, !audioFinished, audio.streamID == reply.audioStreamID, audio.streamID != nil,
                   audio.sequence == audioSequence else { return false }
             audioSequence += 1
             audioFinished = audio.isFinal
@@ -1266,18 +1268,32 @@ extension HostSession {
     /// remaining frames are refused, so the reply CLI retires its renderer. The `stop_playback` frame is
     /// returned only for a ready device that advertised it; an older device would refuse it as malformed.
     func stopReplyPlayback(
-        queue: ReplyAudioQueue? = nil, stop: ReplyAudioQueue.Stop? = nil, requestCutoff: UInt64? = nil
+        queue: ReplyAudioQueue? = nil, stop: ReplyAudioQueue.Stop? = nil, requestCutoff: UInt64? = nil,
+        preservingRequests: Bool = false
     ) -> VoicePlaybackStopResult {
         guard case .ready(let version) = state else { return VoicePlaybackStopResult(frame: nil, stopped: []) }
         let targets = queuedAudioStopTargets(queue, stop: stop)
-        // Acceptance precedes this actor hop. Preserve later requests, even those with no ticket or descriptor.
-        let cutoff = stop?.requestCutoff ?? requestCutoff ?? ReplyConnectionStopGate.accept(connectionID)
-        let laterRequests = replyRequests.values.filter { $0.admissionPosition > cutoff }
-        let laterReplies = Set(laterRequests.compactMap { $0.descriptor?.id })
-            .union(stop.flatMap { queue?.repliesIssued(after: $0) } ?? [])
-        let stopped = repliesInFlight.filter { !laterReplies.contains($0) }
-        replyRequests = replyRequests.filter { $0.value.audioFinished || $0.value.admissionPosition > cutoff }
-        evictedForHandoff = evictedForHandoff.filter { $0.value.request.admissionPosition > cutoff }
+        // Mute retires in-flight playback only. Its control barrier prevents any newer flight until the stop.
+        var laterReplies: Set<UUID> = []
+        if !preservingRequests {
+            // Acceptance precedes this actor hop. Preserve later requests, even without tickets/descriptors.
+            let cutoff = stop?.requestCutoff ?? requestCutoff ?? ReplyConnectionStopGate.accept(connectionID)
+            let laterRequests = replyRequests.values.filter { $0.admissionPosition > cutoff }
+            laterReplies = Set(laterRequests.compactMap { $0.descriptor?.id })
+                .union(stop.flatMap { queue?.repliesIssued(after: $0) } ?? [])
+            replyRequests = replyRequests.filter { $0.value.audioFinished || $0.value.admissionPosition > cutoff }
+            evictedForHandoff = evictedForHandoff.filter { $0.value.request.admissionPosition > cutoff }
+        }
+        let retired = repliesInFlight.filter { !laterReplies.contains($0) }
+        var retained: Set<UUID> = []
+        for (id, request) in replyRequests where request.descriptor.map({ retired.contains($0.id) }) == true {
+            replyRequests[id]?.audioStopped = true
+            if let reply = request.descriptor { retained.insert(reply.id) }
+        }
+        // Capable mute retires retained requests' audio only: whole-reply ledgers would also refuse
+        // their pending text/cards. Requestless flights have no persistent media flag; keep their
+        // existing whole-reply stops. Cancelling stops retain exactly the same ledger membership.
+        let stopped = preservingRequests ? retired.filter { !retained.contains($0) } : retired
         stoppedReplies.append(contentsOf: stopped)
         stoppedReplies.removeFirst(max(0, stoppedReplies.count - Self.playbackStopLimit))
         repliesInFlight.removeAll { !laterReplies.contains($0) }

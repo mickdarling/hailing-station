@@ -605,13 +605,34 @@ extension WebSocketListener {
         return await peer.send(frame) ? "sent" : "failed"
     }
 
+    /// Hold publication across both controls: preserved audio must never start before the device is muted.
+    /// A peer without reply mute gets the same cancelling stop as an explicit stop.
+    func muteReplyPlayback(connection: UUID) async -> (playback: String, mute: String) {
+        guard await acceptsReplyMute(connection: connection) else {
+            return (await stopReplyPlayback(connection: connection, markQueuedAudio: true), "unsupported")
+        }
+        let barrier = ReplyConnectionStopGate.captureControl(connection, cancellingRequests: false)
+        defer { ReplyConnectionStopGate.complete(barrier) }
+        let playback = await stopReplyPlayback(connection: connection, markQueuedAudio: false,
+                                               preservingRequests: true)
+        let mute = await setReplyMute(true, connection: connection)
+        if mute != "sent" {
+            // Never release preserved replies onto a transport whose mute could not be delivered.
+            peers.values.first { $0.session.connectionID == connection }?.replyTransport.retire()
+        }
+        return (playback, mute)
+    }
+
     /// Stops reply playback for the dismissing connection (#309) and returns a fixed outcome token:
     /// `stopped` (sent to the device), `cut` (frames refused only: an older device, or the send failed),
     /// `idle` (nothing mid-stream and no device stop), `coalesced` (a redundant device report), or `no_connection`.
     func stopReplyPlayback(
         connection: UUID, voiceStopAt: ContinuousClock.Instant? = nil, markQueuedAudio: Bool,
-        queueStop: ReplyAudioQueue.Stop? = nil, requestStop: ReplyConnectionStopGate.Control? = nil
+        queueStop: ReplyAudioQueue.Stop? = nil, requestStop: ReplyConnectionStopGate.Control? = nil,
+        preservingRequests: Bool = false
     ) async -> String {
+        precondition(!preservingRequests || (!markQueuedAudio && queueStop == nil && requestStop?.cutoff == nil),
+                     "A preserving mute must not accept a request cutoff")
         guard !stopped, let peer = peers.values.first(where: { $0.session.connectionID == connection }) else {
             resolvePlaybackStop(queueStop, control: queueStop?.control ?? requestStop)
             return "no_connection"
@@ -619,15 +640,17 @@ extension WebSocketListener {
         let stop = markQueuedAudio
             ? (queueStop ?? replyAudioQueue.captureStop(connection, orderingControl: true)) : nil
         let control = stop?.control ?? requestStop
-            ?? (markQueuedAudio ? nil : ReplyConnectionStopGate.captureControl(connection))
+            ?? (markQueuedAudio ? nil : ReplyConnectionStopGate.captureControl(
+                connection, cancellingRequests: !preservingRequests))
         defer { resolvePlaybackStop(stop, control: control) }
-        // Request cutoff and control barrier are accepted before the first session hop, even for an unmarked stop.
+        // The control barrier precedes the session hop; mute preserves request authority.
         let cancellations = markQueuedAudio ? sessionUpdateFence.cancelProactive(connection: connection) : []
         let playbackStop = UUID()
         stopsInFlight[playbackStop] = peer.session
         await ReplyAudioEnqueueTesting.beforeStopSession?()
         let result = await peer.session.stopReplyPlayback(
-            voiceStopAt: voiceStopAt, queue: replyAudioQueue, stop: stop, requestCutoff: control?.cutoff
+            voiceStopAt: voiceStopAt, queue: replyAudioQueue, stop: stop, requestCutoff: control?.cutoff,
+            preservingRequests: preservingRequests
         )
         for id in result.stopped { stoppedReplyIDs.record(id) }
         stopsInFlight[playbackStop] = nil
@@ -1788,14 +1811,10 @@ extension AmbientRightyoRouter {
         }
     }
 
-    /// The owner's spoken "mute" or "unmute" (#404) on the connection that said it; it is never typed to the agent. A
-    /// mute stops the reply now playing, plays "Muted." and only then sends `set_reply_mute`, so the device lets the
-    /// confirmation finish before it goes quiet; an unmute sends it first, so "Unmuted." is heard. A device without
-    /// `reply_mute` is only stopped, and confirmed as a stop. Logs tokens only.
-    /// Ordering: the mute frame is sent only once `acknowledgeAmbient` has returned, which waits for the connection to
-    /// have processed every clip frame, its final audio frame last; one connection sends in order, so the device has
-    /// the clip before the mute and treats the mute as one to apply after it. Commands from one connection run one
-    /// at a time in the order said, so a quick "mute" then "unmute" ends unmuted.
+    /// The owner's spoken mute stops playback, then sends the mute flag while publication remains held.
+    /// Confirmation text/PCM follows under mute; it is retained silently for replay. Unmute sends its flag first.
+    /// A peer without reply mute gets a cancelling stop and an honest "Stopped." confirmation. Logs tokens only.
+    /// Voice mute/unmute commands on one connection run in the order said.
     private func voiceMuted(
         on connection: UUID, target: String, listener: WebSocketListener
     ) -> @Sendable (Bool) -> Void {
@@ -1814,14 +1833,16 @@ extension AmbientRightyoRouter {
         let supported = await listener?.acceptsReplyMute(connection: connection) ?? false
         var mute = supported ? "pending" : "unsupported"
         if !muted, supported { mute = await listener?.setReplyMute(false, connection: connection) ?? "" }
-        let playback = muted ? await listener?.stopReplyPlayback(
-            connection: connection, markQueuedAudio: false
-        ) ?? "no_connection" : "none"
+        var playback = "none"
+        if muted {
+            let result = await listener?.muteReplyPlayback(connection: connection)
+            playback = result?.playback ?? "no_connection"
+            mute = result?.mute ?? "no_connection"
+        }
         let persona = supported ? (muted ? AmbientStopConfirmation.muted : AmbientStopConfirmation.unmuted)
             : (muted ? AmbientStopConfirmation.stopped : nil)
         var confirm = "none"
         if let persona { confirm = await confirmVoiceMute(persona, on: connection, target: target, listener: listener) }
-        if muted, supported { mute = await listener?.setReplyMute(true, connection: connection) ?? "" }
         emit("ambient_voice_mute", detail: "muted=\(muted) mute=\(mute) playback=\(playback) confirm=\(confirm)")
     }
 
@@ -3234,6 +3255,7 @@ extension WebSocketListener {
 
 struct VoicePlaybackStopResult {
     let frame: Frame?
+    /// Whole-reply ledger entries; capable mute excludes retained requests with audio-only retirement.
     let stopped: [UUID]
     var targets: Set<String>?
     var coalesced = false
@@ -3243,15 +3265,17 @@ extension HostSession {
     /// Retire on every report. Only the redundant outbound frame uses the last accepted stop's fixed window.
     func stopReplyPlayback(
         voiceStopAt now: ContinuousClock.Instant?, queue: ReplyAudioQueue? = nil,
-        stop: ReplyAudioQueue.Stop? = nil, requestCutoff: UInt64? = nil
+        stop: ReplyAudioQueue.Stop? = nil, requestCutoff: UInt64? = nil, preservingRequests: Bool = false
     ) -> VoicePlaybackStopResult {
-        guard let now else { return stopReplyPlayback(queue: queue, stop: stop, requestCutoff: requestCutoff) }
+        guard let now else { return stopReplyPlayback(queue: queue, stop: stop, requestCutoff: requestCutoff,
+            preservingRequests: preservingRequests) }
         guard case .ready = state else { return VoicePlaybackStopResult(frame: nil, stopped: []) }
         let previous = acceptedVoiceStop
         let coalesced = previous.map {
             $0.at.duration(to: now) < .seconds(1) && $0.revision == replyFlightRevision
         } ?? false
-        let result = stopReplyPlayback(queue: queue, stop: stop, requestCutoff: requestCutoff)
+        let result = stopReplyPlayback(queue: queue, stop: stop, requestCutoff: requestCutoff,
+            preservingRequests: preservingRequests)
         // Retirement also writes the ledger; retain its new revision without sliding the accepted timestamp.
         acceptedVoiceStop = (coalesced ? previous?.at ?? now : now, replyFlightRevision)
         return VoicePlaybackStopResult(frame: coalesced ? nil : result.frame,
