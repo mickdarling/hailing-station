@@ -25,6 +25,10 @@ final class AppearanceStationIntegrationUITests: XCTestCase {
         XCTAssertTrue(screen.waitForExistence(timeout: 5))
         let value = app.descendants(matching: .any).matching(identifier: "appearance.text-size.value").firstMatch
         XCTAssertTrue(value.exists)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "appearance-real-station-settings"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
         app.buttons["Done"].tap()
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "station.tools").firstMatch.exists)

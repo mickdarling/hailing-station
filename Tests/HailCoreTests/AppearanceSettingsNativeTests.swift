@@ -65,15 +65,61 @@ struct AppearanceSettingsNativeTests {
     }
 
     private func visibleText(_ value: Any) -> [String] {
-        guard let object = value as? NSObject else { return [] }
-        func attribute(_ name: String) -> AnyObject? {
-            let selector = NSSelectorFromString(name)
-            guard object.responds(to: selector) else { return nil }
-            return object.perform(selector)?.takeUnretainedValue()
+        var traversal = AppearanceAccessibilityTraversal()
+        let text = traversal.read(value)
+        if !traversal.diagnostics.isEmpty { print(traversal.diagnostics.joined(separator: "\n")) }
+        return text
+    }
+}
+
+/// NSHostingView exposes virtual SwiftUI elements through navigation-order children as well as backing NSViews.
+/// Some conform to NSObjectProtocol without subclassing NSObject. Walk both representations without duplicates.
+@MainActor
+private struct AppearanceAccessibilityTraversal {
+    private var seen: Set<ObjectIdentifier> = []
+    private let diagnostic = ProcessInfo.processInfo.environment["HAIL_APPEARANCE_AX_DIAGNOSTIC"] == "1"
+    private(set) var diagnostics: [String] = []
+
+    mutating func read(_ value: Any) -> [String] {
+        guard let object = value as? any NSObjectProtocol else { return [] }
+        guard seen.count < 512, seen.insert(ObjectIdentifier(object as AnyObject)).inserted else { return [] }
+        let full = object as? any NSAccessibilityProtocol
+        let own: [Any?]
+        let navigation: [Any], regular: [Any], contents: [Any]
+        if let full {
+            own = [full.accessibilityLabel(), full.accessibilityValue(), full.accessibilityTitle(),
+                   full.accessibilityValueDescription()]
+            navigation = (full.accessibilityChildrenInNavigationOrder() ?? []).map { $0 as Any }
+            regular = full.accessibilityChildren() ?? []
+            contents = full.accessibilityContents() ?? []
+        } else {
+            own = [attribute("accessibilityLabel", on: object), attribute("accessibilityValue", on: object),
+                   attribute("accessibilityTitle", on: object), attribute("accessibilityValueDescription", on: object)]
+            navigation = (attribute("accessibilityChildrenInNavigationOrder", on: object) as? [Any]) ?? []
+            regular = (attribute("accessibilityChildren", on: object) as? [Any]) ?? []
+            contents = (attribute("accessibilityContents", on: object) as? [Any]) ?? []
         }
-        let own = [attribute("accessibilityLabel") as? String,
-                   attribute("accessibilityValue") as? String].compactMap { $0 }
-        return own + ((attribute("accessibilityChildren") as? [Any]) ?? []).flatMap(visibleText)
+        let text = own.compactMap(Self.text)
+        if diagnostic, diagnostics.count < 64 {
+            let summary = text.joined(separator: " | ").prefix(160)
+            diagnostics.append("AX type=\(type(of: value)) full=\(full != nil) nav=\(navigation.count) "
+                + "children=\(regular.count) contents=\(contents.count) text=\(summary)")
+        }
+        var result = text
+        for child in navigation + regular + contents { result += read(child) }
+        return result
+    }
+
+    private func attribute(_ name: String, on object: any NSObjectProtocol) -> AnyObject? {
+        let selector = NSSelectorFromString(name)
+        guard object.responds(to: selector) else { return nil }
+        // Every selected getter returns an object; never use perform(_:) for an NSRect or other struct getter.
+        return object.perform(selector)?.takeUnretainedValue()
+    }
+
+    private static func text(_ value: Any?) -> String? {
+        if let text = value as? String { return text }
+        return (value as? NSAttributedString)?.string
     }
 }
 #endif
