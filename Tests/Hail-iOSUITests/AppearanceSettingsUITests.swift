@@ -115,8 +115,8 @@ final class AppearanceSettingsUITests: XCTestCase {
         for _ in 0..<2 {
             XCTAssertTrue(changeLayout.isHittable)
             changeLayout.tap()
-            XCTAssertTrue(element("appearance.settings", in: app).exists,
-                          "Replacing the entire entry's layout branch must not dismiss its window-owned sheet.")
+            XCTAssertFalse(element("appearance.settings", in: app).waitForNonExistence(timeout: 1),
+                           "Replacing the entire entry's layout branch must not dismiss its window-owned sheet.")
             assertValue("19 points", in: app)
             assertDoneVisible(in: app)
         }

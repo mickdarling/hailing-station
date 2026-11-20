@@ -30,7 +30,8 @@ final class AppearanceStationIntegrationUITests: XCTestCase {
         screenshot.lifetime = .keepAlways
         add(screenshot)
         app.buttons["Done"].tap()
-        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        XCTAssertTrue(screen.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(settings.isHittable)
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "station.tools").firstMatch.exists)
     }
 }
