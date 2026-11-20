@@ -94,6 +94,7 @@ struct AppearanceSettingsView: View {
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 16))
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("appearance.conversation-preview")
         }
     }
