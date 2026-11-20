@@ -102,7 +102,7 @@ extension RootView {
 
     @ViewBuilder
     var toolLinks: some View {
-        AppearanceSettingsEntry()
+        AppearanceSettingsEntry(typeSize: dynamicTypeSize)
         NavigationLink {
             ConnectivityLabView(store: connections, endpointsChanged: persist)
         } label: {

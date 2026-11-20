@@ -148,6 +148,8 @@ struct AppearanceSettingsView: View {
 
 /// A sheet keeps the station mounted. Opening Settings never constructs another station or audio owner.
 struct AppearanceSettingsEntry: View {
+    /// The root's OS setting, before StationLayout applies its deliberately denser conversation layout.
+    let typeSize: DynamicTypeSize
     @State private var isPresented = false
 
     var body: some View {
@@ -159,15 +161,26 @@ struct AppearanceSettingsEntry: View {
         }
         .accessibilityIdentifier("station.settings")
         .sheet(isPresented: $isPresented) {
-            NavigationStack {
-                AppearanceSettingsView()
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { isPresented = false }
-                        }
-                    }
-            }
-            .frame(minWidth: 300, minHeight: 420)
+            AppearanceSettingsSheet(typeSize: typeSize) { isPresented = false }
         }
+    }
+}
+
+/// Explicit OS text scale prevents StationLayout's local density adjustment from entering Settings.
+struct AppearanceSettingsSheet: View {
+    let typeSize: DynamicTypeSize
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            AppearanceSettingsView()
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done", action: onDismiss)
+                    }
+                }
+        }
+        .environment(\.dynamicTypeSize, typeSize)
+        .frame(minWidth: 300, minHeight: 420)
     }
 }
