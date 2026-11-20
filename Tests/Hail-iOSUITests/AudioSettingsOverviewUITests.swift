@@ -16,19 +16,23 @@ final class AudioSettingsOverviewUITests: XCTestCase {
         openOverview(app)
         assertInactiveOverview(app)
         capture(app, named: "audio-overview-inactive")
-        let tools = element("settings.audio.tools", in: app)
+        let tools = app.buttons["settings.audio.tools"]
         reveal(tools, in: app)
         tools.tap()
         let toolTitle = app.navigationBars["Audio session"]
         XCTAssertTrue(toolTitle.waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Inactive"].waitForExistence(timeout: 5))
-        toolTitle.buttons.firstMatch.tap()
+        let backToOverview = toolTitle.buttons["Audio"]
+        waitUntilHittable(backToOverview)
+        backToOverview.tap()
         XCTAssertTrue(toolTitle.waitForNonExistence(timeout: 5))
         XCTAssertTrue(app.navigationBars["Audio"].waitForExistence(timeout: 5))
         assertInactiveOverview(app)
-        app.navigationBars["Audio"].buttons.firstMatch.tap()
+        let backToSettings = app.navigationBars["Audio"].buttons["Settings"]
+        waitUntilHittable(backToSettings)
+        backToSettings.tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
-        XCTAssertTrue(element("station.settings.audio", in: app).isHittable)
+        waitUntilHittable(app.buttons["station.settings.audio"])
         tapSection("station", in: app)
         XCTAssertTrue(element("station.tools", in: app).waitForExistence(timeout: 5))
     }
@@ -45,16 +49,20 @@ final class AudioSettingsOverviewUITests: XCTestCase {
         XCTAssertTrue(input.label.contains("Audio inactive"))
         assertFitsWidth(input, in: app)
         capture(app, named: "audio-overview-largest-type")
-        let tools = element("settings.audio.tools", in: app)
+        let tools = app.buttons["settings.audio.tools"]
         reveal(tools, in: app)
         XCUIDevice.shared.orientation = .landscapeLeft
-        let wide = XCTNSPredicateExpectation(
-            predicate: NSPredicate { _, _ in app.windows.firstMatch.frame.width > app.windows.firstMatch.frame.height },
-            object: nil)
-        XCTAssertEqual(XCTWaiter().wait(for: [wide], timeout: 5), .completed)
+        // Query XCTest geometry on the main actor; a block predicate can be evaluated off that actor.
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            let frame = app.windows.firstMatch.frame
+            if frame.width > frame.height { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        XCTAssertGreaterThan(app.windows.firstMatch.frame.width, app.windows.firstMatch.frame.height)
         reveal(tools, in: app)
         assertFitsWidth(tools, in: app)
-        XCTAssertTrue(app.navigationBars["Audio"].buttons.firstMatch.isHittable, "Back stays reachable")
+        waitUntilHittable(app.navigationBars["Audio"].buttons["Settings"])
         capture(app, named: "audio-overview-largest-type-landscape")
     }
 
@@ -91,8 +99,8 @@ final class AudioSettingsOverviewUITests: XCTestCase {
     @MainActor
     private func openOverview(_ app: XCUIApplication) {
         tapSection("settings", in: app)
-        let audio = element("station.settings.audio", in: app)
-        XCTAssertTrue(audio.waitForExistence(timeout: 5))
+        let audio = app.buttons["station.settings.audio"]
+        waitUntilHittable(audio)
         audio.tap()
         XCTAssertTrue(app.navigationBars["Audio"].waitForExistence(timeout: 5))
         XCTAssertTrue(element("settings.audio.overview", in: app).waitForExistence(timeout: 5))
@@ -122,11 +130,16 @@ final class AudioSettingsOverviewUITests: XCTestCase {
     @MainActor
     private func tapSection(_ name: String, in app: XCUIApplication) {
         let item = section(name, in: app)
+        waitUntilHittable(item)
+        item.tap()
+    }
+
+    @MainActor
+    private func waitUntilHittable(_ item: XCUIElement) {
         XCTAssertTrue(item.waitForExistence(timeout: 5))
         let shown = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: item)
         XCTAssertEqual(XCTWaiter().wait(for: [shown], timeout: 5), .completed)
         XCTAssertTrue(item.isHittable)
-        item.tap()
     }
 
     @MainActor
@@ -136,9 +149,21 @@ final class AudioSettingsOverviewUITests: XCTestCase {
 
     @MainActor
     private func reveal(_ element: XCUIElement, in app: XCUIApplication, towardTop: Bool = false) {
-        let limit = app.windows.firstMatch.frame.maxY - 120
-        for _ in 0..<8 where !(element.exists && element.isHittable && element.frame.maxY < limit) {
-            if towardTop { app.swipeDown() } else { app.swipeUp() }
+        let window = app.windows.firstMatch
+        for _ in 0..<8 {
+            let viewport = window.frame
+            let top = app.navigationBars.firstMatch.exists
+                ? app.navigationBars.firstMatch.frame.maxY : viewport.minY
+            let bottom = viewport.maxY - 120
+            let exists = element.exists
+            let frame = exists ? element.frame : .zero
+            if exists && element.isHittable && frame.minY >= top && frame.maxY <= bottom { break }
+            let moveDown = exists ? frame.minY < top : towardTop
+            let x = exists
+                ? min(max((frame.midX - viewport.minX) / viewport.width, 0.1), 0.9) : 0.5
+            let start = window.coordinate(withNormalizedOffset: CGVector(dx: x, dy: moveDown ? 0.35 : 0.65))
+            let end = window.coordinate(withNormalizedOffset: CGVector(dx: x, dy: moveDown ? 0.65 : 0.35))
+            start.press(forDuration: 0.01, thenDragTo: end)
         }
         XCTAssertTrue(element.waitForExistence(timeout: 5))
         XCTAssertTrue(element.isHittable)
