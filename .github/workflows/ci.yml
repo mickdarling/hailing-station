@@ -109,6 +109,14 @@ jobs:
           fi
           if [ "$after" -lt "$before" ]; then echo "::error::ProtocolVersion went backwards ($before -> $after)"; exit 1; fi
           echo "version rule: ok ($before -> $after, compatible=$compatible)"
+      - name: Host-path guard tests
+        run: python3 -m unittest scripts/tests/test_host_paths.py
+      - name: Check every PR commit for host paths
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/check-host-paths.py "$BASE_SHA..$HEAD_SHA"
 
   gate:
     name: gate
