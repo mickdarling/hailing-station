@@ -195,6 +195,11 @@ public final class ReplyPlaybackController {
     }
 }
 extension ReplyPlaybackController {
+    /// Content follows receipt order even while another reply retains the FIFO audio turn.
+    public var presentationForDisplay: ReplyPresentation? { latest }
+    public var displayDiffersFromControls: Bool {
+        presentationForDisplay?.id != presentationForControls?.id
+    }
     func pruneStreamReceipts() {
         // Cache only the count: retaining oldValue here would force dictionary copies on every frame.
         defer { receiptStreamCount = streams.count }
