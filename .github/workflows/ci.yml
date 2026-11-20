@@ -20,7 +20,7 @@ jobs:
   verify:
     name: verify
     runs-on: macos-26
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Select Xcode
@@ -35,8 +35,10 @@ jobs:
           restore-keys: spm-${{ runner.os }}-
       - name: Verify
         # Test output is captured until each lane ends (#185). The step times out before the job, so the upload
-        # below still runs and a hung lane's capture shows the last test that started (#264).
-        timeout-minutes: 25
+        # below still runs and a hung lane's capture shows the last test that started (#264). The full lanes take
+        # about 24-26 minutes on the hosted runner (2026-11), so the step has headroom (#1272); a genuinely hung
+        # lane is still stopped sooner by verify.sh's per-lane stall detector.
+        timeout-minutes: 40
         env:
           HAIL_TEST_CAPTURE_DIR: ${{ runner.temp }}/test-captures
         run: scripts/verify.sh all
