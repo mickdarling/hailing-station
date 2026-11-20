@@ -14,6 +14,11 @@ struct PrivacySettingsRequestState {
     var overheardFailure: String?
 }
 
+struct PrivacySettingsReason: Identifiable, Equatable {
+    let id: String
+    let text: String
+}
+
 struct PrivacySettingsState {
     let host: HostConnectionSnapshot?
     let privacy: PrivacySwitchStatus
@@ -28,6 +33,14 @@ struct PrivacySettingsState {
 
     var knowsWhose: Bool { ["owner", "everyone"].contains(whoseOverheard) }
     var canRequestPrivacy: Bool { unavailableReason == nil }
+    var privacyReasons: [PrivacySettingsReason] {
+        let detail = privacyDetail
+        var rows = [PrivacySettingsReason(id: "status-detail", text: detail)]
+        if let reason = unavailableReason, reason != detail {
+            rows.append(PrivacySettingsReason(id: "unavailable", text: reason))
+        }
+        return rows
+    }
     var privacyDetail: String {
         guard !isListeningToHost else { return privacy.detail }
         switch privacy.shown {
@@ -73,11 +86,9 @@ struct PrivacySettingsView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("settings.privacy.connection")
                 privacyControl
-                Text(state.privacyDetail).font(.footnote).foregroundStyle(.secondary)
-                    .accessibilityIdentifier("settings.privacy.status-detail")
-                if let reason = state.unavailableReason {
-                    Text(reason).font(.footnote).foregroundStyle(.secondary)
-                        .accessibilityIdentifier("settings.privacy.unavailable")
+                ForEach(state.privacyReasons) { reason in
+                    Text(reason.text).font(.footnote).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("settings.privacy.\(reason.id)")
                 }
             }
             Section {
