@@ -13,9 +13,10 @@ extension AppearanceSettingsUITests {
     }
 
     @MainActor
-    func launchEntryPreview() -> XCUIApplication {
+    func launchEntryPreview(extra: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-appearance-preview", "-reset-appearance-preview", "-appearance-entry-preview"]
+            + extra
         app.launch()
         XCTAssertTrue(app.buttons["station.settings"].waitForExistence(timeout: 10))
         XCTAssertFalse(element("station.connection", in: app).exists)

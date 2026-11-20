@@ -39,7 +39,8 @@ struct AppearanceSettingsNativeTests {
     }
 
     private func scene(_ preferences: ConversationAppearancePreferences, scheme: ColorScheme) -> AnyView {
-        AnyView(AppearanceSettingsView().environment(preferences).environment(\.colorScheme, scheme))
+        AnyView(AppearanceSettingsView().environment(preferences).environment(\.colorScheme, scheme)
+            .environment(\.accessibilityEnabled, true))
     }
 
     private func render(_ host: NSView) async {

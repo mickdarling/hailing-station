@@ -107,6 +107,7 @@ struct AppearanceSettingsView: View {
                 .font(.system(size: appearance.state.pointSize(bodyScale: bodyScale)))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("appearance.preview.\(speaker.lowercased())")
         }
     }
 }

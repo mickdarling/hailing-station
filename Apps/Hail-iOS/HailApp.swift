@@ -81,6 +81,7 @@ struct HailApp: App {
 /// Replaces an outer layout branch under the real window-owned settings presenter; no station resources exist.
 private struct AppearanceEntryPreview: View {
     @Environment(ConversationAppearancePreferences.self) private var appearance
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         Group {
@@ -91,6 +92,8 @@ private struct AppearanceEntryPreview: View {
             }
         }
         .accessibilityIdentifier("appearance.example-tools")
+        .environment(\.dynamicTypeSize,
+                     ProcessInfo.processInfo.arguments.contains("-appearance-dense-example") ? .xSmall : typeSize)
     }
 
     private var tools: some View {
