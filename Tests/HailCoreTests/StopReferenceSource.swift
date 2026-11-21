@@ -12,10 +12,10 @@ struct StopReferenceSource {
         code = source.replacing(commentsOrStrings) { $0.output.hasPrefix("/") ? " " : String($0.output) }
         var bare: Set<String> = ["turnOff", "destinationLost", "ownerChangedDestination", "cancelTransportRestore",
                                  "bindingLossReason", "destinationLossReason", "targetLoss", "attributeSelectionLoss",
-                                 "recordSendFailure"]
+                                 "recordSendFailure", "cancelForDiagnosticsDismissal"]
         if code.contains(#/(?:class|extension)\s+AmbientListeningReconnect\b/#) { bare.formUnion(["block", "veto"]) }
         if code.contains(#/(?:class|extension)\s+AmbientListeningController\b/#) {
-            bare.formUnion(["end", "observeSystemEnd", "updateDestination"])
+            bare.formUnion(["end", "observeSystemEnd", "updateDestination", "stopListening"])
         }
         if code.contains(#/(?:enum|extension)\s+(?:AmbientListeningState\.)?StopReason\b/#) {
             bare.formUnion(["legacy", "sendError", "bindingLoss"])
@@ -24,9 +24,9 @@ struct StopReferenceSource {
         members = bare.union(["block", "veto", "legacy", "sendError", "bindingLoss"])
             .union(AmbientLegacyStopPathTests.paths.map { String(describing: $0) })
         let assignments = #/
-            (?m) (?:\b(?:let|var)\s+|^[ \t]*(?:\w+\??[ \t]*\.[ \t]*)*)
-            (\w+)(?:[ \t]*:[^=\n]+)?\s*=\s*
-            (?:\w+\??\s*\.\s*)*\.?(\w+)(?:\((?:\w+:)+\))?[ \t]*$
+            (?m) (?:\b(?:let|var)\s+|\b(?:\w+\??[ \t]*\.[ \t]*)*)
+            (\w+)(?:[ \t]*:[^={};\n]+)?\s*=\s*
+            (?:\w+\??\s*\.\s*)*\.?(\w+)(?:\((?:\w+:)+\))?[ \t]*(?=$|[;}])
             /#
         self.assignments = code.matches(of: assignments).map { (String($0.1), String($0.2)) }
     }

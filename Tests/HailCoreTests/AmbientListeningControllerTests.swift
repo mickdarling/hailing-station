@@ -43,7 +43,7 @@ import Testing
         #expect(harness.controller.isOn)
         #expect(harness.controller.isListening)
         #expect(harness.capture.startCount == 1)
-        let stop: () async -> Void = harness.controller.turnOff
+        let stop = harness.controller.turnOff
         await stop()
         #expect(!harness.controller.isOn)
         #expect(harness.controller.listeningState == .stopped(.ownerOff))

@@ -1563,14 +1563,15 @@ public struct DuckModeStatus: Equatable, Sendable {
 
 /// Transport restore reuses the live capture and the normal resume wire flag (#904).
 extension AmbientListeningController {
-    public enum TurnOffSource: Sendable { case owner, diagnosticsDismissal }
-
     public func turnOff() async {
-        await turnOff(source: .owner)
+        await stopListening(reason: .ownerOff)
     }
 
-    public func turnOff(source: TurnOffSource) async {
-        let stop: StopReason = source == .owner ? .ownerOff : .legacy(.diagnosticsDismissed)
+    public func cancelForDiagnosticsDismissal() async {
+        await stopListening(reason: .legacy(.diagnosticsDismissed))
+    }
+
+    private func stopListening(reason stop: StopReason) async {
         reconnect.block(.ownerStop, stop: stop)
         await end(session, reason: nil, cause: "user", stop: stop)
     }

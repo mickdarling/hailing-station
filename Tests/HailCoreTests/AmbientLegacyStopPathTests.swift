@@ -87,6 +87,13 @@ import Testing
         #expect(files["Register.swift"] == inventory)
         #expect(files["Forward.swift"] == ["forward onStop", "forward onLoss"])
         #expect(files["Notify.swift"] == ["notify onLoss", "notify onStop"])
+
+        let inline = Self.references(in: [
+            "Register.swift": "func register() { self.onLoss = controller.destinationLost }",
+            "Notify.swift": "func notify() { await self.onLoss?() }"
+        ])
+        #expect(inline["Register.swift"] == ["register onLoss", "register destinationLost"])
+        #expect(inline["Notify.swift"] == ["notify onLoss"])
     }
 }
 
@@ -120,7 +127,9 @@ extension AmbientLegacyStopPathTests {
             recover legacy retriesExhausted
             stopForPolicy block cancelTransportRestore
             ownerChangedDestination block bindingLossReason destinationLost
-            turnOff turnOff legacy diagnosticsDismissed block end
+            turnOff stopListening
+            cancelForDiagnosticsDismissal stopListening legacy diagnosticsDismissed
+            stopListening block end
             receiveAmbientRefusal recordSendFailure end legacy hostRefused
             cancelTransportRestore end
             """,
@@ -148,7 +157,7 @@ extension AmbientLegacyStopPathTests {
             prepareCaptureResume block legacy privacyUnconfirmed block legacy
             """,
             "Apps/Hail-iOS/RootView.swift": "reconcileAmbientDestination ownerChangedDestination destinationLost",
-            "Apps/Hail-iOS/AudioDiagnosticsView.swift": "disappear turnOff",
+            "Apps/Hail-iOS/AudioDiagnosticsView.swift": "disappear cancelForDiagnosticsDismissal",
             "Apps/Hail-iOS/StationCard.swift": "body turnOff",
             "Apps/Hail-iOS/StationMenuPublishers.swift": "attach turnOff",
             // Same Swift spelling in unrelated code.
