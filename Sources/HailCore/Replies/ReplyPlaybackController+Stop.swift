@@ -12,10 +12,19 @@ extension ReplyPlaybackController {
     /// Voice mute waits for its spoken confirmation; unmute and mute with no playback apply immediately (#404).
     func setReplyMute(_ muted: Bool) {
         guard muted else {
+            stopMuteWindow = nil
             pendingMuteAfter = nil
             return setMuted(false)
         }
-        if let activeKey, !isMuted { pendingMuteAfter = activeKey } else { setMuted(true) }
+        guard !isMuted else { return }
+        if let window = stopMuteWindow, window.key == (activeKey ?? queue.first), idleNow() < window.deadline {
+            setMuted(true)
+            cancelPlayback(stopping: [window.key])
+            drain()
+            return
+        }
+        guard let activeKey else { return setMuted(true) }
+        pendingMuteAfter = activeKey
     }
     func applyPendingMuteIfDue() {
         guard let after = pendingMuteAfter, activeKey != after, !playbackOrder.contains(after) else { return }
@@ -28,13 +37,21 @@ extension ReplyPlaybackController {
     /// Stop shared playback and this host's pending replies, or every host when nil (#309, `+Headset`).
     /// Mark stopped replies complete so late frames cannot restart them.
     func stopPlayback(from endpointID: HostEndpoint.Identifier?) {
+        stopMuteWindow = nil
         let pending = Set(queue).union(firstAudio.keys).union(cancelledFirstAudio).union(expiredFirstAudio)
         let stopped = Set(playbackOrder).union(pending.filter { endpointID == nil || $0.endpointID == endpointID })
         cancelFirstAudio(for: stopped)
         expiredFirstAudio.subtract(stopped)
         guard !stopped.isEmpty else { return }
-        player.cancel()
+        let previousHead = queue.first
+        cancelPlayback(stopping: stopped)
+        isPaused = false
+        status = "Stopped"
+        drain(afterStop: queue.first != previousHead)
+    }
+    private func cancelPlayback(stopping stopped: Set<ReplyStreamKey>) {
         playbackGeneration &+= 1
+        player.cancel()
         for key in stopped {
             setPresentationStatus("Stopped", for: key)
             streams[key] = nil
@@ -43,9 +60,6 @@ extension ReplyPlaybackController {
         queue.removeAll { stopped.contains($0) }
         playbackOrder.removeAll()
         activeKey = nil
-        isPaused = false
-        status = "Stopped"
-        drain()
     }
 }
 // First-audio arrival watches share the idle clock, scheduler and deadline (#825), independently of the player head.
