@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 import Testing
 @testable import HailCore
@@ -33,14 +34,29 @@ struct StationRedesignFlagsTests {
         for value in [NSNumber(value: 1), NSNumber(value: 1.0)] {
             defaults.set(value, forKey: key)
             let numeric = StationRedesignFlags { defaults.object(forKey: $0) }
-            #expect(!numeric.isOn(.shell))
+            #expect(!numeric.isOn(.shell), "Numeric fixture: \(Self.storedKind(defaults.object(forKey: key)))")
         }
         defaults.set(true, forKey: key)
         let optedIn = StationRedesignFlags { defaults.object(forKey: $0) }
-        #expect(optedIn.isOn(.shell))
+        #expect(optedIn.isOn(.shell), "After numeric writes: \(Self.storedKind(defaults.object(forKey: key)))")
         defaults.set(false, forKey: key)
         let optedOut = StationRedesignFlags { defaults.object(forKey: $0) }
         #expect(!optedOut.isOn(.shell))
+        defaults.set(true, forKey: key)
+        let afterOff = StationRedesignFlags { defaults.object(forKey: $0) }
+        #expect(afterOff.isOn(.shell), "After Boolean off: \(Self.storedKind(defaults.object(forKey: key)))")
+        defaults.removeObject(forKey: key)
+        defaults.set(true, forKey: key)
+        let fresh = StationRedesignFlags { defaults.object(forKey: $0) }
+        #expect(fresh.isOn(.shell), "Fresh Boolean: \(Self.storedKind(defaults.object(forKey: key)))")
+    }
+
+    private static func storedKind(_ raw: Any?) -> String {
+        guard let raw else { return "missing" }
+        let kind = String(reflecting: type(of: raw))
+        guard let number = raw as? NSNumber else { return kind }
+        return "\(kind), value=\(number), objc=\(String(cString: number.objCType)), "
+            + "CFBoolean=\(CFGetTypeID(number) == CFBooleanGetTypeID())"
     }
 
     @Test func keysAreNamespacedPerStep() {
