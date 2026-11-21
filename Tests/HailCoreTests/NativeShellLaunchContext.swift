@@ -10,14 +10,17 @@ enum NativeShellLaunchContext {
     private static let configured: Bool = {
         guard optedIn else { return StationRedesignLaunch.flags.isOn(.shell) }
         let defaults = UserDefaults.standard
-        let original = defaults.volatileDomain(forName: NSArgumentDomain)
-        let existed = defaults.volatileDomainNames.contains(NSArgumentDomain)
+        let original = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
+        let existed = defaults.volatileDomainNames.contains(UserDefaults.argumentDomain)
         var temporary = original
         temporary[StationRedesignStep.shell.key] = true
-        defaults.setVolatileDomain(temporary, forName: NSArgumentDomain)
+        defaults.setVolatileDomain(temporary, forName: UserDefaults.argumentDomain)
         defer {
-            if existed { defaults.setVolatileDomain(original, forName: NSArgumentDomain) }
-            else { defaults.removeVolatileDomain(forName: NSArgumentDomain) }
+            if existed {
+                defaults.setVolatileDomain(original, forName: UserDefaults.argumentDomain)
+            } else {
+                defaults.removeVolatileDomain(forName: UserDefaults.argumentDomain)
+            }
         }
         return StationRedesignLaunch.flags.isOn(.shell)
     }()

@@ -42,6 +42,7 @@ Only the dedicated opt-in path of `NativeShellLaunchContext` installs one litera
 volatile `NSArgumentDomain` before the actual production static launch snapshot is first read. The previous
 volatile domain is restored synchronously, before any suspension; it never calls a persistent defaults writer.
 The actual launch snapshot is then held for the process, just as in the app; no flags are re-read to swap a branch.
+The Swift spelling is `UserDefaults.argumentDomain`, as declared by Foundation's SDK API notes.
 
 Without `HAIL_NATIVE_SHELL_LIFETIME=1`, existing native-root fixtures only read the genuine production snapshot;
 no defaults domain is changed and no saved value is masked. CI's missing preference must remain default-off,
@@ -54,7 +55,8 @@ The existing scene host reads/configures that context before constructing its ro
 the same in their test-suite initializer. It occurs once on the main actor without yielding. Normal parallel CI
 does not receive a temporary override that could race the real-UserDefaults flag tests. Restoring the opt-in
 input does not mutate the cached snapshot. Synthetic diagnostics use a unique suite, assert collection is off,
-and make no preference writes. No live-app reset or disk preference write is used for either path.
+and write no preference values. Their temporary suite is removed on normal close and on startup failure.
+Neither launch path resets live-app preferences or writes a persistent flag.
 
 ## Assertions and honest limits
 
@@ -63,10 +65,17 @@ mounts the actual root/card around a confirmed scripted destination and the exis
 that synthetic owner. Waiting for the real card's activity callback ensures the real ambient content initialized.
 Visibility observations come from the actual shell's `stationAccessibilityHidden` environment, so selecting
 Devices/Settings/Sessions and returning to Station must exercise the real flag-on branch and hide/show the station.
+Each section, sidebar and compact-column step snapshots the surface's appear/disappear counts and requires them
+to remain unchanged. Sidebar and compact-column steps also require the actual observed visibility to stay visible.
+The host counts calls to the actual injected `makeResources` closure and requires exactly one at startup and
+throughout delivery checks, rather than inferring scene identity only from a closure returning the same references.
 
 The existing fixture's layout branch also removes and remounts the actual ambient surface/card while pushing and
-popping an inert tool. Real surface appear/disappear counters witness that removal. The shipped card's own
-`onDisappear` and root destination reconciliation run unchanged; the fixture contains no replacement stop logic.
+popping an inert tool. Real surface appear/disappear counters witness that surface removal and remount. The shipped
+card's unmodified `onDisappear` handler remains attached in the removed subtree and forwards to the real root's
+destination reconciliation. Its callback execution is not separately instrumented in this flag-on fixture; a valid
+no-op reconcile cannot distinguish invocation from non-invocation. The default-off `StationToolAmbientLifetimeTests`
+directly observes that callback as supplemental evidence. No protected hook or replacement stop logic is introduced.
 Every section/removal/remount step checks the same store/controller/binding, requested-on and streaming state,
 `startCount == 1`, `stopCount == 0`, no release or new permission/streamer, and additional fake PCM frames delivered
 through the same scripted socket. Cleanup intentionally turns the fake owner off only after the continuity checks.

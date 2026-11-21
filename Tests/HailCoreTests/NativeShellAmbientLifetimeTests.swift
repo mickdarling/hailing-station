@@ -25,18 +25,11 @@ struct NativeShellAmbientLifetimeTests {
         do {
             try await removeAndRemountCard(fixture)
             for hidden in [true, false] {
-                fixture.root.navigation.apply(.setSidebarHidden(hidden))
-                await fixture.host.render()
-                try await fixture.assertContinuedDelivery()
+                try await fixture.changeLayout(.setSidebarHidden(hidden))
             }
-            // This exercises the real state model, not an assertion that AppKit displayed an iPad compact stack.
-            fixture.root.navigation.apply(.setCompactColumn(.sidebar))
-            #expect(fixture.root.navigation.sidebarSelection(collapsed: true) == nil)
-            await fixture.host.render()
-            try await fixture.assertContinuedDelivery()
-            fixture.root.navigation.apply(.setCompactColumn(.detail))
-            await fixture.host.render()
-            try await fixture.assertContinuedDelivery()
+            for column in [StationCompactColumn.sidebar, .detail] {
+                try await fixture.changeLayout(.setCompactColumn(column))
+            }
         } catch {
             await fixture.close()
             throw error

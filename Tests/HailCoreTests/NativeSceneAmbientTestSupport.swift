@@ -9,6 +9,10 @@ import HailProtocol
 @MainActor @Observable
 final class NativeSceneAmbientProbe {
     enum StationVisibility: Equatable { case unobserved, visible, hidden }
+    struct SurfaceMounts: Equatable {
+        let appearances: Int
+        let disappearances: Int
+    }
 
     var toolShown = false
     var disappearances = 0
@@ -16,6 +20,10 @@ final class NativeSceneAmbientProbe {
     var stationVisibility = StationVisibility.unobserved
     @ObservationIgnored var root: StationRootView?
     private let binding: AmbientAudioBinding
+
+    var surfaceMounts: SurfaceMounts {
+        SurfaceMounts(appearances: appearances, disappearances: disappearances)
+    }
 
     init(binding: AmbientAudioBinding) { self.binding = binding }
 
@@ -60,12 +68,17 @@ struct NativeSceneStationContent: View {
 final class NativeSceneAmbientHost {
     private let hosting: NSHostingView<AnyView>
     private let window: NSWindow
+    private let resourceFactory: NativeSceneResourceFactory
+
+    var resourceFactoryCalls: Int { resourceFactory.calls }
 
     init(resources: StationResources, probe: NativeSceneAmbientProbe, width: CGFloat = 760) {
         NativeShellLaunchContext.install()
         _ = NSApplication.shared
+        let factory = NativeSceneResourceFactory(resources: resources)
+        resourceFactory = factory
         hosting = NSHostingView(rootView: AnyView(StationRootView(selectionStore: RootSelectionStore(),
-            makeResources: { resources }).environment(probe).environment(\.scenePhase, .active)
+            makeResources: { factory.make() }).environment(probe).environment(\.scenePhase, .active)
             .environment(\.accessibilityEnabled, true)
             .transaction { $0.disablesAnimations = true; $0.animation = nil }))
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 620),
@@ -88,6 +101,18 @@ final class NativeSceneAmbientHost {
 
     func visibleText() -> [String] { accessibilityText(hosting) }
     func finish() { window.close() }
+}
+
+@MainActor
+private final class NativeSceneResourceFactory {
+    private let resources: StationResources
+    private(set) var calls = 0
+
+    init(resources: StationResources) { self.resources = resources }
+    func make() -> StationResources {
+        calls += 1
+        return resources
+    }
 }
 
 @MainActor
