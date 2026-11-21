@@ -11,7 +11,7 @@ import Testing
         #expect(session.effects.isEmpty)
         session.send(.init(
             outputs: [.bluetoothA2DP], inputs: [.usbAudio], previousOutputs: [.speaker],
-            previousInputs: [.usbAudio], reason: .override
+            previousInputs: [.usbAudio], reason: .newDeviceAvailable
         ))
         // 21:16Z: input loss followed by availability, with external output in notification history (#852).
         session.options.defaultToSpeaker = true
@@ -26,8 +26,8 @@ import Testing
         session.drainEchoes()
         #expect(session.categories == 1)
         #expect(session.clears == 1)
-        // An echo still on built-in output is conservatively treated as a choice (#852).
-        #expect(session.state.userChoseBuiltIn)
+        // The matching built-in echo has no independent picker provenance.
+        #expect(!session.state.userChoseBuiltIn)
     }
 
     @Test func inputReturnInCategoryEchoWaitsForAvailability() {
@@ -47,6 +47,7 @@ import Testing
     @Test(arguments: [false, true])
     func failedApplyRetriesOnNextGenuineEpisode(failClear: Bool) {
         let session = ScriptedOutputSession()
+        session.options.defaultToSpeaker = true
         session.failure = failClear ? .clearOverride : .setCategory(.init())
         session.send(.init(
             outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.bluetoothA2DP],
@@ -63,7 +64,7 @@ import Testing
         #expect(session.categories == 1)
         session.send(.init(outputs: [.speaker], inputs: [.usbAudio], reason: .newDeviceAvailable))
         session.drainEchoes()
-        #expect(session.categories == 2)
+        #expect(session.categories == (failClear ? 1 : 2))
         #expect(session.clears == (failClear ? 2 : 1))
         #expect(session.applyResult == .succeeded)
     }
@@ -122,29 +123,33 @@ final class ScriptedOutputSession {
     typealias Effect = AudioOutputRouteDriver.Effect
     enum Failure: Error { case scripted }
     enum ApplyResult { case notAttempted, succeeded, failed }
-    var state = Policy.State()
+    let driver = AudioOutputRouteDriver()
+    var state: Policy.State {
+        get { driver.state }
+        set { driver.state = newValue }
+    }
     var options = Policy.Options()
     var effects: [Effect] = []
     var applyResult = ApplyResult.notAttempted
     var failure: Effect?
     var overrideOutputs: [Policy.Port]?
     var decisionReasons: [Policy.DecisionReason] = []
-    var reconfigureMarker = AudioOutputReconfigureMarker()
     private var echoes: [Policy.Route] = []
 
     var categories: Int { effects.filter { if case .setCategory = $0 { true } else { false } }.count }
     var clears: Int { effects.filter { $0 == .clearOverride }.count }
 
-    func send(_ route: Policy.Route, now: ContinuousClock.Instant = .now) {
+    func send(_ route: Policy.Route) {
         var current = route
         current.options = options
-        current.appInitiatedReconfigure = reconfigureMarker.attributes(current.reason, now: now)
-        let snapshot = current
-        applyResult = AudioOutputRouteDriver.process(snapshot, state: &state, observeDecision: { decision in
-            self.decisionReasons.append(decision.reason)
-        }, perform: { effect in
-            try self.perform(effect, route: snapshot)
+        let initial = current
+        applyResult = driver.process(initial, actual: { current }, perform: { effect in
+            try self.perform(effect, route: current)
+            current.options = self.options
+            if effect == .clearOverride, let outputs = self.overrideOutputs { current.outputs = outputs }
+            if effect == .restoreSpeaker { current.outputs = [.speaker] }
         }) ? .succeeded : .failed
+        if let observation = driver.lastObservation { decisionReasons.append(observation.reason) }
     }
 
     func drainEchoes() {
@@ -158,6 +163,8 @@ final class ScriptedOutputSession {
     private func perform(_ effect: Effect, route: Policy.Route) throws {
         effects.append(effect)
         var echo = route
+        echo.settling = false
+        echo.origin = nil
         echo.previousInputs = route.inputs
         echo.previousOutputs = route.outputs
         echo.reason = effect == .clearOverride ? .override : .categoryChange
@@ -166,6 +173,10 @@ final class ScriptedOutputSession {
             throw Failure.scripted
         }
         if effect == .clearOverride, let overrideOutputs { echo.outputs = overrideOutputs }
+        if effect == .restoreSpeaker {
+            echo.reason = .override
+            echo.outputs = [.speaker]
+        }
         echoes.append(echo)
         if case .setCategory(let desired) = effect { options = desired }
     }

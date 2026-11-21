@@ -57,19 +57,21 @@ struct BluetoothHFPRouteTests {
     }
 
     /// The app's category change can move output, but cannot undo an explicit Speaker choice (#914).
-    @Test func toggleThatMovesOutputToTheHeadsetMakesNoEffectAndKeepsTheSpeakerLatch() {
+    @Test func toggleThatMovesOutputToTheHeadsetRestoresTheSpeakerLatch() {
         let session = ScriptedOutputSession()
         session.options.defaultToSpeaker = true
         session.send(.init(outputs: [.speaker], inputs: [.builtInMic], previousOutputs: [.bluetoothA2DP],
                            previousInputs: [.builtInMic], reason: .override))
         #expect(session.state.userChoseBuiltIn)
 
-        session.reconfigureMarker.arm()
-        session.send(.init(outputs: [.bluetoothHFP], inputs: [.bluetoothHFP],
-                           availableInputs: [.builtInMic, .bluetoothHFP], previousOutputs: [.speaker],
-                           previousInputs: [.builtInMic], reason: .categoryChange))
+        let before = Self.toggle(available: [.builtInMic])
+        let after = Policy.Route(outputs: [.bluetoothHFP], inputs: [.bluetoothHFP],
+                                 availableInputs: [.builtInMic, .bluetoothHFP], previousOutputs: [.speaker],
+                                 previousInputs: [.builtInMic], reason: .categoryChange)
+        session.driver.write(.configure, before: before, actual: { after }, perform: {})
+        session.send(after)
         session.drainEchoes()
-        #expect(session.effects.isEmpty)
+        #expect(session.effects == [.restoreSpeaker])
         #expect(session.options.defaultToSpeaker)
         #expect(session.state.userChoseBuiltIn)
     }
@@ -82,7 +84,6 @@ struct BluetoothHFPRouteTests {
         #expect(session.state.userChoseBuiltIn)
 
         for available in [[Policy.Port.builtInMic, .bluetoothHFP], [.builtInMic], [.builtInMic, .bluetoothHFP]] {
-            session.reconfigureMarker.arm()
             session.send(Self.toggle(available: available))
             session.drainEchoes()
         }
@@ -93,10 +94,11 @@ struct BluetoothHFPRouteTests {
     @Test func togglingNeitherRepairsNorSpendsTheNextEpisodesRepair() {
         let session = ScriptedOutputSession()
         session.options.defaultToSpeaker = true
-        session.reconfigureMarker.arm()
+        session.send(.init(outputs: [.speaker], inputs: [.builtInMic], previousOutputs: [.bluetoothA2DP],
+                           previousInputs: [.builtInMic], reason: .override))
         session.send(Self.toggle(available: [.builtInMic]))
-        session.reconfigureMarker.arm()
         session.send(Self.toggle(available: [.builtInMic, .bluetoothHFP]))
+        #expect(session.state.userChoseBuiltIn)
         session.drainEchoes()
         #expect(session.effects.isEmpty)
 
@@ -106,12 +108,13 @@ struct BluetoothHFPRouteTests {
         )
         session.overrideOutputs = [.bluetoothA2DP]
         session.send(connected)
+        #expect(!session.state.userChoseBuiltIn)
+        session.send(connected)
         session.drainEchoes()
         let repair: [AudioOutputRouteDriver.Effect] = [.setCategory(.init()), .clearOverride]
         #expect(session.effects == repair)
 
         for available in [[Policy.Port.builtInMic], [.builtInMic, .bluetoothHFP]] {
-            session.reconfigureMarker.arm()
             session.send(Self.toggle(available: available, outputs: [.bluetoothA2DP]))
             session.drainEchoes()
         }
@@ -122,6 +125,6 @@ struct BluetoothHFPRouteTests {
     /// The route notification a settings toggle causes: a category change, with the headset listed only while on.
     private static func toggle(available: [Policy.Port], outputs: [Policy.Port] = [.speaker]) -> Policy.Route {
         .init(outputs: outputs, inputs: [.builtInMic], availableInputs: available,
-              previousOutputs: outputs, previousInputs: [.builtInMic], reason: .categoryChange)
+              previousOutputs: outputs, previousInputs: [.builtInMic], reason: .categoryChange, origin: .configure)
     }
 }

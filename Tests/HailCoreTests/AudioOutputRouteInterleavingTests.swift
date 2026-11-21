@@ -12,7 +12,8 @@ import Testing
         for reason in [Policy.Reason.categoryChange, .routeConfigurationChange].prefix(intervening) {
             session.send(.init(outputs: [.speaker], inputs: [.usbAudio], reason: reason))
         }
-        Self.chooseBuiltIn(session, output: output)
+        // The picker moved from an external route. A same-pair tap while release is pending is tested as ambiguous.
+        Self.chooseBuiltIn(session, output: output, previous: .bluetoothA2DP)
         // Do not drain pending effects first: this reproduces a user choice before our echo arrives (#852).
         let effects = session.effects
         Self.checkLaterCycles(session, effects: effects)
@@ -51,18 +52,19 @@ import Testing
         ))
         #expect(session.effects.isEmpty)
         #expect(!session.state.userChoseBuiltIn)
-        // They can observe external output and clear a prior choice, still without an effect.
+        // They can observe external output and preserve a prior choice, still without an effect.
         session.state.userChoseBuiltIn = true
         session.send(.init(outputs: [.bluetoothA2DP], inputs: [.usbAudio], reason: reason))
-        #expect(!session.state.userChoseBuiltIn)
+        #expect(session.state.userChoseBuiltIn)
         #expect(session.state.externalOutputSeen)
         #expect(session.effects.isEmpty)
     }
 
-    private static func chooseBuiltIn(_ session: ScriptedOutputSession, output: Policy.Port) {
+    private static func chooseBuiltIn(_ session: ScriptedOutputSession, output: Policy.Port,
+                                      previous: Policy.Port = .speaker) {
         let effects = session.effects
         session.send(.init(
-            outputs: [output], inputs: [.usbAudio], previousOutputs: [.speaker],
+            outputs: [output], inputs: [.usbAudio], previousOutputs: [previous],
             previousInputs: [.usbAudio], reason: .override
         ))
         #expect(session.state.userChoseBuiltIn)

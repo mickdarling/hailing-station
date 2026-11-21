@@ -18,6 +18,7 @@ import Testing
             reason: .oldDeviceUnavailable
         ))
         #expect(!session.state.externalOutputSeen)
+        session.options.mixWithOthers = false
         session.send(.init(outputs: [.speaker], inputs: [.builtInMic], reason: .categoryChange))
         #expect(session.effects.isEmpty)
         session.send(.init(
@@ -49,6 +50,7 @@ import Testing
         ))
         #expect(session.state.externalOutputSeen)
         #expect(session.state.inputLossPending)
+        session.options.mixWithOthers = false // Capture has taken back its nonmixable play-and-record category.
         session.send(.init(outputs: [.speaker], inputs: [.usbAudio], reason: .categoryChange))
         #expect(session.effects.isEmpty)
         let returned = Policy.Route(outputs: [.speaker], inputs: [.usbAudio], reason: .newDeviceAvailable)
@@ -67,15 +69,17 @@ import Testing
         session.state = .init(
             externalOutputSeen: true, userChoseBuiltIn: true, inputLossPending: true,
             lastInputs: [.usbAudio], lastOutputs: [.speaker],
-            lastAvailability: .init(inputs: [.usbAudio], outputs: [.speaker],
-                                    previousInputs: [.builtInMic], previousOutputs: [.speaker])
+            lastAvailability: .init(reason: .newDeviceAvailable,
+                                    previous: .init(inputs: [.builtInMic], outputs: [.speaker]))
         )
-        let state = session.state
+        var state = session.state
         session.options = .init(defaultToSpeaker: true, mixWithOthers: true)
         Self.observeWithoutEffects(session, route: .init(
             category: category, outputs: [.bluetoothA2DP], inputs: [], previousOutputs: [.speaker], reason: reason
         ))
-        #expect(session.state == state)
+        if reason == .newDeviceAvailable { state.userChoseBuiltIn = false }
+        #expect(session.state.userChoseBuiltIn == state.userChoseBuiltIn)
+        #expect(session.state.inputLossPending)
     }
 
     @Test func keepaliveDoesNotForgetAnExplicitOwnerChoice() {
@@ -103,7 +107,6 @@ import Testing
         #expect(session.state.lastAvailability == state.lastAvailability)
         #expect(session.state.lastInputs == state.lastInputs)
         #expect(session.state.lastOutputs == state.lastOutputs)
-        #expect(session.state.userChoseBuiltIn == state.userChoseBuiltIn)
         #expect(session.decisionReasons.last == (route.category == .playback ? .keepalive : .unsupportedCategory))
     }
 }

@@ -15,8 +15,9 @@ import Testing
         ))
         #expect(session.state.inputLossPending)
         Self.observePlayback(session)
-        // Capture configuration installs its audible fallback before emitting the category notification.
-        session.options = Policy.configurationOptions(outputs: [.speaker], options: .init())
+        // Capture configuration defers its audible fallback before emitting the category notification.
+        let before = Policy.Route(category: .playback, outputs: [.speaker], inputs: [], reason: .other)
+        session.options = Policy.configurationOptions(for: before, allowsHFP: false, state: session.state)
         session.send(.init(
             outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.speaker], reason: .categoryChange
         ))
@@ -31,9 +32,9 @@ import Testing
         session.send(returned)
         #expect(session.decisionReasons.last == .noHardwareEpisode)
         session.drainEchoes()
-        #expect(session.categories == 1)
+        #expect(session.categories == 0)
         #expect(session.clears == 1)
-        #expect(session.effects.count == 2)
+        #expect(session.effects.count == 1)
         #expect(!session.options.defaultToSpeaker)
     }
 
@@ -46,7 +47,8 @@ import Testing
             category: category, outputs: previous ? [.speaker] : [.bluetoothA2DP], inputs: [],
             previousOutputs: previous ? [.bluetoothA2DP] : [.speaker], reason: .newDeviceAvailable
         ))
-        #expect(session.state == .init(externalOutputSeen: true, userChoseBuiltIn: true))
+        #expect(session.state.externalOutputSeen)
+        #expect(session.state.userChoseBuiltIn == previous)
         #expect(session.effects.isEmpty)
         #expect(session.options == .init(defaultToSpeaker: true, mixWithOthers: true))
     }
@@ -66,7 +68,8 @@ import Testing
             #expect(session.effects.isEmpty)
             #expect(session.options == .init(mixWithOthers: true))
             #expect(session.decisionReasons.last == .keepalive)
-            #expect(session.state == state)
+            #expect(session.state.inputLossPending == state.inputLossPending)
+            #expect(session.state.lastAvailability == state.lastAvailability)
         }
     }
 }

@@ -10,16 +10,15 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
     private let events: AsyncStream<AudioSessionBackendEvent>
     private let continuation: AsyncStream<AudioSessionBackendEvent>.Continuation
     private let observers = NotificationObserverBag()
-    private var outputRouteState = AudioOutputRoutePolicy.State()
-    private var reconfigureMarker = AudioOutputReconfigureMarker()
-    private var isRepairingOutputRoute = false
+    let routing: AudioOutputSessionRouting
 
     public convenience init() {
-        self.init(session: .sharedInstance())
+        self.init(routing: .shared)
     }
 
-    init(session: AVAudioSession) {
-        self.session = session
+    init(routing: AudioOutputSessionRouting) {
+        self.routing = routing
+        session = routing.session
         let pair = AsyncStream<AudioSessionBackendEvent>.makeStream(bufferingPolicy: .bufferingNewest(16))
         events = pair.stream
         continuation = pair.continuation
@@ -31,31 +30,27 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
     }
 
     public func configure(allowsBluetoothHFP: Bool) async throws {
-        // Arm before setCategory: its notification can be delivered synchronously or shortly after it returns.
-        reconfigureMarker.arm()
-        do {
-            try AudioOutputSessionRouting.configure(session, allowsBluetoothHFP: allowsBluetoothHFP)
-        } catch {
-            reconfigureMarker.cancel()
-            throw error
-        }
+        // Capture takes ownership on activation and then applies its saved microphone selection.
+        try routing.prepareBackendCategory(allowsBluetoothHFP: allowsBluetoothHFP, source: .capturePreparation)
     }
 
     public func setActive(_ active: Bool) async throws {
-        if active {
-            try session.setActive(true)
-        } else {
-            try session.setActive(false, options: .notifyOthersOnDeactivation)
-        }
+        try routing.setCaptureActive(active)
     }
 
     public func availableInputs() async -> [AudioPort] {
-        (session.availableInputs ?? []).map(Self.port)
+        (session.availableInputs ?? []).filter { permitsInput($0) }.map(Self.port)
     }
 
     public func selectInput(id: AudioPort.ID?) async throws {
+        guard session.category != .playback else { throw AudioInputSelectionError.sessionInactive }
         let selected = session.availableInputs?.first { $0.uid == id }
-        try session.setPreferredInput(selected)
+        if let selected, !permitsInput(selected) { throw AudioInputSelectionError.unavailable(selected.uid) }
+        try routing.select(selected)
+    }
+
+    private func permitsInput(_ port: AVAudioSessionPortDescription) -> Bool {
+        port.portType != .bluetoothHFP || !routing.driver.state.holdsBuiltInOutput
     }
 
     public func diagnostics(isActive: Bool) async -> AudioSessionDiagnostics {
@@ -78,9 +73,7 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
             forName: AVAudioSession.routeChangeNotification,
             object: session,
             queue: .main
-        ) { [weak self, continuation] notification in
-            let snapshot = AudioOutputSessionRouting.snapshot(notification)
-            MainActor.assumeIsolated { self?.repairOutputRoute(snapshot) }
+        ) { [continuation] _ in
             continuation.yield(.routeChanged)
         })
         observers.add(center.addObserver(
@@ -92,24 +85,10 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
         })
     }
 
-    private func repairOutputRoute(_ snapshot: AudioOutputSessionRouting.Snapshot) {
-        guard !isRepairingOutputRoute else { return }
-        var route = AudioOutputSessionRouting.route(session, snapshot: snapshot)
-        route.appInitiatedReconfigure = reconfigureMarker.attributes(route.reason)
-        isRepairingOutputRoute = true
-        defer { isRepairingOutputRoute = false }
-        let session = session
-        AudioOutputRouteDriver.process(route, state: &outputRouteState, observeDecision: { decision in
-            Self.logRouteDecision(decision.reason)
-        }, perform: { effect in
-            try AudioOutputSessionRouting.apply(effect, to: session)
-        })
-    }
-
-    private static func logRouteDecision(_ reason: AudioOutputRoutePolicy.DecisionReason) {
+    static func logRouteDecision(_ reason: AudioOutputRoutePolicy.DecisionReason) {
         // Fixed messages only: no device names, UIDs, or route payloads in field logs (#852).
         switch reason {
-        case .repairRequested: break
+        case .repairRequested, .speakerFallback, .appOperation, .ambiguous: break
         case .userChoiceAssumed: log.info("repair not attempted: user choice assumed")
         case .noHardwareEpisode: log.info("repair not attempted: no hardware episode")
         case .keepalive: log.info("repair not attempted: keepalive")
@@ -130,7 +109,7 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
         return .interruptionEnded(shouldResume: options.contains(.shouldResume))
     }
 
-    private static func port(_ description: AVAudioSessionPortDescription) -> AudioPort {
+    static func port(_ description: AVAudioSessionPortDescription) -> AudioPort {
         AudioPort(
             id: description.uid,
             name: description.portName,
@@ -149,7 +128,20 @@ public final class AVAudioSessionBackend: AudioSessionBackend {
     }
 }
 
-private final class NotificationObserverBag: @unchecked Sendable {
+// The lifecycle calls this overload after activation. The existing resolver verifies the selected input,
+// including its no-write path. Settle output once that selection succeeds, before activate() returns.
+extension ManagedAudioSession {
+    @discardableResult
+    func selectPreferredInput() async throws -> AudioSessionDiagnostics {
+        let selected = try await selectPreferredInput(expectedGeneration: nil)
+        if let backend = backend as? AVAudioSessionBackend {
+            await backend.routing.inputSelectionFinished()
+        }
+        return selected
+    }
+}
+
+final class NotificationObserverBag: @unchecked Sendable {
     private var observers: [any NSObjectProtocol] = []
 
     func add(_ observer: any NSObjectProtocol) {

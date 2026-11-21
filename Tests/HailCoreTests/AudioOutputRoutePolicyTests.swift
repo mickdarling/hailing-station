@@ -10,29 +10,23 @@ import Testing
         .newDeviceAvailable
     ]
 
-    @Test(arguments: Policy.Port.allCases)
-    func configurationUsesSpeakerDefaultOnlyForBuiltInOutputs(_ port: Policy.Port) {
-        for previousDefault in [false, true] {
-            let options = Policy.configurationOptions(
-                outputs: [port], options: .init(defaultToSpeaker: previousDefault, mixWithOthers: true)
-            )
-            #expect(options.defaultToSpeaker == (port == .speaker || port == .receiver))
-            #expect(options.mixWithOthers)
-        }
-    }
-
-    @Test func capturelessReplyUsesAudibleSpeakerIncludingAnInactiveRoute() {
-        for outputs: [Policy.Port] in [[], [.receiver], [.speaker], [.receiver, .speaker]] {
-            #expect(Policy.configurationOptions(outputs: outputs, options: .init()).defaultToSpeaker)
-        }
+    @Test(arguments: [false, true])
+    func firstConfigurationPermitsExternalAudioAndDefersSpeakerFallback(allowsHFP: Bool) {
+        let route = Policy.Route(options: .init(defaultToSpeaker: true), outputs: [.speaker],
+                                 inputs: [], reason: .other, isActive: false)
+        let options = Policy.configurationOptions(for: route, allowsHFP: allowsHFP, state: .init())
+        #expect(options.allowsA2DP)
+        #expect(options.allowsHFP == allowsHFP)
+        #expect(!options.defaultToSpeaker)
     }
 
     @Test(arguments: Self.externalOutputs)
     func externalOutputWinsEvenInAMixedRoute(_ port: Policy.Port) {
-        let options = Policy.configurationOptions(
-            outputs: [.speaker, port], options: .init(defaultToSpeaker: true)
-        )
-        #expect(!options.defaultToSpeaker)
+        let route = Policy.Route(options: .init(defaultToSpeaker: true), outputs: [.speaker, port],
+                                 inputs: [.builtInMic], reason: .other, settling: true)
+        let decision = Policy.routeChange(route, state: .init())
+        #expect(decision.options == route.options)
+        #expect(!decision.clearOverride)
     }
 
     @Test func fieldSequenceRestoresExternalOutputExactlyOnce() {
@@ -88,8 +82,7 @@ import Testing
             options: .init(defaultToSpeaker: true), outputs: [output], inputs: [.usbAudio], reason: reason
         ), state: .init(externalOutputSeen: true,
                        lastInputs: [.usbAudio], lastOutputs: [output]))
-        let cacheOnly = reason == .categoryChange || reason == .routeConfigurationChange
-        #expect(decision.options.defaultToSpeaker == cacheOnly)
+        #expect(decision.options.defaultToSpeaker)
         #expect(!decision.clearOverride)
         #expect(decision.state.externalOutputSeen)
     }
@@ -108,7 +101,7 @@ extension AudioOutputRoutePolicyTests {
         #expect(!decision.clearOverride)
         // Capture history stays untouched while keepalive owns an output-only session (#852).
         #expect(decision.reason == .keepalive)
-        #expect(!decision.state.userChoseBuiltIn)
+        #expect(decision.state.userChoseBuiltIn == (reason == .override && output == .speaker))
         #expect(decision.state.lastInputs == state.lastInputs)
         #expect(decision.state.lastOutputs == state.lastOutputs)
         #expect(decision.state.lastAvailability == state.lastAvailability)
@@ -130,7 +123,7 @@ extension AudioOutputRoutePolicyTests {
             outputs: [.speaker], inputs: [.builtInMic], previousOutputs: [.headphones], reason: .oldDeviceUnavailable
         ), state: remembered)
         #expect(!removed.state.externalOutputSeen)
-        #expect(removed.options.defaultToSpeaker)
+        #expect(!removed.options.defaultToSpeaker)
         let later = Policy.routeChange(.init(
             outputs: [.speaker], inputs: [.builtInMic], reason: .categoryChange
         ), state: removed.state)
@@ -157,12 +150,24 @@ extension AudioOutputRoutePolicyTests {
         #expect(replugged.clearOverride)
     }
 
-    @Test func unpluggingHeadphonesRestoresAnAudibleReceiverFallback() {
-        let unplugged = Policy.routeChange(.init(
-            outputs: [.receiver], inputs: [.builtInMic], previousOutputs: [.headphones], reason: .oldDeviceUnavailable
-        ), state: .init(externalOutputSeen: true))
-        #expect(unplugged.options.defaultToSpeaker)
-        #expect(!unplugged.clearOverride)
+    @Test(arguments: [false, true], [false, true])
+    func unpluggingHeadphonesRestoresAnAudibleReceiverFallback(delayed: Bool, speakerChosen: Bool) {
+        let session = ScriptedOutputSession()
+        session.send(.init(outputs: [.headphones], inputs: [.builtInMic], reason: .newDeviceAvailable))
+        if speakerChosen {
+            session.send(.init(outputs: [.speaker], inputs: [.builtInMic], previousOutputs: [.headphones],
+                               previousInputs: [.builtInMic], reason: .override))
+        }
+        session.send(.init(outputs: delayed ? [.speaker] : [.receiver], inputs: [.builtInMic],
+                           previousOutputs: [.headphones], reason: .oldDeviceUnavailable))
+        if delayed { #expect(session.effects.isEmpty) }
+        let receiver = Policy.Route(outputs: [.receiver], inputs: [.builtInMic], previousOutputs: [.speaker],
+                                    reason: .routeConfigurationChange)
+        session.send(receiver)
+        session.drainEchoes()
+        session.send(receiver)
+        #expect(session.state.userChoseBuiltIn == speakerChosen)
+        #expect(session.effects == [speakerChosen ? .restoreSpeaker : .setCategory(.init(defaultToSpeaker: true))])
     }
 
     @Test(arguments: Policy.Port.allCases, Policy.Reason.allCases)

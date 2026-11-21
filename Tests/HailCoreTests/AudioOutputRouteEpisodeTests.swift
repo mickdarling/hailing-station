@@ -64,7 +64,7 @@ import Testing
         let route = AudioOutputRouteEchoTests.repairRoute
         session.send(route)
         session.send(route)
-        #expect(session.categories == 1)
+        #expect(session.categories == 0)
         #expect(session.clears == 1)
     }
 

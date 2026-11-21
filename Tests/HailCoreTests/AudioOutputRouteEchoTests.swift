@@ -50,37 +50,114 @@ import Testing
         session.overrideOutputs = [.bluetoothA2DP]
         session.send(Self.repairRoute)
         session.drainEchoes()
-        #expect(session.categories == 1)
+        #expect(session.categories == 0)
         #expect(session.clears == 1)
         #expect(!session.state.userChoseBuiltIn)
         Self.usbCycle(session)
         session.drainEchoes()
-        #expect(session.categories == 2)
+        #expect(session.categories == 0)
         #expect(session.clears == 2)
         #expect(!session.state.userChoseBuiltIn)
     }
 
     @Test(arguments: [0, 4])
-    func builtInRepairEchoConservativelyLatchesEvenAfterUnrelatedEvents(_ intervening: Int) {
+    func builtInRepairEchoStaysAmbiguousAcrossCategoryNotifications(_ intervening: Int) {
         let session = ScriptedOutputSession()
         session.send(Self.repairRoute)
         for _ in 0..<intervening {
             session.send(.init(outputs: [.speaker], inputs: [.usbAudio], reason: .routeConfigurationChange))
         }
         session.drainEchoes()
-        #expect(session.state.userChoseBuiltIn)
-        let effects = session.effects
-        Self.usbCycle(session)
-        session.drainEchoes()
-        #expect(session.effects == effects)
-        session.send(.init(outputs: [.bluetoothA2DP], inputs: [.usbAudio], reason: .categoryChange))
         #expect(!session.state.userChoseBuiltIn)
+        #expect(session.decisionReasons.last == .ambiguous)
         session.overrideOutputs = [.bluetoothA2DP]
         Self.usbCycle(session)
         session.drainEchoes()
         #expect(session.clears == 2)
     }
 
+    @Test(arguments: [false, true])
+    func delayedReleaseFromSpeakerToReceiverIsAmbiguous(failedInputBetweenEchoes: Bool) {
+        let session = ScriptedOutputSession()
+        session.send(Self.repairRoute)
+        #expect(session.driver.lastObservation?.actual.outputs == [.speaker])
+        session.drainEchoes()
+        #expect(session.driver.lastObservation?.reason == .ambiguous)
+        #expect(!session.state.userChoseBuiltIn)
+        if failedInputBetweenEchoes {
+            let speaker = Self.repairRoute
+            #expect(throws: FakeAudioError.self) {
+                try session.driver.write(.preferredInput(.builtInMic), before: speaker, actual: { speaker }, perform: {
+                    throw FakeAudioError.selectionFailed
+                })
+            }
+            #expect(session.driver.lastObservation?.status == .failed)
+        }
+        let receiver = Policy.Route(outputs: [.receiver], inputs: [.usbAudio], previousOutputs: [.speaker],
+                                    previousInputs: [.usbAudio], reason: .override)
+        session.send(receiver)
+        #expect(session.driver.lastObservation?.attribution == .releaseOverride)
+        #expect(session.driver.lastObservation?.reason == .ambiguous)
+        session.send(receiver)
+        session.send(.init(outputs: [.receiver], inputs: [.usbAudio], reason: .other, settling: true))
+        #expect(session.driver.lastObservation?.reason == .ambiguous)
+        #expect(session.driver.lastObservation?.status == .noWrite)
+        #expect(!session.state.userChoseBuiltIn)
+        #expect(session.effects == [.clearOverride])
+    }
+
+    @Test func duplicateRemovalKeepsSpeakerFallbackEchoAttribution() {
+        let session = ScriptedOutputSession()
+        session.options.defaultToSpeaker = true
+        let removal = Policy.Route(outputs: [.receiver], inputs: [.builtInMic], previousOutputs: [.headphones],
+                                   previousInputs: [.builtInMic], reason: .oldDeviceUnavailable)
+        session.send(removal)
+        var duplicate = removal
+        duplicate.outputs = [.speaker]
+        session.send(duplicate)
+        session.drainEchoes()
+        #expect(session.effects == [.restoreSpeaker])
+        #expect(session.driver.lastObservation?.attribution == .restoreSpeaker)
+        #expect(!session.state.userChoseBuiltIn)
+    }
+
+    @Test(arguments: [false, true])
+    func confirmedClearThenPickerReversalSurvivesUSB(speakerDefault: Bool) {
+        let session = ScriptedOutputSession()
+        session.options.defaultToSpeaker = speakerDefault
+        session.overrideOutputs = [.bluetoothA2DP]
+        session.send(Self.repairRoute)
+        session.drainEchoes()
+        #expect(session.driver.lastObservation?.attribution == .releaseOverride)
+        session.send(.init(outputs: [.speaker], inputs: [.usbAudio], previousOutputs: [.bluetoothA2DP],
+                           previousInputs: [.usbAudio], reason: .override))
+        #expect(session.driver.lastObservation?.attribution == nil)
+        #expect(session.state.userChoseBuiltIn)
+        Self.usbCycle(session)
+        #expect(session.state.userChoseBuiltIn)
+        #expect(session.categories == (speakerDefault ? 1 : 0))
+        #expect(session.clears == 1)
+    }
+
+    @Test func duplicateArrivalWithChangedCurrentOutputPreservesPicker() {
+        let session = ScriptedOutputSession()
+        var notice = Policy.Route(
+            outputs: [.speaker], inputs: [.builtInMic], availableInputs: [.bluetoothHFP],
+            previousOutputs: [.speaker], previousInputs: [.builtInMic], reason: .newDeviceAvailable
+        )
+        session.overrideOutputs = [.bluetoothA2DP]
+        session.send(notice)
+        session.drainEchoes()
+        session.send(.init(outputs: [.speaker], inputs: [.builtInMic], previousOutputs: [.bluetoothA2DP],
+                           previousInputs: [.builtInMic], reason: .override))
+        notice.outputs = [.bluetoothA2DP]
+        session.send(notice)
+        #expect(session.state.userChoseBuiltIn)
+        #expect(session.effects == [.clearOverride])
+    }
+}
+
+extension AudioOutputRouteEchoTests {
     static func usbCycle(_ session: ScriptedOutputSession) {
         session.send(.init(
             outputs: [.speaker], inputs: [], previousOutputs: [.speaker],

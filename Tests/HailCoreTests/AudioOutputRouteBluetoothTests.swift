@@ -41,16 +41,15 @@ import Testing
     }
 
     @Test(arguments: Self.bluetoothInputs)
-    func ownerChoiceSurvivesFirstAirPodsAvailability(_ port: Policy.Port) {
+    func ownerChoiceReleasesOnFirstAirPodsArrival(_ port: Policy.Port) {
         let session = ScriptedOutputSession()
         session.options.defaultToSpeaker = true
         session.send(.init(outputs: [.speaker], inputs: [.builtInMic], reason: .override))
         session.send(Self.available(port, warm: true))
         session.drainEchoes()
-        #expect(session.effects.isEmpty)
+        #expect(session.clears == 1)
         #expect(session.state.externalOutputSeen)
-        #expect(session.state.userChoseBuiltIn)
-        #expect(session.decisionReasons.last == .userChoiceAssumed)
+        #expect(!session.state.userChoseBuiltIn)
     }
 
     @Test(arguments: Self.bluetoothInputs, [Policy.Category.playback, .other])
@@ -59,15 +58,16 @@ import Testing
         session.options = .init(defaultToSpeaker: true, mixWithOthers: true)
         session.state = .init(userChoseBuiltIn: true, inputLossPending: true,
                               lastInputs: [], lastOutputs: [.speaker])
-        var expected = session.state
-        expected.externalOutputSeen = true
         var route = Self.available(port)
         route.category = category
         route.inputs = []
         session.send(route)
         session.drainEchoes()
         #expect(session.effects.isEmpty)
-        #expect(session.state == expected)
+        #expect(session.state.externalOutputSeen)
+        #expect(!session.state.userChoseBuiltIn)
+        #expect(session.state.inputLossPending)
+        #expect(session.state.lastAvailability == nil)
         #expect(session.options == .init(defaultToSpeaker: true, mixWithOthers: true))
         #expect(session.decisionReasons.last == (category == .playback ? .keepalive : .unsupportedCategory))
     }
@@ -103,6 +103,7 @@ import Testing
     @Test(arguments: [false, true])
     func failedBluetoothRepairRetriesOnNextHardwareEpisode(_ failClear: Bool) {
         let session = ScriptedOutputSession()
+        session.options.defaultToSpeaker = true
         session.failure = failClear ? .clearOverride : .setCategory(.init())
         let connected = Self.available(.bluetoothHFP)
         session.send(connected)
@@ -119,7 +120,7 @@ import Testing
         let clearsBeforeRetry = session.clears
         session.send(connected)
         #expect(session.applyResult == .succeeded)
-        #expect(session.categories == categoriesBeforeRetry + 1)
+        #expect(session.categories == categoriesBeforeRetry + (failClear ? 0 : 1))
         #expect(session.clears == clearsBeforeRetry + 1)
         session.drainEchoes()
     }

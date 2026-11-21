@@ -67,16 +67,22 @@ enum AudioSessionIdleOwnership {
     static func isStationOwned(category: String, options: UInt) -> Bool {
         category == playAndRecordCategory && options & mixWithOthersOption == 0
     }
+
+    static func configureIfStationOwned(category: String, options: UInt, allowsHFP: Bool,
+                                        prepare: (Bool, AudioOutputSessionOwnership.Request) throws -> Void) rethrows {
+        guard isStationOwned(category: category, options: options) else { return }
+        try prepare(allowsHFP, .idleSetting)
+    }
 }
 
 #if os(iOS)
 extension AVAudioSessionBackend: AudioSessionIdleConfiguring {
-    /// Re-apply only the injected session's station-owned category, using the same attribution as active capture.
     func configureIfStationOwned(allowsBluetoothHFP: Bool) async throws {
-        guard AudioSessionIdleOwnership.isStationOwned(
-            category: session.category.rawValue, options: session.categoryOptions.rawValue
-        ) else { return }
-        try await configure(allowsBluetoothHFP: allowsBluetoothHFP)
+        try AudioSessionIdleOwnership.configureIfStationOwned(
+            category: session.category.rawValue, options: session.categoryOptions.rawValue,
+            allowsHFP: allowsBluetoothHFP,
+            prepare: routing.prepareBackendCategory(allowsBluetoothHFP:source:)
+        )
     }
 }
 #endif

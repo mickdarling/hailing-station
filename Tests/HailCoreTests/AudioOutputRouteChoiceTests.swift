@@ -24,18 +24,19 @@ import Testing
         #expect(session.decisionReasons.last == .userChoiceAssumed)
         session.send(.init(
             outputs: [.bluetoothA2DP], inputs: [.usbAudio], previousOutputs: [output],
-            previousInputs: [.usbAudio], reason: .override
+            previousInputs: [.usbAudio], reason: .newDeviceAvailable
         ))
         session.drainEchoes()
         #expect(!session.state.userChoseBuiltIn)
-        let categoriesBeforeBlip = session.categories
+        #expect(session.categories == 0)
         session.send(.init(
             outputs: [.speaker], inputs: [], previousOutputs: [.bluetoothA2DP],
             previousInputs: [.usbAudio], reason: .override
         ))
         session.send(.init(outputs: [.speaker], inputs: [.usbAudio], reason: .newDeviceAvailable))
         session.drainEchoes()
-        #expect(session.categories == categoriesBeforeBlip + 1)
+        #expect(session.categories == 1)
+        #expect(!session.options.defaultToSpeaker)
         #expect(session.clears == 1)
     }
 
