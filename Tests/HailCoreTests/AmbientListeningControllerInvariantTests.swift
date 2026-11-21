@@ -17,10 +17,7 @@ import Testing
             send: { [store = rig.store] in try await store.sendAudio($0, to: $1) }
         )
         rig.store.ambientController = controller
-        let first = try await enqueuePeer(rig)
-        await rig.store.upsert(rig.endpoint)
-        await rig.store.connect(rig.endpoint.id)
-        await first.socket.flush()
+        let first = try await connectPeer(rig, at: rig.endpoint)
         try await rig.store.selectTarget(host: rig.endpoint.id, targetID: rig.target.id)
         let original = try rig.currentBinding()
         await controller.turnOn(for: original)
@@ -30,7 +27,7 @@ import Testing
         #expect(controller.listeningState == .on(intent))
 
         await interruptAndResume(controller, center: rig.center, release: released.stream, intent: intent)
-        _ = try await enqueuePeer(rig)
+        _ = try await enqueuePeer(rig, at: rig.endpoint)
         await first.socket.fail()
         await arrivalObserved { controller.reconnect.isPending }
         await controller.update(binding: nil, scene: .active)
@@ -56,13 +53,65 @@ import Testing
         #expect(controller.listeningState == .on(intent))
     }
 
-    private func enqueuePeer(_ rig: AmbientReconnectRig) async throws -> Peer {
+    private func connectPeer(_ rig: AmbientReconnectRig, at endpoint: HostEndpoint) async throws -> Peer {
+        let peer = try await enqueuePeer(rig, at: endpoint)
+        await rig.store.upsert(endpoint)
+        await rig.store.connect(endpoint.id)
+        await arrivalObserved { rig.store.snapshots[endpoint.id]?.receivedTargetList == true }
+        return peer
+    }
+
+    private func enqueuePeer(_ rig: AmbientReconnectRig, at endpoint: HostEndpoint) async throws -> Peer {
         let peer = Peer()
         try await peer.socket.push(.hello(HelloInfo(versions: VersionNegotiation.supported,
             capabilities: ["ping", "stream_audio", "select_target"], deviceName: "Synthetic")))
         try await peer.socket.push(.targets([rig.target]))
-        await rig.connector.enqueue(.socket(peer), for: rig.endpoint.url)
+        await rig.connector.enqueue(.socket(peer), for: endpoint.url)
         return peer
+    }
+
+    enum StartStage: CaseIterable, Sendable { case permission, activation }
+
+    @Test(arguments: StartStage.allCases)
+    func ownerReselectRetiresPendingStart(_ stage: StartStage) async throws {
+        let rig = try AmbientReconnectRig()
+        rig.store.ambientController = rig.controller
+        let first = try await connectPeer(rig, at: rig.endpoint)
+        try await rig.store.selectTarget(host: rig.endpoint.id, targetID: rig.target.id)
+        let binding = try rig.currentBinding()
+        let second = try endpoint("second", "ws://127.0.0.1:8770")
+        let peer = try await connectPeer(rig, at: second)
+        var pings = await peer.holdNextPong().makeAsyncIterator()
+
+        let gate = SleepGate()
+        switch stage {
+        case .permission: rig.permissionGate = gate
+        case .activation: rig.activationGate = gate
+        }
+        let start = Task { await rig.controller.turnOn(for: binding) }
+        for await _ in gate.firstSleep.stream {}
+        let selection = Task { try await rig.store.selectTarget(host: second.id, targetID: rig.target.id) }
+        let nonce = try #require(await pings.next())
+        #expect(rig.controller.listeningState == .stopped(.ownerReselect))
+        #expect(rig.controller.stopReason == OwnerDestinationRun.reason)
+        #expect(!rig.controller.isListening)
+
+        await gate.fire()
+        await start.value
+        #expect(rig.released == (stage == .activation ? 1 : 0))
+        try rig.capture.yield(sineBuffer(frames: 14_400))
+        rig.capture.stop()
+        await arrivalObserved { !rig.controller.isListening }
+        #expect(rig.capture.startCount == 0)
+        #expect(try await audioFrames(first.socket).isEmpty)
+
+        try await peer.socket.push(.pong(nonce: nonce))
+        try await selection.value
+        #expect(rig.controller.listeningState == .stopped(.ownerReselect))
+        #expect(rig.capture.startCount == 0)
+        #expect(try await audioFrames(peer.socket).isEmpty)
+        await rig.close()
+        await rig.store.disconnect(second.id)
     }
 
     @Test func initialCaptureFailureRetainsItsExistingStop() async throws {
@@ -85,12 +134,25 @@ import Testing
     }
 
     private actor Peer: WebSocketTransport {
-        let socket = ArrivalSocket()
+        let socket = ScriptedSocket()
+        private var heldPong: AsyncStream<String>.Continuation?
+
+        func holdNextPong() -> AsyncStream<String> {
+            let pair = AsyncStream<String>.makeStream()
+            heldPong = pair.continuation
+            return pair.stream
+        }
 
         func send(_ data: Data) async throws {
-            try await socket.send(data)
+            await socket.send(data)
             if case .control(.ping(let nonce)) = try FrameCoding.decode(data).payload {
-                try await socket.push(.pong(nonce: nonce))
+                if let heldPong {
+                    heldPong.yield(nonce)
+                    heldPong.finish()
+                    self.heldPong = nil
+                } else {
+                    try await socket.push(.pong(nonce: nonce))
+                }
             }
         }
 

@@ -56,7 +56,11 @@ In the same ten files, stop functions must be called directly. The scanner flags
 
 The reducer tests cover destination identity, all automatic events, one stop per generation and obsolete stops after restart. The inventory fixtures cover differently spelled constructions, unapplied entry points, comments, and literal text beside interpolated code. Controller tests add exact typed outcomes to the existing text, diagnostics, capture and recovery assertions. The controller invariant test follows one original intent through a mask preference change, an interruption and microphone recovery, then an armed socket loss and restoration.
 
-Strict SwiftLint passed for the Swift files changed from the SM1 base. Host builds, synthetic tests, simulator checks and physical-device checks are pending. Slice 4 owns the privacy work in #1305. SM2 owns scene-specific activation and capture lifetime on Audio Diagnostics Back. The same-window reselect during a pending start remains separate follow-up work.
+Strict SwiftLint passed for the Swift files changed from the SM1 base. Host builds, synthetic tests, simulator checks and physical-device checks are pending. Slice 4 owns the privacy work in #1305. SM2 owns scene-specific activation and capture lifetime on Audio Diagnostics Back.
+
+## #1308
+
+Owner reselect retires a pending ambient start.
 
 ## SM2 · Device scope and scene lifecycle
 

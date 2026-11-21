@@ -39,9 +39,9 @@ extension AmbientLegacyStopPathTests {
             "destinationLossReason": 3, "destinationLost": 2, "diagnosticsDismissed": 1, "end": 13,
             "forgetSelection": 5, "hostRefused": 1, "leftForeground": 3, "legacy": 13, "observeSystemEnd": 2,
             "ownerChangedDestination": 1, "privacySendFailed": 1, "privacyUnconfirmed": 1,
-            "receiveAmbientRefusal": 2, "recordSendFailure": 3, "retriesExhausted": 1, "sendError": 1,
-            "sendFailed": 2, "socketBindingLost": 2, "stopForPolicy": 3, "stopListening": 3,
-            "systemCaptureEnded": 2, "turnOff": 1, "updateDestination": 3, "veto": 7
+            "receiveAmbientRefusal": 2, "recordSendFailure": 3, "retire": 3, "retirePendingOwnerStart": 2,
+            "retriesExhausted": 1, "sendError": 1, "sendFailed": 2, "socketBindingLost": 2, "stopForPolicy": 3,
+            "stopListening": 3, "systemCaptureEnded": 2, "turnOff": 1, "updateDestination": 3, "veto": 7
         ]
     ]
 }
