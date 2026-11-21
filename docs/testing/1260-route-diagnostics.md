@@ -19,6 +19,8 @@ Every port uses the existing closed `route` vocabulary. Empty or unavailable lis
 
 An older collecting host receives the original notification (`reason` and input `route`) and playback start (output `route` on iOS). The sender drops helper writes and supplementary policy decisions, strips snapshot fields, and skips a batch if this leaves it empty. Protocol v1 still accepts the original shapes. The strict decoder validates the new tokens, boolean types, counts, and positive sequence bounds.
 
+Configure and decision records share a separate recording allowance of 60 events per burst, refilling at one per second. All records share the 500-event buffer. When it overflows, including after a failed send, the phone evicts the oldest supplementary records first. The original recording allowance and `events_dropped` count apply to legacy-shaped events. A missing configure or decision can leave a gap in `route_sequence` even when the host receives no drop count.
+
 ## Reconstructing an episode
 
 Use `haild diagnostics show <session-prefix> --json` on the collecting host. Within one continuous device logging session, order observations by `route_sequence`. It starts at one, survives batching and reconnects, and restarts when a fresh log starts or diagnostics are re-enabled. A configure gets its sequence and device timestamp before its write. Its completed record can arrive after a nested category notification with a higher sequence, even when both share a millisecond. A raw notification and a policy sample can describe one hardware transition. Use the presence of `decision` to identify the reducer's observation. Check for sequence gaps and `events_dropped` before inferring that a later observation never happened.
@@ -71,6 +73,8 @@ gated xcodebuild build-for-testing -jobs 2 -project HailingStation.xcodeproj -sc
 ```
 
 Check that `routeSnapshotAtConfigureChangeAndPlaybackStart` preserves the configure's lower sequence through a nested notification, reports the applied options, and samples the playback owner at the busy edge. The macOS test scripts the notification callback. The iOS branch posts a synthetic category notification. `legacyHostReceivesCompatibleRouteEvents` compares the actual socket bytes and covers a batch containing only supplementary records. The protocol fixture exercises every gated field. The six route negatives cover phase, decision, port, count, sequence, and boolean kind. Host hello coverage checks a diagnostics sink, an ordinary host without one, and a connection probe. The sink test reads the full fixture back from temporary storage and compares every event. The positive snapshot example lives beside the schema so the existing canonical v1 diagnostic fixture remains a legacy peer example.
+
+`offlineSnapshotsPreserveTheLastLegacyRecordingToken` exhausts both recording allowances at a fixed instant before connecting to a legacy host and compares its complete event stream. `fullBufferCountsOnlyLegacyEvictions` covers appending and requeuing into a full buffer, including the count when one legacy event is actually lost.
 
 ## Later physical check
 

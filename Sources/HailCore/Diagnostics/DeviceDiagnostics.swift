@@ -23,7 +23,7 @@ public final class DeviceDiagnostics {
     public static let enabledKey = "hailing-station.device-diagnostics.v1"
     public nonisolated static let capacity = 500
     nonisolated let recordingState = DiagnosticRecordingState()
-    /// Recording: a burst of 60 events, then one per second. Excess is counted, not stored.
+    /// Each recording budget allows a burst of 60 events, then one per second.
     public static let recordRate = (capacity: 60.0, perSecond: 1.0)
     /// Sending mirrors the host's per-session bucket (120 events, 2 per second), so the host never drops.
     public static let sendRate = (capacity: 120.0, perSecond: 2.0)
@@ -35,10 +35,9 @@ public final class DeviceDiagnostics {
 
     @ObservationIgnored private var buffer: [DiagnosticEvent] = []
     @ObservationIgnored private var dropped = 0
-    @ObservationIgnored private var recordTokens: Double
-    @ObservationIgnored private var sendTokens: Double
-    @ObservationIgnored private var recordUpdated: ContinuousClock.Instant
-    @ObservationIgnored private var sendUpdated: ContinuousClock.Instant
+    @ObservationIgnored private var recordBudget: DiagnosticTokenBucket
+    @ObservationIgnored private var snapshotBudget: DiagnosticTokenBucket
+    @ObservationIgnored private var sendBudget: DiagnosticTokenBucket
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let appInfo: [DiagnosticField: DiagnosticValue]
     @ObservationIgnored private let wallNow: @Sendable () -> Int64
@@ -67,10 +66,10 @@ public final class DeviceDiagnostics {
         self.wallNow = wallNow
         self.clock = clock
         isEnabled = defaults.bool(forKey: Self.enabledKey)
-        recordTokens = Self.recordRate.capacity
-        sendTokens = Self.sendRate.capacity
-        recordUpdated = clock()
-        sendUpdated = recordUpdated
+        let now = clock()
+        recordBudget = DiagnosticTokenBucket(rate: Self.recordRate, at: now)
+        snapshotBudget = DiagnosticTokenBucket(rate: Self.recordRate, at: now)
+        sendBudget = DiagnosticTokenBucket(rate: Self.sendRate, at: now)
         recordingState.update(isEnabled ? generation : nil)
         if isEnabled {
             updateRouteSink()
@@ -93,41 +92,51 @@ public final class DeviceDiagnostics {
         if enabled { record(.appInfo, appInfo) }
     }
 
-    /// Buffers one event when logging is on. A value that fails the protocol's bounds, the rate limit or a full
-    /// buffer (oldest first) only adds to the dropped count reported in the next batch.
+    /// Snapshot-only records have their own allowance. Their loss is visible as a gap in the route sequence.
     public func record(
         _ name: DiagnosticEventName, _ fields: [DiagnosticField: DiagnosticValue] = [:], timestamp: Int64? = nil
     ) {
         guard isEnabled else { return }
-        refill(&recordTokens, updated: &recordUpdated, rate: Self.recordRate)
-        guard recordTokens >= 1,
-              let event = try? DiagnosticEvent(name, timestamp: max(0, timestamp ?? wallNow()), fields: fields)
-        else {
-            dropped += 1
-            onPending?()
+        let supplementary = Self.isSupplementaryRouteSnapshot(fields)
+        guard let event = try? DiagnosticEvent(name, timestamp: max(0, timestamp ?? wallNow()), fields: fields),
+              takeRecordingToken(supplementary: supplementary) else {
+            if !supplementary {
+                dropped += 1
+                onPending?()
+            }
             return
         }
-        recordTokens -= 1
         buffer.append(event)
         trimToCapacity()
         onPending?()
     }
 
-    /// Keeps the newest `capacity` events and counts the rest as dropped.
+    private func takeRecordingToken(supplementary: Bool) -> Bool {
+        if supplementary { return snapshotBudget.take(upTo: 1, at: clock()) == 1 }
+        return recordBudget.take(upTo: 1, at: clock()) == 1
+    }
+
+    /// On append and requeue, evict snapshot-only records first, then count the oldest legacy losses.
     private func trimToCapacity() {
-        if buffer.count > Self.capacity {
-            dropped += buffer.count - Self.capacity
-            buffer.removeFirst(buffer.count - Self.capacity)
+        var excess = buffer.count - Self.capacity
+        if excess > 0 {
+            buffer.removeAll { event in
+                guard excess > 0, Self.isSupplementaryRouteSnapshot(event.fields) else { return false }
+                excess -= 1
+                return true
+            }
+            buffer.removeFirst(excess)
+            dropped += excess
         }
         bufferedCount = buffer.count
     }
 
-    /// The next batch the send budget allows, oldest first, led by an `events_dropped` count when anything was
-    /// lost. Nil when off, empty or out of budget. A failed send hands the batch back with `requeue`.
+    /// The next batch the send budget allows, oldest first, led by a count of lost legacy-shaped events.
+    /// Nil when off, empty or out of budget. A failed send hands the batch back with `requeue`.
     public func nextBatch() -> DiagnosticBatch? {
         guard isEnabled, !buffer.isEmpty || dropped > 0 else { return nil }
-        refill(&sendTokens, updated: &sendUpdated, rate: Self.sendRate)
-        let budget = min(Int(sendTokens), DiagnosticLimits.maxEventsPerBatch)
+        let pending = buffer.count + (dropped > 0 ? 1 : 0)
+        let budget = sendBudget.take(upTo: min(pending, DiagnosticLimits.maxEventsPerBatch), at: clock())
         guard budget >= 1 else { return nil }
         var batch: [DiagnosticEvent] = []
         if dropped > 0, let count = try? DiagnosticEvent(.eventsDropped, timestamp: max(0, wallNow()), fields: [
@@ -140,7 +149,6 @@ public final class DeviceDiagnostics {
         batch += buffer.prefix(taken)
         buffer.removeFirst(taken)
         bufferedCount = buffer.count
-        sendTokens -= Double(batch.count)
         return batch.isEmpty ? nil : DiagnosticBatch(events: batch, generation: generation)
     }
 
@@ -148,7 +156,6 @@ public final class DeviceDiagnostics {
     public func isCurrent(_ batch: DiagnosticBatch) -> Bool { isEnabled && batch.generation == generation }
 
     /// Puts an unsent batch back in front, unless logging was turned off (or off and on) since it was taken.
-    /// Anything over capacity is counted as dropped.
     public func requeue(_ batch: DiagnosticBatch) {
         guard isCurrent(batch) else { return }
         buffer = batch.events + buffer
@@ -157,15 +164,27 @@ public final class DeviceDiagnostics {
     }
 
     public var hasPending: Bool { isEnabled && (!buffer.isEmpty || dropped > 0) }
+}
 
-    private func refill(
-        _ tokens: inout Double, updated: inout ContinuousClock.Instant, rate: (capacity: Double, perSecond: Double)
-    ) {
-        let instant = clock()
+private struct DiagnosticTokenBucket {
+    let rate: (capacity: Double, perSecond: Double)
+    var tokens: Double
+    var updated: ContinuousClock.Instant
+
+    init(rate: (capacity: Double, perSecond: Double), at instant: ContinuousClock.Instant) {
+        self.rate = rate
+        tokens = rate.capacity
+        updated = instant
+    }
+
+    mutating func take(upTo limit: Int, at instant: ContinuousClock.Instant) -> Int {
         let elapsed = updated.duration(to: instant).components
         let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
         tokens = min(rate.capacity, tokens + max(0, seconds) * rate.perSecond)
         updated = instant
+        let taken = min(limit, Int(tokens))
+        tokens -= Double(taken)
+        return taken
     }
 }
 
@@ -514,9 +533,13 @@ extension DeviceDiagnostics: AudioRouteObservationSink {
         record(name, fields, timestamp: stamp.timestamp)
     }
 
-    /// A decision is supplementary. Only the independent notification observer produced a legacy change.
+    private nonisolated static func isSupplementaryRouteSnapshot(_ fields: [DiagnosticField: DiagnosticValue]) -> Bool {
+        fields[.phase] == .token("configure") || fields[.decision] != nil
+    }
+
+    /// Only the independent notification observer produced a legacy change.
     nonisolated static func withoutRouteSnapshot(_ event: DiagnosticEvent) -> DiagnosticEvent? {
-        if event.fields[.phase] == .token("configure") || event.fields[.decision] != nil { return nil }
+        if isSupplementaryRouteSnapshot(event.fields) { return nil }
         guard !DiagnosticLimits.routeSnapshotFields.isDisjoint(with: event.fields.keys) else { return event }
         let fields = event.fields.filter { !DiagnosticLimits.routeSnapshotFields.contains($0.key) }
         return try? DiagnosticEvent(event.name, timestamp: event.timestamp, fields: fields)

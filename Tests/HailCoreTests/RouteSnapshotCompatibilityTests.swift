@@ -5,18 +5,25 @@ import Testing
 
 @MainActor
 @Suite struct RouteSnapshotCompatibilityTests {
-    @Test(arguments: [false, true])
-    func legacyHostReceivesCompatibleRouteEvents(advertisesSnapshots: Bool) async throws {
-        let host = try endpoint(), socket = ScriptedSocket(), connector = ScriptedConnector()
+    private func connect(_ socket: ScriptedSocket, advertisesSnapshots: Bool) async throws -> HostConnection {
+        let host = try endpoint(), connector = ScriptedConnector()
         await connector.enqueue(.socket(socket), for: host.url)
-        let connection = HostConnection(endpoint: host, connector: connector)
-        await connection.connect()
-        try await waitUntil { try await socket.sentFrames().count == 1 }
         let capabilities = [DiagnosticLimits.capability]
             + (advertisesSnapshots ? [DiagnosticLimits.routeSnapshotCapability] : [])
         try await socket.push(.hello(HelloInfo(versions: [1], capabilities: capabilities, deviceName: "Mac")))
-        try await waitUntil { await connection.snapshot.state == .ready }
+        let ready = AsyncStream<Void>.makeStream()
+        let connection = HostConnection(endpoint: host, connector: connector, observer: { snapshot in
+            if snapshot.state == .ready { ready.continuation.finish() }
+        })
+        await connection.connect()
+        for await _ in ready.stream {}
+        return connection
+    }
 
+    @Test(arguments: [false, true])
+    func legacyHostReceivesCompatibleRouteEvents(advertisesSnapshots: Bool) async throws {
+        let socket = ScriptedSocket()
+        let connection = try await connect(socket, advertisesSnapshots: advertisesSnapshots)
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         let bytes = try Data(contentsOf: root.appendingPathComponent("fixtures/schema/route-snapshot.example.json"))
@@ -41,6 +48,74 @@ import Testing
         try await connection.sendDiagnostics(onlySupplementary)
         #expect(await socket.outgoing.count == count + (advertisesSnapshots ? 1 : 0))
         await connection.disconnect()
+    }
+
+    @Test func offlineSnapshotsPreserveTheLastLegacyRecordingToken() async throws {
+        let suite = "hail-route-budget-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = ContinuousClock.now
+        let log = DeviceDiagnostics(defaults: defaults, appInfo: [:], wallNow: { 5 }, clock: { now })
+        log.setEnabled(true)
+        let route = AudioRouteSnapshot(
+            ports: .init(input: .builtInMic, output: .headphones, inputCount: 1, outputCount: 1),
+            settings: DeviceDiagnosticsOutputRouteTests.snapshot(output: .headphones).settings
+        )
+        log.currentAudioRoute = { route }
+        let observations = AudioRouteObservations()
+        observations.setObserving(log, enabled: true)
+        let change = AudioRouteChange(reasonRaw: 4, current: route, previous: route.ports)
+        var expected = [try DiagnosticEvent(.appInfo, timestamp: 5)]
+        let burst = Int(DeviceDiagnostics.recordRate.capacity)
+        for index in 0..<(burst - 2) {
+            log.record(.appForeground, timestamp: Int64(index))
+            expected.append(try DiagnosticEvent(.appForeground, timestamp: Int64(index)))
+        }
+        // One legacy token remains. Exhaust the snapshot allowance with both supplementary shapes.
+        for _ in 0..<burst {
+            observations.publish(.decision(change, .noHardwareEpisode, choseBuiltIn: false, appAttributed: false))
+            observations.publish(.configure(before: route.ports, result: route.settings, policyApply: false,
+                                            succeeded: true))
+        }
+        log.recordRouteNotification(reason: 4, previous: route.ports)
+        expected.append(try DiagnosticEvent(.routeChange, timestamp: 5, fields: [
+            .reason: .token("override"), .route: .token("built_in_mic")
+        ]))
+
+        let socket = ScriptedSocket()
+        let connection = try await connect(socket, advertisesSnapshots: false)
+        while let batch = log.nextBatch() { try await connection.sendDiagnostics(batch.events) }
+        #expect(!log.hasPending)
+        #expect(try await DeviceDiagnosticsSendingTests.diagnostics(socket) == expected)
+        await connection.disconnect()
+    }
+
+    @Test(arguments: [false, true])
+    func fullBufferCountsOnlyLegacyEvictions(overflowLegacy: Bool) throws {
+        let rig = DeviceDiagnosticsTests()
+        defer { rig.defaults.removePersistentDomain(forName: rig.suite) }
+        let log = rig.log()
+        log.setEnabled(true)
+        log.record(.routeChange, [.phase: .token("configure")])
+        let unsent = try #require(log.nextBatch())
+        var expected = [try DiagnosticEvent(.appInfo, timestamp: 1_000, fields: DeviceDiagnosticsTests.info)]
+        for index in 1..<DeviceDiagnostics.capacity {
+            rig.clock.advance(by: .seconds(1))
+            log.record(.appForeground, timestamp: Int64(index))
+            expected.append(try DiagnosticEvent(.appForeground, timestamp: Int64(index)))
+        }
+        log.record(.routeChange, [.decision: .token("no_hardware_episode")])
+        log.requeue(unsent)
+        log.record(.routeChange, [.phase: .token("configure")])
+        if overflowLegacy {
+            log.record(.appBackground)
+            expected[0] = try DiagnosticEvent(.eventsDropped, timestamp: 1_000, fields: [
+                .count: .integer(1), .code: .token("app_buffer")
+            ])
+            expected.append(try DiagnosticEvent(.appBackground, timestamp: 1_000))
+        }
+        #expect(log.bufferedCount == DeviceDiagnostics.capacity)
+        #expect(rig.drain(log) == expected)
     }
 
     /// Fixed canonical legacy bytes. Only the transport-generated ID and envelope time vary.
