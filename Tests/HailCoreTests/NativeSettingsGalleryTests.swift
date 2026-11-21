@@ -49,7 +49,9 @@ import Testing
         if let output { try image.data.write(to: output.appendingPathComponent(filename), options: .atomic) }
         return ["file": filename, "page": page.rawValue, "requestedLogicalWidth": String(Int(style.width)),
                 "requestedLogicalHeight": "900", "pixelsWide": String(image.pixelsWide),
-                "pixelsHigh": String(image.pixelsHigh), "pngBytes": String(image.data.count)]
+                "pixelsHigh": String(image.pixelsHigh), "pngBytes": String(image.data.count),
+                "opaqueSampleFraction": String(image.opaqueSampleFraction),
+                "backingScale": String(Double(image.pixelsWide) / Double(style.width))]
     }
 
     private func exportDirectory() throws -> URL? {
