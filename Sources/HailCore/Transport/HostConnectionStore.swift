@@ -295,6 +295,8 @@ extension HostConnectionStore {
     private func transportLost(host: HostEndpoint.Identifier, generation: UUID, sending: Bool, token: UUID) {
         guard tokens[host] == token, let snapshot = snapshots[host],
               snapshot.connectionGeneration == generation else { return }
+        // sendAudio owns errors from its writes. Its catch knows the attempted stream, binding and error.
+        if sending, Self.audioSendGeneration == generation { return }
         // A failed reassert send must settle as privacy failure, even if its notice arrived first.
         // Receive loss during confirmation remains a distinct transport flap and retains retry pacing.
         if sending, ambientController?.reconnect.privacyConfirmation.sendFailed(host: host, generation: generation)
@@ -514,6 +516,8 @@ extension HostConnectionStore {
 
 /// Ambient audio (#203), with the owner voice status and input route around a stream's start (rightyo#164).
 extension HostConnectionStore {
+    @TaskLocal private static var audioSendGeneration: UUID?
+
     /// Sends one ambient segment to the host and target the binding names (#203). The binding is authoritative:
     /// it must still be the current one for the connection's confirmed target, so a reconnect, an endpoint change
     /// or any target selection since it was taken makes every further segment throw and the streamer releases
@@ -523,7 +527,9 @@ extension HostConnectionStore {
               ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding,
               let connection = connections[binding.hostID] else { throw HostConnectionFailure.notReady }
         if audio.sequence == 0 {
-            await startingStream(on: connection, host: binding.hostID)
+            await Self.$audioSendGeneration.withValue(binding.connectionGeneration) {
+                await startingStream(on: connection, host: binding.hostID)
+            }
             // The route send suspended: a selection or endpoint change since then owns the connection, so this
             // binding's audio must not reach its new target (#491 review).
             guard AmbientSendAdmission.isCurrent,
@@ -531,7 +537,9 @@ extension HostConnectionStore {
                   connections[binding.hostID] === connection else { throw HostConnectionFailure.notReady }
         }
         do {
-            try await connection.sendAudio(audio, bindingGeneration: binding.connectionGeneration)
+            try await Self.$audioSendGeneration.withValue(binding.connectionGeneration) {
+                try await connection.sendAudio(audio, bindingGeneration: binding.connectionGeneration)
+            }
         } catch {
             // A send can observe the refusal before its ordered notice callback reaches the controller.
             await acceptConfirmedResume(on: binding.hostID)
@@ -1030,13 +1038,17 @@ extension AmbientListeningController {
 
     /// Only the live stream's failure counts: a stream replaced by a pause (#445) still draining is ignored.
     private func recordSendFailure(_ error: any Error, session current: UUID,
-                                   from source: AmbientAudioStreamer?, streamID: UUID?) {
+                                   from source: AmbientAudioStreamer?, streamID: UUID?,
+                                   attempted destination: AmbientAudioBinding? = nil) {
         guard AmbientSendAdmission.isCurrent, session == current, sendFailure == nil,
               let source, source === streamer, source.streamID == streamID else { return }
         if AmbientRefusal.isPolicyStop(error) {
             stopForPolicy()
             return
         }
+        // The sender can learn of the loss while the store still publishes the ready binding.
+        if isListening, let destination, let store = reconnect.store, store.ambientController === self,
+           reconnect.dropAfterSendFailure(error, streamID: streamID, binding: destination, store: store) { return }
         if reconnect.isPending, Self.isTransportError(error) { return }
         movedAway = AmbientHandoff(refusal: error)
         if case HostConnectionFailure.remote = error, !Self.isTransient(error) {
@@ -1283,15 +1295,14 @@ extension AmbientListeningController {
         let source = StreamerSource()
         source.binding = binding
         let streamer = try await makeStreamer { [weak self] payload in
+            let destination = await self?.sendBinding(payload, session: current, source: source)
             do {
-                guard let destination = await self?.sendBinding(payload, session: current, source: source) else {
-                    throw HostConnectionFailure.notReady
-                }
+                guard let destination else { throw HostConnectionFailure.notReady }
                 try await send(payload, destination)
                 await self?.transportSent(payload, binding: destination)
             } catch {
                 await self?.recordSendFailure(
-                    error, session: current, from: source.streamer, streamID: payload.streamID
+                    error, session: current, from: source.streamer, streamID: payload.streamID, attempted: destination
                 )
                 throw error
             }
@@ -1723,7 +1734,7 @@ enum SegmentTailRelease: Equatable, Sendable {
 // The restore's acceptance proof: the existing confirmed round trip, with a nonce the store can check in receipt
 // order, so a refusal that follows the pong is not misread as a refusal of the unaccepted stream.
 extension HostConnection {
-    /// A failed selection send can leave receive open; restart only that still-current socket's loop.
+    /// An audio or selection send can fail while receive stays open. Restart only the failed socket's loop.
     func retryAmbientTransport(generation failed: UUID) async -> Bool {
         guard !Task.isCancelled, wantsConnection, snapshot.connectionGeneration == failed,
               snapshot.state == .ready, socket != nil else { return false }

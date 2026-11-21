@@ -348,7 +348,7 @@ extension AmbientListeningReconnect {
         guard isPending, binding?.hostID == snapshot.id else { return }
         if AmbientListeningController.isTransportError(error) {
             drop(snapshot, store: store)
-            retrySelectionTransport(snapshot, store: store)
+            retryTransport(snapshot, store: store)
             return
         }
         let reason: Reason
@@ -362,13 +362,15 @@ extension AmbientListeningReconnect {
         }
         veto(reason, host: snapshot.id)
     }
-    private func retrySelectionTransport(_ snapshot: HostConnectionSnapshot, store: HostConnectionStore) {
-        guard let intent = pending, allowsTransportRetry(host: snapshot.id, generation: snapshot.connectionGeneration)
-        else { return }
-        retryTask?.cancel()
-        retryTask = Task { [weak self, weak store] in
-            guard let self, let store, self.pending?.id == intent.id, !Task.isCancelled else { return }
-            _ = await store.retryAmbientTransport(host: snapshot.id, generation: snapshot.connectionGeneration)
+    private func retryTransport(_ snapshot: HostConnectionSnapshot, store: HostConnectionStore) {
+        guard retryTask == nil, let intent = pending,
+              allowsTransportRetry(host: snapshot.id, generation: snapshot.connectionGeneration) else { return }
+        // The replacement receive loop outlives the audio send whose admission was just retired.
+        retryTask = AmbientSendAdmission.$current.withValue(nil) {
+            Task { [weak self, weak store] in
+                guard let self, let store, self.pending?.id == intent.id, !Task.isCancelled else { return }
+                _ = await store.retryAmbientTransport(host: snapshot.id, generation: snapshot.connectionGeneration)
+            }
         }
     }
     func allowsTransportRetry(host id: HostEndpoint.Identifier, generation: UUID) -> Bool {
@@ -431,12 +433,22 @@ extension AmbientListeningReconnect {
     }
     func sendFailed(_ error: any Error, audio: AudioPayload, binding: AmbientAudioBinding,
                     store: HostConnectionStore) {
-        guard !(error is CancellationError), !(error is EncodingError),
-              !(error is HostConnectionFailure) || (error as? HostConnectionFailure) == .notReady,
-              controller?.ownsAudio(audio.streamID, binding: binding) == true,
-              let snapshot = store.snapshots[binding.hostID],
-              snapshot.connectionGeneration == binding.connectionGeneration else { return }
+        dropAfterSendFailure(error, streamID: audio.streamID, binding: binding, store: store)
+    }
+
+    @discardableResult
+    func dropAfterSendFailure(_ error: any Error, streamID: UUID?, binding: AmbientAudioBinding,
+                              store: HostConnectionStore) -> Bool {
+        guard AmbientSendAdmission.isCurrent, controller?.isListening == true,
+              !(error is CancellationError), (error as? URLError)?.code != .cancelled,
+              !(error is EncodingError), !(error is AmbientAudioError),
+              AmbientListeningController.isTransportError(error),
+              controller?.ownsAudio(streamID, binding: binding) == true,
+              store.ambientBinding(host: binding.hostID, targetID: binding.targetID) == binding,
+              let snapshot = store.snapshots[binding.hostID] else { return false }
         drop(snapshot, store: store)
+        retryTransport(snapshot, store: store)
+        return true
     }
     func veto(_ reason: Reason, host: HostEndpoint.Identifier) {
         // A completed restore retains presentation state, but only a pending restore owns this run's veto.
@@ -581,7 +593,7 @@ extension AmbientListeningReconnect {
         // An already-private host sends no same-socket confirmation. Its pre-arm only accepts a
         // fresh connection: retain call intent and use the ordinary paced reconnect/selection path.
         drop(snapshot, store: store)
-        retrySelectionTransport(snapshot, store: store)
+        retryTransport(snapshot, store: store)
         return true
     }
 }
