@@ -28,21 +28,23 @@ manifest is changed, and no new production test hook, controller, owner or launc
 
 ## Process isolation and defaults
 
-`NativeShellLaunchContext` installs one literal Boolean in the process's volatile `NSArgumentDomain` before the
-actual production static launch snapshot is first read. The previous volatile domain is restored synchronously,
-before any suspension; it never calls a persistent defaults writer. The actual launch snapshot is then held for
-the process, just as in the app; no flags are re-read to swap a live branch.
+Only the dedicated opt-in path of `NativeShellLaunchContext` installs one literal true Boolean in the process's
+volatile `NSArgumentDomain` before the actual production static launch snapshot is first read. The previous
+volatile domain is restored synchronously, before any suspension; it never calls a persistent defaults writer.
+The actual launch snapshot is then held for the process, just as in the app; no flags are re-read to swap a branch.
 
-Without `HAIL_NATIVE_SHELL_LIFETIME=1`, existing native-root fixtures install false, preserving deterministic
-default-off coverage regardless of the operator's saved app flag. The new suite is disabled. With the explicit
-environment opt-in, run ONLY the dedicated filtered suite in a NEW process, serially. Do not set the opt-in on
+Without `HAIL_NATIVE_SHELL_LIFETIME=1`, existing native-root fixtures only read the genuine production snapshot;
+no defaults domain is changed and no saved value is masked. CI's missing preference must remain default-off,
+which a named native fixture test asserts explicitly. The new suite is disabled. With the explicit environment
+opt-in, run ONLY the dedicated filtered suite in a NEW process, serially. Do not set the opt-in on
 `verify.sh all`, an unfiltered test process, a parallel CI lane or an installed app. A wrong/stale snapshot fails
 the new suite's explicit flag-on requirement rather than silently testing the legacy branch.
 
-The existing scene host installs that context before constructing its root; direct-root lifetime tests do the same
-in their test-suite initializer. Configuration occurs once on the main actor without yielding. Restoring its
-temporary input does not mutate the cached production snapshot. Synthetic diagnostics use a unique suite, assert
-collection is off, and make no preference writes.
+The existing scene host reads/configures that context before constructing its root; direct-root lifetime tests do
+the same in their test-suite initializer. It occurs once on the main actor without yielding. Normal parallel CI
+does not receive a temporary override that could race the real-UserDefaults flag tests. Restoring the opt-in
+input does not mutate the cached snapshot. Synthetic diagnostics use a unique suite, assert collection is off,
+and make no preference writes. No live-app reset or disk preference write is used for either path.
 
 ## Assertions and honest limits
 
