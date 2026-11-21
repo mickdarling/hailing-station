@@ -51,7 +51,7 @@ import Testing
         rig.start()
         rig.player.complete()
         rig.controller.replayLatest()
-        #expect(rig.player.replacements == 1 && rig.controller.queue.isEmpty)
+        #expect(rig.player.replacements == 1 && rig.controller.queue.count == 1)
         rig.allowed = false
         rig.controller.recheckProactivePlayback()
         #expect(rig.player.cancels == 1 && rig.controller.activeKey == nil)
