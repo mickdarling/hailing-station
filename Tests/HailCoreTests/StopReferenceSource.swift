@@ -1,199 +1,90 @@
 import Foundation
 
-/// References retain the enclosing function and duplicates so an extra stop in the same function counts.
+/// Counts legacy spellings throughout production code and stop names in controller files.
 struct StopReferenceSource {
-    private let code: String
-    private let bare: Set<String>
-    private let legacyConstructors: Set<String.Index>
-    let members: Set<String>
-    let assignments: [(name: String, value: String)]
+    private static let entryPoints: Set<String> = [
+        "attributeSelectionLoss", "bindingLoss", "block", "cancelForDiagnosticsDismissal", "cancelTransportRestore",
+        "destinationLossReason", "destinationLost", "end", "endBySystem", "forgetSelection", "legacy",
+        "observeSystemEnd", "ownerChangedDestination", "receiveAmbientRefusal", "recordSendFailure", "retire",
+        "sendError", "sendFailed", "stopForPolicy", "stopListening", "targetLoss", "turnOff", "updateDestination",
+        "veto"
+    ]
+    private static let names = entryPoints.union(["bindingLossReason"])
+        .union(AmbientLegacyStopPathTests.paths.map { String(describing: $0) })
 
-    init(_ source: String) {
-        let commentsOrStrings = #/"(?:\\.|[^"\\\n])*"|\/\/[^\n]*|\/\*(?s:.*?)\*\//#
-        code = source.replacing(commentsOrStrings) { $0.output.hasPrefix("/") ? " " : String($0.output) }
-        var bare: Set<String> = ["turnOff", "destinationLost", "ownerChangedDestination", "cancelTransportRestore",
-                                 "bindingLossReason", "destinationLossReason", "targetLoss", "attributeSelectionLoss",
-                                 "recordSendFailure", "cancelForDiagnosticsDismissal"]
-        if code.contains(#/(?:class|extension)\s+AmbientListeningReconnect\b/#) { bare.formUnion(["block", "veto"]) }
-        if code.contains(#/(?:class|extension)\s+AmbientListeningController\b/#) {
-            bare.formUnion(["end", "observeSystemEnd", "updateDestination", "stopListening"])
-        }
-        if code.contains(#/(?:enum|extension)\s+(?:AmbientListeningState\.)?StopReason\b/#) {
-            bare.formUnion(["legacy", "sendError", "bindingLoss"])
-        }
-        self.bare = bare
-        let paths = Set(AmbientLegacyStopPathTests.paths.map { String(describing: $0) })
-        members = bare.union(["block", "veto", "legacy", "sendError", "bindingLoss"]).union(paths)
-        let legacyConstructors = Self.legacyConstructorSites(in: code, paths: paths)
-        self.legacyConstructors = legacyConstructors
-        let assignments = #/
-            (?m) (?: \b(?:let|var)[ \t]+(\w+)(?:[ \t]*:[^={};\n]+)?
-                   | (?:^|[;{])[ \t]*(?:\w+\??[ \t]*\.[ \t]*)*(\w+) ) \s*=\s*
-            (?:\w+\??\s*\.\s*)*\.?(\w+)(?:\((?:\w+:)+\))?[ \t]*(?=$|[;}])
-            /#
-        self.assignments = code.matches(of: assignments).compactMap { match in
-            guard let name = match.1 ?? match.2,
-                  match.3 != "legacy" || legacyConstructors.contains(match.3.startIndex) else { return nil }
-            return (String(name), String(match.3))
-        }
-    }
+    private static let controllerNames: Set<Substring> = ["AmbientListeningController", "ambientController"]
+    // A caller can inherit its receiver from another file (e.g. a StationCard extension).
+    private static let qualifiedStops: [Substring: Set<Substring>] = [
+        "controller": ["turnOff", "destinationLost", "ownerChangedDestination", "cancelForDiagnosticsDismissal",
+                       "receiveAmbientRefusal", "cancelTransportRestore"],
+        "reconnect": ["block", "veto", "sendFailed"]
+    ]
 
-    private static func legacyConstructorSites(in code: String, paths: Set<String>) -> Set<String.Index> {
-        guard code.contains("legacy") else { return [] }
-        // Keep constructor references (including unapplied values), the declaration and known path literals.
-        let typed = #/
-            (?: \bStopReason\s*\.\s*
-              | \bcase\s+(?=legacy\s*\(\s*(?:AmbientListeningState\.)?LegacyStopPath\s*\))
-            )(legacy)\b
-            /#
-        var sites = Set(code.matches(of: typed).map { $0.1.startIndex })
-        let shorthand = #/
-            (?m) (?:^|[(:,?=]|\breturn)\s*\.\s*(legacy)\s*\(\s*
-            (?:(?:AmbientListeningState\.)?LegacyStopPath)?\.\s*(\w+)\s*\)
-            /#
-        for call in code.matches(of: shorthand) where paths.contains(String(call.2)) {
-            sites.insert(call.1.startIndex)
-        }
-        if code.contains(#/\.\s*legacy\s*\(/#) {
-            sites.formUnion(LegacyStopContext(code).constructorSites)
-        }
-        return sites
-    }
+    var includesEntryPoints = false
+    var legacyCounts: [String: Int] = [:]
+    var controllerCounts: [String: Int] = [:]
+    var unappliedLines: [String: Int] = [:]
 
-    func references(aliases: Set<String>) -> [String] {
-        guard members.union(aliases).contains(where: { code.contains($0) }) else { return [] }
-        let tokens = #/\bfunc\s+(\w+)|\bvar\s+(bindingLossReason|body)\b|(\.\s*)?\b(\w+)\b/#
-        var scope = "<file>"
-        var sites: [String] = []
-        for token in code.matches(of: tokens) {
-            if let declaration = token.1 ?? token.2 {
-                scope = String(declaration)
-            } else if let word = token.4 {
-                if word == "legacy" && !legacyConstructors.contains(word.startIndex) { continue }
-                let name = String(word)
-                if aliases.contains(name) || bare.contains(name) || (token.3 != nil && members.contains(name)) {
-                    sites.append("\(scope) \(name)")
-                }
-            }
-        }
-        return sites
-    }
-}
-
-// Inspect the context of a shorthand .legacy(...) without interpreting its payload.
-private struct LegacyStopContext {
-    private let tokens: [Substring]
-    private let enclosing: [Int?]
-    private let matchingDelimiter: [Int: Int]
-
-    init(_ code: String) {
-        let token = #/"(?:\\.|[^"\\\n])*"|\w+|->|\?\?|==|!=|\S/#
-        tokens = code.matches(of: token).map(\.output)
-        var scopes: [Int] = []
-        var enclosing: [Int?] = []
-        var matchingDelimiter: [Int: Int] = [:]
+    init(_ source: String, definesStopPaths: Bool = false) throws {
+        guard definesStopPaths || source.contains("legacy") || source.contains("LegacyStopPath")
+                || Self.controllerNames.contains(where: { source.contains($0) })
+                || Self.qualifiedStops.keys.contains(where: { source.contains($0) }) else { return }
+        var lexer = StopReferenceLexer(source)
+        let tokens = try lexer.tokens()
+        includesEntryPoints = definesStopPaths || Self.referencesController(tokens)
         for (index, word) in tokens.enumerated() {
-            enclosing.append(scopes.last)
-            switch word {
-            case "(", "[", "{": scopes.append(index)
-            case ")", "]", "}":
-                if let opening = scopes.popLast() {
-                    matchingDelimiter[opening] = index
-                    matchingDelimiter[index] = opening
-                }
-            default: break
+            if word == "LegacyStopPath" {
+                legacyCounts["LegacyStopPath", default: 0] += 1
+            } else if word == "legacy", index > 0, tokens[index - 1] == "." {
+                legacyCounts[".legacy", default: 0] += 1
+                if tokens.dropFirst(index + 1).first == "(" { legacyCounts[".legacy(", default: 0] += 1 }
             }
         }
-        self.enclosing = enclosing
-        self.matchingDelimiter = matchingDelimiter
+        if includesEntryPoints { countEntryPoints(tokens, in: source) }
     }
 
-    var constructorSites: Set<String.Index> {
-        var sites: Set<String.Index> = []
-        for index in tokens.indices where tokens[index] == "legacy" {
-            guard index > 0, tokens[index - 1] == ".", value(at: index + 1) == "(",
-                  let end = matchingDelimiter[index + 1] else { continue }
-            if hasStopContext(start: index - 1, end: end) { sites.insert(tokens[index].startIndex) }
+    private static func referencesController(_ tokens: [Substring]) -> Bool {
+        if !controllerNames.isDisjoint(with: tokens) { return true }
+        for (index, receiver) in tokens.enumerated() {
+            guard let members = qualifiedStops[receiver] else { continue }
+            var following = tokens.dropFirst(index + 1)
+            if following.first == "?" || following.first == "!" { following = following.dropFirst() }
+            if following.first == ".", let name = following.dropFirst().first, members.contains(name) { return true }
         }
-        return sites
+        return false
     }
 
-    private func value(at index: Int) -> Substring? {
-        tokens.indices.contains(index) ? tokens[index] : nil
-    }
-
-    // Only visit siblings. Commas in calls, closures or subscripts cannot start a new outer argument.
-    private func prefix(before index: Int) -> String {
-        let opening = enclosing[index] ?? -1
-        var words: [Substring] = []
-        var cursor = index - 1
-        while cursor > opening {
-            words.append(tokens[cursor])
-            if let other = matchingDelimiter[cursor], other < cursor {
-                cursor = other
-                words.append(tokens[cursor])
+    private mutating func countEntryPoints(_ tokens: [Substring], in source: String) {
+        for (index, word) in tokens.enumerated() where Self.names.contains(String(word)) {
+            let name = String(word)
+            controllerCounts[name, default: 0] += 1
+            let previous = index > 0 ? tokens[index - 1] : ""
+            let next = tokens.dropFirst(index + 1)
+            if Self.entryPoints.contains(name), previous != "func", !Self.isApplied(next) {
+                let line = Self.lineTokens(at: index, tokens: tokens, source: source)
+                unappliedLines[line, default: 0] += 1
             }
-            cursor -= 1
         }
-        return words.reversed().joined(separator: " ")
     }
 
-    private func hasStopContext(start: Int, end: Int) -> Bool {
-        let before = prefix(before: start)
-        if isCast(after: end) { return true }
+    private static func lineTokens(at index: Int, tokens: [Substring], source: String) -> String {
+        let word = tokens[index]
+        let start = source[..<word.startIndex].lastIndex(where: \.isNewline) ?? source.startIndex
+        let end = source[word.endIndex...].firstIndex(where: \.isNewline) ?? source.endIndex
+        let before = tokens[..<index].reversed().prefix { $0.startIndex >= start }
+        let after = tokens[index...].prefix { $0.startIndex < end }
+        return (Array(before.reversed()) + after).joined(separator: " ")
+    }
 
-        let origin = expressionOrigin(in: before)
-        if origin.contains(#/\b(?:let|var) \w+ : (?:AmbientListeningState \. )?StopReason =$/#) { return true }
-        guard let opening = enclosing[start] else { return false }
-        if tokens[opening] == "{" {
-            let returnsValue = origin.isEmpty || origin.contains(#/\breturn$/#)
-            return returnsValue && returnsStopReason(body: opening)
+    private static func isApplied(_ following: ArraySlice<Substring>) -> Bool {
+        if following.first == "{" { return true }
+        guard following.first == "(" else { return false }
+        // block(_:stop:) names a function value. A call has an expression after each label.
+        var arguments = following.dropFirst()
+        while arguments.count >= 2, arguments.dropFirst().first == ":" {
+            arguments = arguments.dropFirst(2)
+            if arguments.first == ")" { return false }
         }
-        guard tokens[opening] == "(" else { return false }
-        if isStopArgument(origin, opening: opening) { return true }
-        // Parentheses used for grouping carry the surrounding expression's type through to their contents.
-        guard origin.isEmpty, let closing = matchingDelimiter[opening],
-              prefix(before: opening).contains(#/(?:^|[(:,?={]|\?\?|\breturn)\s*$/#) else { return false }
-        return hasStopContext(start: opening, end: closing)
-    }
-
-    // For either branch of a ternary, or the fallback of ??, keep the introducer of the whole expression.
-    private func expressionOrigin(in prefix: String) -> String {
-        guard prefix.hasSuffix(" ?") || prefix.hasSuffix(" :") || prefix.hasSuffix(" ??") else { return prefix }
-        let introducer = #/\breturn\b|(?:^|, )\w+ :| =(?= |$)/#
-        guard let last = prefix.matches(of: introducer).last else { return "" }
-        return String(prefix[..<last.range.upperBound])
-    }
-
-    private func isCast(after end: Int) -> Bool {
-        guard value(at: end + 1) == "as" else { return false }
-        if value(at: end + 2) == "StopReason" { return true }
-        return value(at: end + 2) == "AmbientListeningState" && value(at: end + 3) == "."
-            && value(at: end + 4) == "StopReason"
-    }
-
-    private func returnsStopReason(body: Int) -> Bool {
-        let signature = prefix(before: body)
-        if signature.contains(#/-> (?:AmbientListeningState \. )?StopReason(?: where [^{};]+)?$/#) { return true }
-        guard signature.contains(#/\b(?:if|else|switch|guard|do|catch|while|for)\b[^{};]*$/#),
-              let outer = enclosing[body], tokens[outer] == "{" else { return false }
-        return returnsStopReason(body: outer)
-    }
-
-    private func isStopArgument(_ origin: String, opening: Int) -> Bool {
-        let argument = origin.split(separator: ",", omittingEmptySubsequences: false).last?
-            .trimmingCharacters(in: .whitespaces) ?? ""
-        switch value(at: opening - 1) {
-        case "block", "veto", "end", "cancelTransportRestore", "forgetSelection",
-             "attributeSelectionLoss", "SendFailureCause":
-            return argument == "stop :"
-        case "stopListening": return argument == "reason :"
-        case "sendError": return argument == "destinationReason :"
-        case "stop", "stopped":
-            guard origin.isEmpty, value(at: opening - 2) == "." else { return false }
-            let base = prefix(before: opening - 2)
-            return base.contains(#/(?:^|[(:,?={]|\breturn|\bEvent|\bAmbientListeningState)\s*$/#)
-        default: return false
-        }
+        return true
     }
 }

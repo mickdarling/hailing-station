@@ -36,11 +36,25 @@ The slice column identifies follow-up scope in #1283. SM1 preserves every stop i
 | `replacementFailed` | Reconnect `receive` sees a failed replacement or `selectionFailed` receives a non-transport selection failure outside the recognized authorization and capability cases. | 3 |
 | `diagnosticsDismissed` | Back from Audio Diagnostics cancels a pending start through `cancelForDiagnosticsDismissal()` and retains the historical `user` diagnostic token. | 2 |
 
-Inspection of all Swift files in `Sources` and `Apps` found 32 `.legacy(...)` listening-stop constructions. Of these, 13 are in `HostConnectionStore.swift`, 11 in `AmbientListeningReconnect.swift` and 8 in `AmbientListeningState.swift`. The reconnect count includes the privacy confirmation callbacks in both `restore` and `prepareCaptureResume`, each of which passes `.legacy(failure)` to a stop-taking method. Both callbacks already have entries in the expected inventory.
+The inventory counts three spellings per Swift file throughout `Sources/` and `Apps/`. It counts `.legacy` member references, the subset followed by `(`, and the identifier `LegacyStopPath`. The lexer skips comments and string text and includes code inside string interpolation.
+
+| File | All `.legacy` | Followed by `(` | `LegacyStopPath` |
+| --- | ---: | ---: | ---: |
+| `Sources/HailCore/Transport/HostConnectionStore.swift` | 13 | 13 | 0 |
+| `Sources/HailCore/AmbientListeningReconnect.swift` | 11 | 11 | 3 |
+| `Sources/HailCore/Transport/AmbientListeningState.swift` | 8 | 8 | 2 |
+| `Sources/HailDaemonKit/Provider/ProviderInputCoordinator.swift` | 2 | 0 | 0 |
+| **Total** | **34** | **32** | **5** |
+
+The two provider uses select and match a delivery mode. The 32 constructions include both reconnect callbacks that pass `.legacy(failure)`. An omitted tree-wide count means zero.
+
+The stop-name inventory covers the store, reconnect and state files in the table, plus Swift files that reference `AmbientListeningController`, `ambientController`, or a known stop member on the `controller` or `reconnect` receiver. Its keys pin all ten files, including files with zero stop names. A new caller therefore requires an explicit file entry. Within these files the inventory counts whole identifiers, including declarations, bare `legacy`, the 13 path names and `bindingLossReason`. Moving a call within one file can preserve its counts. The path-to-slice table records the intent of each stop. [Per-file counts and controller file list](../../Tests/HailCoreTests/AmbientLegacyStopPathTests+Pins.swift)
+
+In the same ten files, stop functions must be called directly. The scanner flags a name used as a value at its first reference, including compound names such as `block(_:stop:)`. The two exceptions are the declaration and use of the `sendFailed` enum case in `AmbientListeningState.swift`. Each exception pins the tokens on that line and their occurrence count. The test loads the JSON from the sibling `Fixtures/` directory relative to its Swift source file. [Per-site exceptions](../../Tests/Fixtures/ambient-stop-unapplied-lines.json)
 
 ## Verification pending
 
-The reducer tests cover destination identity, all automatic events, one stop per generation and obsolete stops after restart. The source inventory counts production stop constructions, callback references and aliases, retaining duplicate sites within a function. Controller tests add exact typed outcomes to the existing text, diagnostics, capture and recovery assertions. The controller invariant test follows one original intent through a mask preference change, an interruption and microphone recovery, then an armed socket loss and restoration.
+The reducer tests cover destination identity, all automatic events, one stop per generation and obsolete stops after restart. The inventory fixtures cover differently spelled constructions, unapplied entry points, comments, and literal text beside interpolated code. Controller tests add exact typed outcomes to the existing text, diagnostics, capture and recovery assertions. The controller invariant test follows one original intent through a mask preference change, an interruption and microphone recovery, then an armed socket loss and restoration.
 
 Strict SwiftLint passed for the Swift files changed from the SM1 base. Host builds, synthetic tests, simulator checks and physical-device checks are pending. Slice 4 owns the privacy work in #1305. SM2 owns scene-specific activation and capture lifetime on Audio Diagnostics Back. The same-window reselect during a pending start remains separate follow-up work.
 
