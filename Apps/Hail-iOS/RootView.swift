@@ -1,7 +1,6 @@
 import HailCore
 import HailProtocol
 import SwiftUI
-
 // Keep the native type distinct from the existing destination-selection test shell.
 #if !SWIFT_PACKAGE
 typealias RootView = StationRootView
@@ -36,11 +35,14 @@ struct StationRootView: View, AmbientDestinationOwner {
     @State var showingDestinations = false
     /// The redesign's navigation (#1115), owned here above both the shell and today's station.
     @State var navigation = StationNavigationState()
+    @AppStorage("ambient.masksDuringReplies") var settingsMasksDuringReplies = false
+    @AppStorage("overheard.show") var settingsShowOverheard = false
+    @AppStorage("overheard.whose") var settingsWhoseOverheard = "owner"
+    @State var privacySettingsRequest = PrivacySettingsRequestState()
     @State var scenePhaseRevision: UInt = 0
     @Environment(\.scenePhase) var scenePhase
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @Environment(\.dynamicTypeSize) var dynamicTypeSize
-
     @MainActor
     init(
         selectionStore: any DestinationSelectionStoring = UserDefaultsDestinationSelectionStore(),
@@ -49,7 +51,6 @@ struct StationRootView: View, AmbientDestinationOwner {
         self.selectionStore = selectionStore
         _station = StateObject(wrappedValue: StationSceneState(makeResources))
     }
-
     var body: some View {
         stationRoot
         .environment(connections)

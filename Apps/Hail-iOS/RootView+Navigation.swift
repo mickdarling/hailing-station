@@ -47,8 +47,8 @@ extension StationRootView {
         }
     }
 
-    /// The station is today's, unchanged. The other sections push the same tools the station's tool links do, so
-    /// each keeps its own back navigation; none holds state of its own.
+    /// The station is today's, unchanged. Other sections keep their own back navigation. Settings' Audio overview
+    /// reads the same scene-owned model as its existing tool; none of these destinations owns an audio session.
     @ViewBuilder
     func stationSection(_ section: StationSection) -> some View {
         switch section {
@@ -76,23 +76,52 @@ extension StationRootView {
             }
             .navigationTitle(section.title)
         case .settings:
-            List {
-                ShellAppearanceEntry()
-                NavigationLink { AudioDiagnosticsView(model: audioRoutes) } label: {
-                    Label("Audio", systemImage: "waveform")
-                }
-                NavigationLink { CaptureSafeLabsView(audioSession: audioRoutes, playback: playback) } label: {
-                    Label("Labs", systemImage: "wrench.and.screwdriver")
-                }
-                .accessibilityIdentifier("station.settings.labs")
-                NavigationLink {
-                    ReplySegmentToolsView(playback: playback, gate: echoGuard.segmentOnsetGate)
-                } label: {
-                    Label("Turn-taking", systemImage: "pause.circle")
-                }
-            }
-            .navigationTitle(section.title)
+            shellSettingsSection
         }
+    }
+
+    private var shellSettingsSection: some View {
+        List {
+            ShellAppearanceEntry()
+            NavigationLink { listeningSettingsOverview } label: {
+                Label("Listening and attention", systemImage: "ear")
+            }
+            .accessibilityIdentifier("settings.listening.entry")
+            NavigationLink { audioSettingsOverview } label: {
+                Label("Audio", systemImage: "waveform")
+            }
+            .accessibilityIdentifier("station.settings.audio")
+            NavigationLink { privacySettingsOverview } label: {
+                Label("Privacy", systemImage: "hand.raised")
+            }
+            .accessibilityIdentifier("station.settings.privacy")
+            NavigationLink { voicesSettingsOverview } label: {
+                Label("Voices and replies", systemImage: "quote.bubble")
+            }
+            .accessibilityIdentifier("settings.voices.entry")
+            NavigationLink { notificationSettingsOverview } label: {
+                Label("Notifications and updates", systemImage: "bell")
+            }
+            .accessibilityIdentifier("settings.notifications.entry")
+            NavigationLink { targetsSettingsOverview } label: {
+                Label("Targets", systemImage: "scope")
+            }
+            .accessibilityIdentifier("settings.targets.entry")
+            NavigationLink { advancedSettingsOverview } label: {
+                Label("Advanced and diagnostics", systemImage: "gearshape")
+            }
+            .accessibilityIdentifier("settings.advanced.entry")
+            NavigationLink { CaptureSafeLabsView(audioSession: audioRoutes, playback: playback) } label: {
+                Label("Labs", systemImage: "wrench.and.screwdriver")
+            }
+            .accessibilityIdentifier("station.settings.labs")
+            NavigationLink {
+                ReplySegmentToolsView(playback: playback, gate: echoGuard.segmentOnsetGate)
+            } label: {
+                Label("Turn-taking", systemImage: "pause.circle")
+            }
+        }
+        .navigationTitle(StationSection.settings.title)
     }
 }
 
