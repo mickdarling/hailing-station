@@ -21,6 +21,14 @@ struct ReplySegmentToolsView: View {
     var body: some View { Text("Turn-taking fixture") }
 }
 
+extension StationRootView {
+    // These three app projections are excluded by SWIFT_PACKAGE. This lifetime fixture does not open them;
+    // their actual renderers and owner adapters have independent Settings tests and gallery scenes.
+    var voicesSettingsOverview: some View { Text("Voices and replies destination fixture") }
+    var targetsSettingsOverview: some View { Text("Targets destination fixture") }
+    var advancedSettingsOverview: some View { Text("Advanced and diagnostics destination fixture") }
+}
+
 extension View {
     // Exactly the platform-cosmetic Mac branch; no iOS toolbar or lifetime behavior is simulated here.
     func stationHiddenNavigationBar() -> some View { self }

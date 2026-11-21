@@ -1,8 +1,9 @@
 # Flag-on native shell ambient lifetime qualification (#1115)
 
-This is a separate qualification candidate based on adoption `a82b827b`. It does not rewrite approved shell or
-Settings heads. The issue-linked PR's Verification record owns actual commands, results, evidence and exact-head
-reviews. Source authoring ran no build, test, lint, simulator, OS/hardware/audio query or playback, network or push.
+This separate qualification candidate stacks after Notifications `855c9c6d`, including adoption `a82b827b` and all
+Settings groups. It does not rewrite their feature heads. The issue-linked PR's Verification record owns actual
+commands, results, evidence and exact-head reviews. Source authoring ran no build, test, lint, simulator,
+OS/hardware/audio query or playback, network or push.
 
 ## Real code under test
 
@@ -14,6 +15,15 @@ native root, resources and ambient card. The surrounding station layout remains 
 conditionally mounts the real ambient surface and an inert tool; it does not render all of RootView+Interface or
 StationLayout. The Mac tool screens are inert peripheral UI stubs. The Mac navigation-bar
 cosmetic helper returns self, as its actual Mac platform branch does; no UIKit toolbar behavior is simulated.
+
+The actual Settings list retains all ten rows. Only its Voices, Targets and Advanced root destination projections,
+which the app explicitly excludes under `SWIFT_PACKAGE`, receive inert text destinations in this lifetime fixture.
+No renderer, selection, controller or intent behavior is copied into those stubs, and the suite does not open them.
+Audio, Privacy, Listening and Notifications use their existing real app adapters. The root's Privacy protocol
+conformance, preference bindings and request state are present; Listening's binding and Notifications' lazy model
+are also supplied by the actual root/resources. Constructing that notification model does not query the OS.
+All inherited native Settings renderers, gallery scenes and synthetic owner fixtures remain unchanged. Their
+separate tests target destination behavior; these lifetime assertions target section/card continuity only.
 
 There are three production files, with no audio/transport/ambient/playback logic changes:
 
