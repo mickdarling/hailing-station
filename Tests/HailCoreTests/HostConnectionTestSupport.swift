@@ -138,11 +138,14 @@ actor SleepRecorder {
 
 actor SleepGate {
     private var waiter: UnsafeContinuation<Void, any Error>?
+    let firstSleep = AsyncStream<Void>.makeStream()
 
-    func sleep(_ duration: Duration) async throws {
-        _ = duration
+    func sleep(_: Duration) async throws {
         // See ScriptedSocket.receive(): actor ownership provides exact-once resume.
-        try await withUnsafeThrowingContinuation { waiter = $0 }
+        try await withUnsafeThrowingContinuation {
+            waiter = $0
+            firstSleep.continuation.finish()
+        }
     }
 
     func isWaiting() -> Bool { waiter != nil }
