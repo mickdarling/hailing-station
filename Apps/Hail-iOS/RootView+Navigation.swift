@@ -95,6 +95,10 @@ extension RootView {
                 Label("Voices and replies", systemImage: "quote.bubble")
             }
             .accessibilityIdentifier("settings.voices.entry")
+            NavigationLink { targetsSettingsOverview } label: {
+                Label("Targets", systemImage: "scope")
+            }
+            .accessibilityIdentifier("settings.targets.entry")
             NavigationLink { advancedSettingsOverview } label: {
                 Label("Advanced and diagnostics", systemImage: "gearshape")
             }
