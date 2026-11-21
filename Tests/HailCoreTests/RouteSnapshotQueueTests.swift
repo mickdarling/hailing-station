@@ -1,7 +1,7 @@
 import Foundation
+import HailCore
 import HailProtocol
 import Testing
-@testable import HailCore
 
 @MainActor
 @Suite struct RouteSnapshotQueueTests {
@@ -10,7 +10,9 @@ import Testing
     ) async throws -> HostConnectionStore {
         let connector = ScriptedConnector()
         await connector.enqueue(.socket(socket), for: host.url)
-        let store = HostConnectionStore(connector: connector, sleep: { try await gate.sleep($0) }, jitter: { 0 })
+        let store = HostConnectionStore(
+            connector: connector, negotiationScheduler: { _, _ in }, sleep: { try await gate.sleep($0) }, jitter: { 0 }
+        )
         try await socket.push(DeviceDiagnosticsSendingTests.hello(collecting: true))
         await store.upsert(host)
         await store.connect(host.id)
@@ -49,6 +51,44 @@ import Testing
         #expect(sent == Array(expected.prefix(120)))
         rig.clock.advance(by: .seconds(60))
         #expect(sent + rig.drain(log) == expected)
+    }
+
+    @Test(arguments: [false, true])
+    func directLegacySendSkipsSnapshotsBeforeTakingSendTokens(useAdvertisedCapabilities: Bool) async throws {
+        let rig = DeviceDiagnosticsTests()
+        defer { rig.defaults.removePersistentDomain(forName: rig.suite) }
+        let log = rig.log()
+        log.setEnabled(true)
+        // Spend 87 tokens including app_info. Hold the clock fixed for the remaining 33 sends.
+        for _ in 0..<86 {
+            rig.clock.advance(by: .seconds(1))
+            log.record(.appBackground)
+        }
+        var spent = 0
+        while let batch = log.nextBatch() { spent += batch.events.count }
+        try #require(spent == 87)
+        let socket = ScriptedSocket()
+        let connection = try await RouteSnapshotCompatibilityTests.connect(socket, advertisesSnapshots: false)
+        let capabilities = await connection.currentSnapshot().capabilities
+        func nextBatch() -> DiagnosticBatch? {
+            useAdvertisedCapabilities ? log.nextBatch(for: capabilities) : log.nextBatch()
+        }
+
+        for _ in 0..<32 { log.record(.routeChange, [.phase: .token("configure")]) }
+        log.record(.appForeground)
+        let first = try #require(nextBatch())
+        try await connection.sendDiagnostics(first.events)
+        let foreground = try DiagnosticEvent(.appForeground, timestamp: 1_000)
+        #expect(first.events == [foreground])
+        #expect(try await DeviceDiagnosticsSendingTests.diagnostics(socket) == [foreground])
+
+        for index in 0..<32 { log.record(.appBackground, timestamp: Int64(index)) }
+        let second = try #require(nextBatch())
+        try await connection.sendDiagnostics(second.events)
+        let rest = try (0..<32).map { try DiagnosticEvent(.appBackground, timestamp: Int64($0)) }
+        #expect(try await DeviceDiagnosticsSendingTests.diagnostics(socket) == [foreground] + rest)
+        #expect(!log.hasPending)
+        await connection.disconnect()
     }
 
     @Test func capableReconnectSeesNewSnapshotsAndOriginalFieldsOnRetry() throws {

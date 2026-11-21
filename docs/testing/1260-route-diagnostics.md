@@ -19,6 +19,8 @@ Every port uses the existing closed `route` vocabulary. Empty or unavailable lis
 
 An older collecting host receives the original notification (`reason` and input `route`) and playback start (output `route` on iOS). At each flush the phone reads the selected collector's advertised capabilities. It discards all queued helper writes and policy decisions if the collector lacks route snapshots, and all masking reports if the collector lacks reply masking. Only eligible records enter the FIFO batch of up to 32 and spend send tokens. The send bucket holds 120 tokens and refills at two per second. The sender strips snapshot fields from legacy frames on the wire. Protocol v1 still accepts the original shapes. The strict decoder validates the new tokens, boolean types, counts, and positive sequence bounds.
 
+Direct senders read the receiving connection's advertised capabilities with `await connection.currentSnapshot().capabilities`, pass them to `log.nextBatch(for: capabilities)`, and send the returned events with `try await connection.sendDiagnostics(batch.events)`. On a standalone log, `nextBatch()` assumes a legacy collector.
+
 Offline snapshots remain queued within the buffer limit. A capable collector receives the snapshots still queued when it connects. A legacy flush permanently discards unsupported records. A later capable collector can receive newly queued snapshots and the full fields of eligible records returned by a failed send.
 
 Configure and decision records share a separate recording allowance of 60 events per burst, refilling at one per second. All data records share the 500-event buffer. When it overflows, including after a failed send, the phone evicts the oldest supplementary records first. The original recording allowance and `events_dropped` count apply to legacy-shaped events. A missing configure or decision can leave a gap in `route_sequence` even when the host receives no drop count.
@@ -66,6 +68,7 @@ diff -r "$proof_dir/frames" fixtures/frames
 gated swiftlint lint --strict --quiet Sources/HailCore/AudioOutputSessionRouting.swift \
   Sources/HailCore/Diagnostics/DeviceDiagnostics.swift Sources/HailProtocol/Control.swift \
   Sources/HailDaemonKit/Listener/HostSession.swift Tests/HailCoreTests/RouteSnapshot*Tests.swift \
+  Tests/HailCoreTests/ReplyMasking*Tests.swift \
   Tests/HailCoreTests/DeviceDiagnosticsGenerationTests.swift Tests/HailCoreTests/DeviceDiagnosticsOutputRouteTests.swift \
   Tests/HailCoreTests/HostConnectionTestSupport.swift \
   Tests/HailProtocolTests/DiagnosticEventTests.swift Tests/HailDaemonKitTests/DiagnosticSessionTests.swift
@@ -82,6 +85,8 @@ Check that `routeSnapshotAtConfigureChangeAndPlaybackStart` preserves the config
 `offlineSnapshotsPreserveTheLastLegacyRecordingToken` exhausts both recording allowances at a fixed instant before connecting to a legacy host and compares its complete event stream. `fullBufferCountsOnlyLegacyEvictions` covers appending and requeuing into a full buffer, including the count when one legacy event is actually lost.
 
 `legacyFlushSkipsSnapshotsBeforeTakingSendTokens` queues 32 snapshots followed by 468 legacy records, allows one legacy flush, and adds 33 records before the second flush. It checks the first 32 events on the socket, the full 120-token burst, and all 501 legacy records in order. `capableReconnectSeesNewSnapshotsAndOriginalFieldsOnRetry` checks the queue across a change of collector capabilities. `failedSendRestoresLossCountAndAllSurvivors` checks the retried marker and all 500 surviving records after an unsent batch is returned to a full queue.
+
+`directLegacySendSkipsSnapshotsBeforeTakingSendTokens` exercises both public dequeue forms on a standalone log. With 33 send tokens left, it queues 32 configure snapshots and one foreground event. It checks that the first send delivers the foreground event and that the next 32 events all reach the socket without a clock advance.
 
 ## Later physical check
 

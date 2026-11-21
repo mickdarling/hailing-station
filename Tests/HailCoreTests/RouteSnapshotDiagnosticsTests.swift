@@ -8,6 +8,7 @@ import Testing
 @Suite struct RouteSnapshotDiagnosticsTests {
     let suite = "hail-route-snapshot-\(UUID().uuidString)"
     var defaults: UserDefaults { UserDefaults(suiteName: suite) ?? .standard }
+    let capabilities = [DiagnosticLimits.capability, DiagnosticLimits.routeSnapshotCapability]
     let before = AudioRoutePorts(input: .none, output: .none, inputCount: 0, outputCount: 0)
     let speaker = AudioRoutePorts(input: .bluetoothHFP, output: .builtInSpeaker, inputCount: 1, outputCount: 2)
     let applied = AudioRouteSettings(category: .playAndRecord, defaultToSpeaker: true, allowA2DP: true,
@@ -58,7 +59,7 @@ import Testing
         let playback = ReplyPlaybackController(player: AmbientReplyEchoGuard().guarding(player))
         playback.ingest(idleAudio(idleReply(), sequence: 0, final: true, byte: 1))
         log.watch(playback)
-        let events = try #require(log.nextBatch()).events.filter { $0.fields[.routeSequence] != nil }
+        let events = try #require(log.nextBatch(for: capabilities)).events.filter { $0.fields[.routeSequence] != nil }
         #expect(events.map(\.timestamp) == [7, 7, 7, 7])
         #expect(events.map { $0.fields[.routeSequence] } == [.integer(2), .integer(3), .integer(1), .integer(4)])
         try checkConfigure(events)
@@ -124,7 +125,7 @@ import Testing
             }
             Issue.record("write error was swallowed")
         } catch Refusal.refused {}
-        let event = try #require(log.nextBatch()?.events.last)
+        let event = try #require(log.nextBatch(for: capabilities)?.events.last)
         #expect(event.fields[.policyApply] == .boolean(true))
         #expect(event.fields[.writeSucceeded] == .boolean(false))
         #expect(event.fields[.defaultToSpeaker] == .boolean(true))
@@ -132,7 +133,7 @@ import Testing
             log.setEnabled(false)
             log.setEnabled(true)
         }
-        #expect(log.nextBatch()?.events.map(\.name) == [.appInfo])
+        #expect(log.nextBatch(for: capabilities)?.events.map(\.name) == [.appInfo])
         #expect(log.beginRouteObservation()?.sequence == 1)
     }
 }

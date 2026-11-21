@@ -134,22 +134,20 @@ public final class DeviceDiagnostics {
 }
 
 extension DeviceDiagnostics {
-    /// Read the selected collector on the main actor at dequeue time, including after a reconnect.
+    /// Use the store's current collector, or legacy capabilities when dequeuing a standalone log.
     public func nextBatch() -> DiagnosticBatch? {
         let collector = sendingStore.flatMap { $0.diagnostics === self ? $0.diagnosticsCollectingHost : nil }
-        return nextBatch(for: collector?.capabilities)
+        return nextBatch(for: collector?.capabilities ?? [])
     }
 
-    /// Drop incompatible whole records before charging the send bucket. Keep the original fields on
-    /// eligible records so a failed send can retry against a different collector.
-    func nextBatch(for capabilities: [String]?) -> DiagnosticBatch? {
+    /// Dequeue for a collecting host using its advertised capabilities. Drop incompatible whole records
+    /// before charging the send bucket. Keep eligible records intact for retry against a different host.
+    public func nextBatch(for capabilities: [String]) -> DiagnosticBatch? {
         guard isEnabled, !buffer.isEmpty || dropped > 0 else { return nil }
-        if let capabilities {
-            let routes = capabilities.contains(DiagnosticLimits.routeSnapshotCapability)
-            let masking = capabilities.contains(DiagnosticLimits.replyMaskingCapability)
-            buffer.removeAll { Self.shouldOmit($0, routeSnapshots: routes, masking: masking) }
-            bufferedCount = buffer.count
-        }
+        let routes = capabilities.contains(DiagnosticLimits.routeSnapshotCapability)
+        let masking = capabilities.contains(DiagnosticLimits.replyMaskingCapability)
+        buffer.removeAll { Self.shouldOmit($0, routeSnapshots: routes, masking: masking) }
+        bufferedCount = buffer.count
         let pending = buffer.count + (dropped > 0 ? 1 : 0)
         let budget = sendBudget.take(upTo: min(pending, DiagnosticLimits.maxEventsPerBatch), at: clock())
         guard budget >= 1 else { return nil }

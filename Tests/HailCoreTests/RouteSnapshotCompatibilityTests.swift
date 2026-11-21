@@ -5,16 +5,17 @@ import Testing
 
 @MainActor
 @Suite struct RouteSnapshotCompatibilityTests {
-    private func connect(_ socket: ScriptedSocket, advertisesSnapshots: Bool) async throws -> HostConnection {
+    static func connect(_ socket: ScriptedSocket, advertisesSnapshots: Bool) async throws -> HostConnection {
         let host = try endpoint(), connector = ScriptedConnector()
         await connector.enqueue(.socket(socket), for: host.url)
         let capabilities = [DiagnosticLimits.capability]
             + (advertisesSnapshots ? [DiagnosticLimits.routeSnapshotCapability] : [])
         try await socket.push(.hello(HelloInfo(versions: [1], capabilities: capabilities, deviceName: "Mac")))
         let ready = AsyncStream<Void>.makeStream()
-        let connection = HostConnection(endpoint: host, connector: connector, observer: { snapshot in
-            if snapshot.state == .ready { ready.continuation.finish() }
-        })
+        let connection = HostConnection(
+            endpoint: host, connector: connector, negotiationScheduler: { _, _ in },
+            observer: { if $0.state == .ready { ready.continuation.finish() } }
+        )
         await connection.connect()
         for await _ in ready.stream {}
         return connection
@@ -23,7 +24,7 @@ import Testing
     @Test(arguments: [false, true])
     func legacyHostReceivesCompatibleRouteEvents(advertisesSnapshots: Bool) async throws {
         let socket = ScriptedSocket()
-        let connection = try await connect(socket, advertisesSnapshots: advertisesSnapshots)
+        let connection = try await Self.connect(socket, advertisesSnapshots: advertisesSnapshots)
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         let bytes = try Data(contentsOf: root.appendingPathComponent("fixtures/schema/route-snapshot.example.json"))
@@ -97,7 +98,7 @@ import Testing
         ]))
 
         let socket = ScriptedSocket()
-        let connection = try await connect(socket, advertisesSnapshots: false)
+        let connection = try await Self.connect(socket, advertisesSnapshots: false)
         let capabilities = await connection.currentSnapshot().capabilities
         while let batch = log.nextBatch(for: capabilities) { try await connection.sendDiagnostics(batch.events) }
         #expect(!log.hasPending)
@@ -112,7 +113,9 @@ import Testing
         let log = rig.log()
         log.setEnabled(true)
         log.record(.routeChange, [.phase: .token("configure")])
-        let unsent = try #require(log.nextBatch())
+        let capabilities = [DiagnosticLimits.capability, DiagnosticLimits.routeSnapshotCapability]
+        let unsent = try #require(log.nextBatch(for: capabilities))
+        #expect(unsent.events.map(\.name) == [.appInfo, .routeChange])
         var expected = [try DiagnosticEvent(.appInfo, timestamp: 1_000, fields: DeviceDiagnosticsTests.info)]
         for index in 1..<DeviceDiagnostics.capacity {
             rig.clock.advance(by: .seconds(1))
