@@ -199,6 +199,15 @@ extension AudioOutputSessionRouting {
         process(route)
     }
 
+    func keepalive(_ active: Bool, operation: AudioOutputRoutePolicy.Operation, _ body: () throws -> Void) rethrows {
+        try write(operation) {
+            try body()
+            driver.ownership.isActive = active
+            driver.ownership.owner = active ? .keepalive : .unownedSession
+            driver.ownership.awaitingInputSelection = false
+        }
+    }
+
     static func route(_ session: AVAudioSession, snapshot: Snapshot) -> AudioOutputRoutePolicy.Route {
         let current = session.currentRoute
         let category: AudioOutputRoutePolicy.Category = session.category == .playAndRecord ? .playAndRecord
@@ -469,7 +478,7 @@ extension AudioOutputRouteDriver {
         defer { writing = nil }
         try perform()
         let after = actual()
-        if operation == .activation {
+        if operation == .activation || operation == .handoff || operation == .keepalive {
             pendingInput = nil
             supersededInput = nil
         }

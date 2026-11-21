@@ -24,8 +24,13 @@ public final class SilentAudioKeepalive: NSObject, BackgroundKeepaliveRendering 
     public func start() throws {
         if !holdsCategory { found = (session.category, session.categoryOptions) }
         do {
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-            try session.setActive(true)
+            let routing = AudioOutputSessionRouting.shared
+            if !holdsCategory {
+                try routing.write(.keepalive) {
+                    try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+                }
+            }
+            try routing.keepalive(true, operation: .keepalive) { try session.setActive(true) }
             try startEngine()
         } catch {
             stop(releasingSession: true)
@@ -43,8 +48,16 @@ public final class SilentAudioKeepalive: NSObject, BackgroundKeepaliveRendering 
         defer { found = nil }
         // Capture (tap-to-talk, ambient) has configured the session since: it is theirs, active or not (#354).
         guard holdsCategory else { return }
-        try? session.setActive(false, options: .notifyOthersOnDeactivation)
-        if let found { try? session.setCategory(found.category, mode: .default, options: found.options) }
+        try? AudioOutputSessionRouting.shared.keepalive(false, operation: .handoff) {
+            try session.setActive(false, options: .notifyOthersOnDeactivation)
+        }
+        if let found {
+            var options = found.options
+            if found.category == .playAndRecord { options.remove(.defaultToSpeaker) }
+            try? AudioOutputSessionRouting.shared.write(.handoff) {
+                try session.setCategory(found.category, mode: .default, options: options)
+            }
+        }
     }
 
     /// Still the category the keepalive set: nothing (tap-to-talk, ambient) has configured the session since.

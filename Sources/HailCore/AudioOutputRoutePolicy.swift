@@ -14,7 +14,7 @@ struct AudioOutputRoutePolicy: Sendable {
         }
     }
 
-    enum Owner: Sendable { case unownedSession, capture, standalone }
+    enum Owner: Sendable { case unownedSession, capture, standalone, keepalive }
     enum Category: CaseIterable, Sendable { case playAndRecord, playback, other }
     enum Reason: CaseIterable, Sendable {
         case newDeviceAvailable, oldDeviceUnavailable, override, categoryChange, routeConfigurationChange, other
@@ -71,6 +71,7 @@ struct AudioOutputRoutePolicy: Sendable {
 
     enum Operation: Equatable, Sendable {
         case configure, activation, preferredInput(Port?), repairCategory, releaseOverride, restoreSpeaker
+        case keepalive, handoff
     }
 
     /// AVAudioSession notifications have no transaction ID. Compare both endpoints of completed writes.
@@ -108,7 +109,7 @@ struct AudioOutputRoutePolicy: Sendable {
                     route.outputs.contains(where: \.isBuiltInOutput)
                 return builtInOverride || route.outputs.contains(where: \.isExternalOutput)
             case .restoreSpeaker: return route.outputs == [.speaker]
-            case .configure: return !knownPrevious || previous == before
+            case .configure, .handoff, .keepalive: return !knownPrevious || previous == before
             case .activation, .repairCategory: return route.reason != .override || previous == before && before != after
             }
         }
@@ -160,11 +161,12 @@ struct AudioOutputRoutePolicy: Sendable {
         }
 
         mutating func completed(_ transition: Transition) {
-            if transition.operation == .activation || transition.operation == .configure {
+            if transition.operation == .activation || transition.operation == .configure ||
+                transition.operation == .handoff {
                 lastSettled = nil
                 if disconnectFallback == .applied { disconnectFallback = .none }
             }
-            if transition.operation == .activation { ambiguousEpisode = false }
+            if transition.operation == .activation || transition.operation == .handoff { ambiguousEpisode = false }
             transitions.removeAll { $0 == transition }
             transitions.append(transition)
         }

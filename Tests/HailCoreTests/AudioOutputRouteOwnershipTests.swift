@@ -98,6 +98,26 @@ import Testing
         #expect(session.clears == 1)
     }
 
+    @Test func keepaliveHandoffReconcilesOnce() {
+        let session = ScriptedOutputSession()
+        let playback = Policy.Route(category: .playback, outputs: [.speaker], inputs: [], reason: .categoryChange)
+        session.send(playback)
+        #expect(session.effects.isEmpty)
+        var old = playback
+        old.owner = .standalone
+        old.category = .playAndRecord
+        old.options.defaultToSpeaker = true
+        #expect(!Policy.configurationOptions(for: old, owner: .capture, allowsHFP: false,
+                                             state: session.state).defaultToSpeaker)
+        let capture = Policy.Route(outputs: [.receiver], inputs: [.builtInMic], reason: .other, settling: true)
+        session.driver.write(.handoff, before: playback, actual: { capture }, perform: {})
+        session.send(capture)
+        session.drainEchoes()
+        session.send(capture)
+        #expect(session.categories == 1)
+        #expect(session.clears == 0)
+    }
+
     @Test func ambiguousEchoRecordsNoDurableLatch() {
         let session = ScriptedOutputSession()
         session.send(AudioOutputRouteEchoTests.repairRoute)
