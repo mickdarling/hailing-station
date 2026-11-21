@@ -82,6 +82,12 @@ import Testing
         case .targetRemoval, .endpointRemoval: await rig.controller.destinationLost()
         }
         #expect(!rig.controller.isListening && !rig.controller.isOn)
+        let reason: AmbientListeningState.StopReason = switch loss {
+        case .targetRemoval: .targetRemoved
+        case .endpointRemoval: .ownerRemove
+        case .ownerSelection: .ownerReselect
+        }
+        #expect(rig.controller.listeningState == .stopped(reason))
         #expect(rig.controller.binding == nil && rig.released == 1)
         try await rig.expectNoAdditionalPCM()
         await rig.close()

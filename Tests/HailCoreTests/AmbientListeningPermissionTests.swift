@@ -47,6 +47,7 @@ import Testing
         await controller.update(binding: current, scene: .active)
         #expect(!controller.isOn)
         #expect(capture.startCount == 0)
+        #expect(controller.listeningState == .stopped(.legacy(.leftForeground)))
     }
 
     struct Held {

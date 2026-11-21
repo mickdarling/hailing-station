@@ -87,6 +87,7 @@ import Testing
 
         // The session is released after listening turns off, not with it (#394): wait for both.
         try await harness.feed { !harness.controller.isOn && harness.released > 0 }
+        #expect(harness.controller.listeningState == .stopped(.legacy(.retriesExhausted)))
         #expect(harness.delays == [.seconds(1), .seconds(3), .seconds(10)])
         #expect(harness.streams.count == 4)
         #expect(harness.controller.stopReason?.contains("Gave up after 3 restarts.") == true)
@@ -101,6 +102,7 @@ import Testing
         await harness.controller.turnOn(for: try binding())
 
         try await harness.feed { !harness.controller.isOn }
+        #expect(harness.controller.listeningState == .stopped(.legacy(.hostRefused)))
         #expect(harness.delays.isEmpty)
         #expect(harness.unexpectedStops.count == 1)
         #expect(harness.unexpectedStops.first?.contains("ambient busy") == true)
@@ -115,6 +117,7 @@ import Testing
         try await harness.feed { !harness.delays.isEmpty }
         await harness.controller.turnOff()
         #expect(!harness.controller.isOn)
+        #expect(harness.controller.listeningState == .stopped(.ownerOff))
         #expect(harness.controller.stopReason == nil)
         #expect(harness.unexpectedStops.isEmpty)
         #expect(harness.released == 1)
@@ -126,6 +129,7 @@ import Testing
         await harness.controller.turnOn(for: try binding())
         await harness.controller.destinationLost()
         #expect(!harness.controller.isOn)
+        #expect(harness.controller.listeningState == .stopped(.legacy(.socketBindingLost)))
         #expect(harness.unexpectedStops.count == 1)
         #expect(harness.unexpectedStops.first?.contains("went away") == true)
         #expect(harness.released == 1)

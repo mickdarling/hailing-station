@@ -51,6 +51,7 @@ import Testing
         #expect(rig.notices.isEmpty && rig.unexpected.isEmpty)
         await run.close()
         #expect(rig.notices.map(\.reason) == [.ownerStop])
+        #expect(rig.controller.listeningState == .stopped(.ownerOff))
     }
 
     @Test(arguments: [HostConnectionFailure.remote("not_allowed: ambient busy"),
@@ -59,6 +60,8 @@ import Testing
         let run = try AmbientTransportSendFailureRun(error: error)
         try await expectHardStop(run, reason: AmbientRefusal.isPolicyStop(error)
             ? AmbientRefusal.policyStopReason : "Stopped: \(AmbientListeningController.describe(error))")
+        #expect(run.rig.controller.listeningState == .stopped(AmbientRefusal.isPolicyStop(error)
+            ? .policyDenied : .legacy(.hostRefused)))
     }
 
     @Test func cancellationAndCodecErrorsStillStop() async throws {
@@ -67,6 +70,8 @@ import Testing
         for error in errors {
             let run = try AmbientTransportSendFailureRun(error: error)
             try await expectHardStop(run, reason: "Stopped: \(AmbientListeningController.describe(error))")
+            #expect(run.rig.controller.listeningState == .stopped(.legacy(
+                error is CancellationError || error is URLError ? .sendCancelled : .encodingFailed)))
         }
     }
 
@@ -75,6 +80,7 @@ import Testing
         let run = try AmbientTransportSendFailureRun(error: nil)
         let reason = "Stopped: \(AmbientListeningController.describe(error))"
         try await expectHardStop(run, reason: reason, socketError: error)
+        #expect(run.rig.controller.listeningState == .stopped(.legacy(.sendCancelled)))
     }
 
     @Test func retiredStreamSocketFailureLeavesReplacementCaptureSending() async throws {
@@ -88,6 +94,7 @@ import Testing
         await gate.started.wait()
         let retiring = Task { await rig.controller.turnOff() }
         await arrivalObserved { !rig.controller.isOn }
+        #expect(rig.controller.listeningState == .stopped(.ownerOff))
         await rig.controller.turnOn(for: original)
         try nextCapture.yield(sineBuffer(frames: 14_400))
         await arrivalObserved { run.lastSentAudio != nil }
@@ -117,6 +124,7 @@ import Testing
         try await run.failSend()
         await arrivalObserved { !rig.controller.isOn || rig.controller.reconnect.isPending }
         #expect(!rig.controller.isOn && rig.notices.isEmpty)
+        #expect(rig.controller.listeningState == .stopped(.ownerReselect))
         #expect(rig.unexpected == ["Stopped: the connection changed."])
         await run.close()
     }
@@ -160,6 +168,7 @@ extension AmbientTransportSendFailureTests {
             await rig.controller.turnOff()
         }
         await arrivalObserved { !rig.controller.isOn }
+        #expect(rig.controller.listeningState == .stopped(reason == .privacy ? .privacyStop : .ownerOff))
         await run.retry.release()
         await run.waitForTargets()
         #expect(rig.notices.map(\.reason) == [reason] && rig.notices.map(\.outcome) == [.blocked])
@@ -177,6 +186,7 @@ extension AmbientTransportSendFailureTests {
         try #require(rig.controller.reconnect.isPending)
         rig.capture.stop()
         await arrivalObserved { !rig.controller.isOn }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.systemCaptureEnded)))
         #expect(rig.notices.map(\.outcome) == [.failed] && rig.notices.first?.reason == .startFailed)
         #expect(rig.notices.first?.text.contains("tap to resume") == true && rig.unexpected.isEmpty)
         await run.close()

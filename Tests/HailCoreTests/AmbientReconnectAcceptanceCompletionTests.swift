@@ -32,6 +32,7 @@ import Testing
         #expect(rig.notices.map(\.outcome) == [.applied])
         try await rig.socket.push(.error(code: .notAllowed, message: "ambient busy elsewhere"))
         try await waitUntil { await MainActor.run { !rig.controller.isOn } }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.hostRefused)))
         #expect(rig.notices.allSatisfy { $0.outcome != .failed },
                 "A refusal after positive acceptance was still described as a dropped connection")
         #expect(rig.unexpected.count == 1,

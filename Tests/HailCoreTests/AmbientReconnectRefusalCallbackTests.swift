@@ -51,6 +51,7 @@ import Testing
 extension AmbientReconnectRig {
     func expectSingleRefusal(_ noticeID: UUID) async throws {
         try await waitUntil { @MainActor in !self.controller.isOn && self.released == 1 }
+        #expect(controller.listeningState == .stopped(.movedAway))
         let ids: [UUID] = notices.map(\.id)
         let uniqueIDs: Set<UUID> = Set(ids)
         #expect(ids == [noticeID, noticeID])

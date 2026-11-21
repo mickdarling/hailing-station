@@ -22,6 +22,7 @@ import Testing
         let message = movedAway ? "ambient moved to pad" : "ambient busy elsewhere"
         try await rig.socket.push(.error(code: .notAllowed, message: message))
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(movedAway ? .movedAway : .legacy(.hostRefused)))
         #expect(rig.notices.count == 1, "An hour-later refusal rewrote the restore notice into a connection-drop stop")
         if !movedAway { #expect(rig.unexpected.count == 1, "The ordinary stop alert was suppressed") }
         #expect(!rig.controller.reconnect.replacedAppliedNotice)
@@ -42,6 +43,7 @@ import Testing
         #expect(!rig.controller.reconnect.isPending && rig.notices.isEmpty)
         try await rig.socket.push(.error(code: .notAllowed, message: "ambient busy elsewhere"))
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.hostRefused)))
         #expect(rig.notices.isEmpty && rig.unexpected.count == 1)
         await rig.close()
     }
