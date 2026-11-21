@@ -36,6 +36,8 @@ The slice column identifies follow-up scope in #1283. SM1 preserves every stop i
 | `replacementFailed` | Reconnect `receive` sees a failed replacement or `selectionFailed` receives a non-transport selection failure outside the recognized authorization and capability cases. | 3 |
 | `diagnosticsDismissed` | Back from Audio Diagnostics cancels a pending start through `cancelForDiagnosticsDismissal()` and retains the historical `user` diagnostic token. | 2 |
 
+Inspection of all Swift files in `Sources` and `Apps` found 32 `.legacy(...)` listening-stop constructions. Of these, 13 are in `HostConnectionStore.swift`, 11 in `AmbientListeningReconnect.swift` and 8 in `AmbientListeningState.swift`. The reconnect count includes the privacy confirmation callbacks in both `restore` and `prepareCaptureResume`, each of which passes `.legacy(failure)` to a stop-taking method. Both callbacks already have entries in the expected inventory.
+
 ## Verification pending
 
 The reducer tests cover destination identity, all automatic events, one stop per generation and obsolete stops after restart. The source inventory counts production stop constructions, callback references and aliases, retaining duplicate sites within a function. Controller tests add exact typed outcomes to the existing text, diagnostics, capture and recovery assertions. The controller invariant test follows one original intent through a mask preference change, an interruption and microphone recovery, then an armed socket loss and restoration.
