@@ -17,9 +17,13 @@ Each sample includes `category` (`play_and_record`, `playback`, or `other`) and 
 
 Every port uses the existing closed `route` vocabulary. Empty or unavailable lists yield `none` and zero. Unmapped ports yield `other`. Only the first port is reported. Counts saturate at 255. A count above one leaves the identities of subsequent ports unknown.
 
-An older collecting host receives the original notification (`reason` and input `route`) and playback start (output `route` on iOS). The sender drops helper writes and supplementary policy decisions, strips snapshot fields, and skips a batch if this leaves it empty. Protocol v1 still accepts the original shapes. The strict decoder validates the new tokens, boolean types, counts, and positive sequence bounds.
+An older collecting host receives the original notification (`reason` and input `route`) and playback start (output `route` on iOS). At each flush the phone reads the selected collector's advertised capabilities. It discards all queued helper writes and policy decisions if the collector lacks route snapshots, and all masking reports if the collector lacks reply masking. Only eligible records enter the FIFO batch of up to 32 and spend send tokens. The send bucket holds 120 tokens and refills at two per second. The sender strips snapshot fields from legacy frames on the wire. Protocol v1 still accepts the original shapes. The strict decoder validates the new tokens, boolean types, counts, and positive sequence bounds.
 
-Configure and decision records share a separate recording allowance of 60 events per burst, refilling at one per second. All records share the 500-event buffer. When it overflows, including after a failed send, the phone evicts the oldest supplementary records first. The original recording allowance and `events_dropped` count apply to legacy-shaped events. A missing configure or decision can leave a gap in `route_sequence` even when the host receives no drop count.
+Offline snapshots remain queued within the buffer limit. A capable collector receives the snapshots still queued when it connects. A legacy flush permanently discards unsupported records. A later capable collector can receive newly queued snapshots and the full fields of eligible records returned by a failed send.
+
+Configure and decision records share a separate recording allowance of 60 events per burst, refilling at one per second. All data records share the 500-event buffer. When it overflows, including after a failed send, the phone evicts the oldest supplementary records first. The original recording allowance and `events_dropped` count apply to legacy-shaped events. A missing configure or decision can leave a gap in `route_sequence` even when the host receives no drop count.
+
+The queue keeps its pending legacy loss count separately. Its generated `events_dropped` marker uses one send token and one batch slot. On a failed send the phone restores that count, returns the data to the front in order, then adds any new legacy evictions to the pending total.
 
 ## Reconstructing an episode
 
@@ -62,7 +66,8 @@ diff -r "$proof_dir/frames" fixtures/frames
 gated swiftlint lint --strict --quiet Sources/HailCore/AudioOutputSessionRouting.swift \
   Sources/HailCore/Diagnostics/DeviceDiagnostics.swift Sources/HailProtocol/Control.swift \
   Sources/HailDaemonKit/Listener/HostSession.swift Tests/HailCoreTests/RouteSnapshot*Tests.swift \
-  Tests/HailCoreTests/DeviceDiagnosticsOutputRouteTests.swift Tests/HailCoreTests/HostConnectionTestSupport.swift \
+  Tests/HailCoreTests/DeviceDiagnosticsGenerationTests.swift Tests/HailCoreTests/DeviceDiagnosticsOutputRouteTests.swift \
+  Tests/HailCoreTests/HostConnectionTestSupport.swift \
   Tests/HailProtocolTests/DiagnosticEventTests.swift Tests/HailDaemonKitTests/DiagnosticSessionTests.swift
 
 # Compile the iOS routing adapter with the repository's unsigned simulator scheme.
@@ -75,6 +80,8 @@ gated xcodebuild build-for-testing -jobs 2 -project HailingStation.xcodeproj -sc
 Check that `routeSnapshotAtConfigureChangeAndPlaybackStart` preserves the configure's lower sequence through a nested notification, reports the applied options, and samples the playback owner at the busy edge. The macOS test scripts the notification callback. The iOS branch posts a synthetic category notification. `legacyHostReceivesCompatibleRouteEvents` compares the actual socket bytes and covers a batch containing only supplementary records. The protocol fixture exercises every gated field. The six route negatives cover phase, decision, port, count, sequence, and boolean kind. Host hello coverage checks a diagnostics sink, an ordinary host without one, and a connection probe. The sink test reads the full fixture back from temporary storage and compares every event. The positive snapshot example lives beside the schema so the existing canonical v1 diagnostic fixture remains a legacy peer example.
 
 `offlineSnapshotsPreserveTheLastLegacyRecordingToken` exhausts both recording allowances at a fixed instant before connecting to a legacy host and compares its complete event stream. `fullBufferCountsOnlyLegacyEvictions` covers appending and requeuing into a full buffer, including the count when one legacy event is actually lost.
+
+`legacyFlushSkipsSnapshotsBeforeTakingSendTokens` queues 32 snapshots followed by 468 legacy records, allows one legacy flush, and adds 33 records before the second flush. It checks the first 32 events on the socket, the full 120-token burst, and all 501 legacy records in order. `capableReconnectSeesNewSnapshotsAndOriginalFieldsOnRetry` checks the queue across a change of collector capabilities. `failedSendRestoresLossCountAndAllSurvivors` checks the retried marker and all 500 surviving records after an unsent batch is returned to a full queue.
 
 ## Later physical check
 

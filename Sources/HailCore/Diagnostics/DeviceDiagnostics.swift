@@ -38,6 +38,7 @@ public final class DeviceDiagnostics {
     @ObservationIgnored private var recordBudget: DiagnosticTokenBucket
     @ObservationIgnored private var snapshotBudget: DiagnosticTokenBucket
     @ObservationIgnored private var sendBudget: DiagnosticTokenBucket
+    @ObservationIgnored fileprivate weak var sendingStore: HostConnectionStore?
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let appInfo: [DiagnosticField: DiagnosticValue]
     @ObservationIgnored private let wallNow: @Sendable () -> Int64
@@ -130,26 +131,42 @@ public final class DeviceDiagnostics {
         }
         bufferedCount = buffer.count
     }
+}
 
-    /// The next batch the send budget allows, oldest first, led by a count of lost legacy-shaped events.
-    /// Nil when off, empty or out of budget. A failed send hands the batch back with `requeue`.
+extension DeviceDiagnostics {
+    /// Read the selected collector on the main actor at dequeue time, including after a reconnect.
     public func nextBatch() -> DiagnosticBatch? {
+        let collector = sendingStore.flatMap { $0.diagnostics === self ? $0.diagnosticsCollectingHost : nil }
+        return nextBatch(for: collector?.capabilities)
+    }
+
+    /// Drop incompatible whole records before charging the send bucket. Keep the original fields on
+    /// eligible records so a failed send can retry against a different collector.
+    func nextBatch(for capabilities: [String]?) -> DiagnosticBatch? {
         guard isEnabled, !buffer.isEmpty || dropped > 0 else { return nil }
+        if let capabilities {
+            let routes = capabilities.contains(DiagnosticLimits.routeSnapshotCapability)
+            let masking = capabilities.contains(DiagnosticLimits.replyMaskingCapability)
+            buffer.removeAll { Self.shouldOmit($0, routeSnapshots: routes, masking: masking) }
+            bufferedCount = buffer.count
+        }
         let pending = buffer.count + (dropped > 0 ? 1 : 0)
         let budget = sendBudget.take(upTo: min(pending, DiagnosticLimits.maxEventsPerBatch), at: clock())
         guard budget >= 1 else { return nil }
-        var batch: [DiagnosticEvent] = []
-        if dropped > 0, let count = try? DiagnosticEvent(.eventsDropped, timestamp: max(0, wallNow()), fields: [
-            .count: .integer(Int64(min(dropped, Int(Int32.max)))), .code: .token("app_buffer")
-        ]) {
-            batch.append(count)
-            dropped = 0
+        let reportedDrops = min(dropped, Int(Int32.max))
+        var events: [DiagnosticEvent] = []
+        if reportedDrops > 0 {
+            guard let marker = try? DiagnosticEvent(.eventsDropped, timestamp: max(0, wallNow()), fields: [
+                .count: .integer(Int64(reportedDrops)), .code: .token("app_buffer")
+            ]) else { return nil }
+            events.append(marker)
+            dropped -= reportedDrops
         }
-        let taken = min(budget - batch.count, buffer.count)
-        batch += buffer.prefix(taken)
+        let taken = min(budget - events.count, buffer.count)
+        events += buffer.prefix(taken)
         buffer.removeFirst(taken)
         bufferedCount = buffer.count
-        return batch.isEmpty ? nil : DiagnosticBatch(events: batch, generation: generation)
+        return DiagnosticBatch(events: events, generation: generation, reportedDrops: reportedDrops)
     }
 
     /// True while logging is on and has not been turned off since `batch` was taken. Check before sending.
@@ -158,7 +175,8 @@ public final class DeviceDiagnostics {
     /// Puts an unsent batch back in front, unless logging was turned off (or off and on) since it was taken.
     public func requeue(_ batch: DiagnosticBatch) {
         guard isCurrent(batch) else { return }
-        buffer = batch.events + buffer
+        dropped += batch.reportedDrops
+        buffer.insert(contentsOf: batch.events.dropFirst(batch.reportedDrops > 0 ? 1 : 0), at: 0)
         trimToCapacity()
         onPending?()
     }
@@ -192,6 +210,17 @@ private struct DiagnosticTokenBucket {
 public struct DiagnosticBatch: Sendable, Equatable {
     public let events: [DiagnosticEvent]
     public let generation: UInt64
+    /// Only the queue-generated leading marker is folded back into the pending count on retry.
+    fileprivate let reportedDrops: Int
+}
+
+extension HostConnectionStore {
+    /// Assigning the log schedules its first flush here. Keep a weak link so later timed flushes
+    /// consult the same live collector selection as the store, even if the original host disconnected.
+    func scheduleDiagnosticsFlush() {
+        diagnostics?.sendingStore = self
+        scheduleDiagnosticsFlush(after: .seconds(2))
+    }
 }
 
 /// A capture thread may prepare diagnostics only under the current opt-in generation.
@@ -212,8 +241,8 @@ extension HostConnection {
         let masking = snapshot.capabilities.contains(DiagnosticLimits.replyMaskingCapability)
         let routeSnapshots = snapshot.capabilities.contains(DiagnosticLimits.routeSnapshotCapability)
         let sendable = events.compactMap { event -> DiagnosticEvent? in
-            guard masking || !DeviceDiagnostics.isReplyMaskingReport(event) else { return nil }
-            guard let projected = routeSnapshots ? event : DeviceDiagnostics.withoutRouteSnapshot(event)
+            guard !DeviceDiagnostics.shouldOmit(event, routeSnapshots: routeSnapshots, masking: masking),
+                  let projected = routeSnapshots ? event : DeviceDiagnostics.withoutRouteSnapshotFields(event)
             else { return nil }
             let compatible = streamFields ? projected : DeviceDiagnostics.withoutPlaybackStreamFields(projected)
             return accepted ? compatible : DeviceDiagnostics.withoutStreamAbandoned(compatible)
@@ -537,9 +566,14 @@ extension DeviceDiagnostics: AudioRouteObservationSink {
         fields[.phase] == .token("configure") || fields[.decision] != nil
     }
 
-    /// Only the independent notification observer produced a legacy change.
-    nonisolated static func withoutRouteSnapshot(_ event: DiagnosticEvent) -> DiagnosticEvent? {
-        if isSupplementaryRouteSnapshot(event.fields) { return nil }
+    fileprivate nonisolated static func shouldOmit(
+        _ event: DiagnosticEvent, routeSnapshots: Bool, masking: Bool
+    ) -> Bool {
+        (!routeSnapshots && isSupplementaryRouteSnapshot(event.fields)) || (!masking && isReplyMaskingReport(event))
+    }
+
+    /// Strip the new fields from a notification or playback start that has a legacy shape.
+    fileprivate nonisolated static func withoutRouteSnapshotFields(_ event: DiagnosticEvent) -> DiagnosticEvent? {
         guard !DiagnosticLimits.routeSnapshotFields.isDisjoint(with: event.fields.keys) else { return event }
         let fields = event.fields.filter { !DiagnosticLimits.routeSnapshotFields.contains($0.key) }
         return try? DiagnosticEvent(event.name, timestamp: event.timestamp, fields: fields)

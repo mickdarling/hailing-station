@@ -32,7 +32,9 @@ import Testing
             return
         }
         try await connection.sendDiagnostics(events)
-        let sent = try #require(await socket.outgoing.last)
+        let first = try await diagnosticFrames(socket)
+        try #require(first.count == 1)
+        let sent = first[0]
         var envelope = try FrameCoding.decode(sent)
         if advertisesSnapshots {
             envelope.payload = .control(.diagnostic(events: events))
@@ -44,10 +46,22 @@ import Testing
         let onlySupplementary = events.filter {
             $0.fields[.decision] != nil || $0.fields[.phase] == .token("configure")
         }
-        let count = await socket.outgoing.count
         try await connection.sendDiagnostics(onlySupplementary)
-        #expect(await socket.outgoing.count == count + (advertisesSnapshots ? 1 : 0))
+        let frames = try await diagnosticFrames(socket)
+        try #require(frames.count == (advertisesSnapshots ? 2 : 1))
+        if advertisesSnapshots {
+            var second = try FrameCoding.decode(frames[1])
+            second.payload = .control(.diagnostic(events: onlySupplementary))
+            #expect(try FrameCoding.encode(second) == frames[1])
+        }
         await connection.disconnect()
+    }
+
+    private func diagnosticFrames(_ socket: ScriptedSocket) async throws -> [Data] {
+        try await socket.outgoing.filter { bytes in
+            if case .control(.diagnostic) = try FrameCoding.decode(bytes).payload { return true }
+            return false
+        }
     }
 
     @Test func offlineSnapshotsPreserveTheLastLegacyRecordingToken() async throws {
@@ -84,7 +98,8 @@ import Testing
 
         let socket = ScriptedSocket()
         let connection = try await connect(socket, advertisesSnapshots: false)
-        while let batch = log.nextBatch() { try await connection.sendDiagnostics(batch.events) }
+        let capabilities = await connection.currentSnapshot().capabilities
+        while let batch = log.nextBatch(for: capabilities) { try await connection.sendDiagnostics(batch.events) }
         #expect(!log.hasPending)
         #expect(try await DeviceDiagnosticsSendingTests.diagnostics(socket) == expected)
         await connection.disconnect()
