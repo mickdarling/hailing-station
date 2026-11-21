@@ -6,7 +6,7 @@ import Testing
 import AVFAudio
 #endif
 
-/// Playback-start output diagnostics (#852), independent of the input-only route-change event.
+/// The legacy playback-start route identifies the output (#852).
 @MainActor
 @Suite struct DeviceDiagnosticsOutputRouteTests {
     let suite = "hail-output-route-\(UUID().uuidString)"
@@ -28,7 +28,7 @@ import AVFAudio
     func playbackStartRecordsTheOutputRouteAndRoundTrips(route: String) throws {
         defer { defaults.removePersistentDomain(forName: suite) }
         let log = DeviceDiagnostics(defaults: defaults)
-        log.outputRoute = { route }
+        log.currentAudioRoute = { Self.snapshot(output: DiagnosticRoutePort(rawValue: route) ?? .other) }
         let event = try playbackStart(log)
         #expect(event.fields[.route] == .token(route))
         #expect(DiagnosticField.route.tokens.contains(route))
@@ -37,11 +37,10 @@ import AVFAudio
         #expect(try FrameCoding.decode(FrameCoding.encode(frame)).payload == frame.payload)
     }
 
-    @Test func anUnmappedOutputIsRecordedOnlyAsOther() throws {
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let log = DeviceDiagnostics(defaults: defaults)
-        log.outputRoute = { "unmapped_port_type" }
-        #expect(try playbackStart(log).fields[.route] == .token("other"))
+    static func snapshot(output: DiagnosticRoutePort) -> AudioRouteSnapshot {
+        .init(ports: .init(input: .none, output: output, inputCount: 0, outputCount: output == .none ? 0 : 1),
+              settings: .init(category: .playback, defaultToSpeaker: false, allowA2DP: false,
+                              allowHFP: false, mixWithOthers: true))
     }
 
     #if os(macOS)

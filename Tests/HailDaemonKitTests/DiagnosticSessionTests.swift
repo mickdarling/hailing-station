@@ -29,6 +29,7 @@ import Testing
         // It accepts the stream_abandoned code (#469), so it says so; a device sends that token only then.
         #expect(advertised.contains(DiagnosticLimits.streamAbandonedCapability))
         #expect(advertised.contains(DiagnosticLimits.playbackStreamCapability))
+        #expect(advertised.contains(DiagnosticLimits.routeSnapshotCapability))
         let frame = sessionFrame(payload: .control(.diagnostic(events: try diagnosticEvents(2))))
         let result = await session.receive(frame)
         #expect(result == HostSessionResult(frames: []))
@@ -63,6 +64,26 @@ import Testing
         #expect(stored == events)
     }
 
+    @Test func routeSnapshotSurvivesHostStorage() async throws {
+        defer { cleanUp() }
+        let (host, adapter) = try await sessionHost()
+        let session = HostSession(host: host, authorizer: PersonalTerminalAuthorizer(
+            diagnostics: DiagnosticLog(directory: scratch)
+        ))
+        _ = try await capabilities(session)
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/schema/route-snapshot.example.json"))
+        let frame = try FrameCoding.decode(data)
+        guard case .control(.diagnostic(let events)) = frame.payload else {
+            Issue.record("expected diagnostic fixture")
+            return
+        }
+        #expect(await session.receive(data) == HostSessionResult(frames: []))
+        #expect(try DiagnosticLog.records(in: scratch).map(\.event) == events)
+        #expect(await adapter.deliveries.isEmpty)
+    }
+
     @Test func withoutASinkNothingIsAdvertisedAcceptedOrWritten() async throws {
         defer { cleanUp() }
         let (host, _) = try await sessionHost()
@@ -72,6 +93,7 @@ import Testing
             #expect(!advertised.contains(DiagnosticLimits.capability))
             #expect(!advertised.contains(DiagnosticLimits.streamAbandonedCapability))
             #expect(!advertised.contains(DiagnosticLimits.playbackStreamCapability))
+            #expect(!advertised.contains(DiagnosticLimits.routeSnapshotCapability))
             let frame = sessionFrame(payload: .control(.diagnostic(events: try diagnosticEvents(1))))
             let result = await session.receive(frame)
             guard case .error(let code, _, _) = try onlyControl(result) else {

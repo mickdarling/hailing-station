@@ -45,11 +45,11 @@ public final class DeviceDiagnostics {
     @ObservationIgnored private let clock: @Sendable () -> ContinuousClock.Instant
     @ObservationIgnored var observers: [any NSObjectProtocol] = []
     @ObservationIgnored var lastPlayback: (busy: Bool, failures: Set<String>) = (false, [])
-    // Output port type at playback start (#852); nil keeps macOS unchanged. Injectable without AVAudioSession.
-    @ObservationIgnored var outputRoute: @MainActor () -> String? = {
+    @ObservationIgnored private var routeSequence: Int64 = 0
+    @ObservationIgnored var currentAudioRoute: @MainActor () -> AudioRouteSnapshot? = {
         #if os(iOS)
-        let output = AVAudioSession.sharedInstance().currentRoute.outputs.first?.portType
-        return output.map(DeviceDiagnostics.route) ?? "none"
+        let session = AVAudioSession.sharedInstance()
+        return AudioRouteSnapshot(ports: AudioRoutePorts(session.currentRoute), settings: AudioRouteSettings(session))
         #else
         return nil
         #endif
@@ -72,7 +72,10 @@ public final class DeviceDiagnostics {
         recordUpdated = clock()
         sendUpdated = recordUpdated
         recordingState.update(isEnabled ? generation : nil)
-        if isEnabled { record(.appInfo, self.appInfo) }
+        if isEnabled {
+            updateRouteSink()
+            record(.appInfo, self.appInfo)
+        }
     }
 
     /// Persists the choice. Off clears everything buffered; on starts with this build's `app_info`.
@@ -81,6 +84,8 @@ public final class DeviceDiagnostics {
         guard enabled != isEnabled else { return }
         isEnabled = enabled
         generation &+= 1
+        routeSequence = 0
+        updateRouteSink()
         recordingState.update(enabled ? generation : nil)
         buffer.removeAll()
         dropped = 0
@@ -186,9 +191,12 @@ extension HostConnection {
         let accepted = snapshot.capabilities.contains(DiagnosticLimits.streamAbandonedCapability)
         let streamFields = snapshot.capabilities.contains(DiagnosticLimits.playbackStreamCapability)
         let masking = snapshot.capabilities.contains(DiagnosticLimits.replyMaskingCapability)
+        let routeSnapshots = snapshot.capabilities.contains(DiagnosticLimits.routeSnapshotCapability)
         let sendable = events.compactMap { event -> DiagnosticEvent? in
             guard masking || !DeviceDiagnostics.isReplyMaskingReport(event) else { return nil }
-            let compatible = streamFields ? event : DeviceDiagnostics.withoutPlaybackStreamFields(event)
+            guard let projected = routeSnapshots ? event : DeviceDiagnostics.withoutRouteSnapshot(event)
+            else { return nil }
+            let compatible = streamFields ? projected : DeviceDiagnostics.withoutPlaybackStreamFields(projected)
             return accepted ? compatible : DeviceDiagnostics.withoutStreamAbandoned(compatible)
         }
         guard !sendable.isEmpty else { return }
@@ -322,7 +330,7 @@ extension DeviceDiagnostics {
                 ?? (playback.player as? EchoGuardedReplyPlayer)?.gapReporter
             let gaps = reporter?.takePlayoutGaps()
             if busy {
-                record(.replyPlaybackStart, outputRoute().map { [.route: Self.token($0, for: .route)] } ?? [:])
+                recordPlaybackStart(playback)
             } else if let gaps {
                 record(.replyPlaybackEnd, [.count: .integer(Int64(gaps.count)), .ms: .integer(gaps.milliseconds)])
             } else {
@@ -367,6 +375,17 @@ extension DeviceDiagnostics {
         for name in names {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
                 let name = note.name
+                #if os(iOS)
+                if name == AVAudioSession.routeChangeNotification {
+                    guard self?.recordingState.generation != nil else { return }
+                    let reason = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0
+                    let previous = AudioRoutePorts(
+                        note.userInfo?[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription
+                    )
+                    MainActor.assumeIsolated { self?.recordRouteNotification(reason: reason, previous: previous) }
+                    return
+                }
+                #endif
                 let info = Self.scalars(note.userInfo)
                 MainActor.assumeIsolated { self?.handle(name, info) }
             })
@@ -385,13 +404,7 @@ extension DeviceDiagnostics {
     #if os(iOS)
     /// An input or output port as a `route` token, compared against the system constants.
     nonisolated static func route(_ port: AVAudioSession.Port) -> String {
-        let names: [AVAudioSession.Port: String] = [
-            .builtInMic: "built_in_mic", .builtInSpeaker: "built_in_speaker", .builtInReceiver: "built_in_receiver",
-            .headphones: "headphones", .headsetMic: "headset_mic", .lineIn: "line_in", .lineOut: "line_out",
-            .bluetoothA2DP: "bluetooth_a2dp", .bluetoothHFP: "bluetooth_hfp", .bluetoothLE: "bluetooth_le",
-            .airPlay: "airplay", .HDMI: "hdmi", .carAudio: "car_audio", .usbAudio: "usb_audio"
-        ]
-        return names[port] ?? "other"
+        AudioRoutePorts.port(port).rawValue
     }
     #endif
 
@@ -415,12 +428,6 @@ extension DeviceDiagnostics {
     private func handleAudioSession(_ name: Notification.Name, _ info: [String: UInt]) {
         #if os(iOS)
         switch name {
-        case AVAudioSession.routeChangeNotification:
-            let input = AVAudioSession.sharedInstance().currentRoute.inputs.first?.portType
-            record(.routeChange, [
-                .reason: .token(Self.routeChangeReason(info[AVAudioSessionRouteChangeReasonKey] ?? 0)),
-                .route: .token(input.map(Self.route) ?? "none")
-            ])
         case AVAudioSession.interruptionNotification:
             if info[AVAudioSessionInterruptionTypeKey] == AVAudioSession.InterruptionType.began.rawValue {
                 let reason = Self.interruptionReason(info[AVAudioSessionInterruptionReasonKey] ?? 0)
@@ -435,5 +442,142 @@ extension DeviceDiagnostics {
         default: break
         }
         #endif
+    }
+}
+
+extension DeviceDiagnostics: AudioRouteObservationSink {
+    private func updateRouteSink() {
+        #if os(iOS)
+        AudioRouteObservations.shared.setObserving(self, enabled: isEnabled)
+        #endif
+    }
+
+    func beginRouteObservation() -> RouteObservationStamp? {
+        guard isEnabled, routeSequence < DiagnosticLimits.integers.upperBound else { return nil }
+        routeSequence += 1
+        return RouteObservationStamp(sequence: routeSequence, timestamp: wallNow(), generation: generation,
+                                    hfpPreference: defaults.bool(forKey: AudioInputPreferences.bluetoothHFPDefaultsKey))
+    }
+
+    func observe(_ observation: AudioRouteObservation, at stamp: RouteObservationStamp) {
+        guard isEnabled, stamp.generation == generation else { return }
+        var fields: [DiagnosticField: DiagnosticValue]
+        switch observation {
+        case .configure(let before, let result, let policyApply, let succeeded):
+            fields = result.fields
+            before.add(to: &fields, input: .preInput, output: .preOutput,
+                       inputCount: .preInputCount, outputCount: .preOutputCount)
+            fields[.phase] = .token("configure")
+            fields[.policyApply] = .boolean(policyApply)
+            fields[.writeSucceeded] = .boolean(succeeded)
+        case .decision(let change, let reason, let choseBuiltIn, let appAttributed):
+            fields = change.fields
+            fields[.decision] = .token(reason.diagnosticToken)
+            fields[.userChoseBuiltIn] = .boolean(choseBuiltIn)
+            fields[.appAttributed] = .boolean(appAttributed)
+        }
+        recordRoute(.routeChange, fields: fields, at: stamp)
+    }
+
+    /// Even when the backend skips a nested notification or has no active observer, preserve the legacy input.
+    func recordRouteNotification(reason: UInt, previous: AudioRoutePorts) {
+        guard isEnabled, let current = currentAudioRoute() else { return }
+        guard let stamp = beginRouteObservation() else {
+            record(.routeChange, [.reason: .token(Self.routeChangeReason(reason)),
+                                  .route: .token(current.ports.input.rawValue)])
+            return
+        }
+        let change = AudioRouteChange(reasonRaw: reason, current: current, previous: previous)
+        recordRoute(.routeChange, fields: change.fields, at: stamp)
+    }
+
+    private func recordPlaybackStart(_ playback: ReplyPlaybackController) {
+        guard isEnabled else { return }
+        guard let current = currentAudioRoute() else { return record(.replyPlaybackStart) }
+        guard let stamp = beginRouteObservation() else {
+            return record(.replyPlaybackStart, [.route: .token(current.ports.output.rawValue)])
+        }
+        var fields = current.fields
+        fields[.route] = .token(current.ports.output.rawValue)
+        let routed = (playback.player as? any CaptureRoutedReplies)
+            ?? (playback.player as? EchoGuardedReplyPlayer)?.gapReporter as? any CaptureRoutedReplies
+        if let routed { fields[.captureOwnsEngine] = .boolean(routed.isRoutedThroughCapture) }
+        recordRoute(.replyPlaybackStart, fields: fields, at: stamp)
+    }
+
+    private func recordRoute(
+        _ name: DiagnosticEventName, fields: [DiagnosticField: DiagnosticValue], at stamp: RouteObservationStamp
+    ) {
+        var fields = fields
+        fields[.routeSequence] = .integer(stamp.sequence)
+        fields[.hfpPreference] = .boolean(stamp.hfpPreference)
+        record(name, fields, timestamp: stamp.timestamp)
+    }
+
+    /// A decision is supplementary. Only the independent notification observer produced a legacy change.
+    nonisolated static func withoutRouteSnapshot(_ event: DiagnosticEvent) -> DiagnosticEvent? {
+        if event.fields[.phase] == .token("configure") || event.fields[.decision] != nil { return nil }
+        guard !DiagnosticLimits.routeSnapshotFields.isDisjoint(with: event.fields.keys) else { return event }
+        let fields = event.fields.filter { !DiagnosticLimits.routeSnapshotFields.contains($0.key) }
+        return try? DiagnosticEvent(event.name, timestamp: event.timestamp, fields: fields)
+    }
+}
+
+private extension AudioRoutePorts {
+    func add(to fields: inout [DiagnosticField: DiagnosticValue],
+             input inputKey: DiagnosticField = .input, output outputKey: DiagnosticField = .output,
+             inputCount inputCountKey: DiagnosticField = .inputCount,
+             outputCount outputCountKey: DiagnosticField = .outputCount) {
+        fields[inputKey] = .token(input.rawValue)
+        fields[outputKey] = .token(output.rawValue)
+        fields[inputCountKey] = .integer(Int64(inputCount))
+        fields[outputCountKey] = .integer(Int64(outputCount))
+    }
+}
+
+private extension AudioRouteSettings {
+    var fields: [DiagnosticField: DiagnosticValue] {
+        let categoryToken = switch category {
+        case .playAndRecord: "play_and_record"
+        case .playback: "playback"
+        case .other: "other"
+        }
+        return [.category: .token(categoryToken), .defaultToSpeaker: .boolean(defaultToSpeaker),
+                .allowA2DP: .boolean(allowA2DP), .allowHFP: .boolean(allowHFP), .mixWithOthers: .boolean(mixWithOthers)]
+    }
+}
+
+private extension AudioRouteSnapshot {
+    var fields: [DiagnosticField: DiagnosticValue] {
+        var fields = settings.fields
+        ports.add(to: &fields)
+        return fields
+    }
+}
+
+private extension AudioRouteChange {
+    var fields: [DiagnosticField: DiagnosticValue] {
+        var fields = current.fields
+        fields[.phase] = .token("change")
+        fields[.route] = .token(current.ports.input.rawValue)
+        fields[.reason] = .token(DeviceDiagnostics.routeChangeReason(reasonRaw))
+        previous.add(to: &fields, input: .previousInput, output: .previousOutput,
+                     inputCount: .previousInputCount, outputCount: .previousOutputCount)
+        return fields
+    }
+}
+
+private extension AudioOutputRoutePolicy.DecisionReason {
+    var diagnosticToken: String {
+        switch self {
+        case .repairRequested: "repair_requested"
+        case .userChoiceAssumed: "user_choice_assumed"
+        case .noHardwareEpisode: "no_hardware_episode"
+        case .keepalive: "keepalive"
+        case .unsupportedCategory: "unsupported_category"
+        case .noExternalEvidence: "no_external_evidence"
+        case .externalOutputActive: "external_output_active"
+        case .awaitingRoute: "awaiting_route"
+        }
     }
 }
