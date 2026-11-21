@@ -66,11 +66,19 @@ public final class ReplyPlaybackController {
                 queue.insert(activeKey, at: 0)
                 watchHeadIfChanged()
             }
-            if oldValue != activeKey { clearSegmentBoundary() }
+            if oldValue != activeKey {
+                if activeKey != stopMuteWindow?.key { stopMuteWindow = nil }
+                clearSegmentBoundary()
+            }
             if (oldValue == nil) != (activeKey == nil) { replyActivityChanged() }
         }
     }
-    var playbackGeneration: UInt = 0 { didSet { clearSegmentBoundary() } }
+    var playbackGeneration: UInt = 0 {
+        didSet {
+            stopMuteWindow = nil
+            clearSegmentBoundary()
+        }
+    }
     public var segmentSettings = ReplySegmentSettings.saved()
     public internal(set) var segmentPause: ReplySegmentPause?
     public internal(set) var lastSegmentYield: ReplySegmentPause?
@@ -101,6 +109,7 @@ public final class ReplyPlaybackController {
     @ObservationIgnored var pendingMuteAfter: ReplyStreamKey? { // a waiting voice mute (#404, `+Stop`)
         didSet { cancelMutedFirstAudio() }
     }
+    @ObservationIgnored var stopMuteWindow: (key: ReplyStreamKey, deadline: ContinuousClock.Instant)?
     public init(player: any ReplyAudioPlaying) {
         self.player = player
         observeAudioInterruptions(on: .default)
@@ -166,8 +175,13 @@ extension ReplyPlaybackController {
             status = queue.isEmpty ? (isMuted ? "Muted" : "Played") : "Waiting for audio"
         }
     }
-    func drain() {
-        guard prepareDrain() else { return }
+    func drain(afterStop: Bool = false) {
+        let ready = prepareDrain()
+        if afterStop, let key = queue.first, !key.isAnnouncement, !isMuted {
+            // Promotion starts the window even when the head is waiting for frame zero.
+            stopMuteWindow = (key, idleNow() + .milliseconds(100))
+        }
+        guard ready else { return }
         guard !isCaptureSuppressed, !isPaused else {
             status = isCaptureSuppressed ? "Paused while listening" : "Paused"
             return
@@ -176,15 +190,13 @@ extension ReplyPlaybackController {
               let segment = nextRetainedSegment(in: stream) {
             let beginsPlayback = stream.nextSequence == 0 && !playbackOrder.contains(key)
             guard beginPlaybackIfNeeded(key, begins: beginsPlayback) else { return }
-            let generation = playbackGeneration
-            let onPlayed = completion(for: segment, key: key, generation: generation)
             do {
-                try player.schedule(segment, onPlayed: onPlayed)
+                try schedule(segment, for: key)
             } catch {
                 lastPlaybackError = error as NSError
                 failPlayback(for: key)
                 setPresentationStatus(Self.playbackFailed, for: key)
-                drain()
+                drain(afterStop: afterStop)
                 return
             }
             stream.nextSequence = segment.sequence + 1
@@ -201,6 +213,18 @@ extension ReplyPlaybackController {
             }
             completed.insert(key)
             return
+        }
+    }
+
+    private func schedule(_ segment: AudioPayload, for key: ReplyStreamKey) throws {
+        let generation = playbackGeneration
+        let onPlayed = completion(for: segment, key: key, generation: generation)
+        guard stopMuteWindow?.key == key, segment.sequence == 0, !segment.isFinal else {
+            return try player.schedule(segment, onPlayed: onPlayed)
+        }
+        try player.schedule(segment) { [weak self] in
+            if let self, playbackGeneration == generation, stopMuteWindow?.key == key { stopMuteWindow = nil }
+            onPlayed?()
         }
     }
 }
