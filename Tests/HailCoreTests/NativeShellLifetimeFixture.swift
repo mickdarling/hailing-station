@@ -22,6 +22,7 @@ struct NativeShellLifetimeFixture {
             try await rig.start(listening: false)
             let binding = try rig.currentBinding()
             let probe = NativeSceneAmbientProbe(binding: binding)
+            #expect(probe.stationVisibility == .unobserved)
             let defaults = try #require(UserDefaults(suiteName: "hail-shell-proof-\(UUID().uuidString)"))
             let resources = StationResources(connections: rig.store, backend: FakeAudioSessionBackend(inputs: []),
                 player: FormatTestPlayer(), keepaliveRenderer: FakeKeepaliveRenderer(),
@@ -32,7 +33,7 @@ struct NativeShellLifetimeFixture {
             await host.render()
             try await waitUntil { await MainActor.run {
                 probe.root?.ambientDestinationBinding == binding && probe.appearances > 0
-                    && probe.stationHidden == false && rig.controller.onListeningChange != nil
+                    && probe.stationVisibility == .visible && rig.controller.onListeningChange != nil
             } }
             await host.render()
             let root = try #require(probe.root)
@@ -62,7 +63,8 @@ struct NativeShellLifetimeFixture {
     func select(_ section: StationSection) async throws {
         root.navigation.apply(.select(section))
         await host.render()
-        try await waitUntil { await MainActor.run { probe.stationHidden == (section != .station) } }
+        let expected: NativeSceneAmbientProbe.StationVisibility = section == .station ? .visible : .hidden
+        try await waitUntil { await MainActor.run { probe.stationVisibility == expected } }
         #expect(root.navigation.section == section)
         try await assertContinuedDelivery()
     }

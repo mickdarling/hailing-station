@@ -8,10 +8,12 @@ import HailProtocol
 /// The real native root retains its scene owner, bindings and observer. Only its surrounding station layout varies.
 @MainActor @Observable
 final class NativeSceneAmbientProbe {
+    enum StationVisibility: Equatable { case unobserved, visible, hidden }
+
     var toolShown = false
     var disappearances = 0
     var appearances = 0
-    var stationHidden: Bool?
+    var stationVisibility = StationVisibility.unobserved
     @ObservationIgnored var root: StationRootView?
     private let binding: AmbientAudioBinding
 
@@ -48,7 +50,9 @@ struct NativeSceneStationContent: View {
         .navigationDestination(isPresented: Binding(get: { probe?.toolShown == true },
                                                    set: { probe?.toolShown = $0 })) { Text("Station tool") }
         .onAppear { probe?.install(root) }
-        .onChange(of: stationHidden, initial: true) { _, hidden in probe?.stationHidden = hidden }
+        .onChange(of: stationHidden, initial: true) { _, hidden in
+            probe?.stationVisibility = hidden ? .hidden : .visible
+        }
     }
 }
 
