@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 import Testing
 @testable import HailCore
@@ -31,16 +32,48 @@ struct StationRedesignFlagsTests {
         let key = StationRedesignStep.shell.key
 
         for value in [NSNumber(value: 1), NSNumber(value: 1.0)] {
+            defaults.removeObject(forKey: key)
             defaults.set(value, forKey: key)
+            let raw = try #require(defaults.object(forKey: key) as? NSNumber)
+            #expect(CFGetTypeID(raw) != CFBooleanGetTypeID(), "Numeric fixture: \(Self.storedKind(raw))")
             let numeric = StationRedesignFlags { defaults.object(forKey: $0) }
             #expect(!numeric.isOn(.shell))
+
+            // Foundation can coalesce equal-valued writes and keep numeric 1 when true is stored over it.
+            // Do not require coalescing on every platform; when the captured value stays numeric it stays off.
+            defaults.set(true, forKey: key)
+            let afterTrue = try #require(defaults.object(forKey: key) as? NSNumber)
+            if CFGetTypeID(afterTrue) == CFNumberGetTypeID() {
+                let retainedNumeric = StationRedesignFlags { defaults.object(forKey: $0) }
+                #expect(!retainedNumeric.isOn(.shell),
+                        "Equal-valued write retained a number: \(Self.storedKind(afterTrue))")
+            }
         }
-        defaults.set(true, forKey: key)
-        let optedIn = StationRedesignFlags { defaults.object(forKey: $0) }
-        #expect(optedIn.isOn(.shell))
-        defaults.set(false, forKey: key)
-        let optedOut = StationRedesignFlags { defaults.object(forKey: $0) }
-        #expect(!optedOut.isOn(.shell))
+    }
+
+    @Test func freshBooleanAndOffToOnPreferencesUseActualBooleanFixtures() throws {
+        let suite = "StationRedesignFlagsTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let key = StationRedesignStep.shell.key
+        defaults.removeObject(forKey: key)
+
+        for value in [true, false, true] {
+            defaults.set(value, forKey: key)
+            let raw = try #require(defaults.object(forKey: key) as? NSNumber)
+            #expect(CFGetTypeID(raw) == CFBooleanGetTypeID(), "Boolean fixture: \(Self.storedKind(raw))")
+            #expect(raw.boolValue == value)
+            let flags = StationRedesignFlags { defaults.object(forKey: $0) }
+            #expect(flags.isOn(.shell) == value)
+        }
+    }
+
+    private static func storedKind(_ raw: Any?) -> String {
+        guard let raw else { return "missing" }
+        let kind = String(reflecting: type(of: raw))
+        guard let number = raw as? NSNumber else { return kind }
+        return "\(kind), value=\(number), objc=\(String(cString: number.objCType)), "
+            + "CFBoolean=\(CFGetTypeID(number) == CFBooleanGetTypeID())"
     }
 
     @Test func keysAreNamespacedPerStep() {
