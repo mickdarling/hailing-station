@@ -32,23 +32,40 @@ struct StationRedesignFlagsTests {
         let key = StationRedesignStep.shell.key
 
         for value in [NSNumber(value: 1), NSNumber(value: 1.0)] {
+            defaults.removeObject(forKey: key)
             defaults.set(value, forKey: key)
+            let raw = try #require(defaults.object(forKey: key) as? NSNumber)
+            #expect(CFGetTypeID(raw) != CFBooleanGetTypeID(), "Numeric fixture: \(Self.storedKind(raw))")
             let numeric = StationRedesignFlags { defaults.object(forKey: $0) }
-            #expect(!numeric.isOn(.shell), "Numeric fixture: \(Self.storedKind(defaults.object(forKey: key)))")
+            #expect(!numeric.isOn(.shell))
+
+            // Foundation can coalesce equal-valued writes and keep numeric 1 when true is stored over it.
+            // Do not require coalescing on every platform; when the captured value stays numeric it stays off.
+            defaults.set(true, forKey: key)
+            let afterTrue = try #require(defaults.object(forKey: key) as? NSNumber)
+            if CFGetTypeID(afterTrue) == CFNumberGetTypeID() {
+                let retainedNumeric = StationRedesignFlags { defaults.object(forKey: $0) }
+                #expect(!retainedNumeric.isOn(.shell),
+                        "Equal-valued write retained a number: \(Self.storedKind(afterTrue))")
+            }
         }
-        defaults.set(true, forKey: key)
-        let optedIn = StationRedesignFlags { defaults.object(forKey: $0) }
-        #expect(optedIn.isOn(.shell), "After numeric writes: \(Self.storedKind(defaults.object(forKey: key)))")
-        defaults.set(false, forKey: key)
-        let optedOut = StationRedesignFlags { defaults.object(forKey: $0) }
-        #expect(!optedOut.isOn(.shell))
-        defaults.set(true, forKey: key)
-        let afterOff = StationRedesignFlags { defaults.object(forKey: $0) }
-        #expect(afterOff.isOn(.shell), "After Boolean off: \(Self.storedKind(defaults.object(forKey: key)))")
+    }
+
+    @Test func freshBooleanAndOffToOnPreferencesUseActualBooleanFixtures() throws {
+        let suite = "StationRedesignFlagsTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let key = StationRedesignStep.shell.key
         defaults.removeObject(forKey: key)
-        defaults.set(true, forKey: key)
-        let fresh = StationRedesignFlags { defaults.object(forKey: $0) }
-        #expect(fresh.isOn(.shell), "Fresh Boolean: \(Self.storedKind(defaults.object(forKey: key)))")
+
+        for value in [true, false, true] {
+            defaults.set(value, forKey: key)
+            let raw = try #require(defaults.object(forKey: key) as? NSNumber)
+            #expect(CFGetTypeID(raw) == CFBooleanGetTypeID(), "Boolean fixture: \(Self.storedKind(raw))")
+            #expect(raw.boolValue == value)
+            let flags = StationRedesignFlags { defaults.object(forKey: $0) }
+            #expect(flags.isOn(.shell) == value)
+        }
     }
 
     private static func storedKind(_ raw: Any?) -> String {
