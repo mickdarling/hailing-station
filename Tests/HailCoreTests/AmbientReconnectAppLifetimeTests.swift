@@ -113,10 +113,7 @@ import Testing
     }
 
     private func removeTargetAndReconcileCard(_ rig: AmbientReconnectRig, binding: AmbientAudioBinding) async throws {
-        try await rig.socket.push(.targets([]))
-        try await waitUntil { await MainActor.run {
-            rig.store.snapshots[rig.endpoint.id]?.targets.isEmpty == true
-        } }
+        try await rig.removeAdvertisedTargets()
         #expect(rig.store.ambientBinding(host: binding.hostID, targetID: binding.targetID) == nil)
         let presentation = rig.appPresentation
         #expect(presentation.card(hostName: nil) == nil,
@@ -126,5 +123,14 @@ import Testing
         if presentation.card(hostName: nil) == nil {
             await rig.controller.destinationLost() // The card disappears, while the root still shows its notice.
         }
+    }
+}
+
+extension AmbientReconnectRig {
+    func removeAdvertisedTargets() async throws {
+        try await socket.push(.targets([]))
+        try await waitUntil { await MainActor.run {
+            self.store.snapshots[self.endpoint.id]?.targets.isEmpty == true
+        } }
     }
 }

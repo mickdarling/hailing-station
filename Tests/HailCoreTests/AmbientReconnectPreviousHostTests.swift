@@ -5,7 +5,8 @@ import Testing
 
 @MainActor
 @Suite(.serialized) struct AmbientReconnectPreviousHostTests {
-    @Test func selectingAnotherHostAttributesTheRootStopToOwnerReselect() async throws {
+    @Test(arguments: [false, true])
+    func confirmedHostSwitchKeepsTheRootsStopAttribution(discardConfirmation: Bool) async throws {
         let run = try OwnerDestinationRun()
         let rig = run.rig
         try await run.start()
@@ -13,13 +14,30 @@ import Testing
         let original = try rig.currentBinding()
         let second = try endpoint("second", "ws://127.0.0.1:8770")
         let socket = try await connectSecondHost(second, rig: rig)
-        try await selectSecondHost(second, socket: socket, rig: rig)
+        let selection = Task { await root.select(Destination(endpoint: second, target: rig.target)) }
+        try await confirmSecondSelection(socket) {
+            if discardConfirmation {
+                root.scenePhase = .background
+                root.scenePhaseRevision &+= 1
+            }
+        }
+        await selection.value
+        #expect(rig.store.ambientBinding(host: second.id, targetID: rig.target.id)?.targetID == rig.target.id)
         #expect(try rig.currentBinding() == original)
         #expect(rig.controller.isListening && rig.controller.binding == original)
-        root.selectedHostID = second.id
-        #expect(root.ambientDestinationBinding?.hostID == second.id)
-        await root.reconcileAmbientDestination()
-        #expect(rig.controller.listeningState == .stopped(.ownerReselect))
+        if discardConfirmation {
+            #expect(root.ambientDestinationBinding == original)
+            await root.reconcileAmbientDestination()
+            #expect(rig.controller.isListening && rig.controller.binding == original)
+            try await rig.removeAdvertisedTargets()
+            #expect(root.ambientDestinationBinding == nil)
+            await root.reconcileAmbientDestination()
+            #expect(rig.controller.listeningState == .stopped(.targetRemoved))
+        } else {
+            #expect(root.ambientDestinationBinding?.hostID == second.id)
+            await root.reconcileAmbientDestination()
+            #expect(rig.controller.listeningState == .stopped(.ownerReselect))
+        }
         #expect(rig.controller.stopReason == OwnerDestinationRun.reason && rig.released == 1)
         #expect(run.stops().map { $0.fields[.reason] } == [.token("binding_changed")])
         await rig.close()
@@ -72,6 +90,11 @@ import Testing
     private func selectSecondHost(_ second: HostEndpoint, socket: ScriptedSocket,
                                   rig: AmbientReconnectRig) async throws {
         let selection = Task { try await rig.store.selectTarget(host: second.id, targetID: rig.target.id) }
+        try await confirmSecondSelection(socket)
+        try await selection.value
+    }
+
+    private func confirmSecondSelection(_ socket: ScriptedSocket, beforePong: () -> Void = {}) async throws {
         try await waitUntil { try await socket.sentFrames().contains {
             if case .control(.select) = $0.payload { return true }; return false
         } }
@@ -81,7 +104,7 @@ import Testing
         let pings = try await socket.sentFrames().compactMap { frame -> String? in
             if case .control(.ping(let nonce)) = frame.payload { return nonce }; return nil
         }
+        beforePong()
         try await socket.push(.pong(nonce: try #require(pings.last)))
-        try await selection.value
     }
 }

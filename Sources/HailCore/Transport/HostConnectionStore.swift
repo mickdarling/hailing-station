@@ -76,6 +76,8 @@ public final class HostConnectionStore {
     private var selectionSerials: [HostEndpoint.Identifier: UInt64] = [:]
     /// Independent confirmation tokens also retire older overlapping reauthorizations (#904).
     private var selectionRequests: [HostEndpoint.Identifier: UUID] = [:]
+    @ObservationIgnored private var latestSelectionRequest: UUID?
+    @ObservationIgnored fileprivate var confirmedHostSwitch: (generation: UUID, destination: AmbientAudioBinding)?
     /// The target each host last confirmed through `selectTarget`, the one its connection addresses audio to.
     /// Ambient bindings exist only for it (#218).
     private var selectedTargets: [HostEndpoint.Identifier: String] = [:]
@@ -228,13 +230,15 @@ extension HostConnectionStore {
         if restoring, let current = ambientBinding(host: id, targetID: targetID),
            ambientController?.binding == current, ambientController?.isListening == true,
            ambientController?.reconnect.isPending == false { return }
+        let request = UUID()
+        latestSelectionRequest = request
+        confirmedHostSwitch = nil
         let previousIntent = restoring ? nil : ambientController?.listeningState.intent
         if !restoring {
             ambientController?.reconnect.block(.ownerSelection, stop: .ownerReselect)
             forgetSelection(id, stop: .ownerReselect)
         }
         selectedTargets[id] = nil
-        let request = UUID()
         selectionRequests[id] = request
         let serial = selectionSerials[id]
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
@@ -247,17 +251,22 @@ extension HostConnectionStore {
         // A later selection, endpoint change or removal owns the outcome.
         if selectionSerials[id] == serial, selectionRequests[id] == request, connections[id] === connection {
             selectedTargets[id] = targetID
-            attributeHostSwitch(from: previousIntent, to: id)
+            if latestSelectionRequest == request, let previousIntent, previousIntent.destination.hostID != id,
+               ambientController?.listeningState.intent == previousIntent,
+               let destination = ambientBinding(host: id, targetID: targetID) {
+                confirmedHostSwitch = (previousIntent.generation, destination)
+            }
             ambientController?.reconnect.restore(store: self)
         }
     }
 
-    private func attributeHostSwitch(from intent: AmbientListeningState.Intent?, to host: HostEndpoint.Identifier) {
-        guard let intent, intent.destination.hostID != host,
-              ambientController?.listeningState.intent?.generation == intent.generation else { return }
-        let previous = intent.destination.hostID
-        ambientController?.attributeSelectionLoss(host: previous, serial: selectionSerials[previous, default: 0],
-                                                  stop: .ownerReselect)
+    fileprivate func consumeHostSwitch(generation: UUID, from original: AmbientAudioBinding?,
+                                       to destination: AmbientAudioBinding?) -> Bool {
+        defer { confirmedHostSwitch = nil }
+        guard let confirmedHostSwitch, confirmedHostSwitch.generation == generation,
+              let destination, destination == confirmedHostSwitch.destination, let original else { return false }
+        return ambientBinding(host: original.hostID, targetID: original.targetID) == original
+            && ambientBinding(host: destination.hostID, targetID: destination.targetID) == destination
     }
 
     private func selectionFailed(_ error: any Error, host id: HostEndpoint.Identifier,
@@ -1210,6 +1219,13 @@ extension AmbientListeningController {
         return .bindingLoss(binding, snapshot: snapshot)
     }
 
+    private func destinationLossReason(to destination: AmbientAudioBinding?) -> StopReason {
+        if reconnect.store?.consumeHostSwitch(generation: session, from: binding, to: destination) == true {
+            return .ownerReselect
+        }
+        return bindingLossReason
+    }
+
     private func preservesPause(_ current: AmbientAudioBinding) -> Bool {
         pausedReason != nil && current.hostID == binding?.hostID && current.targetID == binding?.targetID
             && current.selection == binding?.selection
@@ -1219,7 +1235,7 @@ extension AmbientListeningController {
         if current != binding {
             guard let current, preservesPause(current) else {
                 return await end(session, reason: "Stopped: the destination or connection changed.",
-                                 cause: "binding_changed", stop: bindingLossReason)
+                                 cause: "binding_changed", stop: destinationLossReason(to: current))
             }
             self.binding = current
         }
@@ -1268,8 +1284,11 @@ extension AmbientListeningController {
     /// it is reported like any other unexpected stop (#287).
     public func destinationLost() async {
         guard !reconnect.isPending else { return }
+        // The root reports loss without passing its new binding. An invalidated original or replacement
+        // has its own loss reason even when another host previously confirmed a selection.
+        let destination = reconnect.store?.confirmedHostSwitch?.destination
         await end(session, reason: "Stopped: the connection or destination went away.",
-                  cause: "binding_changed", stop: bindingLossReason)
+                  cause: "binding_changed", stop: destinationLossReason(to: destination))
     }
 
     /// Waits before each fresh stream; their count is the cap.
@@ -1546,7 +1565,11 @@ public struct DuckModeStatus: Equatable, Sendable {
 extension AmbientListeningController {
     public enum TurnOffSource: Sendable { case owner, diagnosticsDismissal }
 
-    public func turnOff(source: TurnOffSource = .owner) async {
+    public func turnOff() async {
+        await turnOff(source: .owner)
+    }
+
+    public func turnOff(source: TurnOffSource) async {
         let stop: StopReason = source == .owner ? .ownerOff : .legacy(.diagnosticsDismissed)
         reconnect.block(.ownerStop, stop: stop)
         await end(session, reason: nil, cause: "user", stop: stop)

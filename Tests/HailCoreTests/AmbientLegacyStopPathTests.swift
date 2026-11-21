@@ -14,66 +14,37 @@ import Testing
         #expect(Path.allCases == Self.paths)
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        var actual: [String] = []
+        var sources: [String: String] = [:]
         for tree in ["Sources", "Apps"] {
             let files = try #require(FileManager.default.enumerator(at: root.appendingPathComponent(tree),
                                                                    includingPropertiesForKeys: nil))
             for case let file as URL in files where file.pathExtension == "swift" {
-                let source = try String(contentsOf: file, encoding: .utf8)
-                let path = file.path.dropFirst(root.path.count + 1)
-                actual += Self.references(in: source).map { "\(path) \($0)" }
+                let path = String(file.path.dropFirst(root.path.count + 1))
+                sources[path] = try String(contentsOf: file, encoding: .utf8)
             }
         }
+        let actual = Self.references(in: sources).flatMap { path, sites in sites.map { "\(path) \($0)" } }
         #expect(actual.sorted() == Self.inventory.sorted())
     }
 
     // Include bare method values inside a type/extension as well as qualified calls in other files.
     // Counting the reference that creates a callback also catches callbacks passed on to other code.
     static func references(in source: String) -> [String] {
-        let commentsOrStrings = #/"(?:\\.|[^"\\\n])*"|\/\/[^\n]*|\/\*(?s:.*?)\*\//#
-        let code = source.replacing(commentsOrStrings) { $0.output.hasPrefix("/") ? " " : String($0.output) }
-        var bare: Set<String> = ["turnOff", "destinationLost", "ownerChangedDestination", "cancelTransportRestore",
-                                 "bindingLossReason", "targetLoss", "attributeSelectionLoss", "recordSendFailure"]
-        if code.contains(#/(?:class|extension)\s+AmbientListeningReconnect\b/#) { bare.formUnion(["block", "veto"]) }
-        if code.contains(#/(?:class|extension)\s+AmbientListeningController\b/#) {
-            bare.formUnion(["end", "observeSystemEnd", "updateDestination"])
-        }
-        if code.contains(#/(?:enum|extension)\s+(?:AmbientListeningState\.)?StopReason\b/#) {
-            bare.formUnion(["legacy", "sendError", "bindingLoss"])
-        }
-        let members = bare.union(["block", "veto", "legacy", "sendError", "bindingLoss"])
-            .union(paths.map { String(describing: $0) })
-        guard members.contains(where: { code.contains($0) }) else { return [] }
-        let aliases = callbackAliases(in: code, members: members)
-        let tokens = #/\bfunc\s+(\w+)|\bvar\s+(bindingLossReason|body)\b|(\.\s*)?\b(\w+)\b/#
-        var scope = "<file>"
-        var sites: [String] = []
-        for token in code.matches(of: tokens) {
-            if let declaration = token.1 ?? token.2 {
-                scope = String(declaration)
-            } else if let word = token.4 {
-                let name = String(word)
-                if aliases.contains(name) || bare.contains(name) || (token.3 != nil && members.contains(name)) {
-                    sites.append("\(scope) \(name)")
-                }
-            }
-        }
-        return sites
+        references(in: ["fixture": source])["fixture", default: []]
     }
 
-    private static func callbackAliases(in code: String, members: Set<String>) -> Set<String> {
-        let assignments = #/
-            (?m) (?:\b(?:let|var)\s+|^[ \t]*(?:\w+\??[ \t]*\.[ \t]*)*)
-            (\w+)(?:[ \t]*:[^=\n]+)?\s*=\s*
-            (?:\w+\??\s*\.\s*)*\.?(\w+)(?:\((?:\w+:)+\))?[ \t]*$
-            /#
-        let pairs = code.matches(of: assignments).map { (String($0.1), String($0.2)) }
-        var aliases: Set<String> = []
+    static func references(in sources: [String: String]) -> [String: [String]] {
+        let files = sources.mapValues(StopReferenceSource.init)
+        let assignments = files.values.flatMap(\.assignments)
+        var aliases = Set(files.values.flatMap { file in
+            file.assignments.compactMap { file.members.contains($0.value) ? $0.name : nil }
+        })
         while true {
-            let next = Set(pairs.compactMap { members.contains($0.1) || aliases.contains($0.1) ? $0.0 : nil })
-            if next == aliases { return aliases }
-            aliases = next
+            let count = aliases.count
+            aliases.formUnion(assignments.compactMap { aliases.contains($0.value) ? $0.name : nil })
+            if count == aliases.count { break }
         }
+        return files.mapValues { $0.references(aliases: aliases) }
     }
 
     @Test func referencesAndAliasChainsRemainCounted() {
@@ -108,6 +79,14 @@ import Testing
         #expect(Self.references(in: registration) == inventory)
         let withInvocation = registration + "\nfunc notify() { await self.onLoss?() }"
         #expect(Self.references(in: withInvocation) == inventory + ["notify onLoss"])
+        let files = Self.references(in: [
+            "Register.swift": registration,
+            "Forward.swift": "func forward() {\n self.onStop = self.onLoss\n}",
+            "Notify.swift": "func notify() { await self.onLoss?(); await self.onStop?() }"
+        ])
+        #expect(files["Register.swift"] == inventory)
+        #expect(files["Forward.swift"] == ["forward onStop", "forward onLoss"])
+        #expect(files["Notify.swift"] == ["notify onLoss", "notify onStop"])
     }
 }
 
@@ -119,7 +98,6 @@ extension AmbientLegacyStopPathTests {
             upsert legacy socketBindingLost veto
             disconnect veto
             selectTarget block
-            attributeHostSwitch attributeSelectionLoss
             selectionFailed veto legacy socketBindingLost
             remove veto
             forgetSelection attributeSelectionLoss
@@ -136,12 +114,13 @@ extension AmbientLegacyStopPathTests {
             observeSystemEnd end legacy systemCaptureEnded
             update block bindingLossReason updateDestination updateDestination
             bindingLossReason bindingLoss
-            updateDestination end bindingLossReason end legacy leftForeground
-            destinationLost end bindingLossReason
+            destinationLossReason bindingLossReason
+            updateDestination end destinationLossReason end legacy leftForeground
+            destinationLost end destinationLossReason
             recover legacy retriesExhausted
             stopForPolicy block cancelTransportRestore
             ownerChangedDestination block bindingLossReason destinationLost
-            turnOff legacy diagnosticsDismissed block end
+            turnOff turnOff legacy diagnosticsDismissed block end
             receiveAmbientRefusal recordSendFailure end legacy hostRefused
             cancelTransportRestore end
             """,

@@ -54,3 +54,5 @@ Device-wide intent and UI event wiring move together to SM2. Proposed multi-wind
 - Retain the originating store through an authorized final-tail drain after its window closes. Deliver the tail only on its original binding and release the store when the drain ends.
 
 The two-window toggle, single-microphone and cross-window Off checks belong to SM2.
+
+Attribution left for SM2: when the root clears its selection while both the old and the new destination are valid, it calls `destinationLost()` without the binding it just compared, so the store can attribute that stop to an owner reselect. SM2 passes the reconciled binding at that call so the stop is attributed exactly. Control flow is unaffected.
