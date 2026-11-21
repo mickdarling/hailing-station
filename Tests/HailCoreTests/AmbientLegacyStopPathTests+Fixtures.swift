@@ -17,6 +17,26 @@ extension AmbientLegacyStopPathTests {
         }
     }
 
+    @Test func unqualifiedConstructorInANewExtensionChangesTheTreeWideCount() throws {
+        let original = """
+        extension StopReason {
+            static func legacy() -> Self { prelegacy() }
+            static func prelegacy() -> Self { .legacy(.leftForeground) }
+        }
+        """
+        let before = try StopReferenceSource(original)
+        #expect(before.legacyCounts == [".legacy": 1, ".legacy(": 1])
+
+        let addition = """
+        extension StopReason {
+            static func fallback() -> Self { legacy(.leftForeground) }
+        }
+        """
+        let after = try StopReferenceSource(original + "\n" + addition)
+        #expect(after.legacyCounts == [".legacy": 1, ".legacy(": 1, "legacy(": 1])
+        #expect(!after.includesEntryPoints)
+    }
+
     @Test func unrelatedFilesOnlyPinLegacySpellings() throws {
         let source = """
         // AmbientListeningController
@@ -72,5 +92,15 @@ extension AmbientLegacyStopPathTests {
         #expect(inventory.legacyCounts == [".legacy": 1, ".legacy(": 1])
         #expect(inventory.controllerCounts == ["legacy": 1])
         #expect(inventory.unappliedLines.isEmpty)
+    }
+
+    @Test func extendedRegexTextIsIgnoredAndCountingResumesAfterTheDelimiter() throws {
+        let source = """
+        use(#/controller.destinationLost|legacy(path)|LegacyStopPath/#, legacy(value))
+        use(##/a/#b\\/##c//d|.legacy(path)/##, .legacy(value))
+        """
+        let inventory = try StopReferenceSource(source)
+        #expect(inventory.legacyCounts == [".legacy": 1, ".legacy(": 1, "legacy(": 1])
+        #expect(!inventory.includesEntryPoints)
     }
 }

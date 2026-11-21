@@ -8,7 +8,7 @@ extension AmbientLegacyStopPathTests {
     static let legacyCounts = [
         storeFile: [".legacy": 13, ".legacy(": 13],
         reconnectFile: [".legacy": 11, ".legacy(": 11, "LegacyStopPath": 3],
-        stateFile: [".legacy": 8, ".legacy(": 8, "LegacyStopPath": 2],
+        stateFile: [".legacy": 8, ".legacy(": 8, "legacy(": 1, "LegacyStopPath": 2],
         "Sources/HailDaemonKit/Provider/ProviderInputCoordinator.swift": [".legacy": 2]
     ]
 

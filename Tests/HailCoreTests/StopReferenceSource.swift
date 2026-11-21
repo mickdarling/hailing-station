@@ -35,9 +35,15 @@ struct StopReferenceSource {
         for (index, word) in tokens.enumerated() {
             if word == "LegacyStopPath" {
                 legacyCounts["LegacyStopPath", default: 0] += 1
-            } else if word == "legacy", index > 0, tokens[index - 1] == "." {
-                legacyCounts[".legacy", default: 0] += 1
-                if tokens.dropFirst(index + 1).first == "(" { legacyCounts[".legacy(", default: 0] += 1 }
+            } else if word == "legacy" {
+                let previous = tokens[..<index].last
+                let hasParen = tokens.dropFirst(index + 1).first == "("
+                if previous == "." {
+                    legacyCounts[".legacy", default: 0] += 1
+                    if hasParen { legacyCounts[".legacy(", default: 0] += 1 }
+                } else if hasParen, previous != "func" {
+                    legacyCounts["legacy(", default: 0] += 1
+                }
             }
         }
         if includesEntryPoints { countEntryPoints(tokens, in: source) }

@@ -36,17 +36,17 @@ The slice column identifies follow-up scope in #1283. SM1 preserves every stop i
 | `replacementFailed` | Reconnect `receive` sees a failed replacement or `selectionFailed` receives a non-transport selection failure outside the recognized authorization and capability cases. | 3 |
 | `diagnosticsDismissed` | Back from Audio Diagnostics cancels a pending start through `cancelForDiagnosticsDismissal()` and retains the historical `user` diagnostic token. | 2 |
 
-The inventory counts three spellings per Swift file throughout `Sources/` and `Apps/`. It counts `.legacy` member references, the subset followed by `(`, and the identifier `LegacyStopPath`. The lexer skips comments and string text and includes code inside string interpolation.
+The inventory is a tripwire for ordinary added stop paths. It pins `.legacy` references, dotted and unqualified `legacy(` counts, and `LegacyStopPath` tokens per Swift file throughout `Sources/` and `Apps/`. It also flags added stop entry-point calls or unapplied references in the pinned controller files and changes to that file set. Code review must trace indirect stops through renamed receivers, new closure chains, or existing callbacks such as `StationMenuStatus.setListening`.
 
-| File | All `.legacy` | Followed by `(` | `LegacyStopPath` |
-| --- | ---: | ---: | ---: |
-| `Sources/HailCore/Transport/HostConnectionStore.swift` | 13 | 13 | 0 |
-| `Sources/HailCore/AmbientListeningReconnect.swift` | 11 | 11 | 3 |
-| `Sources/HailCore/Transport/AmbientListeningState.swift` | 8 | 8 | 2 |
-| `Sources/HailDaemonKit/Provider/ProviderInputCoordinator.swift` | 2 | 0 | 0 |
-| **Total** | **34** | **32** | **5** |
+| File | All `.legacy` | `.legacy(` | Unqualified `legacy(` | `LegacyStopPath` |
+| --- | ---: | ---: | ---: | ---: |
+| `Sources/HailCore/Transport/HostConnectionStore.swift` | 13 | 13 | 0 | 0 |
+| `Sources/HailCore/AmbientListeningReconnect.swift` | 11 | 11 | 0 | 3 |
+| `Sources/HailCore/Transport/AmbientListeningState.swift` | 8 | 8 | 1 | 2 |
+| `Sources/HailDaemonKit/Provider/ProviderInputCoordinator.swift` | 2 | 0 | 0 | 0 |
+| **Total** | **34** | **32** | **1** | **5** |
 
-The two provider uses select and match a delivery mode. The 32 constructions include both reconnect callbacks that pass `.legacy(failure)`. An omitted tree-wide count means zero.
+The two provider uses select and match a delivery mode. The 32 dotted constructions include both reconnect callbacks that pass `.legacy(failure)`. The unqualified count includes `case legacy(LegacyStopPath)` and excludes `func legacy` declarations. An omitted tree-wide count means zero. The lexer skips comments, string text and extended regex literals, and includes code inside string interpolation. Bare `/.../` regex literals are outside its scope.
 
 The stop-name inventory covers the store, reconnect and state files in the table, plus Swift files that reference `AmbientListeningController`, `ambientController`, or a known stop member on the `controller` or `reconnect` receiver. Its keys pin all ten files, including files with zero stop names. A new caller therefore requires an explicit file entry. Within these files the inventory counts whole identifiers, including declarations, bare `legacy`, the 13 path names and `bindingLossReason`. Moving a call within one file can preserve its counts. The path-to-slice table records the intent of each stop. [Per-file counts and controller file list](../../Tests/HailCoreTests/AmbientLegacyStopPathTests+Pins.swift)
 

@@ -1,7 +1,8 @@
-/// Keeps code in string interpolations and skips comment and string text. Tokens retain their source positions.
+/// Keeps interpolated Swift code and skips comments, string text and extended regex literals.
+/// Tokens retain their source positions.
 struct StopReferenceLexer {
     enum LexicalError: Error {
-        case unterminatedComment, unterminatedString, unterminatedInterpolation
+        case unterminatedComment, unterminatedString, unterminatedInterpolation, unterminatedRegex
     }
 
     private var rest: Substring
@@ -65,6 +66,11 @@ struct StopReferenceLexer {
     private mutating func readLiteralOrHashes() throws {
         let hashes = rest.prefix { $0 == "#" }
         rest = rest[hashes.endIndex...]
+        if !hashes.isEmpty, take("/") {
+            result.append(hashes)
+            try skipExtendedRegex(closing: "/" + String(hashes))
+            return
+        }
         guard rest.first == "\"" else {
             result.append(hashes)
             return
@@ -92,6 +98,14 @@ struct StopReferenceLexer {
             }
         }
         throw LexicalError.unterminatedString
+    }
+
+    private mutating func skipExtendedRegex(closing: String) throws {
+        while !rest.isEmpty {
+            if take(closing) { return }
+            if rest.removeFirst() == "\\" { rest = rest.dropFirst() }
+        }
+        throw LexicalError.unterminatedRegex
     }
 
     private mutating func take(_ prefix: String) -> Bool {

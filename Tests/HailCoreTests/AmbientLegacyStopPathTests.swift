@@ -1,3 +1,7 @@
+// This tripwire flags added .legacy, unqualified legacy( and LegacyStopPath tokens throughout Sources and Apps.
+// It also flags added stop entry-point calls or unapplied references in pinned controller files and changes to that set.
+// Code review must trace indirection through renamed receivers, new closure chains and callbacks such as
+// StationMenuStatus.setListening. The lexer skips extended regex literals but does not recognize bare /.../ literals.
 import Foundation
 import Testing
 @testable import HailCore
