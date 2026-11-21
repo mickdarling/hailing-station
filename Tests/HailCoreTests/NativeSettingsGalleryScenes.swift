@@ -4,8 +4,8 @@ import SwiftUI
 
 @MainActor
 final class NativeSettingsGalleryIntents {
-    private(set) var count = 0
-    func record() { count += 1 }
+    private(set) var invocationCount = 0
+    func record() { invocationCount += 1 }
 }
 
 /// Authored input values, not installed-app or hardware readings. Every renderer is the actual app source.

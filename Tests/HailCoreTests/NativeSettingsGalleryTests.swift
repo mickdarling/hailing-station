@@ -44,7 +44,7 @@ import Testing
         defer { host.finish() }
         await host.render()
         let image = try host.png()
-        #expect(intents.count == 0, "Rendering may not invoke any setting, navigation or OS-read intent")
+        #expect(intents.invocationCount == 0, "Rendering may not invoke any setting, navigation or OS-read intent")
         let filename = "native-synthetic-\(name).png"
         if let output { try image.data.write(to: output.appendingPathComponent(filename), options: .atomic) }
         return ["file": filename, "page": page.rawValue, "requestedLogicalWidth": String(Int(style.width)),
