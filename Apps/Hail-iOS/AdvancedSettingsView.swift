@@ -37,6 +37,9 @@ struct AdvancedSettingsView<Tools: View>: View {
                     .accessibilityIdentifier("settings.advanced.host-unavailable")
             }
         }
+        #if os(macOS)
+        .formStyle(.grouped)
+        #endif
         .navigationTitle("Advanced and diagnostics")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
