@@ -12,7 +12,7 @@ enum SocketTestError: Error, Sendable {
 actor ScriptedSocket: WebSocketTransport {
     private var incoming: [Result<Data, any Error>] = []
     private var waiters: [UnsafeContinuation<Data, any Error>] = []
-    private var outgoing: [Data] = []
+    private(set) var outgoing: [Data] = []
     private(set) var closeCount = 0
     private let finishReceiveOnClose: Bool
 
