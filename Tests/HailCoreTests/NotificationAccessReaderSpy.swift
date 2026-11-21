@@ -12,7 +12,8 @@ actor NotificationAccessReaderSpy {
     }
 
     func finish(_ request: Int, with status: NotificationAccessStatus) throws {
-        let continuation = try #require(pending.removeValue(forKey: request), "An explicit read must be pending")
+        let removed = pending.removeValue(forKey: request)
+        let continuation = try #require(removed, "An explicit read must be pending")
         continuation.resume(returning: status)
     }
 }
