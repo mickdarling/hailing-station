@@ -83,6 +83,10 @@ extension RootView {
     private var shellSettingsSection: some View {
         List {
             ShellAppearanceEntry()
+            NavigationLink { listeningSettingsOverview } label: {
+                Label("Listening and attention", systemImage: "ear")
+            }
+            .accessibilityIdentifier("settings.listening.entry")
             NavigationLink { audioSettingsOverview } label: {
                 Label("Audio", systemImage: "waveform")
             }

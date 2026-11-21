@@ -35,6 +35,7 @@ struct StationRootView: View, AmbientDestinationOwner {
     @State var showingDestinations = false
     /// The redesign's navigation (#1115), owned here above both the shell and today's station.
     @State var navigation = StationNavigationState()
+    @AppStorage("ambient.masksDuringReplies") var settingsMasksDuringReplies = false
     @AppStorage("overheard.show") var settingsShowOverheard = false
     @AppStorage("overheard.whose") var settingsWhoseOverheard = "owner"
     @State var privacySettingsRequest = PrivacySettingsRequestState()
