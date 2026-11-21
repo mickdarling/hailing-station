@@ -33,6 +33,7 @@ import Testing
         let disappearance = try #require(session.disappearance)
         await disappearance.value
         #expect(!controller.isOn && !controller.isListening && !model.diagnostics.isActive)
+        #expect(controller.listeningState == .stopped(.ownerOff))
         await permission.resolve(granted)
         await start.value
         #expect(!controller.isOn && !controller.isListening && !model.diagnostics.isActive)

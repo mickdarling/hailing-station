@@ -35,6 +35,7 @@ import Testing
     @Test func startsOffAndListensOnlyAfterTheUserTurnsItOn() async throws {
         let harness = Harness()
         #expect(!harness.controller.isOn)
+        #expect(harness.controller.listeningState == .off)
         #expect(!harness.controller.isListening)
         #expect(harness.capture.startCount == 0)
 
@@ -44,6 +45,7 @@ import Testing
         #expect(harness.capture.startCount == 1)
         await harness.controller.turnOff()
         #expect(!harness.controller.isOn)
+        #expect(harness.controller.listeningState == .stopped(.ownerOff))
         #expect(harness.controller.stopReason == nil)
         #expect(harness.released == 1)
     }
@@ -85,6 +87,7 @@ import Testing
         await harness.controller.update(binding: current, scene: .background)
         await harness.controller.update(binding: try binding(target: "tmux:other"), scene: .background)
         #expect(!harness.controller.isOn)
+        #expect(harness.controller.listeningState == .stopped(.legacy(.socketBindingLost)))
         #expect(!harness.controller.isListening)
         #expect(harness.controller.stopReason?.contains("destination") == true)
     }
@@ -98,6 +101,7 @@ import Testing
 
         await harness.controller.update(binding: try binding(target: "tmux:other"), scene: .active)
         #expect(!harness.controller.isOn)
+        #expect(harness.controller.listeningState == .stopped(.legacy(.socketBindingLost)))
         #expect(!harness.controller.isListening)
         #expect(harness.controller.stopReason?.contains("destination") == true)
         #expect(harness.sent.last?.isFinal == true)
@@ -118,6 +122,7 @@ import Testing
         )
         await harness.controller.update(binding: reselected, scene: .active)
         #expect(!harness.controller.isOn)
+        #expect(harness.controller.listeningState == .stopped(.legacy(.socketBindingLost)))
     }
 
     @Test(.timeLimit(.minutes(1))) func aSendFailureStopsListeningAndSurfacesTheReason() async throws {
@@ -132,6 +137,7 @@ import Testing
         for await _ in harness.firstRelease.stream {}
         try Task.checkCancellation()
         #expect(!harness.controller.isOn)
+        #expect(harness.controller.listeningState == .stopped(.legacy(.hostRefused)))
         #expect(!harness.controller.isListening)
         #expect(harness.controller.stopReason?.contains("ambient busy") == true)
         #expect(harness.released == 1)
@@ -142,6 +148,7 @@ import Testing
         await harness.controller.turnOn(for: try binding())
         harness.capture.stop()
         try await waitUntil { await MainActor.run { !harness.controller.isOn } }
+        #expect(harness.controller.listeningState == .stopped(.legacy(.systemCaptureEnded)))
         #expect(harness.controller.stopReason?.contains("microphone") == true)
     }
 
@@ -150,6 +157,7 @@ import Testing
         harness.permission = false
         await harness.controller.turnOn(for: try binding())
         #expect(!harness.controller.isOn)
+        #expect(harness.controller.listeningState == .stopped(.microphonePermissionDenied))
         #expect(harness.capture.startCount == 0)
         #expect(harness.controller.stopReason?.contains("Microphone access") == true)
     }

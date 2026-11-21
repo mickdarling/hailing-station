@@ -154,13 +154,16 @@ extension HostConnectionStore {
         let restoring = ambientController?.reconnect.refreshEndpoint(
             endpoint, previous: snapshots[endpoint.id], store: self
         ) == true
-        if !restoring { ambientController?.reconnect.veto(.endpointChanged, host: endpoint.id) }
+        let changedAddress = snapshots[endpoint.id].map { $0.endpoint.url != endpoint.url } ?? false
+        let stop: AmbientListeningState.StopReason = changedAddress
+            ? .unsafeEndpointChange : .legacy(.socketBindingLost)
+        if !restoring { ambientController?.reconnect.veto(.endpointChanged, host: endpoint.id, stop: stop) }
         conversation.forgetHeardTurns(endpoint.id)
         let existing = connections.removeValue(forKey: endpoint.id)
         if restoring {
             selectedTargets[endpoint.id] = nil
             selectionRequests[endpoint.id] = nil
-        } else { forgetSelection(endpoint.id) }
+        } else { forgetSelection(endpoint.id, stop: stop) }
         let retainedBarrier = retiredBarriers.removeValue(forKey: endpoint.id)
         tokens[endpoint.id] = nil
         let inheritedBarrier = existing.map(drainingTransportBarrier(for:)) ?? retainedBarrier
@@ -215,8 +218,8 @@ extension HostConnectionStore {
     public func disconnect(_ id: HostEndpoint.Identifier) async {
         sessionUpdateDisplay.forget(id)
         revokeProactiveSpeech(id)
-        ambientController?.reconnect.veto(.explicitDisconnect, host: id)
-        forgetSelection(id)
+        ambientController?.reconnect.veto(.explicitDisconnect, host: id, stop: .ownerDisconnect)
+        forgetSelection(id, stop: .ownerDisconnect)
         await connections[id]?.disconnect()
     }
     /// Only reauthorization of the owner's existing destination uses `restoring` (#904).
@@ -225,7 +228,10 @@ extension HostConnectionStore {
         if restoring, let current = ambientBinding(host: id, targetID: targetID),
            ambientController?.binding == current, ambientController?.isListening == true,
            ambientController?.reconnect.isPending == false { return }
-        if !restoring { ambientController?.reconnect.block(.ownerSelection); forgetSelection(id) }
+        if !restoring {
+            ambientController?.reconnect.block(.ownerSelection, stop: .ownerReselect)
+            forgetSelection(id, stop: .ownerReselect)
+        }
         selectedTargets[id] = nil
         let request = UUID()
         selectionRequests[id] = request
@@ -247,7 +253,7 @@ extension HostConnectionStore {
                                  restoring: Bool, on connection: HostConnection) {
         guard let snapshot = snapshots[id], connections[id] === connection,
               let reconnect = ambientController?.reconnect else { return }
-        guard restoring else { return reconnect.veto(.bindingChanged, host: id) }
+        guard restoring else { return reconnect.veto(.bindingChanged, host: id, stop: .legacy(.socketBindingLost)) }
         reconnect.selectionFailed(error, snapshot: snapshot, store: self)
     }
     func retryAmbientTransport(host id: HostEndpoint.Identifier, generation: UUID) async -> Bool {
@@ -267,16 +273,16 @@ extension HostConnectionStore {
         else { return nil }
         return AmbientAudioBinding(
             hostID: id, targetID: targetID, connectionGeneration: snapshot.connectionGeneration,
-            selection: selectionSerials[id, default: 0]
+            selection: selectionSerials[id, default: 0], endpointURL: snapshot.endpoint.url.absoluteString
         )
     }
 
     public func remove(_ id: HostEndpoint.Identifier) async {
         sessionUpdateDisplay.forget(id)
-        ambientController?.reconnect.veto(.endpointChanged, host: id)
+        ambientController?.reconnect.veto(.endpointChanged, host: id, stop: .ownerRemove)
         conversation.forgetHeardTurns(id)
         tokens[id] = nil
-        forgetSelection(id)
+        forgetSelection(id, stop: .ownerRemove)
         let connection = connections.removeValue(forKey: id)
         let barrier = connection.map(drainingTransportBarrier(for:)) ?? retiredBarriers[id]
         if let barrier { retiredBarriers[id] = barrier }
@@ -286,7 +292,8 @@ extension HostConnectionStore {
         order.removeAll { $0 == id }
     }
     /// Every selection change, endpoint change or removal invalidates outstanding bindings for the host.
-    private func forgetSelection(_ id: HostEndpoint.Identifier) {
+    private func forgetSelection(_ id: HostEndpoint.Identifier, stop: AmbientListeningState.StopReason) {
+        ambientController?.attributeSelectionLoss(host: id, serial: selectionSerials[id, default: 0], stop: stop)
         selectionSerials[id, default: 0] &+= 1
         selectedTargets[id] = nil
         selectionRequests[id] = nil
@@ -496,7 +503,7 @@ extension HostConnectionStore {
             duckMode[event.endpointID] = DuckModeStatus(on: on, reason: reason, expiresMilliseconds: expires)
             if let request = privacyLocal[event.endpointID]?.request,
                request.on != on || (on && duckMode[event.endpointID]?.isOn() != true) {
-                ambientController?.reconnect.veto(.privacy, host: event.endpointID)
+                ambientController?.reconnect.veto(.privacy, host: event.endpointID, stop: .legacy(.privacyUnconfirmed))
             }
             ambientController?.reconnect.confirmedPrivacy(on: duckMode[event.endpointID]?.isOn() == true,
                                                          host: event.endpointID)
@@ -663,14 +670,14 @@ extension HostConnectionStore {
         // yet; drop() blocks an unsettled request. Gap taps and failed sends latch until an owner start.
         if snapshots[id]?.state != .ready || ambientController?.reconnect.isPending == true
             || ambientController?.pausedReason != nil {
-            ambientController?.reconnect.veto(.privacy, host: id)
+            ambientController?.reconnect.veto(.privacy, host: id, stop: .privacyStop)
         }
         let request = PrivacyRequest(on: on)
         privacyLocal[id, default: PrivacySwitchLocal()].request = request
         do {
             try await sendPrivacy(on: on, host: id)
         } catch {
-            ambientController?.reconnect.veto(.privacy, host: id)
+            ambientController?.reconnect.veto(.privacy, host: id, stop: .legacy(.privacySendFailed))
             if privacyLocal[id]?.request == request { privacyLocal[id]?.request = nil }
             throw error
         }
@@ -806,6 +813,31 @@ public struct AmbientAudioBinding: Hashable, Sendable {
     public let targetID: String
     public let connectionGeneration: UUID
     let selection: UInt64
+    let endpointURL: String?
+
+    init(hostID: HostEndpoint.Identifier, targetID: String, connectionGeneration: UUID, selection: UInt64,
+         endpointURL: String? = nil) {
+        self.hostID = hostID
+        self.targetID = targetID
+        self.connectionGeneration = connectionGeneration
+        self.selection = selection
+        self.endpointURL = endpointURL
+    }
+}
+
+// Endpoint metadata travels with the authorized binding. Its existing equality and hash inputs stay the same.
+extension AmbientAudioBinding {
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.hostID == rhs.hostID && lhs.targetID == rhs.targetID &&
+            lhs.connectionGeneration == rhs.connectionGeneration && lhs.selection == rhs.selection
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(hostID)
+        hasher.combine(targetID)
+        hasher.combine(connectionGeneration)
+        hasher.combine(selection)
+    }
 }
 
 /// Scene state as the ambient toggle needs it; the app maps SwiftUI's `ScenePhase` onto it.
@@ -827,7 +859,10 @@ public final class AmbientListeningController {
         -> AmbientAudioStreamer
 
     /// The toggle: true from the user's request until any stop.
-    public private(set) var isOn = false
+    public var isOn: Bool { listeningState.intent != nil }
+    private let listeningOwner = AmbientListeningOwner()
+    var listeningState: AmbientListeningState { listeningOwner.state }
+    typealias StopReason = AmbientListeningState.StopReason
     /// True only while microphone audio is actually streaming.
     public private(set) var isListening = false {
         didSet { reportActivity() }
@@ -856,11 +891,18 @@ public final class AmbientListeningController {
     @ObservationIgnored private var streamer: AmbientAudioStreamer?
     @ObservationIgnored private var session = UUID()
     @ObservationIgnored private var scene = AmbientScene.active
+    @ObservationIgnored private var retiredSelection: (generation: UUID, reason: StopReason)?
     @ObservationIgnored private var awaitingPermission = false
     @ObservationIgnored private var pendingStart = false
     @ObservationIgnored private var sendFailure: String?
+    private struct SendFailureCause {
+        let cause: String
+        let code: String?
+        var stop: StopReason
+    }
+
     /// The send failure's cause as a token (`host_refused` with the host's code, or `send_failed`) for diagnostics.
-    @ObservationIgnored private var sendFailureCause: (cause: String, code: String?)?
+    @ObservationIgnored private var sendFailureCause: SendFailureCause?
     /// Set when the host refused a segment because another device took listening over (#366).
     @ObservationIgnored private var movedAway: AmbientHandoff?
     /// Identifies the current "listening here now" confirmation, so only its own timer clears it.
@@ -913,7 +955,7 @@ public final class AmbientListeningController {
         reconnect.ownerStarted()
         let current = UUID()
         session = current
-        isOn = true
+        listeningOwner.apply(.ownerStart(.init(binding)), generation: current)
         stopReason = nil
         handoff = nil
         movedAway = nil
@@ -929,7 +971,7 @@ public final class AmbientListeningController {
         guard session == current else { return }
         guard granted else {
             return await end(current, reason: "Microphone access is off. Allow it in Settings to listen.",
-                             cause: "permission_denied")
+                             cause: "permission_denied", stop: .microphonePermissionDenied)
         }
         if scene == .active { await start(current) } else { pendingStart = true }
     }
@@ -945,7 +987,8 @@ extension AmbientListeningController {
         guard session == current else { return false }
         if resuming, scene != .active { pausedReason = Self.foregroundPausedStatus; return false }
         guard scene == .active else {
-            await end(current, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
+            await end(current, reason: "Stopped: Hailing Station left the foreground.", cause: "background",
+                      stop: .legacy(.leftForeground))
             return false
         }
         activation = current
@@ -962,28 +1005,34 @@ extension AmbientListeningController {
             guard scene == .active else {
                 await release(current)
                 if resuming, session == current { pausedReason = Self.foregroundPausedStatus; return false }
-                await end(current, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
+                await end(current, reason: "Stopped: Hailing Station left the foreground.", cause: "background",
+                          stop: .legacy(.leftForeground))
                 return false
             }
             try streamer.start()
-            self.streamer = streamer
-            isListening = true
-            pausedStream = nil
-            pausedReason = nil
-            diagnostics?.record(.ambientStart)
-            observeSystemEnd(session: current)
-            watch(streamer, session: current)
+            didStartStreaming(streamer, session: current)
             return true
         } catch {
             await release(current)
             if !resuming {
-                await end(current, reason: "Could not start listening: \(Self.describe(error))", cause: "start_failed")
+                await end(current, reason: "Could not start listening: \(Self.describe(error))",
+                          cause: "start_failed", stop: .legacy(.captureStartFailed))
             }
             return false
         }
     }
 
-    private func end(_ current: UUID, reason: String?, cause: String, code: String? = nil) async {
+    private func didStartStreaming(_ streamer: AmbientAudioStreamer, session current: UUID) {
+        self.streamer = streamer
+        isListening = true
+        pausedStream = nil
+        pausedReason = nil
+        diagnostics?.record(.ambientStart)
+        observeSystemEnd(session: current)
+        watch(streamer, session: current)
+    }
+
+    private func end(_ current: UUID, reason: String?, cause: String, code: String? = nil, stop: StopReason) async {
         guard session == current, isOn else { return }
         let restoring = reconnect.isPending
         var fields: [DiagnosticField: DiagnosticValue] = [.reason: .token(cause)]
@@ -992,7 +1041,7 @@ extension AmbientListeningController {
         if restoring { reconnect.finish(.failed, reason: movedAway == nil ? .startFailed : .movedAway) }
         session = UUID()
         reconnect.captureResumed()
-        isOn = false
+        listeningOwner.apply(.stop(stop), generation: current)
         isListening = false
         pendingStart = false
         awaitingPermission = false
@@ -1032,7 +1081,8 @@ extension AmbientListeningController {
         Task {
             guard isListening, pausedReason == nil, self.streamer === streamer else { return }
             await end(current, reason: sendFailure ?? "Stopped: the microphone was interrupted or ended.",
-                      cause: sendFailureCause?.cause ?? "capture_ended", code: sendFailureCause?.code)
+                      cause: sendFailureCause?.cause ?? "capture_ended", code: sendFailureCause?.code,
+                      stop: sendFailureCause?.stop ?? .legacy(.systemCaptureEnded))
         }
     }
 
@@ -1056,7 +1106,9 @@ extension AmbientListeningController {
                               streamID: streamID, binding: binding)
         }
         sendFailure = movedAway?.status ?? "Stopped: \(Self.describe(error))"
-        sendFailureCause = Self.diagnosticCause(error)
+        let diagnostic = Self.diagnosticCause(error)
+        let stop: StopReason = movedAway == nil ? .sendError(error, destinationReason: bindingLossReason) : .movedAway
+        sendFailureCause = SendFailureCause(cause: diagnostic.cause, code: diagnostic.code, stop: stop)
         if let code = sendFailureCause?.code { diagnostics?.record(.hostRefusal, [.code: .token(code)]) }
     }
 
@@ -1087,7 +1139,8 @@ extension AmbientListeningController {
             }
             Task { @MainActor in
                 if interrupted { return await self?.pause(current) }
-                await self?.end(current, reason: Self.interruptedReason, cause: ended ?? "system_interruption")
+                await self?.end(current, reason: Self.interruptedReason, cause: ended ?? "system_interruption",
+                                stop: .legacy(.systemCaptureEnded))
             }
         }
     }
@@ -1122,7 +1175,7 @@ extension AmbientListeningController {
         guard isOn else { return }
         if reconnect.isPending {
             if let current, current.hostID != binding?.hostID || current.targetID != binding?.targetID {
-                reconnect.block(.bindingChanged)
+                reconnect.block(.bindingChanged, stop: bindingLossReason)
             }
             if let current, pausedReason != nil, reconnect.canResumeCapture {
                 await updateDestination(current, previous: previous)
@@ -1130,6 +1183,20 @@ extension AmbientListeningController {
             return
         }
         await updateDestination(current, previous: previous)
+    }
+
+    /// Remember which command retired this exact selection, for a later binding-change callback.
+    fileprivate func attributeSelectionLoss(host: HostEndpoint.Identifier, serial: UInt64, stop: StopReason) {
+        if let intent = listeningState.intent, intent.destination.hostID == host,
+           intent.destination.selection == serial {
+            retiredSelection = (intent.generation, stop)
+        }
+    }
+
+    private var bindingLossReason: StopReason {
+        if let retiredSelection, retiredSelection.generation == session { return retiredSelection.reason }
+        let snapshot = binding.flatMap { reconnect.store?.snapshots[$0.hostID] }
+        return .bindingLoss(binding, snapshot: snapshot)
     }
 
     private func preservesPause(_ current: AmbientAudioBinding) -> Bool {
@@ -1141,7 +1208,7 @@ extension AmbientListeningController {
         if current != binding {
             guard let current, preservesPause(current) else {
                 return await end(session, reason: "Stopped: the destination or connection changed.",
-                                 cause: "binding_changed")
+                                 cause: "binding_changed", stop: bindingLossReason)
             }
             self.binding = current
         }
@@ -1160,7 +1227,8 @@ extension AmbientListeningController {
         case .inactive where isListening, .background where isListening:
             break
         case .inactive, .background:
-            await end(session, reason: "Stopped: Hailing Station left the foreground.", cause: "background")
+            await end(session, reason: "Stopped: Hailing Station left the foreground.", cause: "background",
+                      stop: .legacy(.leftForeground))
         }
     }
 }
@@ -1189,7 +1257,8 @@ extension AmbientListeningController {
     /// it is reported like any other unexpected stop (#287).
     public func destinationLost() async {
         guard !reconnect.isPending else { return }
-        await end(session, reason: "Stopped: the connection or destination went away.", cause: "binding_changed")
+        await end(session, reason: "Stopped: the connection or destination went away.",
+                  cause: "binding_changed", stop: bindingLossReason)
     }
 
     /// Waits before each fresh stream; their count is the cap.
@@ -1205,6 +1274,7 @@ extension AmbientListeningController {
               Self.isTransient(error), isLive(streamer) else { return false }
         if let lastRecovery, now() - lastRecovery >= Self.recoveryQuietPeriod { recoveries = 0 }
         guard recoveries < Self.recoveryBackoff.count else {
+            sendFailureCause?.stop = .legacy(.retriesExhausted)
             sendFailure = sendFailure.map { "\($0) Gave up after \(recoveries) restarts." }
             return false
         }
@@ -1262,12 +1332,12 @@ extension AmbientListeningController {
         let reason: AmbientListeningReconnect.Reason = pausedReason == nil ? .targetPolicyChanged : .callPolicyChanged
         let stopping = reconnect.isPending || pausedReason != nil
         sendFailure = pausedReason == nil ? AmbientRefusal.policyStopReason : AmbientRefusal.callPolicyStopReason
-        sendFailureCause = ("host_refused", "not_allowed")
+        sendFailureCause = SendFailureCause(cause: "host_refused", code: "not_allowed", stop: .policyDenied)
         diagnostics?.record(.hostRefusal, [.code: .token("not_allowed")])
         // Discard now, before the async teardown can yield or the encoder can send its tail.
-        reconnect.block(reason)
+        reconnect.block(reason, stop: .policyDenied)
         if !stopping {
-            cancelTransportRestore(reason: reason)
+            cancelTransportRestore(reason: reason, stop: .policyDenied)
         }
     }
 }
@@ -1275,7 +1345,7 @@ extension AmbientListeningController {
 extension AmbientListeningController {
     /// Ends listening for owner-initiated destination changes.
     public func ownerChangedDestination() async {
-        if reconnect.isPending { reconnect.block(.bindingChanged) }
+        if reconnect.isPending { reconnect.block(.bindingChanged, stop: bindingLossReason) }
         await destinationLost()
     }
 }
@@ -1463,9 +1533,10 @@ public struct DuckModeStatus: Equatable, Sendable {
 
 /// Transport restore reuses the live capture and the normal resume wire flag (#904).
 extension AmbientListeningController {
+    /// Slice 2 follow-up: Audio Diagnostics also calls this command on disappearance. Its scene owns that attribution.
     public func turnOff() async {
-        reconnect.block(.ownerStop)
-        await end(session, reason: nil, cause: "user")
+        reconnect.block(.ownerStop, stop: .ownerOff)
+        await end(session, reason: nil, cause: "user", stop: .ownerOff)
     }
 
     func ownsAudio(_ streamID: UUID?, binding: AmbientAudioBinding) -> Bool {
@@ -1510,7 +1581,10 @@ extension AmbientListeningController {
         recordSendFailure(error, session: session, from: streamer, streamID: streamID)
         streamer.discardCapture()
         let current = session
-        Task { await end(current, reason: sendFailure, cause: "host_refused") }
+        Task {
+            await end(current, reason: sendFailure, cause: "host_refused",
+                      stop: sendFailureCause?.stop ?? .legacy(.hostRefused))
+        }
     }
 
     private func transportSent(_ audio: AudioPayload, binding: AmbientAudioBinding) {
@@ -1537,7 +1611,7 @@ extension AmbientListeningController {
         streamer.resumeTransport()
         return true
     }
-    func cancelTransportRestore(reason: AmbientListeningReconnect.Reason? = nil) {
+    func cancelTransportRestore(reason: AmbientListeningReconnect.Reason? = nil, stop: StopReason) {
         streamer?.discardCapture()
         isListening = false
         let current = session
@@ -1551,7 +1625,7 @@ extension AmbientListeningController {
         let policyStop = reason == .callPolicyChanged || reason == .targetPolicyChanged
         Task {
             await end(current, reason: message, cause: policyStop ? "host_refused" : "binding_changed",
-                      code: policyStop ? "not_allowed" : nil)
+                      code: policyStop ? "not_allowed" : nil, stop: stop)
         }
     }
     static func isTransportError(_ error: any Error) -> Bool {

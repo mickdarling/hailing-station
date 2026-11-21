@@ -52,6 +52,7 @@ import Testing
         await loss.rig.controller.destinationLost()
         for run in [owner, loss] {
             #expect(!run.rig.controller.isOn && !run.rig.controller.isListening)
+            #expect(run.rig.controller.listeningState == (listening ? .stopped(.legacy(.socketBindingLost)) : .off))
             #expect(run.rig.controller.binding == nil && !run.rig.controller.reconnect.isPending)
             #expect(run.rig.controller.stopReason == (listening ? OwnerDestinationRun.reason : nil))
             #expect(run.rig.unexpected == (listening ? [OwnerDestinationRun.reason] : []))

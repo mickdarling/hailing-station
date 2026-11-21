@@ -11,6 +11,7 @@ import Testing
         try await rig.drop()
         try? await rig.store.setPrivacy(on: on, host: rig.endpoint.id)
         try await rig.expectStopped(.privacy)
+        #expect(rig.controller.listeningState == .stopped(.privacyStop))
         try await rig.reconnect()
         #expect(rig.notices.count == 1)
         await rig.close()
@@ -32,6 +33,14 @@ import Testing
             await rig.controller.update(binding: other, scene: .background)
         }
         try await rig.expectStopped(reason)
+        let stop: AmbientListeningState.StopReason = switch reason {
+        case .ownerStop: .ownerOff
+        case .ownerSelection: .ownerReselect
+        case .explicitDisconnect: .ownerDisconnect
+        case .endpointChanged: .ownerRemove
+        default: .legacy(.socketBindingLost)
+        }
+        #expect(rig.controller.listeningState == .stopped(stop))
         await rig.close()
     }
     @Test func knownMediaBeforeDropRestoresWithoutAGate() async throws {
@@ -72,6 +81,7 @@ import Testing
         changed.name = "Changed synthetic target"
         try await rig.socket.push(.targets(remove ? [] : [changed]))
         try await rig.expectStopped(.targetChanged)
+        #expect(rig.controller.listeningState == .stopped(remove ? .targetRemoved : .legacy(.socketBindingLost)))
         await rig.close()
     }
     @Test func explicitDisconnectAndProtocolFailureNeverArmRestore() async throws {

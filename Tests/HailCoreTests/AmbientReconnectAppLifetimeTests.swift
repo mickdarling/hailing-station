@@ -37,6 +37,7 @@ import Testing
         #expect(presentation.card(hostName: nil) == nil)
         #expect(presentation.resumeBinding == nil)
         #expect(!rig.controller.isListening && rig.controller.binding == nil)
+        #expect(rig.controller.listeningState == .stopped(.legacy(.socketBindingLost)))
         await rig.close()
     }
 
@@ -61,6 +62,12 @@ import Testing
         case .cardDisappearance: await rig.controller.destinationLost()
         }
         #expect(!rig.controller.isOn && !rig.controller.isListening)
+        let reason: AmbientListeningState.StopReason = switch loss {
+        case .targetRemoval: .targetRemoved
+        case .destinationChange: .ownerReselect
+        case .cardDisappearance: .legacy(.socketBindingLost)
+        }
+        #expect(rig.controller.listeningState == .stopped(reason))
         #expect(rig.controller.binding == nil)
         // Selection can stop the old sender on another task before update observes that listening is off.
         // Stopped state closes admission immediately; the earlier task still owns asynchronous release.
@@ -85,6 +92,7 @@ import Testing
             try await waitUntil { await releasing.isSet }
             try await ambientRefusalDeadline { await rig.controller.update(binding: nil, scene: .active) }
             #expect(!rig.controller.isOn && !rig.controller.isListening)
+            #expect(rig.controller.listeningState == .stopped(.legacy(.socketBindingLost)))
             #expect(rig.controller.binding == nil && rig.released == 0)
             let frames = try await rig.socket.sentFrames().count
             try await rig.feed()

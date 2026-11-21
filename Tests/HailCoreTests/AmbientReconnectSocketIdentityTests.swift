@@ -51,6 +51,7 @@ import Testing
         let handoff = AmbientHandoff.movedAway(to: "pad")
         #expect(!rig.controller.isListening && rig.controller.handoff == handoff)
         #expect(rig.controller.stopReason == handoff.status && rig.unexpected.isEmpty)
+        #expect(rig.controller.listeningState == .stopped(.movedAway))
         #expect(rig.notices.map(\.id) == [applied.id, applied.id])
         #expect(rig.notices.last?.outcome == .failed && rig.notices.last?.reason == .movedAway)
         await rig.close()
