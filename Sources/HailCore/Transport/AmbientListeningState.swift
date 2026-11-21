@@ -25,7 +25,7 @@ enum AmbientListeningState: Equatable, Sendable {
     enum LegacyStopPath: CaseIterable, Equatable, Sendable {
         case systemCaptureEnded, socketBindingLost, privacySendFailed, privacyUnconfirmed
         case leftForeground, captureStartFailed, sendCancelled, encodingFailed, sendFailed
-        case hostRefused, retriesExhausted, replacementFailed
+        case hostRefused, retriesExhausted, replacementFailed, diagnosticsDismissed
     }
 
     enum StopReason: Equatable, Sendable {

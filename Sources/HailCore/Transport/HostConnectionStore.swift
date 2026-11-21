@@ -228,6 +228,7 @@ extension HostConnectionStore {
         if restoring, let current = ambientBinding(host: id, targetID: targetID),
            ambientController?.binding == current, ambientController?.isListening == true,
            ambientController?.reconnect.isPending == false { return }
+        let previousIntent = restoring ? nil : ambientController?.listeningState.intent
         if !restoring {
             ambientController?.reconnect.block(.ownerSelection, stop: .ownerReselect)
             forgetSelection(id, stop: .ownerReselect)
@@ -246,9 +247,19 @@ extension HostConnectionStore {
         // A later selection, endpoint change or removal owns the outcome.
         if selectionSerials[id] == serial, selectionRequests[id] == request, connections[id] === connection {
             selectedTargets[id] = targetID
+            attributeHostSwitch(from: previousIntent, to: id)
             ambientController?.reconnect.restore(store: self)
         }
     }
+
+    private func attributeHostSwitch(from intent: AmbientListeningState.Intent?, to host: HostEndpoint.Identifier) {
+        guard let intent, intent.destination.hostID != host,
+              ambientController?.listeningState.intent?.generation == intent.generation else { return }
+        let previous = intent.destination.hostID
+        ambientController?.attributeSelectionLoss(host: previous, serial: selectionSerials[previous, default: 0],
+                                                  stop: .ownerReselect)
+    }
+
     private func selectionFailed(_ error: any Error, host id: HostEndpoint.Identifier,
                                  restoring: Bool, on connection: HostConnection) {
         guard let snapshot = snapshots[id], connections[id] === connection,
@@ -1533,10 +1544,12 @@ public struct DuckModeStatus: Equatable, Sendable {
 
 /// Transport restore reuses the live capture and the normal resume wire flag (#904).
 extension AmbientListeningController {
-    /// Slice 2 follow-up: Audio Diagnostics also calls this command on disappearance. Its scene owns that attribution.
-    public func turnOff() async {
-        reconnect.block(.ownerStop, stop: .ownerOff)
-        await end(session, reason: nil, cause: "user", stop: .ownerOff)
+    public enum TurnOffSource: Sendable { case owner, diagnosticsDismissal }
+
+    public func turnOff(source: TurnOffSource = .owner) async {
+        let stop: StopReason = source == .owner ? .ownerOff : .legacy(.diagnosticsDismissed)
+        reconnect.block(.ownerStop, stop: stop)
+        await end(session, reason: nil, cause: "user", stop: stop)
     }
 
     func ownsAudio(_ streamID: UUID?, binding: AmbientAudioBinding) -> Bool {

@@ -5,6 +5,27 @@ import Testing
 
 @MainActor
 @Suite(.serialized) struct AmbientReconnectPreviousHostTests {
+    @Test func selectingAnotherHostAttributesTheRootStopToOwnerReselect() async throws {
+        let run = try OwnerDestinationRun()
+        let rig = run.rig
+        try await run.start()
+        let root = try RootView(rig: rig, selectionStore: RootSelectionStore())
+        let original = try rig.currentBinding()
+        let second = try endpoint("second", "ws://127.0.0.1:8770")
+        let socket = try await connectSecondHost(second, rig: rig)
+        try await selectSecondHost(second, socket: socket, rig: rig)
+        #expect(try rig.currentBinding() == original)
+        #expect(rig.controller.isListening && rig.controller.binding == original)
+        root.selectedHostID = second.id
+        #expect(root.ambientDestinationBinding?.hostID == second.id)
+        await root.reconcileAmbientDestination()
+        #expect(rig.controller.listeningState == .stopped(.ownerReselect))
+        #expect(rig.controller.stopReason == OwnerDestinationRun.reason && rig.released == 1)
+        #expect(run.stops().map { $0.fields[.reason] } == [.token("binding_changed")])
+        await rig.close()
+        await rig.store.disconnect(second.id)
+    }
+
     @Test(arguments: [false, true])
     func removingPriorRestoredHostMustNotVetoCurrentHostsRecovery(removePrevious: Bool) async throws {
         let rig = try AmbientReconnectRig()

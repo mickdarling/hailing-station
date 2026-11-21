@@ -14,7 +14,7 @@ The intent contains the owner generation, host ID, endpoint URL, target ID and s
 - Owner Off, reselect, remove, disconnect and a privacy tap each have a distinct stop reason. The command that retires a selection supplies its attribution for that generation. A scene callback observing a changed binding has no owner authority of its own.
 - Policy denial, microphone permission denial, authoritative target or capability removal, unsafe endpoint change and moved-away each have a terminal reason. A ready host's live target with changed metadata can still fail the existing full-target comparison during recovery.
 - The reconnect coordinator carries attribution beside its existing first veto. Capture, send admission, release, retry scheduling, privacy decisions, handoff, drain and notification order still follow the existing controller paths.
-- Existing stop text and diagnostic fields retain their meanings. Owner Off records `ambient_stop` with `reason=user`. Legacy stops keep their existing non-user tokens, including route reasons, `capture_ended`, `background`, `start_failed`, `binding_changed`, `send_failed` and `host_refused`. The typed reasons stay local to the controller.
+- Existing stop text and diagnostic fields retain their meanings. Owner Off and Audio Diagnostics Back during a pending start record `ambient_stop` with `reason=user`. Other legacy stops keep their existing tokens, including route reasons, `capture_ended`, `background`, `start_failed`, `binding_changed`, `send_failed` and `host_refused`. The typed reasons stay local to the controller.
 
 ## Legacy stop inventory
 
@@ -34,12 +34,13 @@ The slice column identifies follow-up scope in #1283. SM1 preserves every stop i
 | `hostRefused` | An ordinary host refusal reaches `watch` through `recordSendFailure`, or reaches `end` through `receiveAmbientRefusal`. | 3 |
 | `retriesExhausted` | Controller `recover` reaches the existing transient-refusal retry cap. `watch` reports the recorded failure. | 3 |
 | `replacementFailed` | Reconnect `receive` sees a failed replacement or `selectionFailed` receives a non-transport selection failure outside the recognized authorization and capability cases. | 3 |
+| `diagnosticsDismissed` | Back from Audio Diagnostics cancels a pending start through `turnOff` and retains the historical `user` diagnostic token. | 2 |
 
 ## Verification pending
 
 The reducer tests cover destination identity, all automatic events, one stop per generation and obsolete stops after restart. The source inventory counts production stop constructions, callback references and aliases, retaining duplicate sites within a function. Controller tests add exact typed outcomes to the existing text, diagnostics, capture and recovery assertions. The controller invariant test follows one original intent through a mask preference change, an interruption and microphone recovery, then an armed socket loss and restoration.
 
-Host builds, strict lint, synthetic tests, simulator checks and physical-device checks are pending. Slice 4 owns the privacy work in #1305. Audio Diagnostics currently routes Back through the same public Off command as the card and menu. SM2 owns that caller's scene-specific attribution. The same-window reselect during a pending start remains separate follow-up work.
+Strict SwiftLint passed for the Swift files changed from the SM1 base. Host builds, synthetic tests, simulator checks and physical-device checks are pending. Slice 4 owns the privacy work in #1305. SM2 owns scene-specific activation and capture lifetime on Audio Diagnostics Back. The same-window reselect during a pending start remains separate follow-up work.
 
 ## SM2 · Device scope and scene lifecycle
 

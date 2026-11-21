@@ -7,7 +7,7 @@ import Testing
     static let paths: [Path] = [
         .systemCaptureEnded, .socketBindingLost, .privacySendFailed, .privacyUnconfirmed,
         .leftForeground, .captureStartFailed, .sendCancelled, .encodingFailed, .sendFailed,
-        .hostRefused, .retriesExhausted, .replacementFailed
+        .hostRefused, .retriesExhausted, .replacementFailed, .diagnosticsDismissed
     ]
 
     @Test func onlyRecordedSitesCanRequestALegacyStop() throws {
@@ -63,7 +63,8 @@ import Testing
 
     private static func callbackAliases(in code: String, members: Set<String>) -> Set<String> {
         let assignments = #/
-            (?m) \b(?:let|var)\s+(\w+)(?:[ \t]*:[^=\n]+)?\s*=\s*
+            (?m) (?:\b(?:let|var)\s+|^[ \t]*(?:\w+\??[ \t]*\.[ \t]*)*)
+            (\w+)(?:[ \t]*:[^=\n]+)?\s*=\s*
             (?:\w+\??\s*\.\s*)*\.?(\w+)(?:\((?:\w+:)+\))?[ \t]*$
             /#
         let pairs = code.matches(of: assignments).map { (String($0.1), String($0.2)) }
@@ -95,6 +96,19 @@ import Testing
             "register build", "register legacy", "register build", "register socketBindingLost"
         ])
     }
+
+    @Test func invokingAStoredCallbackAddsAnInventorySite() {
+        let registration = """
+        var onLoss: (() async -> Void)?
+        func register() {
+            self.onLoss = controller.destinationLost
+        }
+        """
+        let inventory = ["<file> onLoss", "register onLoss", "register destinationLost"]
+        #expect(Self.references(in: registration) == inventory)
+        let withInvocation = registration + "\nfunc notify() { await self.onLoss?() }"
+        #expect(Self.references(in: withInvocation) == inventory + ["notify onLoss"])
+    }
 }
 
 extension AmbientLegacyStopPathTests {
@@ -105,6 +119,7 @@ extension AmbientLegacyStopPathTests {
             upsert legacy socketBindingLost veto
             disconnect veto
             selectTarget block
+            attributeHostSwitch attributeSelectionLoss
             selectionFailed veto legacy socketBindingLost
             remove veto
             forgetSelection attributeSelectionLoss
@@ -114,7 +129,7 @@ extension AmbientLegacyStopPathTests {
             sendAudio sendFailed
             turnOn end
             start end legacy leftForeground end legacy leftForeground end legacy captureStartFailed
-            start observeSystemEnd
+            didStartStreaming observeSystemEnd
             openStreamer recordSendFailure
             watch end legacy systemCaptureEnded
             recordSendFailure sendError bindingLossReason
@@ -126,7 +141,7 @@ extension AmbientLegacyStopPathTests {
             recover legacy retriesExhausted
             stopForPolicy block cancelTransportRestore
             ownerChangedDestination block bindingLossReason destinationLost
-            turnOff block end
+            turnOff legacy diagnosticsDismissed block end
             receiveAmbientRefusal recordSendFailure end legacy hostRefused
             cancelTransportRestore end
             """,
