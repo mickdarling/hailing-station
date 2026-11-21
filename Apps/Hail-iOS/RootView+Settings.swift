@@ -20,6 +20,17 @@ extension StationRootView {
     }
 
     #if !SWIFT_PACKAGE
+    var voicesSettingsOverview: some View {
+        VoicesSettingsOverview(playback: playback) {
+            NavigationLink {
+                ReplySegmentToolsView(playback: playback, gate: echoGuard.segmentOnsetGate)
+            } label: {
+                Label("Turn-taking", systemImage: "pause.circle")
+            }
+            .accessibilityIdentifier("settings.voices.turn-taking")
+        }
+    }
+
     var advancedSettingsOverview: some View {
         AdvancedSettingsOverview(
             diagnostics: diagnostics, collectingHostName: connections.diagnosticsCollectingHost?.endpoint.name,
