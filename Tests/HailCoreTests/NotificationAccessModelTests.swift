@@ -48,7 +48,7 @@ import UserNotifications
     @Test func aReleasedOwnersLateCompletionCannotAffectANewOwner() async throws {
         let stale = NotificationAccessReaderSpy(), fresh = NotificationAccessReaderSpy()
         var old: NotificationAccessModel? = NotificationAccessModel(read: { await stale.read() })
-        weak var previous = old
+        weak let previous = old
         let oldTask = try #require(old?.check())
         try await waitUntil { await stale.calls == 1 }
         old = nil
