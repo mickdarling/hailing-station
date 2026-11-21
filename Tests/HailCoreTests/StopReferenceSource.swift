@@ -4,6 +4,7 @@ import Foundation
 struct StopReferenceSource {
     private let code: String
     private let bare: Set<String>
+    private let legacyConstructors: Set<String.Index>
     let members: Set<String>
     let assignments: [(name: String, value: String)]
 
@@ -21,14 +22,40 @@ struct StopReferenceSource {
             bare.formUnion(["legacy", "sendError", "bindingLoss"])
         }
         self.bare = bare
-        members = bare.union(["block", "veto", "legacy", "sendError", "bindingLoss"])
-            .union(AmbientLegacyStopPathTests.paths.map { String(describing: $0) })
+        let paths = Set(AmbientLegacyStopPathTests.paths.map { String(describing: $0) })
+        members = bare.union(["block", "veto", "legacy", "sendError", "bindingLoss"]).union(paths)
+        let legacyConstructors = Self.legacyConstructorSites(in: code, paths: paths)
+        self.legacyConstructors = legacyConstructors
         let assignments = #/
-            (?m) (?:\b(?:let|var)\s+|\b(?:\w+\??[ \t]*\.[ \t]*)*)
-            (\w+)(?:[ \t]*:[^={};\n]+)?\s*=\s*
+            (?m) (?: \b(?:let|var)[ \t]+(\w+)(?:[ \t]*:[^={};\n]+)?
+                   | (?:^|[;{])[ \t]*(?:\w+\??[ \t]*\.[ \t]*)*(\w+) ) \s*=\s*
             (?:\w+\??\s*\.\s*)*\.?(\w+)(?:\((?:\w+:)+\))?[ \t]*(?=$|[;}])
             /#
-        self.assignments = code.matches(of: assignments).map { (String($0.1), String($0.2)) }
+        self.assignments = code.matches(of: assignments).compactMap { match in
+            guard let name = match.1 ?? match.2,
+                  match.3 != "legacy" || legacyConstructors.contains(match.3.startIndex) else { return nil }
+            return (String(name), String(match.3))
+        }
+    }
+
+    private static func legacyConstructorSites(in code: String, paths: Set<String>) -> Set<String.Index> {
+        guard code.contains("legacy") else { return [] }
+        // A constructor value carries its type. A shorthand call carries a path case or a stop API's argument type.
+        let typed = #/
+            (?: \bStopReason\s*\.\s*
+              | \bcase\s+(?=legacy\s*\(\s*(?:AmbientListeningState\.)?LegacyStopPath\s*\))
+              | \b(?:cancelTransportRestore|block)\s*\([^(){}]*?\bstop\s*:\s*\.\s*(?=legacy\s*\()
+            )(legacy)\b
+            /#
+        var sites = Set(code.matches(of: typed).map { $0.1.startIndex })
+        let shorthand = #/
+            (?m) (?:^|[(:,?=]|\breturn)\s*\.\s*(legacy)\s*\(\s*
+            (?:(?:AmbientListeningState\.)?LegacyStopPath)?\.\s*(\w+)\s*\)
+            /#
+        for call in code.matches(of: shorthand) where paths.contains(String(call.2)) {
+            sites.insert(call.1.startIndex)
+        }
+        return sites
     }
 
     func references(aliases: Set<String>) -> [String] {
@@ -40,6 +67,7 @@ struct StopReferenceSource {
             if let declaration = token.1 ?? token.2 {
                 scope = String(declaration)
             } else if let word = token.4 {
+                if word == "legacy" && !legacyConstructors.contains(word.startIndex) { continue }
                 let name = String(word)
                 if aliases.contains(name) || bare.contains(name) || (token.3 != nil && members.contains(name)) {
                     sites.append("\(scope) \(name)")

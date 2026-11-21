@@ -34,7 +34,7 @@ The slice column identifies follow-up scope in #1283. SM1 preserves every stop i
 | `hostRefused` | An ordinary host refusal reaches `watch` through `recordSendFailure`, or reaches `end` through `receiveAmbientRefusal`. | 3 |
 | `retriesExhausted` | Controller `recover` reaches the existing transient-refusal retry cap. `watch` reports the recorded failure. | 3 |
 | `replacementFailed` | Reconnect `receive` sees a failed replacement or `selectionFailed` receives a non-transport selection failure outside the recognized authorization and capability cases. | 3 |
-| `diagnosticsDismissed` | Back from Audio Diagnostics cancels a pending start through `turnOff` and retains the historical `user` diagnostic token. | 2 |
+| `diagnosticsDismissed` | Back from Audio Diagnostics cancels a pending start through `cancelForDiagnosticsDismissal()` and retains the historical `user` diagnostic token. | 2 |
 
 ## Verification pending
 

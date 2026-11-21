@@ -95,6 +95,25 @@ import Testing
         #expect(inline["Register.swift"] == ["register onLoss", "register destinationLost"])
         #expect(inline["Notify.swift"] == ["notify onLoss"])
     }
+
+    @Test func parameterDefaultsAndUnrelatedLegacyCasesDoNotCreateAliases() {
+        let source = """
+        func register(previous: T = .legacy, x: T = .legacy
+        ) { switch x { case .legacy: break } }
+        func install(
+            onLoss: Callback = controller.destinationLost
+        ) { use(onLoss) }
+        func select() {
+            let mode: T = .legacy
+            let make = T.legacy
+            use(T.legacy(value))
+            use(.legacy(.unrelated))
+            use(mode, make)
+        }
+        """
+        #expect(StopReferenceSource(source).assignments.isEmpty)
+        #expect(Self.references(in: source) == ["install destinationLost"])
+    }
 }
 
 extension AmbientLegacyStopPathTests {
@@ -161,7 +180,6 @@ extension AmbientLegacyStopPathTests {
             "Apps/Hail-iOS/StationCard.swift": "body turnOff",
             "Apps/Hail-iOS/StationMenuPublishers.swift": "attach turnOff",
             // Same Swift spelling in unrelated code.
-            "Sources/HailDaemonKit/Provider/ProviderInputCoordinator.swift": "<file> legacy\ndispatch legacy",
             "Sources/HailDaemonKit/Listener/HostReplyDelivery.swift": "commit block block",
             "Sources/HailCore/AmbientAudioStreamer.swift": "makeQueue sendFailed"
         ]
