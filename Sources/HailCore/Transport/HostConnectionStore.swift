@@ -236,6 +236,7 @@ extension HostConnectionStore {
         let previousIntent = restoring ? nil : ambientController?.listeningState.intent
         if !restoring {
             ambientController?.reconnect.block(.ownerSelection, stop: .ownerReselect)
+            ambientController?.retirePendingOwnerStart()
             forgetSelection(id, stop: .ownerReselect)
         }
         selectedTargets[id] = nil
@@ -987,8 +988,8 @@ public final class AmbientListeningController {
         // The permission alert makes the scene inactive, so only leaving for the background cancels here.
         awaitingPermission = true
         let granted = await requestPermission()
-        awaitingPermission = false
         guard session == current else { return }
+        awaitingPermission = false
         guard granted else {
             return await end(current, reason: "Microphone access is off. Allow it in Settings to listen.",
                              cause: "permission_denied", stop: .microphonePermissionDenied)
@@ -1053,7 +1054,14 @@ extension AmbientListeningController {
     }
 
     private func end(_ current: UUID, reason: String?, cause: String, code: String? = nil, stop: StopReason) async {
-        guard session == current, isOn else { return }
+        guard let streamer = retire(current, reason: reason, cause: cause, code: code, stop: stop) else { return }
+        await streamer.stop()
+        await release(current)
+    }
+
+    private func retire(_ current: UUID, reason: String?, cause: String, code: String? = nil,
+                        stop: StopReason) -> AmbientAudioStreamer? {
+        guard session == current, isOn else { return nil }
         let restoring = reconnect.isPending
         var fields: [DiagnosticField: DiagnosticValue] = [.reason: .token(cause)]
         if let code { fields[.code] = .token(code) }
@@ -1083,10 +1091,9 @@ extension AmbientListeningController {
             notificationCenter.removeObserver(systemEndObserver)
             self.systemEndObserver = nil
         }
-        guard let streamer else { return }
+        guard let streamer else { return nil }
         self.streamer = nil
-        await streamer.stop()
-        await release(current)
+        return streamer
     }
 }
 
@@ -1280,6 +1287,14 @@ extension AmbientListeningController {
 
 /// Recovering from a host-ended stream (#287).
 extension AmbientListeningController {
+    private static let destinationLostMessage = "Stopped: the connection or destination went away."
+
+    fileprivate func retirePendingOwnerStart() {
+        // A paused capture already has its own veto path. Only an initial start has neither a streamer nor a pause.
+        guard streamer == nil, pausedReason == nil else { return }
+        _ = retire(session, reason: Self.destinationLostMessage, cause: "binding_changed", stop: .ownerReselect)
+    }
+
     /// The card went away because the connection or destination did, not because the user turned listening off:
     /// it is reported like any other unexpected stop (#287).
     public func destinationLost() async {
@@ -1287,7 +1302,7 @@ extension AmbientListeningController {
         // The root reports loss without passing its new binding. An invalidated original or replacement
         // has its own loss reason even when another host previously confirmed a selection.
         let destination = reconnect.store?.confirmedHostSwitch?.destination
-        await end(session, reason: "Stopped: the connection or destination went away.",
+        await end(session, reason: Self.destinationLostMessage,
                   cause: "binding_changed", stop: destinationLossReason(to: destination))
     }
 

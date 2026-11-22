@@ -6,8 +6,8 @@ struct StopReferenceSource {
         "attributeSelectionLoss", "bindingLoss", "block", "cancelForDiagnosticsDismissal", "cancelTransportRestore",
         "destinationLossReason", "destinationLost", "end", "endBySystem", "forgetSelection", "legacy",
         "observeSystemEnd", "ownerChangedDestination", "receiveAmbientRefusal", "recordSendFailure", "retire",
-        "sendError", "sendFailed", "stopForPolicy", "stopListening", "targetLoss", "turnOff", "updateDestination",
-        "veto"
+        "retirePendingOwnerStart", "sendError", "sendFailed", "stopForPolicy", "stopListening", "targetLoss",
+        "turnOff", "updateDestination", "veto"
     ]
     private static let names = entryPoints.union(["bindingLossReason"])
         .union(AmbientLegacyStopPathTests.paths.map { String(describing: $0) })
