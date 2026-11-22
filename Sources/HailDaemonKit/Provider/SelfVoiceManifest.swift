@@ -39,16 +39,16 @@ struct SelfVoiceManifest: Codable, Equatable {
 actor SelfVoicePublisher {
     let path: String
     private let renderer: (any SelfVoiceRendering)?
-    let replaceLaunchManifest: SelfVoiceDirectory.ReplaceManifest
+    let observeLaunch: SelfVoiceDirectory.Observer?
     let clock: @Sendable () -> Int
     private var cache: [String: (SelfVoiceConfiguration, SelfVoiceManifest.Voice)] = [:]
 
     init(directory: String, renderer: (any SelfVoiceRendering)? = nil,
-         replaceLaunchManifest: @escaping SelfVoiceDirectory.ReplaceManifest = SelfVoiceDirectory.renameManifest,
+         observeLaunch: SelfVoiceDirectory.Observer? = nil,
          clock: @escaping @Sendable () -> Int = { Int(Date().timeIntervalSince1970) }) {
         path = directory
         self.renderer = renderer
-        self.replaceLaunchManifest = replaceLaunchManifest
+        self.observeLaunch = observeLaunch
         self.clock = clock
     }
 
@@ -104,15 +104,12 @@ final class SelfVoiceDirectory {
 
     private var installedWaves: [String: stat] = [:]
 
-    typealias ReplaceManifest = @Sendable (_ directory: Int32, _ temporary: String, _ name: String) throws -> Void
-    private let replaceManifest: ReplaceManifest
+    enum LaunchEvent { case beforeRenameCheck, renameAuthorized, manifestVerified }
+    typealias Observer = @Sendable (LaunchEvent) -> Void
+    private let observe: Observer?
 
-    static func renameManifest(in directory: Int32, from temporary: String, to name: String) throws {
-        guard renameatx_np(directory, temporary, directory, name, 0) == 0 else { throw SelfVoiceError.directory }
-    }
-
-    init(_ path: String, replaceManifest: @escaping ReplaceManifest = SelfVoiceDirectory.renameManifest) throws {
-        self.replaceManifest = replaceManifest
+    init(_ path: String, observe: Observer? = nil) throws {
+        self.observe = observe
         let parent = try SelfVoicePrivateFile.openParent(path)
         let leaf = parent.leaf
         defer { close(parent.descriptor) }
@@ -181,6 +178,7 @@ final class SelfVoiceDirectory {
     }
 
     func install(_ data: Data, as name: String, timestamp: Int? = nil, check: () throws -> Void = {}) throws {
+        try check()
         try checkedNames()
         let temp = ".self-\(UUID().uuidString).tmp"
         let file = openat(descriptor, temp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
@@ -197,15 +195,22 @@ final class SelfVoiceDirectory {
         try handle.synchronize()
         try checkedNames()
         let named = try info(temp)
-        try check()
         guard opened.st_ino == named.st_ino, opened.st_dev == named.st_dev else { throw SelfVoiceError.directory }
         if timestamp == nil {
+            try check()
             guard renameatx_np(descriptor, temp, descriptor, name, UInt32(RENAME_EXCL)) == 0 else {
                 throw SelfVoiceError.directory
             }
             installedWaves[name] = opened
         } else {
-            try replaceManifest(descriptor, temp, name)
+            observe?(.beforeRenameCheck)
+            // The deadline lock authorizes the rename and is released before filesystem I/O. A rename
+            // authorized before expiry may finish late. All WAVs are installed and synced before this
+            // manifest-last rename. The timed-out call returns nil without waiting. The next prepare()
+            // rereads enrollment and verifies the on-disk generation before it can return a path.
+            try check()
+            observe?(.renameAuthorized)
+            guard renameatx_np(descriptor, temp, descriptor, name, 0) == 0 else { throw SelfVoiceError.directory }
             installedWaves.removeAll() // The manifest rename committed these names, even if the next sync fails.
         }
     }
@@ -240,6 +245,7 @@ extension SelfVoiceDirectory {
         let bytes = try SelfVoicePrivateFile.read(SelfVoiceManifest.name, in: descriptor,
                                                   limit: SelfVoiceManifest.limit)
         guard try bytes?.0 == manifest.encoded() else { throw SelfVoiceError.manifest }
+        observe?(.manifestVerified)
     }
 
     func verifyWaves(_ manifest: SelfVoiceManifest) throws {
@@ -247,7 +253,9 @@ extension SelfVoiceDirectory {
     }
 
     func commit(_ manifest: SelfVoiceManifest, timestamp: Int, check: () throws -> Void = {}) throws {
+        try check()
         try verifyWaves(manifest)
+        try check()
         try sync()
         try install(manifest.encoded(), as: SelfVoiceManifest.name, timestamp: max(0, timestamp), check: check)
         try sync()

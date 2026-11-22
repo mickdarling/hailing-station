@@ -1,32 +1,90 @@
 #if os(macOS)
+import CryptoKit
 import Foundation
+import Synchronization
 import Testing
 @testable import HailDaemonKit
 
 @Suite(.timeLimit(.minutes(1)))
 struct SelfVoiceManifestDeadlineTests {
-    @Test func expiryAtRenamePreservesThePreviousManifestAfterWorkerRetires() async throws {
+    @Test func expiryBeforeRenameCheckRollsBackNewWaves() async throws {
         let files = try EnrollmentFixture(), clock = ProgressTestClock(), renderer = SyntheticSelfVoice()
         defer { files.remove() }
         let first = SelfVoiceLaunchPreparation(enrollmentPath: files.file.path, directory: files.directory.path,
                                                clock: clock.clock, renderer: { _ in renderer })
         try #require(await first.prepare() == files.manifest)
         let previous = try Data(contentsOf: files.manifest)
-        try files.write([])
+        let names = try Set(FileManager.default.contentsOfDirectory(atPath: files.directory.path))
+        try files.write([EnrollmentFixture.voice.merging(["id": "replacement"]) { $1 }])
 
-        let reached = AsyncStream<Void>.makeStream(), release = DispatchSemaphore(value: 0)
-        defer { release.signal() }
-        let replace: SelfVoiceDirectory.ReplaceManifest = { directory, temp, name in
-            reached.continuation.yield(())
-            // The watchdog fails a timer that tries to wait for the filesystem gate.
-            #expect(release.wait(timeout: .now() + 10) == .success)
-            try SelfVoiceDirectory.renameManifest(in: directory, from: temp, to: name)
+        let gate = RenameGate(at: .beforeRenameCheck)
+        let preparation = gate.preparation(files, clock: clock, renderer: renderer)
+        let worker = try await gate.expire(preparation, clock: clock)
+        do {
+            defer { gate.release.signal() }
+            let staged = try FileManager.default.contentsOfDirectory(atPath: files.directory.path)
+            #expect(staged.filter { $0.hasSuffix(".wav") && !names.contains($0) }.count == 1)
         }
-        let publisher = SelfVoicePublisher(directory: files.directory.path, replaceLaunchManifest: replace)
-        let preparation = SelfVoiceLaunchPreparation(enrollmentPath: files.file.path, publisher: publisher,
-                                                      clock: clock.clock, timeout: .seconds(7), renderer: { _ in
-            renderer
-        })
+        await worker.value
+
+        #expect(try Data(contentsOf: files.manifest) == previous)
+        #expect(try Set(FileManager.default.contentsOfDirectory(atPath: files.directory.path)) == names)
+    }
+
+    @Test func expiryAfterRenameCheckRequiresFreshVerificationForNextLaunch() async throws {
+        let files = try EnrollmentFixture(), clock = ProgressTestClock(), renderer = SyntheticSelfVoice()
+        defer { files.remove() }
+        let gate = RenameGate(at: .renameAuthorized)
+        let preparation = gate.preparation(files, clock: clock, renderer: renderer)
+        let worker = try await gate.expire(preparation, clock: clock)
+        #expect(!FileManager.default.fileExists(atPath: files.manifest.path))
+        gate.release.signal()
+        await worker.value
+
+        let late = try files.readManifest()
+        try #require(late.voices.map(\.id) == ["one"])
+        for entry in late.voices {
+            let bytes = try Data(contentsOf: files.directory.appendingPathComponent(entry.file))
+            #expect(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() == entry.sha256)
+        }
+        #expect(await preparation.lastFailure == .timeout)
+        let beforeRetry = gate.verifications.withLock { $0 }
+        try files.write([EnrollmentFixture.voice.merging(["id": "fresh"]) { $1 }])
+        #expect(await preparation.prepare() == files.manifest)
+        #expect(gate.verifications.withLock { $0 } == beforeRetry + 1)
+        #expect(try files.readManifest().voices.map(\.id) == ["fresh"])
+    }
+}
+
+private final class RenameGate: Sendable {
+    let release = DispatchSemaphore(value: 0)
+    let verifications = Mutex(0)
+    private let event: SelfVoiceDirectory.LaunchEvent
+    private let reached = AsyncStream<Void>.makeStream()
+    private let armed = Mutex(true)
+
+    init(at event: SelfVoiceDirectory.LaunchEvent) { self.event = event }
+
+    private func observe(_ step: SelfVoiceDirectory.LaunchEvent) {
+        if step == .manifestVerified { verifications.withLock { $0 += 1 } }
+        guard step == event, armed.withLock({ armed in
+            defer { armed = false }
+            return armed
+        }) else { return }
+        reached.continuation.yield(())
+        // A failed watchdog exposes a caller waiting on the filesystem gate.
+        #expect(release.wait(timeout: .now() + 10) == .success)
+    }
+
+    func preparation(_ files: EnrollmentFixture, clock: ProgressTestClock,
+                     renderer: SyntheticSelfVoice) -> SelfVoiceLaunchPreparation {
+        let publisher = SelfVoicePublisher(directory: files.directory.path, observeLaunch: observe)
+        return SelfVoiceLaunchPreparation(enrollmentPath: files.file.path, publisher: publisher,
+                                          clock: clock.clock, timeout: .seconds(7), renderer: { _ in renderer })
+    }
+
+    func expire(_ preparation: SelfVoiceLaunchPreparation, clock: ProgressTestClock) async throws -> Task<Void, Never> {
+        let deadline = clock.now + .seconds(7)
         let launch = Task {
             defer { reached.continuation.finish() }
             return await preparation.prepare()
@@ -36,11 +94,9 @@ struct SelfVoiceManifestDeadlineTests {
         let worker = try #require(await preparation.inFlightWork)
         clock.advance(by: .seconds(7))
         #expect(await launch.value == nil)
+        #expect(clock.now == deadline)
         #expect(await preparation.lastFailure == .timeout)
-        #expect(try Data(contentsOf: files.manifest) == previous)
-        release.signal()
-        await worker.value
-        #expect(try Data(contentsOf: files.manifest) == previous)
+        return worker
     }
 }
 #endif

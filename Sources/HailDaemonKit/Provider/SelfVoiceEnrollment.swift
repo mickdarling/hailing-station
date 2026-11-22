@@ -87,7 +87,7 @@ private extension SelfVoicePublisher {
         -> VerifiedEnrollment {
         let waves = try await render(enrollment, previous: previous, renderer: renderer, check: check)
         try check()
-        let directory = try SelfVoiceDirectory(path, replaceManifest: replaceLaunchManifest)
+        let directory = try SelfVoiceDirectory(path, observe: observeLaunch)
         do {
             let old = try directory.previous()
             var timestamp = old.timestamp
@@ -149,6 +149,7 @@ private extension SelfVoiceDirectory {
             try verifyWaves(manifest)
         } else {
             try commit(manifest, timestamp: timestamp, check: check)
+            try check()
             let retained = Set((manifest.voices + (old?.voices ?? [])).map(\.file))
             try removeSuperseded(keeping: retained)
         }
@@ -170,9 +171,11 @@ private final class PreparationDeadline: Sendable {
     func revoke() { revoked.withLock { $0 = true } }
 
     func check() throws {
-        guard clock.now() < end else { throw SelfVoiceLaunchPreparation.Failure.timeout }
-        guard !revoked.withLock({ $0 }) else { throw SelfVoiceLaunchPreparation.Failure.cancelled }
-        try Task.checkCancellation()
+        try revoked.withLock { revoked in
+            guard clock.now() < end else { throw SelfVoiceLaunchPreparation.Failure.timeout }
+            guard !revoked else { throw SelfVoiceLaunchPreparation.Failure.cancelled }
+            try Task.checkCancellation()
+        }
     }
 }
 

@@ -64,12 +64,20 @@ Only a successful verification in this daemon run authorizes `--self-voice-manif
 The presence of an earlier manifest on disk never authorizes that argument. Read, validation, render,
 publication and timeout failures record a content-free reason. Preparation returns no path and the child
 launches without the argument.
-The next preparation starts fresh. The whole attempt has one 20-second deadline, matching the announcer's
-render deadline. At expiry preparation returns immediately and cancels its own work and render child.
+The whole attempt has one absolute 20-second deadline, matching the announcer's render deadline.
+At expiry `prepare()` returns `nil` with reason `timeout` without waiting for filesystem work.
+It cancels its own work and render child.
 The worker closes its stdout and stderr readers on cancellation even if a descendant holds the write
 ends open. It joins both closes and reaps its own child in the background.
-There is an open publication race if the deadline expires during the final rename. The caller receives
-no launch path, but the rename can still replace the previous manifest.
+
+The worker checks the deadline and revocation before each WAV install and immediately before the
+manifest rename, under the same lock the timeout uses to revoke the attempt. If expiry wins the
+final check, the previous manifest stays byte-identical and the worker rolls back its new WAVs.
+If the rename passed that check before expiry, it may finish after the caller has timed out. It
+publishes a complete generation at the fixed `manifest.json` path. The worker installs and syncs
+the WAVs first and renames the manifest last. A late rename never yields a path for the timed-out
+call. The next `prepare()` rereads enrollment and verifies the on-disk manifest and WAV digests
+before returning any path.
 
 ## Published manifest
 
