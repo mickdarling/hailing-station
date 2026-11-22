@@ -7,7 +7,7 @@ import Testing
 extension AmbientGapFillTests {
     @Test(arguments: [1_500, 4_100])
     func listenerPrivacyDuringHoleWritesNothingAndResumeHasBothBounds(_ milliseconds: Int) async throws {
-        let rig = try await AmbientGapFillRig.make(holdStarted: true)
+        let rig = try await AmbientGapFillRig.make(privacy: true)
         do {
             let pair = try await FallbackSocketPair.boundedConnect(port: rig.env.port,
                                                                    selecting: [RecipientTestRig.target])
@@ -17,12 +17,13 @@ extension AmbientGapFillTests {
                 payload: .audio(AmbientGapFillRig.segment(stream, 0))), on: socket)
             _ = try await AmbientPrivacySwitchTests.untilPong(socket, step: "initial PCM admitted")
             let pipeline = try #require(rig.env.router.activePipeline)
+            while !pipeline.childStarted { await Task.yield() }
             #expect(await eventually { pipeline.counters.writtenBytes == 3_200 })
             // A hole is now open. Privacy arrives through the listener before its next segment.
             rig.clock.advance(.milliseconds(milliseconds))
             try await AmbientPrivacySwitchTests.send(true, on: socket)
             _ = try await AmbientPrivacySwitchTests.untilPong(socket, step: "privacy wish handled")
-            #expect(!pipeline.hearsAudio && !pipeline.childStarted)
+            #expect(!pipeline.hearsAudio && pipeline.childStarted)
             for sequence in [2, 20, 49] {
                 try await recipientSocketSend(sessionFrame(target: RecipientTestRig.target,
                     payload: .audio(AmbientGapFillRig.segment(stream, sequence))), on: socket)

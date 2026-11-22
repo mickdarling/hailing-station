@@ -17,12 +17,11 @@ struct AmbientGapFillRig {
     let logs: AmbientGapFillLogs
     let clock: AmbientGapTestClock
 
-    static func make(backlogBytes: Int = 524_288, holdStarted: Bool = false) async throws -> Self {
-        let fake = try FakeRightyo(holdStarted ? """
-        /bin/cat > "$7.raw"
-        /usr/bin/sed -n -e '1p' -e '$p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
-        """ : """
-        /usr/bin/sed -n '1p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
+    static func make(backlogBytes: Int = 524_288, privacy: Bool = false) async throws -> Self {
+        // A privacy-capable child holds its on acknowledgement while accepting control writes.
+        let advert = privacy ? AmbientPrivacyEventTests.duck(3) : ""
+        let fake = try FakeRightyo("""
+        /usr/bin/sed -n '1p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g"\(advert)
         /bin/cat > "$7.raw"
         /usr/bin/sed -n '$p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
         """)

@@ -17,13 +17,14 @@ struct DeviceVoiceStopRig {
 
     static func make(
         capabilities: [String] = [PlaybackStop.capability], hold: VoiceStopConfirmationHold? = nil,
-        ambientWired: Bool = true
+        ambientWired: Bool = true, privacyControl: Bool = false
     ) async throws -> Self {
         let owned = AmbientWiringStopConfirmationTests.fixture(dismiss: "owner", turn: "owner")
         let rest = owned.replacingOccurrences(of: "-e '$d'", with: "-e '1d;$d'")
+        let privacy = privacyControl ? #" -e 's/"phase"/"duck":{"version":3,"private":true},"phase"/'"# : ""
         let script = """
             /usr/bin/head -1 events.jsonl | /usr/bin/sed -e "s/dismissal-demo/$7/g" \
-              -e 's/"speakers": "anonymous"/"speakers": "enrolled"/'
+              -e 's/"speakers": "anonymous"/"speakers": "enrolled"/'\(privacy)
             while [ ! -f release ]; do /bin/sleep 0.02; done
             \(rest)
             """
@@ -36,7 +37,7 @@ struct DeviceVoiceStopRig {
                 "confirmidle": [AmbientWiringStopConfirmationTests.idle]
             ])
             let env = try await ambientRig(fake, timing: .init(eofGrace: 2, termGrace: 2),
-                                           acknowledgements: clips,
+                                           acknowledgements: clips, replyControl: privacyControl,
                                            acknowledgementHold: hold.map { barrier in .init { await barrier.wait() } },
                                            onEvent: { event in observation.events.withLock { $0.append(event) } },
                                            ambientWired: ambientWired,

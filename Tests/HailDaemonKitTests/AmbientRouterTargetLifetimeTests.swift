@@ -98,7 +98,7 @@ extension AmbientRouterStreamTargetTests {
         #expect(router.duckMode(connection: connection))
         #expect(await env.listener.ambientClipTarget(connection: connection) == RecipientTestRig.target)
         router.ambientPrivacy(false, connection: connection)
-        #expect(!router.duckMode(connection: connection))
+        #expect(router.duckMode(connection: connection))
         #expect(await env.listener.ambientClipTarget(connection: connection) == RecipientTestRig.target)
         try await pair.boundedBarrier(step: "pre-arm and unreported off send no clip")
         await env.listener.stop()

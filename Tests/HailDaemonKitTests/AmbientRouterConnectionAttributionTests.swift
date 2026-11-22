@@ -36,10 +36,6 @@ extension AmbientRouterStreamTargetTests {
         let connection = try #require(await env.listener.peers.values.first?.session.connectionID)
         let router = env.router
         #expect(await env.listener.ambientClipTarget(connection: connection) == nil)
-        router.ambientPrivacyPreArm(connection: connection)
-        #expect(router.duckMode(connection: connection))
-        router.ambientPrivacy(false, connection: connection)
-        #expect(!router.duckMode(connection: connection))
         #expect(router.setMeeting(on: true, connection: connection, reason: "voice") == 0)
         #expect(router.meetingMode(connection: connection))
         let clips = try #require(router.state.withLock { $0.privacyClips[connection] })
@@ -49,6 +45,10 @@ extension AmbientRouterStreamTargetTests {
         #expect(!router.meetingMode(connection: connection))
         await bounded("unselected exit resolved") { await clips.queued {}.value }
         await bounded("unselected notices drained") { await router.mediaNotices.queued {}.value }
+        router.ambientPrivacyPreArm(connection: connection)
+        #expect(router.duckMode(connection: connection))
+        router.ambientPrivacy(false, connection: connection)
+        #expect(router.duckMode(connection: connection))
         try await pair.boundedBarrier(step: "unselected commands apply silently")
         await env.listener.stop()
     }

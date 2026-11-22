@@ -28,6 +28,7 @@ struct AmbientPrivacyPreArmOffTests {
             $0.parks[parked] = ParkedPrivacy(connection: parked, device: nil, parkedAt: rig.clock.now())
             $0.parkOverflow = true
         }
+        try await AmbientPrivacyPreArmTests.startPrivate(rig, on: socket)
         try await AmbientPrivacySwitchTests.send(false, on: socket)
         try await AmbientPrivacyPreArmTests.until(.duckMode(on: false, reason: "device"), on: socket, step: "B off")
         #expect(!router.duckMode(connection: connection) && router.duckMode(connection: holder))
@@ -84,6 +85,7 @@ struct AmbientPrivacyPreArmOffTests {
         let (socket, connection) = try await AmbientPrivacyPreArmTests.preArmed(rig, name: RestoreRig.appName)
         #expect(rig.details("ambient_privacy_prearmed") == ["source=live"])
         #expect(router.state.withLock { $0.privacySources[connection]?.connection } == source)
+        try await AmbientPrivacyPreArmTests.startPrivate(rig, on: socket)
         try await AmbientPrivacySwitchTests.send(false, on: socket)
         try await AmbientPrivacyPreArmTests.until(.duckMode(on: false, reason: "device"), on: socket, step: "B off")
         let verdict = silent ? "cleared=1 kept=0 \(source)=stale" : "cleared=0 kept=1 \(source)=live"

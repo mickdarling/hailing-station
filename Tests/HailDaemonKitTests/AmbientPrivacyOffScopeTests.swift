@@ -14,6 +14,7 @@ struct AmbientPrivacyOffScopeTests {
         let rig: RestoreRig
         let source: UUID
         let restored: UUID
+        let socket: URLSessionWebSocketTask
     }
 
     /// Source A (a silent peer, or one that answers pings) is private by the owner's voice and still open; B, of class
@@ -29,10 +30,10 @@ struct AmbientPrivacyOffScopeTests {
         #expect(await eventually { router.activeConnection() == source }, "source start marker")
         try #require(await eventually { router.duckMode(connection: source) }, "source holds privacy")
         #expect(await eventually { !rig.details("ambient_duck_confirmed").isEmpty }, "privacy entry settled")
-        let (_, restored) = try await rig.start(name: RestoreRig.appName, kind: kind)
+        let (socket, restored) = try await rig.start(name: RestoreRig.appName, kind: kind)
         #expect(router.duckMode(connection: restored))
         #expect(await eventually { router.activePipeline?.hearsAudio == true }, "restored child confirmed private")
-        return (Scene(rig: rig, source: source, restored: restored), peer)
+        return (Scene(rig: rig, source: source, restored: restored, socket: socket), peer)
     }
 
     /// The source device: a silent peer, or one with the app's own transport, which answers pings. Like the app
@@ -101,6 +102,7 @@ struct AmbientPrivacyOffScopeTests {
         defer { other.cancel() }
         try await other.send(audio(UUID(), 0))
         #expect(await eventually { router.duckMode(connection: otherConnection) }, "third connection private")
+        try await AmbientPrivacyPreArmTests.startPrivate(rig, on: scene.socket)
         let line = await Self.off(scene)
         #expect(line?.contains("\(otherConnection)=not_source") == true)
         #expect(line?.contains("\(scene.source)=stale") == true)
@@ -119,12 +121,13 @@ struct AmbientPrivacyOffScopeTests {
         try #require(await eventually { router.duckMode(connection: dropped) }, "first connection holds privacy")
         first.cancel()
         #expect(await eventually { router.state.withLock { Array($0.parks.keys) } == [dropped] }, "parked")
-        let (_, restored) = try await rig.start(name: RestoreRig.appName)
+        let (socket, restored) = try await rig.start(name: RestoreRig.appName)
         let (later, laterConnection) = try await rig.connectSilent()
         defer { later.cancel() }
         try await later.send(audio(UUID(), 0))
         #expect(await eventually { router.duckMode(connection: laterConnection) }, "later connection private")
-        let line = await Self.off(Scene(rig: rig, source: dropped, restored: restored))
+        try await AmbientPrivacyPreArmTests.startPrivate(rig, on: socket)
+        let line = await Self.off(Scene(rig: rig, source: dropped, restored: restored, socket: socket))
         #expect(line == "cleared=0 kept=1 \(laterConnection)=not_source")
         #expect(router.duckMode(connection: laterConnection))
         await rig.finish()

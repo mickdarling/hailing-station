@@ -6,14 +6,15 @@ import Testing
 extension AmbientGapFillTests {
     @Test(arguments: ["suppression", "idle", "slow"])
     func longUnchargedTimeCannotAccumulateMoreThanThreeSeconds(_ mode: String) async throws {
-        let rig = try await AmbientGapFillRig.make(holdStarted: true)
+        let rig = try await AmbientGapFillRig.make(privacy: true)
         do {
             let pair = try await Self.bucketInput(rig)
             defer { pair.close() }
             let pipeline = try #require(rig.env.router.activePipeline)
+            while !pipeline.childStarted { await Task.yield() }
             if mode == "suppression" {
                 try await Self.bucketPrivacy(true, on: pair.sockets[0])
-                #expect(!pipeline.hearsAudio && !pipeline.childStarted)
+                #expect(!pipeline.hearsAudio && pipeline.childStarted)
             }
             for index in 1...60 {
                 if mode != "idle" {

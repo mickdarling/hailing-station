@@ -7,7 +7,7 @@ import Testing
 extension ReplyQueuedAudioProbeTests {
     @Test(arguments: ["entry-timeout", "restore-timeout", "restore-selection"])
     func slowPrivacyNoticeKeepsOtherDeviceStreamingAndOldQueueSilent(mode: String) async throws {
-        let rig = try await DeviceVoiceStopRig.make()
+        let rig = try await DeviceVoiceStopRig.make(privacyControl: true)
         let notice = VoiceStopConfirmationHold(), entered = VoiceStopConfirmationHold()
         let timeout = VoiceStopConfirmationHold()
         defer { notice.release(); timeout.release() }
@@ -24,7 +24,10 @@ extension ReplyQueuedAudioProbeTests {
             try await expirePrivacyStop(rig, connection: connection, ticket: replies.old, mode: mode, timeout: timeout)
             notice.release()
             await rig.env.router.mediaNotices.queued {}.value
-            #expect(rig.env.router.setDuck(false, connection: connection, reason: "voice") == 0)
+            try await rig.start()
+            let pipeline = try #require(rig.env.router.activePipeline)
+            try #require(await pipeline.privacyKept())
+            #expect(rig.env.router.setDuck(false, connection: connection, reason: "voice") == 1)
             await rig.env.router.mediaNotices.queued {}.value
             #expect(await !listener.replyHold.holds(connection))
             try await assertPrivacyAudio(listener, pair: other, replies: replies, mode: mode)

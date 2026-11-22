@@ -70,9 +70,8 @@ import Testing
         #expect(rig.details("ambient_duck") == ["on=true reason=voice reported=1", "on=false reason=device reported=1"])
     }
 
-    /// Jarvis: after the host stopped the stream while private (no child could keep privacy), the switch still turns
-    /// privacy off for the connection, with the device notice; on stays refused without a stream.
-    @Test func offWorksAfterTheStreamEndedOnDoesNot() async throws {
+    /// An ended child cannot confirm delivery. The device retains its private state.
+    @Test func offAfterTheStreamEndedKeepsTheDevicePrivate() async throws {
         let rig = try await AmbientPrivacySwitchTests.startedRig()
         defer { rig.close() }
         let connection = try #require(rig.connection()), router = rig.env.router
@@ -83,15 +82,13 @@ import Testing
         _ = try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "stream ended")
         #expect(router.duckMode(connection: connection))
         try await AmbientPrivacySwitchTests.send(false, on: rig.socket)
-        try await AmbientPrivacyPreArmTests.until(.duckMode(on: false, reason: "device"), on: rig.socket, step: "off")
-        #expect(!router.duckMode(connection: connection))
-        try await AmbientPrivacySwitchTests.send(true, on: rig.socket)
-        #expect(try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "on without a stream").isEmpty)
-        #expect(!router.duckMode(connection: connection))
+        try await AmbientPrivacyPreArmTests.until(.duckMode(on: true, reason: "device"), on: rig.socket, step: "held")
+        let frames = try await AmbientPrivacySwitchTests.untilPong(rig.socket, step: "off without a child")
+        #expect(!frames.contains(.control(.duckMode(on: false, reason: "device"))))
+        #expect(router.duckMode(connection: connection))
         await rig.settle()
         await rig.env.listener.stop(reason: "synthetic test complete")
-        #expect(rig.details("ambient_duck") == ["on=true reason=device reported=1",
-                                                "on=false reason=device reported=0"])
+        #expect(rig.details("ambient_duck_device") == ["on=true device=sent", "on=true device=sent"])
     }
 
     /// A v1 child cannot take privacy: the switch fails closed. Privacy stays off, the device is told off (reason

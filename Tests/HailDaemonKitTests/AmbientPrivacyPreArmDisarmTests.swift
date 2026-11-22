@@ -73,6 +73,7 @@ struct AmbientPrivacyPreArmDisarmTests {
         })
         let (socket, owner) = try await AmbientPrivacyPreArmTests.preArmed(rig)
         #expect(router.state.withLock { $0.parkOverflow }, "the overflow stays through another pre-arm")
+        try await AmbientPrivacyPreArmTests.startPrivate(rig, on: socket)
         try await AmbientPrivacySwitchTests.send(false, on: socket)
         try await AmbientPrivacyPreArmTests.until(.duckMode(on: false, reason: "device"), on: socket, step: "off")
         #expect(!router.duckMode(connection: owner))

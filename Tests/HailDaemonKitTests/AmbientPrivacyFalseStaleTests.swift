@@ -106,7 +106,12 @@ struct AmbientPrivacyFalseStaleTests {
     /// (d) A source still streaming when the off judges it is alive, whatever its ping: kept counting, never judged
     /// stale.
     @Test func aSourceStillStreamingIsKept() async throws {
-        let rig = try await RestoreRig(phrase: "stop recording", privacy: .silent)
+        let gate = AsyncStream<Void>.makeStream()
+        defer { gate.continuation.finish() }
+        let settings = PrivacyOffSettings(probeTimeout: .milliseconds(500), offScoping: { _ in
+            for await _ in gate.stream {}
+        })
+        let rig = try await RestoreRig(phrase: "stop recording", privacy: settings)
         defer { rig.close() }
         let router = rig.router
         let (peer, source) = try await rig.connectSilent()
@@ -114,9 +119,12 @@ struct AmbientPrivacyFalseStaleTests {
         try await peer.send(audio(UUID(), 0))
         try #require(await eventually { router.duckMode(connection: source) }, "source holds privacy")
         let (_, restored) = try await rig.start(name: RestoreRig.appName)
+        let pipeline = try #require(router.activePipeline)
+        try #require(await pipeline.privacyKept())
+        #expect(router.setDuck(false, connection: restored, reason: "voice") == 1)
         try await peer.send(audio(UUID(), 0))
         #expect(await eventually { router.activeConnection() == source }, "source took listening back")
-        _ = router.setDuck(false, connection: restored, reason: "voice")
+        gate.continuation.finish()
         #expect(await eventually { !rig.details("ambient_privacy_off_scoped").isEmpty }, "off scope marker")
         #expect(rig.details("ambient_privacy_off_scoped") == ["cleared=0 kept=1 \(source)=live"])
         #expect(router.duckMode(connection: source) && router.state.withLock { $0.staleCleared.isEmpty })
@@ -143,8 +151,9 @@ struct AmbientPrivacyFalseStaleTests {
         let cleared = try await Self.clearedAsStale()
         let (rig, router) = (cleared.rig, cleared.rig.router)
         defer { cleared.peer.cancel(); rig.close() }
-        let (_, other) = try await rig.connect(name: RestoreRig.appName)
+        let (socket, other) = try await rig.connect(name: RestoreRig.appName)
         router.state.withLock { $0.duck[other] = AmbientDuckTimer(token: UUID(), timer: nil) }
+        try await AmbientPrivacyPreArmTests.startPrivate(rig, on: socket)
         _ = router.setDuck(false, connection: other, reason: "voice")
         #expect(!router.duckMode(connection: other) && router.duckMode(connection: cleared.source))
         // The scope line would be written by a task off the lock at once; give it time to show it is not.

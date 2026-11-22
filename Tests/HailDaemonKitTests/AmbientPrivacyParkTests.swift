@@ -113,6 +113,8 @@ struct AmbientPrivacyParkTests {
         let router = rig.router
         #expect(router.setDuck(false, connection: UUID(), reason: "voice") == 0)
         #expect(router.state.withLock { !$0.parks.isEmpty }, "an off where privacy was not on keeps the park")
+        let pipeline = try #require(router.activePipeline)
+        try #require(await pipeline.privacyKept())
         _ = router.setDuck(false, connection: restored, reason: "timeout")
         #expect(!router.duckMode(connection: restored))
         #expect(router.state.withLock { !$0.parks.isEmpty }, "a non-owner off keeps the park")

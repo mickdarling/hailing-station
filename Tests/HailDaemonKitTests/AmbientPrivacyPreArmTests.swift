@@ -20,6 +20,18 @@ struct AmbientPrivacyPreArmTests {
         return (socket, connection)
     }
 
+    /// Give the pre-armed connection a listening child that can actually take its off.
+    @discardableResult static func startPrivate(_ rig: RestoreRig, on socket: URLSessionWebSocketTask) async throws
+        -> UUID {
+        let stream = UUID()
+        try await recipientSocketSend(audio(stream, 0), on: socket)
+        _ = try await AmbientPrivacySwitchTests.untilPong(socket, step: "private stream admitted")
+        try #require(rig.router.activeStream == stream)
+        let pipeline = try #require(rig.router.activePipeline)
+        try #require(await pipeline.privacyKept())
+        return stream
+    }
+
     /// Waits up to ten seconds for the queued notice, draining with pings. Pongs do not drain the notice task chain.
     /// An optional invariant must hold on each drain round and after the requested frame arrives.
     static func until(_ control: ControlPayload, on socket: URLSessionWebSocketTask, step: String,
@@ -104,6 +116,7 @@ struct AmbientPrivacyPreArmTests {
         let router = rig.router
         #expect(rig.details("ambient_privacy_prearmed") == ["source=park"])
         #expect(router.privacyHeardOn(connection: connection), "a park the owner heard announced answers a status")
+        let stream = try await Self.startPrivate(rig, on: socket)
         try await AmbientPrivacySwitchTests.send(false, on: socket)
         try await Self.until(.duckMode(on: false, reason: "device"), on: socket, step: "pre-arm off notice")
         #expect(!router.duckMode(connection: connection) && router.state.withLock { $0.parks.isEmpty })
@@ -112,10 +125,11 @@ struct AmbientPrivacyPreArmTests {
         },
                 "park cleared by the off marker")
         #expect(await eventually { await !rig.env.listener.replyHold.holds(connection) }, "hold released marker")
+        try await recipientSocketSend(audio(stream, 1, final: true), on: socket)
         try await recipientSocketSend(audio(UUID(), 0), on: socket)
         #expect(await eventually { router.activeConnection() == connection }, "start after the off marker")
         #expect(!router.duckMode(connection: connection))
-        #expect(await AmbientPrivacyParkTests.launchedPublic(rig, spawn: 1))
+        #expect(await AmbientPrivacyParkTests.launchedPublic(rig, spawn: 2))
         await rig.finish()
     }
 
