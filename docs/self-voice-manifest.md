@@ -62,15 +62,19 @@ its render child. Daemon shutdown also cancels preparation.
 First starts, starts after a crash, device takeovers, and active-stream reloads all launch immediately
 with respect to preparation. At argv assembly, haild checks the enrollment and manifest against the
 last generation verified in this daemon run. It securely reads each file by descriptor with the 16 KiB
-limit above. If the enrollment bytes and the manifest SHA-256 both match, the final two arguments
-are `--self-voice-manifest <absolute path>`. RightyO checks each WAV's SHA-256 against the manifest
-and skips any voice whose clip differs.
+limit above on a dedicated utility queue. The spawn waits at most 250 ms for both reads together.
+If an earlier verification is still running, the spawn falls back immediately. If the enrollment bytes
+and the manifest SHA-256 both match, the final two arguments are `--self-voice-manifest <absolute path>`.
+RightyO checks each WAV's SHA-256 against the manifest and skips any voice whose clip differs.
 
 Otherwise the child starts with ordinary arguments and haild kicks background preparation. The daemon
 queues a content-free log event such as `{"detail":"off for this child (pending)","event":"self-voice"}`.
-Child launch and retirement diagnostics use the same bounded queue. It drops excess events when its sink stalls.
+During a sink stall, haild counts fallbacks by reason and writes one line per occurrence when the sink
+recovers. Child launch and retirement diagnostics share the serial log queue with their own 16-slot limit.
 
-- `pending` means this daemon has yet to verify a generation.
+- `pending` means preparation is pending or spawn-time verification was busy or exceeded 250 ms.
+- With no verified generation after a failed preparation, the reason is `read`, `validation`, `render`,
+  `publication`, `timeout`, or `cancelled`.
 - `changed` means the enrollment bytes differ or the enrollment file failed its secure read.
 - `mismatch` means the on-disk manifest digest differs or the manifest failed its secure read.
 

@@ -111,21 +111,22 @@ final class BackgroundSelfVoice: Sendable {
         }
     }
 
-    enum Reason: String { case pending, changed, mismatch }
+    typealias Reason = SelfVoiceFallback
     private struct State {
         var generation: SelfVoiceGeneration?
+        var failure: SelfVoiceLaunchPreparation.Failure?
         var flight: Task<Void, Never>?
         var stopped = false
     }
     private let state = Mutex(State())
     private let preparation: SelfVoiceLaunchPreparation
-    private let report: @Sendable (Reason) -> Void
+    private let fallbacks: SelfVoiceFallbackLog
     private let logQueue = DispatchQueue(label: "hailing.self-voice.log", qos: .utility)
     private let logSlots = DispatchSemaphore(value: 16)
 
     init(_ preparation: SelfVoiceLaunchPreparation, report: @escaping @Sendable (Reason) -> Void) {
         self.preparation = preparation
-        self.report = report
+        fallbacks = SelfVoiceFallbackLog(queue: logQueue, report: report)
         kick()
     }
 
@@ -140,6 +141,7 @@ final class BackgroundSelfVoice: Sendable {
                 await result.worker.value
                 self?.state.withLock {
                     if !$0.stopped, let generation = result.generation { $0.generation = generation }
+                    $0.failure = result.failure
                     $0.flight = nil
                 }
             }
@@ -157,14 +159,12 @@ final class BackgroundSelfVoice: Sendable {
 
     deinit { inFlight?.cancel() }
 
-    fileprivate func argumentsForSpawn() -> [String] {
-        guard let generation = state.withLock({ $0.generation }) else { return fallback(.pending) }
-        guard (try? SelfVoicePrivateFile.boundedBytes(preparation.enrollmentPath)) == generation.enrollmentBytes
-        else { return fallback(.changed) }
-        // Manifest v1 (ctx-1225-contracts.md:141): RightyO checks each WAV's SHA-256 against these
-        // verified manifest bytes at startup and skips mismatches. No WAV I/O belongs on this path.
-        guard let bytes = try? SelfVoicePrivateFile.boundedBytes(generation.manifest.path, privateDirectory: true),
-              SelfVoiceWave.digest(bytes) == generation.manifestDigest else { return fallback(.mismatch) }
+    func argumentsForSpawn() -> [String] {
+        let (verified, failure) = state.withLock { ($0.generation, $0.failure) }
+        guard let generation = verified else { return fallback(failure.map(Reason.preparation) ?? .pending) }
+        if let reason = preparation.spawnVerification.check(generation, enrollment: preparation.enrollmentPath) {
+            return fallback(reason)
+        }
         return ["--self-voice-manifest", generation.manifest.path]
     }
 
@@ -180,7 +180,7 @@ final class BackgroundSelfVoice: Sendable {
 
     private func fallback(_ reason: Reason) -> [String] {
         kick()
-        enqueueLog { [report] in report(reason) }
+        fallbacks.enqueue(reason)
         return []
     }
 }

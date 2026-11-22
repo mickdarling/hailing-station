@@ -43,8 +43,13 @@ final class AmbientSelfVoiceSwitchRig: Sendable {
         }
     }
 
+    struct Hooks: Sendable {
+        var logGate: RecipientPublicationGate?
+        var read: SelfVoiceSpawnVerification.Read = SelfVoicePrivateFile.boundedBytes
+    }
+
     private init(enabled: Bool, crash: Bool, renderer: any SelfVoiceEnrollmentRendering,
-                 logGate: RecipientPublicationGate?) async throws {
+                 hooks: Hooks) async throws {
         files = try EnrollmentFixture()
         let capture = #"printf '%s\0' "$@" > argv.tmp && /bin/mv argv.tmp argv"#
         let recordAudio = #"/bin/cat > "$7.tmp" && /bin/mv "$7.tmp" "$7.pcm""#
@@ -62,21 +67,23 @@ final class AmbientSelfVoiceSwitchRig: Sendable {
             makePreparation: { [files, clock, events] path, directory in
                 events.built.withLock { $0 += 1 }
                 #expect(path == files.file.path && directory == files.directory.path)
-                return SelfVoiceLaunchPreparation(enrollmentPath: path, directory: directory,
-                                                  clock: clock.clock) { _ in
+                let publisher = SelfVoicePublisher(directory: directory, clock: { 100 })
+                let verification = SelfVoiceSpawnVerification(read: hooks.read)
+                return SelfVoiceLaunchPreparation(enrollmentPath: path, publisher: publisher, clock: clock.clock,
+                                                  timeout: .seconds(20), spawnVerification: verification) { _ in
                     events.attempts.withLock { $0 += 1 }
                     return renderer
                 }
-            }, log: { [events] in events.record($0, blocking: logGate) }
+            }, log: { [events] in events.record($0, blocking: hooks.logGate) }
         )
         listener = try WebSocketListener(bindAddress: "127.0.0.1", port: 0, host: rig.host, ambient: router)
     }
 
     static func withRig(
         enabled: Bool = true, crash: Bool = false, renderer: any SelfVoiceEnrollmentRendering = SyntheticSelfVoice(),
-        logGate: RecipientPublicationGate? = nil, _ body: (AmbientSelfVoiceSwitchRig) async throws -> Void
+        hooks: Hooks = .init(), _ body: (AmbientSelfVoiceSwitchRig) async throws -> Void
     ) async throws {
-        let rig = try await Self(enabled: enabled, crash: crash, renderer: renderer, logGate: logGate)
+        let rig = try await Self(enabled: enabled, crash: crash, renderer: renderer, hooks: hooks)
         defer { rig.fake.cleanUp(); rig.files.remove() }
         do {
             try await body(rig)
@@ -137,7 +144,7 @@ final class AmbientSelfVoiceSwitchRig: Sendable {
         }
     }
 
-    @discardableResult func expectArgv(manifest: Bool) async throws -> String {
+    @discardableResult func expectArgv(manifest: Bool, startPrivate: Bool = false) async throws -> String {
         let file = fake.directory.appendingPathComponent("argv")
         try await watch.wait(for: file)
         let bytes = try Data(contentsOf: file)
@@ -148,7 +155,8 @@ final class AmbientSelfVoiceSwitchRig: Sendable {
         #expect(session.hasPrefix("hail-") && UUID(uuidString: String(session.dropFirst(5))) != nil)
         let ordinary = ["listen", "--mode", "stdin", "--provenance", "live-microphone",
                         "--session-id", session, "--config", fake.config.path]
-        let expected = ordinary + (manifest ? ["--self-voice-manifest", files.manifest.path] : [])
+        let expected = ordinary + (startPrivate ? ["--start-private"] : [])
+            + (manifest ? ["--self-voice-manifest", files.manifest.path] : [])
         #expect(bytes == Data((expected.joined(separator: "\0") + "\0").utf8))
         return session
     }

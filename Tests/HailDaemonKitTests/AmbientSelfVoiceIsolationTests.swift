@@ -10,7 +10,7 @@ struct AmbientSelfVoiceIsolationTests {
     @Test func blockedFallbackLogDoesNotDelaySpawnOrReload() async throws {
         let gate = RecipientPublicationGate(timeout: .seconds(10))
         let held = HeldSelfVoiceRender()
-        try await Rig.withRig(renderer: held, logGate: gate) { rig in
+        try await Rig.withRig(renderer: held, hooks: .init(logGate: gate)) { rig in
             defer { gate.release(); held.release() }
             try await held.waitUntilStarted()
             let launch = Task { rig.start() }
@@ -19,7 +19,11 @@ struct AmbientSelfVoiceIsolationTests {
             _ = await launch.value
             #expect(await rig.router.reload() == .reloaded)
             try await rig.expectArgv(manifest: false)
+            let background = try #require(rig.router.backgroundSelfVoice)
+            for _ in 0..<20 { #expect(background.argumentsForSpawn().isEmpty) }
             #expect(!gate.timedOut)
+            gate.release()
+            for _ in 0..<22 { try await rig.expectReason(.pending) }
         }
     }
 
@@ -39,6 +43,11 @@ struct AmbientSelfVoiceIsolationTests {
             await flight.value
             #expect(rig.attempts == 1)
             #expect(!FileManager.default.fileExists(atPath: rig.files.manifest.path))
+            // The retry can finish without starting a second indefinitely held render.
+            try FileManager.default.removeItem(at: rig.files.file)
+            #expect(await rig.router.reload() == .reloaded)
+            try await rig.expectArgv(manifest: false)
+            try await rig.expectReason(.preparation(.timeout))
         }
     }
 

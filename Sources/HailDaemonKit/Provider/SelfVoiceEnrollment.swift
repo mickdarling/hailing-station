@@ -27,6 +27,56 @@ struct SelfVoiceGeneration: Sendable {
     let manifestDigest: String
 }
 
+enum SelfVoiceFallback: Hashable, Sendable {
+    case pending, changed, mismatch, preparation(SelfVoiceLaunchPreparation.Failure)
+
+    var rawValue: String {
+        switch self {
+        case .pending: "pending"
+        case .changed: "changed"
+        case .mismatch: "mismatch"
+        case .preparation(let failure): failure.rawValue
+        }
+    }
+}
+
+/// Each spawn owns its result. One stalled descriptor operation occupies at most one utility worker
+/// and subsequent spawns fall back immediately until it retires.
+final class SelfVoiceSpawnVerification: Sendable {
+    typealias Read = @Sendable (String, Bool) throws -> Data
+    private let read: Read
+    private let queue = DispatchQueue(label: "hailing.self-voice.verify", qos: .utility)
+    private let slot = DispatchSemaphore(value: 1)
+
+    init(read: @escaping Read = SelfVoicePrivateFile.boundedBytes) { self.read = read }
+
+    func check(_ generation: SelfVoiceGeneration, enrollment: String) -> SelfVoiceFallback? {
+        let deadline = DispatchTime.now() + .milliseconds(250)
+        guard slot.wait(timeout: .now()) == .success else { return .pending }
+        let done = DispatchSemaphore(value: 0)
+        let result = Mutex<SelfVoiceFallback?>(.pending)
+        queue.async { [self] in
+            let failure = verify(generation, enrollment: enrollment)
+            result.withLock { $0 = failure }
+            slot.signal()
+            done.signal()
+        }
+        guard done.wait(timeout: deadline) == .success, DispatchTime.now() <= deadline else { return .pending }
+        return result.withLock { $0 }
+    }
+
+    private func verify(_ generation: SelfVoiceGeneration, enrollment: String) -> SelfVoiceFallback? {
+        guard (try? read(enrollment, false)) == generation.enrollmentBytes else { return .changed }
+        // The v1 child opens the fixed pathname. In scope, only our publisher writes this 0700 directory.
+        // commit verifies every WAV digest before its manifest-last rename, so a concurrent publication
+        // supplies another complete generation from operator enrollment verified in this run. RightyO
+        // rechecks each WAV digest (ctx-1225-contracts.md:141). Other same-UID writers are out of scope.
+        guard let bytes = try? read(generation.manifest.path, true),
+              SelfVoiceWave.digest(bytes) == generation.manifestDigest else { return .mismatch }
+        return nil
+    }
+}
+
 struct SelfVoiceEnrollment: Sendable {
     enum Failure: Error, Equatable { case relativePath, file, size, schema, version, executable, voice, ids }
 
@@ -208,12 +258,14 @@ actor SelfVoiceLaunchPreparation {
     typealias Renderer = @Sendable (SelfVoiceEnrollment) -> any SelfVoiceEnrollmentRendering
 
     let enrollmentPath: String
+    let spawnVerification: SelfVoiceSpawnVerification
     private let manifestURL: URL
     private let publisher: SelfVoicePublisher
     private let clock: TaskProgressClock, timeout: Duration, renderer: Renderer
     private var verified: VerifiedEnrollment?
     struct Completion: Sendable {
         let generation: SelfVoiceGeneration?
+        let failure: Failure?
         let worker: Task<Void, Never>
     }
     private struct Attempt {
@@ -232,7 +284,8 @@ actor SelfVoiceLaunchPreparation {
     }
 
     init(enrollmentPath: String, publisher: SelfVoicePublisher, clock: TaskProgressClock,
-         timeout: Duration, renderer: @escaping Renderer) {
+         timeout: Duration, spawnVerification: SelfVoiceSpawnVerification = .init(), renderer: @escaping Renderer) {
+        self.spawnVerification = spawnVerification
         self.enrollmentPath = enrollmentPath
         self.publisher = publisher
         let directory = URL(fileURLWithPath: publisher.path, isDirectory: true)
@@ -293,11 +346,11 @@ actor SelfVoiceLaunchPreparation {
             lastFailure = nil
             let snapshot = SelfVoiceGeneration(manifest: manifestURL, enrollmentBytes: generation.enrollment.bytes,
                                                manifestDigest: generation.manifestDigest)
-            attempt.waiter.resume(returning: Completion(generation: snapshot, worker: attempt.worker))
+            attempt.waiter.resume(returning: Completion(generation: snapshot, failure: nil, worker: attempt.worker))
         case .failure(let failure):
             attempt.deadline.revoke()
             lastFailure = failure
-            attempt.waiter.resume(returning: Completion(generation: nil, worker: attempt.worker))
+            attempt.waiter.resume(returning: Completion(generation: nil, failure: failure, worker: attempt.worker))
             // cancel() invokes arbitrary render cancellation handlers synchronously. Keep those off the spawn waiter.
             Task.detached { attempt.worker.cancel() }
         }
