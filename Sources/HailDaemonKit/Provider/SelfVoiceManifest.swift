@@ -252,7 +252,7 @@ extension SelfVoiceDirectory {
         let retained = try files.compactMap { name -> stat? in
             var item = stat()
             if fstatat(descriptor, name, &item, AT_SYMLINK_NOFOLLOW) == 0 { return item }
-            if errno == ENOENT { return nil }
+            if errno == ENOENT || errno == ENAMETOOLONG { return nil }
             throw SelfVoiceError.directory
         }
         for name in names where Self.generated(name, prefix: "self-", suffix: ".wav") {

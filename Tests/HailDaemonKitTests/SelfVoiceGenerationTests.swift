@@ -47,6 +47,22 @@ struct SelfVoiceGenerationTests {
         #expect(try SelfVoiceWave.digest(fixture.read(lower)) == wave.sha256)
     }
 
+    @Test func emptyPublishClearsPreviousVoiceWithOverlongFilename() async throws {
+        let fixture = try SelfVoiceFixture()
+        defer { fixture.remove() }
+        try await fixture.publisher.publish([])
+        let name = String(repeating: "a", count: Int(PATH_MAX)) + ".wav"
+        let voice = SelfVoiceManifest.Voice(id: "one", file: name, source: .reply,
+                                            renderedAt: 0, sha256: String(repeating: "0", count: 64))
+        let previous = try SelfVoiceManifest(version: 1, voices: [voice]).encoded()
+        let file = try FileHandle(forWritingTo: fixture.directory.appendingPathComponent(SelfVoiceManifest.name))
+        try file.write(contentsOf: previous)
+        try file.close()
+
+        try await fixture.publisher.publish([])
+        #expect(try fixture.read(SelfVoiceManifest.name) == Data(#"{"version":1,"voices":[]}"#.utf8))
+    }
+
     @Test func emptyPublishReplacesExtraKeysWithExactV1Bytes() async throws {
         let fixture = try SelfVoiceFixture()
         defer { fixture.remove() }
