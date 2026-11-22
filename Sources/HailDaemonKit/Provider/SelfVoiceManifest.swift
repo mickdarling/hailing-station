@@ -208,6 +208,8 @@ final class SelfVoiceDirectory {
             // authorized before expiry may finish late. All WAVs are installed and synced before this
             // manifest-last rename. The timed-out call returns nil without waiting. The next prepare()
             // rereads enrollment and verifies the on-disk generation before it can return a path.
+            // A running child never adopts a late generation: RightyO reads the manifest only at child
+            // start (manifest v1, no hot reload), and commit() verifies every WAV digest before this rename.
             try check()
             observe?(.renameAuthorized)
             guard renameatx_np(descriptor, temp, descriptor, name, 0) == 0 else { throw SelfVoiceError.directory }
