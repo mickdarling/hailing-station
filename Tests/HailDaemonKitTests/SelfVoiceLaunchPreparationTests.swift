@@ -133,7 +133,7 @@ struct SelfVoiceLaunchPreparationTests {
         let result = Task { await prepare.prepare() }
         var started = held.started.stream.makeAsyncIterator()
         _ = try #require(await started.next())
-        let retiring = try #require(await prepare.inFlightWork)
+        let retiring = try #require(await prepare.inFlightWorker?.task)
         clock.advance(by: .seconds(7))
         #expect(await result.value == nil)
         #expect(clock.now == start + .seconds(7))
@@ -157,9 +157,12 @@ struct SelfVoiceLaunchPreparationTests {
     }
 }
 
-private final class HeldRender: SelfVoiceEnrollmentRendering {
+final class HeldRender: SelfVoiceEnrollmentRendering {
     let started = AsyncStream<Void>.makeStream(), terminated = AsyncStream<Void>.makeStream()
     private let pending = Mutex<CheckedContinuation<Void, Never>?>(nil)
+    private let onCancel: @Sendable () -> Void
+
+    init(onCancel: @escaping @Sendable () -> Void = {}) { self.onCancel = onCancel }
 
     func profileID(named name: String, at origin: URL) -> String { name }
 
@@ -169,7 +172,10 @@ private final class HeldRender: SelfVoiceEnrollmentRendering {
                 pending.withLock { $0 = waiter }
                 started.continuation.yield(())
             }
-        } onCancel: { self.terminated.continuation.yield(()) }
+        } onCancel: {
+            self.onCancel()
+            self.terminated.continuation.yield(())
+        }
         // Deliberately returns otherwise valid PCM even after the synthetic child was terminated.
         return Data(count: 8 * 48_000)
     }

@@ -65,9 +65,24 @@ actor SelfVoicePublisher {
         for (voice, origin) in zip(configurations, origins) {
             _ = try await renderer.profileID(named: voice.profile, at: origin)
         }
-        let directory = try SelfVoiceDirectory(path)
+        return try await withLockedDirectory { publisher, directory in
+            try await publisher.publish(configurations, in: directory, using: renderer, beforeManifest: beforeManifest)
+        }
+    }
+
+    func withLockedDirectory<Value: Sendable>(
+        observe: SelfVoiceDirectory.Observer? = nil,
+        _ operation: (isolated SelfVoicePublisher, SelfVoiceDirectory) async throws -> Value
+    ) async throws -> Value {
+        let directory = try SelfVoiceDirectory(path, observe: observe)
+        let descriptor = directory.descriptor
+        defer { close(descriptor) }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw SelfVoiceError.directory }
+        // A duplicate (including one inherited across fork) can outlive close. Unlock after rollback, before return.
+        defer { flock(descriptor, LOCK_UN) }
+        try directory.sweepTemporaries()
         do {
-            return try await publish(configurations, in: directory, using: renderer, beforeManifest: beforeManifest)
+            return try await operation(self, directory)
         } catch {
             directory.rollbackAfterFailure()
             throw error
@@ -112,7 +127,7 @@ final class SelfVoiceDirectory {
     typealias Observer = @Sendable (LaunchEvent) -> Void
     private let observe: Observer?
 
-    init(_ path: String, observe: Observer? = nil) throws {
+    fileprivate init(_ path: String, observe: Observer?) throws {
         self.observe = observe
         let parent = try SelfVoicePrivateFile.openParent(path)
         let leaf = parent.leaf
@@ -122,9 +137,11 @@ final class SelfVoiceDirectory {
         guard dir >= 0 else { throw SelfVoiceError.directory }
         self.path = parent.normalizedPath
         descriptor = dir
-        guard flock(dir, LOCK_EX | LOCK_NB) == 0 else { throw SelfVoiceError.directory }
+    }
+
+    fileprivate func sweepTemporaries() throws {
         for name in try checkedNames() where Self.generated(name, prefix: ".self-", suffix: ".tmp") {
-            guard unlinkat(dir, name, 0) == 0 else { throw SelfVoiceError.directory }
+            guard unlinkat(descriptor, name, 0) == 0 else { throw SelfVoiceError.directory }
         }
     }
 
@@ -133,8 +150,6 @@ final class SelfVoiceDirectory {
         let uuid = name.dropFirst(prefix.count).dropLast(suffix.count)
         return uuid.wholeMatch(of: #/[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}/#) != nil
     }
-
-    deinit { close(descriptor) }
 
     @discardableResult private func checkedNames() throws -> [String] {
         try SelfVoicePrivateFile.checkAncestors((path as NSString).deletingLastPathComponent)

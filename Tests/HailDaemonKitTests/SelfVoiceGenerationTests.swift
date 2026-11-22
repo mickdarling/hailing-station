@@ -152,4 +152,36 @@ struct SelfVoiceGenerationTests {
         for name in foreign { #expect(try fixture.read(name) == marker) }
     }
 }
+
+extension SelfVoiceGenerationTests {
+    @Test(arguments: [false, true])
+    func finishedPublicationUnlocksEvenWithADuplicateDescriptor(throwBeforeCommit: Bool) async throws {
+        enum Interrupted: Error { case beforeCommit(Int32) }
+        let fixture = try SelfVoiceFixture()
+        defer { fixture.remove() }
+        let retained: Int32
+        do {
+            retained = try await fixture.publisher.withLockedDirectory { _, directory in
+                let contender = open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+                try #require(contender >= 0)
+                defer { close(contender) }
+                let result = flock(contender, LOCK_EX | LOCK_NB), lockError = errno
+                try #require(result == -1 && lockError == EWOULDBLOCK)
+                // Model an inherited open-file description without forking the parallel test process.
+                let copy = fcntl(directory.descriptor, F_DUPFD_CLOEXEC, 0)
+                try #require(copy >= 0)
+                if throwBeforeCommit { throw Interrupted.beforeCommit(copy) }
+                return copy
+            }
+            #expect(!throwBeforeCommit)
+        } catch Interrupted.beforeCommit(let copy) {
+            retained = copy
+            #expect(throwBeforeCommit)
+        }
+        defer { close(retained) }
+        let next = SelfVoicePublisher(directory: fixture.directory.path, renderer: fixture.renderer)
+        let manifest = try await next.publish([])
+        #expect(try fixture.read(SelfVoiceManifest.name) == manifest.encoded())
+    }
+}
 #endif

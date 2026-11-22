@@ -91,8 +91,7 @@ private extension SelfVoicePublisher {
         try check()
         let waves = try await render(enrollment, previous: previous, renderer: renderer(enrollment), check: check)
         try check()
-        let directory = try SelfVoiceDirectory(path, observe: observeLaunch)
-        do {
+        return try await withLockedDirectory(observe: observeLaunch) { publisher, directory in
             let old = try directory.previous()
             var timestamp = old.timestamp
             var voices: [SelfVoiceManifest.Voice] = []
@@ -104,7 +103,7 @@ private extension SelfVoicePublisher {
                     voices.append(entry)
                 case let .rendered(config, wav):
                     guard timestamp < Int.max else { throw SelfVoiceError.manifest }
-                    timestamp = max(clock(), timestamp + 1)
+                    timestamp = max(publisher.clock(), timestamp + 1)
                     let name = "self-\(UUID().uuidString).wav"
                     try directory.install(wav, as: name, check: check)
                     voices.append(.init(id: config.id, file: name, source: config.source, renderedAt: timestamp,
@@ -115,9 +114,6 @@ private extension SelfVoicePublisher {
             try directory.finishLaunch(manifest, previous: previous?.manifest, old: old.manifest,
                                        timestamp: timestamp, check: check)
             return VerifiedEnrollment(enrollment: enrollment, manifest: manifest, profileIDs: waves.map(\.profileID))
-        } catch {
-            directory.rollbackAfterFailure()
-            throw error
         }
     }
 
@@ -194,14 +190,21 @@ actor SelfVoiceLaunchPreparation {
     private let publisher: SelfVoicePublisher
     private let clock: TaskProgressClock, timeout: Duration, renderer: Renderer
     private var verified: VerifiedEnrollment?
+    struct Worker {
+        let task: Task<Void, Never>
+        let cancellationQueue = DispatchQueue(label: "hailing.self-voice.cancel", qos: .utility)
+
+        // A synchronous child cancellation handler must run even if the publisher or constrained workers are busy.
+        func cancel() { cancellationQueue.async { task.cancel() } }
+    }
     private struct Attempt {
         let id: UUID, deadline: PreparationDeadline
-        let worker: Task<Void, Never>, timer: Task<Void, Never>
+        let worker: Worker, timer: Task<Void, Never>
         let waiter: CheckedContinuation<URL?, Never>
     }
     private var active: Attempt?
     /// Retirement observation for synthetic tests. A launch never joins this handle.
-    var inFlightWork: Task<Void, Never>? { active?.worker }
+    var inFlightWorker: Worker? { active?.worker }
     private(set) var lastFailure: Failure?
 
     init(enrollmentPath: String, directory: String) {
@@ -233,7 +236,7 @@ actor SelfVoiceLaunchPreparation {
                     do { try await clock.sleepUntil(deadline.end) } catch { return }
                     finish(id, .failure(.timeout))
                 }
-                active = Attempt(id: id, deadline: deadline, worker: worker, timer: timer, waiter: waiter)
+                active = Attempt(id: id, deadline: deadline, worker: Worker(task: worker), timer: timer, waiter: waiter)
                 if Task.isCancelled { finish(id, .failure(.cancelled)) }
             }
         } onCancel: { Task { await self.finish(id, .failure(.cancelled)) } }
@@ -269,8 +272,7 @@ actor SelfVoiceLaunchPreparation {
             attempt.deadline.revoke()
             lastFailure = failure
             attempt.waiter.resume(returning: nil)
-            // A synchronous render cancellation handler must be able to run even when the publisher queue is blocked.
-            DispatchQueue.global(qos: .utility).async { [worker = attempt.worker] in worker.cancel() }
+            attempt.worker.cancel()
         }
     }
 }

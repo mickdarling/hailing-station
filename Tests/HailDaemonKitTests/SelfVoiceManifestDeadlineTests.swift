@@ -117,7 +117,7 @@ private final class RenameGate: Sendable {
     func expire(_ preparation: SelfVoiceLaunchPreparation, clock: ProgressTestClock) async throws -> Task<Void, Never> {
         let deadline = clock.now + .seconds(7)
         let launch = try await start(preparation)
-        let worker = try #require(await preparation.inFlightWork)
+        let worker = try #require(await preparation.inFlightWorker?.task)
         clock.advance(by: .seconds(7))
         #expect(await launch.value == nil)
         #expect(clock.now == deadline)
