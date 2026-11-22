@@ -91,19 +91,20 @@ private extension SelfVoicePublisher {
         do {
             let old = try directory.previous()
             var timestamp = old.timestamp
-            let voices = try waves.map { wave -> SelfVoiceManifest.Voice in
+            var voices: [SelfVoiceManifest.Voice] = []
+            for wave in waves {
                 try check()
                 switch wave.audio {
                 case .verified(let entry):
                     guard old.manifest?.voices.contains(entry) == true else { throw SelfVoiceError.manifest }
-                    return entry
+                    voices.append(entry)
                 case let .rendered(config, wav):
                     guard timestamp < Int.max else { throw SelfVoiceError.manifest }
                     timestamp = max(clock(), timestamp + 1)
                     let name = "self-\(UUID().uuidString).wav"
                     try directory.install(wav, as: name, check: check)
-                    return .init(id: config.id, file: name, source: config.source, renderedAt: timestamp,
-                                 sha256: SelfVoiceWave.digest(wav))
+                    voices.append(.init(id: config.id, file: name, source: config.source, renderedAt: timestamp,
+                                        sha256: SelfVoiceWave.digest(wav)))
                 }
             }
             let manifest = SelfVoiceManifest(version: 1, voices: voices)
