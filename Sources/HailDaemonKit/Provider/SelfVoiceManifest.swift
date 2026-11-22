@@ -26,7 +26,9 @@ struct SelfVoiceManifest: Codable, Equatable {
                 !voice.file.contains("\0") && voice.renderedAt >= 0 && voice.sha256.utf8.count == 64 &&
                 voice.sha256.utf8.allSatisfy("0123456789abcdef".utf8.contains)
         }) else { throw SelfVoiceError.manifest }
-        let data = try JSONEncoder().encode(self)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let data = try encoder.encode(self)
         guard data.count <= Self.limit else { throw SelfVoiceError.manifest }
         return data
     }
@@ -51,12 +53,21 @@ actor SelfVoicePublisher {
         try SelfVoiceManifest.checkIDs(configurations.map(\.id))
         for voice in configurations { _ = try voice.origin() }
         let directory = try SelfVoiceDirectory(path)
+        do {
+            return try await publish(configurations, in: directory, beforeManifest: beforeManifest)
+        } catch {
+            try directory.rollbackWaves()
+            throw error
+        }
+    }
+
+    private func publish(_ configurations: [SelfVoiceConfiguration], in directory: SelfVoiceDirectory,
+                         beforeManifest: @Sendable () throws -> Void) async throws -> SelfVoiceManifest {
         let old = try directory.previous()
         var timestamp = old.timestamp
         var voices: [SelfVoiceManifest.Voice] = []
         for config in configurations {
             if let (saved, entry) = cache[config.id], saved == config, old.manifest?.voices.contains(entry) == true {
-                guard try directory.matches(entry) else { throw SelfVoiceError.manifest }
                 voices.append(entry)
                 continue
             }
@@ -67,17 +78,16 @@ actor SelfVoicePublisher {
             voices.append(entry)
         }
         let manifest = SelfVoiceManifest(version: 1, voices: voices)
-        if manifest != old.manifest {
-            try beforeManifest()
-            try Task.checkCancellation()
-            for entry in voices where try !directory.matches(entry) { throw SelfVoiceError.manifest }
-            // Persist WAV directory entries before making their names visible to a child.
-            try directory.sync()
-            try directory.install(manifest.encoded(), as: SelfVoiceManifest.name, timestamp: max(0, timestamp))
-        }
+        try beforeManifest()
+        try Task.checkCancellation()
+        for entry in voices where try !directory.matches(entry) { throw SelfVoiceError.manifest }
+        try directory.sync()
+        try directory.install(manifest.encoded(), as: SelfVoiceManifest.name, timestamp: max(0, timestamp))
         try directory.sync()
         cache = Dictionary(uniqueKeysWithValues: zip(configurations, voices).map { ($0.0.id, ($0.0, $0.1)) })
-        try directory.removeSuperseded(keeping: Set(voices.map(\.file)))
+        // A child may have opened the previous manifest and still need to open its WAVs by name.
+        let retained = Set((voices + (old.manifest?.voices ?? [])).map(\.file))
+        try directory.removeSuperseded(keeping: retained)
         return manifest
     }
 }
@@ -86,32 +96,45 @@ final class SelfVoiceDirectory {
     let path: String, descriptor: Int32
     private static let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW_ANY | O_CLOEXEC
 
+    private var installedWaves: [String: stat] = [:]
+
     init(_ path: String) throws {
         let parts = path.split(separator: "/")
         guard path.hasPrefix("/"), !path.contains("\0"), let leaf = parts.last,
               !parts.contains("."), !parts.contains("..") else { throw SelfVoiceError.directory }
-        let parent = open("/" + parts.dropLast().joined(separator: "/"), Self.flags)
+        let parentPath = "/" + parts.dropLast().joined(separator: "/")
+        try Self.checkAncestors(parentPath)
+        let parent = open(parentPath, Self.flags)
         guard parent >= 0 else { throw SelfVoiceError.directory }
         defer { close(parent) }
         guard mkdirat(parent, String(leaf), 0o700) == 0 || errno == EEXIST else { throw SelfVoiceError.directory }
         let dir = openat(parent, String(leaf), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard dir >= 0 else { throw SelfVoiceError.directory }
-        self.path = path
+        self.path = "/" + parts.joined(separator: "/")
         descriptor = dir
         guard flock(dir, LOCK_EX | LOCK_NB) == 0 else { throw SelfVoiceError.directory }
-        try checkedNames()
+        for name in try checkedNames() where Self.generated(name, prefix: ".self-", suffix: ".tmp") {
+            guard unlinkat(dir, name, 0) == 0 else { throw SelfVoiceError.directory }
+        }
+    }
+
+    private static func generated(_ name: String, prefix: String, suffix: String) -> Bool {
+        guard name.hasPrefix(prefix), name.hasSuffix(suffix) else { return false }
+        let uuid = name.dropFirst(prefix.count).dropLast(suffix.count)
+        return uuid.wholeMatch(of: #/[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}/#) != nil
     }
 
     deinit { close(descriptor) }
 
     @discardableResult private func checkedNames() throws -> [String] {
+        try Self.checkAncestors((path as NSString).deletingLastPathComponent)
         let current = open(path, Self.flags)
         guard current >= 0 else { throw SelfVoiceError.directory }
         defer { close(current) }
         var named = stat(), held = stat()
         guard fstat(current, &named) == 0, fstat(descriptor, &held) == 0,
               named.st_dev == held.st_dev, named.st_ino == held.st_ino else { throw SelfVoiceError.directory }
-        try Self.requirePrivate(held, type: S_IFDIR)
+        try Self.requirePrivate(held, type: S_IFDIR, hasACL: CodexLauncher.hasExtendedACL(descriptor: descriptor))
         let names = try AuditLog.directoryNames(in: descriptor, at: URL(fileURLWithPath: path))
             .filter { $0 != "." && $0 != ".." }
         for name in names { _ = try info(name) }
@@ -119,14 +142,21 @@ final class SelfVoiceDirectory {
     }
 
     private func info(_ name: String) throws -> stat {
+        let file = openat(descriptor, name, O_EVTONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard file >= 0 else { throw SelfVoiceError.directory }
+        defer { close(file) }
+        return try privateFileInfo(file)
+    }
+
+    private func privateFileInfo(_ file: Int32) throws -> stat {
         var item = stat()
-        guard fstatat(descriptor, name, &item, AT_SYMLINK_NOFOLLOW) == 0 else { throw SelfVoiceError.directory }
-        try Self.requirePrivate(item, type: S_IFREG)
+        guard fstat(file, &item) == 0 else { throw SelfVoiceError.directory }
+        try Self.requirePrivate(item, type: S_IFREG, hasACL: CodexLauncher.hasExtendedACL(descriptor: file))
         return item
     }
 
-    static func requirePrivate(_ info: stat, type: mode_t) throws {
-        guard info.st_uid == getuid(), info.st_mode & S_IFMT == type,
+    static func requirePrivate(_ info: stat, type: mode_t, hasACL: Bool) throws {
+        guard !hasACL, info.st_uid == getuid(), info.st_mode & S_IFMT == type,
               info.st_mode & 0o7777 == (type == S_IFDIR ? 0o700 : 0o600),
               type == S_IFDIR || info.st_nlink == 1 else { throw SelfVoiceError.directory }
     }
@@ -138,9 +168,7 @@ final class SelfVoiceDirectory {
             throw SelfVoiceError.directory
         }
         defer { close(file) }
-        var item = stat()
-        guard fstat(file, &item) == 0 else { throw SelfVoiceError.directory }
-        try Self.requirePrivate(item, type: S_IFREG)
+        let item = try privateFileInfo(file)
         guard item.st_size <= limit else { throw SelfVoiceError.manifest }
         let handle = FileHandle(fileDescriptor: file, closeOnDealloc: false)
         let data = try handle.read(upToCount: limit + 1) ?? Data()
@@ -154,6 +182,7 @@ final class SelfVoiceDirectory {
         }
         let old = try JSONDecoder().decode(SelfVoiceManifest.self, from: data)
         _ = try old.encoded()
+        // A restore plus clock rollback can repeat a second. RightyO also keys embeddings by the WAV digest.
         return (old, max(modified, old.voices.map(\.renderedAt).max() ?? -1))
     }
 
@@ -173,6 +202,7 @@ final class SelfVoiceDirectory {
         guard file >= 0 else { throw SelfVoiceError.directory }
         defer { close(file); unlinkat(descriptor, temp, 0) }
         let handle = FileHandle(fileDescriptor: file, closeOnDealloc: false)
+        let opened = try privateFileInfo(file)
         try handle.write(contentsOf: data)
         if let timestamp {
             // Carry the last enrollment second across restarts, including an empty manifest, without a v1 extension.
@@ -181,20 +211,62 @@ final class SelfVoiceDirectory {
         }
         try handle.synchronize()
         try checkedNames()
-        var opened = stat()
         let named = try info(temp)
-        guard fstat(file, &opened) == 0, opened.st_ino == named.st_ino, opened.st_dev == named.st_dev,
+        guard opened.st_ino == named.st_ino, opened.st_dev == named.st_dev,
               renameatx_np(descriptor, temp, descriptor, name, timestamp == nil ? UInt32(RENAME_EXCL) : 0) == 0
         else { throw SelfVoiceError.directory }
+        if timestamp == nil {
+            installedWaves[name] = opened
+        } else {
+            installedWaves.removeAll() // The manifest rename committed these names, even if the next sync fails.
+        }
+    }
+
+    func rollbackWaves() throws {
+        var failed = false
+        for (name, installed) in installedWaves {
+            var named = stat()
+            if fstatat(descriptor, name, &named, AT_SYMLINK_NOFOLLOW) != 0 {
+                if errno != ENOENT { failed = true }
+            } else if named.st_dev == installed.st_dev, named.st_ino == installed.st_ino,
+                      unlinkat(descriptor, name, 0) != 0 {
+                failed = true
+            }
+        }
+        if failed { throw SelfVoiceError.directory }
     }
 
     func removeSuperseded(keeping files: Set<String>) throws {
-        for name in try checkedNames() where !files.contains(name) && name.hasPrefix("self-") {
-            guard let uuid = UUID(uuidString: String(name.dropFirst(5).dropLast(4))),
-                  name == "self-\(uuid.uuidString).wav" else { continue }
+        for name in try checkedNames() where !files.contains(name) {
+            guard Self.generated(name, prefix: "self-", suffix: ".wav") else { continue }
             _ = try info(name)
             guard unlinkat(descriptor, name, 0) == 0 else { throw SelfVoiceError.directory }
         }
     }
 }
+
+extension SelfVoiceDirectory {
+    private static func checkAncestors(_ parent: String) throws {
+        var path = parent
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        var ancestors = [path]
+        while path != home && path != "/" {
+            path = (path as NSString).deletingLastPathComponent
+            ancestors.append(path)
+        }
+        for ancestor in ancestors.reversed() {
+            var info = stat()
+            guard lstat(ancestor, &info) == 0 else { throw SelfVoiceError.directory }
+            try requireAncestor(info, writableACL: CodexLauncher.aclAllowsChanges(folder: ancestor))
+        }
+    }
+
+    static func requireAncestor(_ info: stat, writableACL: Bool) throws {
+        guard info.st_mode & S_IFMT == S_IFDIR, info.st_uid == getuid() || info.st_uid == 0,
+              info.st_mode & 0o022 == 0 || info.st_mode & S_ISVTX != 0,
+              !writableACL else { throw SelfVoiceError.directory }
+    }
+}
+// Keep the locked file transaction in this slice's two production files.
+// swiftlint:disable:next file_length
 #endif

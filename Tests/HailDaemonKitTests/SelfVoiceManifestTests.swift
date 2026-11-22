@@ -77,12 +77,12 @@ struct SelfVoiceManifestTests {
         #expect(second.voices[0].file != first.voices[0].file && second.voices[1] == first.voices[1])
         let third = try await publisher.publish([voiceFixture(profile: "Local (two)", revision: "2")])
         #expect(third.voices[0].renderedAt > second.voices[0].renderedAt)
-        #expect(try fixture.names() == [third.voices[0].file, "manifest.json"])
+        #expect(try fixture.names() == Set(second.voices.map(\.file) + [third.voices[0].file, "manifest.json"]))
         let calls = await fixture.renderer.calls
         #expect(calls == ["one", "two", "one", "one"])
         let empty = try await publisher.publish([])
         #expect(empty.voices.isEmpty && empty.version == 1)
-        #expect(try fixture.names() == ["manifest.json"])
+        #expect(try fixture.names() == [third.voices[0].file, "manifest.json"])
         let restart = SelfVoicePublisher(directory: fixture.directory.path, renderer: fixture.renderer, clock: { 99 })
         let restored = try await restart.publish([voiceFixture()])
         #expect(restored.voices[0].renderedAt > third.voices[0].renderedAt)
@@ -150,8 +150,9 @@ struct SelfVoiceManifestTests {
         }
         #expect(try fixture.read("manifest.json") == json)
         #expect(try fixture.read(old.voices[0].file) == wav)
+        #expect(try fixture.names() == [old.voices[0].file, "manifest.json"])
         let next = try await fixture.publisher.publish([voiceFixture(revision: "2")])
-        #expect(try fixture.names() == [next.voices[0].file, "manifest.json"])
+        #expect(try fixture.names() == [old.voices[0].file, next.voices[0].file, "manifest.json"])
     }
 }
 #endif

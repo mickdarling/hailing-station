@@ -5,19 +5,65 @@ import Testing
 @testable import HailDaemonKit
 
 struct SelfVoicePublicationSecurityTests {
-    @Test func refusesForeignUIDForDirectoriesAndRegularFiles() throws {
+    @Test func refusesForeignUIDOrExtendedACLForDirectoriesAndRegularFiles() throws {
         // Exercise the same fstat predicate without requiring privileged chown.
         for (type, mode) in [(S_IFDIR, 0o700), (S_IFREG, 0o600)] {
             var item = stat()
             item.st_mode = mode_t(type) | mode_t(mode)
             item.st_nlink = 1
             item.st_uid = getuid()
-            try SelfVoiceDirectory.requirePrivate(item, type: mode_t(type))
+            try SelfVoiceDirectory.requirePrivate(item, type: mode_t(type), hasACL: false)
+            #expect(throws: SelfVoiceError.directory) {
+                try SelfVoiceDirectory.requirePrivate(item, type: mode_t(type), hasACL: true)
+            }
             item.st_uid ^= 1
             #expect(throws: SelfVoiceError.directory) {
-                try SelfVoiceDirectory.requirePrivate(item, type: mode_t(type))
+                try SelfVoiceDirectory.requirePrivate(item, type: mode_t(type), hasACL: false)
             }
         }
+    }
+
+    @Test func checksAncestorOwnerModeStickyBitAndWritableACL() throws {
+        var item = stat()
+        item.st_uid = 0
+        item.st_mode = S_IFDIR | 0o1777
+        try SelfVoiceDirectory.requireAncestor(item, writableACL: false)
+        #expect(throws: SelfVoiceError.directory) { try SelfVoiceDirectory.requireAncestor(item, writableACL: true) }
+        item.st_uid = getuid()
+        for mode in [0o720, 0o702] {
+            item.st_mode = S_IFDIR | mode_t(mode)
+            #expect(throws: SelfVoiceError.directory) {
+                try SelfVoiceDirectory.requireAncestor(item, writableACL: false)
+            }
+        }
+        item.st_mode = S_IFDIR | 0o700
+        try SelfVoiceDirectory.requireAncestor(item, writableACL: false)
+        item.st_uid = uid_t.max
+        #expect(throws: SelfVoiceError.directory) { try SelfVoiceDirectory.requireAncestor(item, writableACL: false) }
+    }
+
+    @Test(arguments: ["ancestor", "directory", "manifest.json", "previous-wave", "foreign"])
+    func rejectsACLAtEachPublicationBoundary(target: String) async throws {
+        let fixture = try SelfVoiceFixture()
+        defer { fixture.remove() }
+        let first = try await fixture.publisher.publish([voiceFixture()])
+        _ = try await fixture.publisher.publish([])
+        let url: URL
+        switch target {
+        case "ancestor": url = fixture.root
+        case "directory": url = fixture.directory
+        case "previous-wave": url = fixture.directory.appendingPathComponent(first.voices[0].file)
+        default: url = fixture.directory.appendingPathComponent(target)
+        }
+        if target == "foreign" {
+            try Data().write(to: url)
+            #expect(chmod(url.path, 0o600) == 0)
+        }
+        let entry = target == "ancestor" ? "everyone allow delete_child" : "everyone deny delete"
+        try CodexLauncherTests.addACL(entry, to: url.path)
+        defer { CodexLauncherTests.clearACLs(url.path) }
+        await #expect(throws: SelfVoiceError.directory) { try await fixture.publisher.publish([]) }
+        #expect(try fixture.names().contains(first.voices[0].file))
     }
 
     @Test func rejectsWritableDirectoryOrUnrelatedEntryBeforeRendering() async throws {

@@ -8,6 +8,7 @@ enum SelfVoiceError: Error, Equatable { case configuration, audio, manifest, dir
 struct SelfVoiceConfiguration: Equatable, Sendable {
     enum Source: String, Codable { case reply, ack, deviceCue = "device_cue" }
     let id: String
+    /// Never enroll a clone of the owner: their own speech would be classified as self.
     let profile: String
     let source: Source
     let revision: String
@@ -47,17 +48,18 @@ extension SelfVoiceRendering {
 struct SelfVoiceRenderer: SelfVoiceRendering {
     let executable: URL
     let outputRoot: URL
+    // At 2.5–3.5 words/s this passage takes about 13–19 seconds. The PCM duration is checked separately.
     static let passage = "A sheet of paper rests on the table beside a small blue pencil. " +
-        "Light passes through the window and moves across the page as the afternoon slowly turns to evening."
+        "Light passes through the window and moves across the page as the afternoon slowly turns to evening. " +
+        "On the shelf below the window, a row of books casts a narrow shadow across the wall."
 
     func pcm(for voice: SelfVoiceConfiguration) async throws -> Data {
         let origin = try voice.origin()
+        // vbsay prefers the exact name. Check that it maps uniquely to the same ID before and after rendering.
         let profileID = try await Self.profileID(named: voice.profile, at: origin)
-        // The shared validator checks the resolved executable AND its ancestors. The fixed env launcher
-        // in OwnedReplyRenderer then finds that same vbsay first, independent of the calling shell.
         let path = try RightyoChildProcess.validate(executable: executable, config: executable) as NSString
         guard path.lastPathComponent == "vbsay", !path.contains(":") else { throw SelfVoiceError.configuration }
-        // urllib sends only the loopback origin directly; HTTP(S) redirects elsewhere have no usable proxy.
+        // As for spoken replies, the pinned wrapper and local engine are trusted to confine synthesis traffic.
         let localAuthority = String(voice.endpoint.dropFirst("http://".count))
         let environment = ["PATH": path.deletingLastPathComponent + ":/usr/bin:/bin",
                            "VBSAY_ENGINE": "voicebox", "VBSTREAM": "0", "VOICEBOX_URL": origin.absoluteString,
