@@ -1,5 +1,6 @@
 #if os(macOS)
 import Darwin
+import Dispatch
 import Foundation
 import os
 
@@ -37,6 +38,9 @@ struct SelfVoiceManifest: Codable, Equatable {
 
 /// One owner per daemon start and target. The nonblocking directory lock covers suspension and other writers.
 actor SelfVoicePublisher {
+    private let queue = DispatchSerialQueue(label: "hailing.self-voice.publication", qos: .utility)
+    nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+
     let path: String
     private let renderer: (any SelfVoiceRendering)?
     let observeLaunch: SelfVoiceDirectory.Observer?

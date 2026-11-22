@@ -7,6 +7,27 @@ import Testing
 
 @Suite(.timeLimit(.minutes(1)))
 struct SelfVoiceManifestDeadlineTests {
+    @Test func unrelatedTasksFinishWhileManifestRenameIsBlocked() async throws {
+        let files = try EnrollmentFixture()
+        defer { files.remove() }
+        let gate = RenameGate(at: .beforeRenameCheck)
+        let preparation = gate.preparation(files, clock: ProgressTestClock(), renderer: SyntheticSelfVoice())
+        let launch = try await gate.start(preparation)
+
+        let completed = await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<64 {
+                group.addTask { await Task.yield() }
+            }
+            var count = 0
+            for await _ in group { count += 1 }
+            return count
+        }
+        #expect(completed == 64)
+        #expect(!FileManager.default.fileExists(atPath: files.manifest.path))
+        gate.release.signal()
+        #expect(await launch.value == files.manifest)
+    }
+
     @Test func expiryBeforeRenameCheckRollsBackNewWaves() async throws {
         let files = try EnrollmentFixture(), clock = ProgressTestClock(), renderer = SyntheticSelfVoice()
         defer { files.remove() }
@@ -83,14 +104,19 @@ private final class RenameGate: Sendable {
                                           clock: clock.clock, timeout: .seconds(7), renderer: { _ in renderer })
     }
 
-    func expire(_ preparation: SelfVoiceLaunchPreparation, clock: ProgressTestClock) async throws -> Task<Void, Never> {
-        let deadline = clock.now + .seconds(7)
+    func start(_ preparation: SelfVoiceLaunchPreparation) async throws -> Task<URL?, Never> {
         let launch = Task {
             defer { reached.continuation.finish() }
             return await preparation.prepare()
         }
         var arrivals = reached.stream.makeAsyncIterator()
         _ = try #require(await arrivals.next())
+        return launch
+    }
+
+    func expire(_ preparation: SelfVoiceLaunchPreparation, clock: ProgressTestClock) async throws -> Task<Void, Never> {
+        let deadline = clock.now + .seconds(7)
+        let launch = try await start(preparation)
         let worker = try #require(await preparation.inFlightWork)
         clock.advance(by: .seconds(7))
         #expect(await launch.value == nil)

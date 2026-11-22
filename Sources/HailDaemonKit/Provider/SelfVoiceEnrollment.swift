@@ -1,5 +1,6 @@
 #if os(macOS)
 import Darwin
+import Dispatch
 import Foundation
 import HailProtocol
 import Synchronization
@@ -82,10 +83,13 @@ private enum EnrollmentWave: Sendable {
 
 private extension SelfVoicePublisher {
     /// Rendering holds no directory lock. A timed-out renderer cannot hold up the next spawn's fresh attempt.
-    func prepare(_ enrollment: SelfVoiceEnrollment, previous: VerifiedEnrollment?,
-                 renderer: any SelfVoiceEnrollmentRendering, check: @Sendable () throws -> Void) async throws
+    func prepare(enrollmentPath: String, previous: VerifiedEnrollment?,
+                 renderer: SelfVoiceLaunchPreparation.Renderer, check: @Sendable () throws -> Void) async throws
         -> VerifiedEnrollment {
-        let waves = try await render(enrollment, previous: previous, renderer: renderer, check: check)
+        try check()
+        let enrollment = try SelfVoiceEnrollment.load(enrollmentPath)
+        try check()
+        let waves = try await render(enrollment, previous: previous, renderer: renderer(enrollment), check: check)
         try check()
         let directory = try SelfVoiceDirectory(path, observe: observeLaunch)
         do {
@@ -235,14 +239,11 @@ actor SelfVoiceLaunchPreparation {
         } onCancel: { Task { await self.finish(id, .failure(.cancelled)) } }
     }
 
-    // Keep even the synchronous open, ACL walk and JSON decode off the actor that releases the launch waiter.
     private nonisolated func run(previous: VerifiedEnrollment?, deadline: PreparationDeadline) async
         -> Result<VerifiedEnrollment, Failure> {
         do {
-            try deadline.check()
-            let enrollment = try SelfVoiceEnrollment.load(enrollmentPath)
-            try deadline.check()
-            return .success(try await publisher.prepare(enrollment, previous: previous, renderer: renderer(enrollment),
+            return .success(try await publisher.prepare(enrollmentPath: enrollmentPath, previous: previous,
+                                                        renderer: renderer,
                                                         check: deadline.check))
         } catch SelfVoiceEnrollment.Failure.file {
             return .failure(.read)
@@ -268,15 +269,18 @@ actor SelfVoiceLaunchPreparation {
             attempt.deadline.revoke()
             lastFailure = failure
             attempt.waiter.resume(returning: nil)
-            // cancel() invokes arbitrary render cancellation handlers synchronously. Keep those off the spawn waiter.
-            Task.detached { attempt.worker.cancel() }
+            // A synchronous render cancellation handler must be able to run even when the publisher queue is blocked.
+            DispatchQueue.global(qos: .utility).async { [worker = attempt.worker] in worker.cancel() }
         }
     }
 }
 
 // The ordinary reply launcher searches PATH. Enrollment pins the operator's exact wrapper even if it is renamed
 // or disappears between validation and spawn. Catalog checks and audio conversion use the slice 1 implementation.
-struct EnrolledReplyRenderer: SelfVoiceEnrollmentRendering {
+actor EnrolledReplyRenderer: SelfVoiceEnrollmentRendering {
+    private let queue = DispatchSerialQueue(label: "hailing.self-voice.render", qos: .utility)
+    nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+
     let enrollment: SelfVoiceEnrollment
     let outputRoot: URL
     let catalog: any SelfVoiceRendering
@@ -390,14 +394,14 @@ private final class EnrollmentChild: Sendable {
         }
     }
 
-    func collect() async throws -> Data {
-        try await withTaskCancellationHandler {
+    func collect(isolation: isolated (any Actor)? = #isolation) async throws -> Data {
+        try await withTaskCancellationHandler(operation: {
             await withCheckedContinuation { done in retired.notify(queue: queue) { done.resume() } }
             guard identity.withLock({ $0.status == 0 }), let bytes = audio.withLock({ $0 }) else {
                 throw SelfVoiceError.audio
             }
             return bytes
-        } onCancel: { self.cancel() }
+        }, onCancel: { self.cancel() }, isolation: isolation)
     }
 
     private func cancel() {
