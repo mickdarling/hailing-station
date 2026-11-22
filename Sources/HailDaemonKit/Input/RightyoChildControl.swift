@@ -152,6 +152,7 @@ extension RightyoStdinWriter {
     /// A reservation also owns the idle writer. A new drain can take only its prefix.
     func reserve(through sequence: Int?) -> Int {
         state.withLock { current in
+            if current.reserved { release(&current) }
             current.epoch += 1
             current.through = sequence ?? -1
             current.prefixCount = current.queue.count
@@ -169,7 +170,6 @@ extension RightyoStdinWriter {
             return write()
         }
     }
-
     func cancel(_ epoch: Int) {
         state.withLock { current in
             if current.reserved, current.epoch == epoch { release(&current) }

@@ -32,24 +32,26 @@ final class RightyoStdinWriter: Sendable {
     }
 
     var counters: RightyoChildProcess.Counters { state.withLock { $0.counters } }
-    func write(_ pcm: Data, leadingSilenceBytes: Int = 0, admission: Int? = nil) -> Bool {
-        guard !pcm.isEmpty, pcm.count.isMultiple(of: 2), pcm.count <= timing.backlogBytes else { return false }
+    enum Enqueue { case accepted, discarded, closed }
+
+    func enqueue(_ pcm: Data, leadingSilenceBytes: Int, admission: Int?) -> Enqueue {
+        guard !pcm.isEmpty, pcm.count.isMultiple(of: 2), pcm.count <= timing.backlogBytes else { return .closed }
         guard (0...AmbientGapFill.maxBytes).contains(leadingSilenceBytes),
-              leadingSilenceBytes.isMultiple(of: AmbientGapFill.chunkBytes) else { return false }
+              leadingSilenceBytes.isMultiple(of: AmbientGapFill.chunkBytes) else { return .closed }
         // One queue item: silence cannot be reordered or evicted separately from its following PCM.
         var chunk = pcm
         if leadingSilenceBytes > 0 {
             chunk = Data(repeating: 0, count: leadingSilenceBytes)
             chunk.append(pcm)
         }
-        let (accepted, start) = state.withLock { state -> (Bool, Bool) in
-            guard !state.closing, !state.failed else { return (false, false) }
+        let (accepted, start) = state.withLock { state -> (Enqueue, Bool) in
+            guard !state.closing, !state.failed else { return (.closed, false) }
             if let admission {
                 state.handed = max(state.handed, admission)
                 if admission <= state.discardedThrough {
                     state.counters.droppedBytes += pcm.count
                     state.counters.droppedChunks += 1
-                    return (true, false)
+                    return (.discarded, false)
                 }
             }
             let before = state.reserved && admission.map { $0 <= state.through } == true
@@ -60,7 +62,7 @@ final class RightyoStdinWriter: Sendable {
             // Only queued prefixes reserve space; taking or evicting the last one restores the PCM budget.
             while state.queued > timing.backlogBytes + state.queue.silenceAllowance { Self.dropOldest(&state) }
             defer { state.writing = true }
-            return (true, !state.writing)
+            return (.accepted, !state.writing)
         }
         if start { writer.async { self.drain() } }
         return accepted

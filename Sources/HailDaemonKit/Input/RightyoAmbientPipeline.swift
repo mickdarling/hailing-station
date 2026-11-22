@@ -403,15 +403,20 @@ extension RightyoAmbientPipeline {
         -> ((accepted: Bool, gap: AmbientGapFill?), String?) {
         lastForwardedSequence.withLock { progress ->
             ((accepted: Bool, gap: AmbientGapFill?), String?) in
-            guard duck.mayHearAudio else { return ((true, nil), nil) }
+            guard duck.mayHearAudio else {
+                if let admission { child.input.suppress(admission) }
+                return ((true, nil), nil)
+            }
             let now = gapClock()
             let elapsed = progress.first.map { now - $0 } ?? .zero
             // Persist the three-second bucket depth, including on refused writes: old credit expires.
             progress.writtenDuration = max(progress.writtenDuration, elapsed - .seconds(3))
             let gap = duck.active ? nil : AmbientGapFill(after: progress.last, sequence: sequence,
                                                         budget: elapsed - progress.writtenDuration)
-            guard child.input.write(pcm, leadingSilenceBytes: gap?.bytes ?? 0, admission: admission) else {
-                return ((false, nil), nil)
+            switch child.input.enqueue(pcm, leadingSilenceBytes: gap?.bytes ?? 0, admission: admission) {
+            case .closed: return ((false, nil), nil)
+            case .discarded: return ((true, nil), nil)
+            case .accepted: break
             }
             progress.first = progress.first ?? now
             progress.writtenDuration += .nanoseconds(Int64(pcm.count + (gap?.bytes ?? 0)) * 31_250)
@@ -464,7 +469,7 @@ extension RightyoAmbientPipeline {
     /// The return value describes immediate delivery. The callback receives the final result exactly once.
     @discardableResult public func reportDuck(_ on: Bool, delivered: @escaping @Sendable (Bool) -> Void) -> Bool {
         if !on {
-            if !startsPrivate, !duck.active, !duck.started { delivered(true); return true }
+            if !startsPrivate, !duck.active, !duck.started { delivered(false); return false }
             return reservePrivacyOff(through: nil).start(delivered: delivered) == .delivered
         }
         let taken = privacyChange.withLock { pending in
@@ -1606,6 +1611,15 @@ final class AmbientGapLog: Sendable {
     }
 }
 
+extension RightyoStdinWriter {
+    func write(_ pcm: Data, leadingSilenceBytes: Int = 0, admission: Int? = nil) -> Bool {
+        enqueue(pcm, leadingSilenceBytes: leadingSilenceBytes, admission: admission) != .closed
+    }
+
+    /// Input already withheld by the pipeline completes its ordered handoff without advancing gap accounting.
+    func suppress(_ admission: Int) { state.withLock { $0.handed = max($0.handed, admission) } }
+}
+
 /// FIFO metadata beside each PCM item; no-gap Data keeps its original storage. O(1) amortised removal.
 struct RightyoPrefixedQueue {
     struct Item {
@@ -1704,11 +1718,19 @@ extension RightyoChildProcess {
     /// Writes the child's duck mode line (#735) the same way; false when it could not be written. Whether the child
     /// understands it is the caller's to know: `RightyoAmbientPipeline.reportDuck` checks.
     @discardableResult public func reportDuck(_ on: Bool) -> Bool {
-        if on { return control.tighten(input) }
+        reportDuck(on, delivered: { _ in })
+    }
+
+    @discardableResult public func reportDuck(_ on: Bool, delivered: @escaping @Sendable (Bool) -> Void) -> Bool {
+        if on {
+            let result = control.tighten(input)
+            delivered(result)
+            return result
+        }
         let epoch = input.reserve(through: nil)
         return RightyoPrivacyOff { [control, input] expired in
             control.relax(input, epoch: epoch, expired: expired)
-        }.start() == .delivered
+        }.start(delivered: delivered) == .delivered
     }
     /// Writes the child's meeting line (#735 MM-D) the same way; whether it advertised it is the pipeline's to know.
     @discardableResult func reportMeeting(_ on: Bool) -> Bool { control.meeting(on) }

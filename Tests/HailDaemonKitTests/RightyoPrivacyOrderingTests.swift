@@ -145,5 +145,26 @@ extension RightyoPrivacyOrderingTests {
         let expected = expired ? off + later : first + off + later
         #expect(try child.recorded() == expected)
     }
+
+    @Test(arguments: [true, false])
+    func retirementAfterIdleReservationRejectsDeliveryWithAnOpenReader(exit: Bool) throws {
+        let child = try RightyoRecordingChild()
+        let change = child.reserve()
+        if exit { child.exit.signal(.exited(0)) } else { child.input.close(abandon: true) }
+        #expect(change.attempt(false) == .failed)
+        #expect(try child.recorded().isEmpty)
+    }
+
+    @Test func freeingControlCapacityDeliversExactlyOnceOnRetry() throws {
+        let child = try RightyoRecordingChild()
+        while child.control.media(true) {}
+        let change = child.reserve()
+        #expect(change.attempt(false) == .pending)
+        let filled = try child.recorded()
+        #expect(!filled.isEmpty && filled.range(of: off) == nil)
+        #expect(change.attempt(false) == .delivered)
+        #expect(change.attempt(true) == .failed)
+        #expect(try child.recorded() == off)
+    }
 }
 #endif

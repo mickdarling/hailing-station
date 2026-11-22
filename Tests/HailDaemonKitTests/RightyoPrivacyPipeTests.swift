@@ -4,6 +4,25 @@ import Testing
 @testable import HailDaemonKit
 
 @Suite(.timeLimit(.minutes(1)), .frozenGuardBudget) struct RightyoPrivacyPipeTests {
+    @Test func suppressedHandoffCompletesThePrefixWithoutConsumingTheBound() async throws {
+        let fake = try AmbientPrivacyAudioGateTests.fake("""
+        /usr/bin/sed -n '1p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \
+          -e 's/"phase"/"duck":{"version":3,"private":true},"phase"/'
+        /bin/cat > /dev/null
+        /usr/bin/sed -n '$p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
+        """)
+        defer { fake.cleanUp() }
+        let pipeline = try AmbientPrivacyAudioGateTests.pipeline(fake, startPrivate: true)
+        let change = pipeline.reservePrivacyOff(through: 7)
+        #expect(pipeline.send(audio: Data([1, 1]), sequence: 7, admission: 7).accepted)
+        let run = Task { try await pipeline.run() }
+        #expect(await pipeline.privacyKept())
+        #expect(change.attempt(false) == .delivered)
+        #expect(pipeline.counters.writtenBytes == 0)
+        pipeline.finishInput()
+        _ = try await run.value
+    }
+
     @Test func fullPipeRetriesAndKeepsBothPrivacyGatesClosed() async throws {
         let fake = try AmbientPrivacyAudioGateTests.fake("""
         /usr/bin/sed -n '1p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \
