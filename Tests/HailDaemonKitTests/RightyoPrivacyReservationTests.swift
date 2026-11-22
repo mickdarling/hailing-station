@@ -32,6 +32,44 @@ import Testing
         #expect(try child.recorded() == firstOn)
     }
 
+    @Test(arguments: [false, true])
+    func deadlinePreservesPublicQueuedAndInFlightPCM(deliveredOn: Bool) throws {
+        let first = Data([1, 2]), second = Data([3, 4]), on = Data("{\"duck\":true}\n".utf8)
+        let audio = Pipe(), pcm = Data(repeating: 7, count: 2_097_152)
+        let child = try RightyoRecordingChild(startPrivate: false, audioPipe: audio)
+        try audio.fileHandleForWriting.close() // Only the stdin writer owns the write end through EOF.
+        child.release()
+        try #require(child.input.write(pcm))
+        var ready = pollfd(fd: audio.fileHandleForReading.fileDescriptor, events: Int16(POLLIN), revents: 0)
+        try #require(poll(&ready, 1, 5_000) == 1)
+        try #require(child.input.write(first))
+        if deliveredOn {
+            try #require(child.control.tighten(child.input))
+            try #require(child.input.write(second))
+        }
+        let epoch = child.input.reserve(through: nil, privacyWanted: true)
+        #expect(child.control.relax(child.input, epoch: epoch, expired: false) == .pending)
+        #expect(child.control.relax(child.input, epoch: epoch, expired: true) == .delivered)
+        #expect(try child.recorded() == (deliveredOn ? on + off : off))
+        child.input.close(abandon: false)
+        #expect(try audio.fileHandleForReading.readToEnd() == pcm + first)
+        #expect(child.input.counters.droppedBytes == (deliveredOn ? second.count : 0))
+    }
+
+    @Test func refusedRepeatPreservesTheOutstandingAck() throws {
+        let child = try RightyoRecordingChild(startPrivate: false)
+        let duck = AmbientDuckControl()
+        let tighten: (Bool) -> Bool = { [control = child.control, input = child.input] _ in control.tighten(input) }
+        #expect(duck.observe(started: AmbientPrivacyAckGateTests.started, write: tighten) == .kept)
+        try #require(duck.report(true, write: tighten))
+        while child.control.media(true) {}
+        while child.control.write(" ") {}
+        #expect(!duck.report(true, write: tighten))
+        #expect(!duck.mayHearAudio)
+        #expect(duck.acknowledge() == .counted)
+        #expect(duck.mayHearAudio && duck.settled == .kept)
+    }
+
     @Test func aLateStartupDecisionCannotReleaseANewerEntry() {
         let duck = AmbientDuckControl()
         let written = AmbientDuckControlTests.Written()

@@ -169,9 +169,9 @@ extension RightyoStdinWriter {
     func tighten(starting: Bool, _ write: () -> Bool) -> Bool {
         state.withLock { current in
             if current.reserved && !starting { release(&current) }
-            current.ordersAudio = true
+            guard write() else { return false }
             current.knownPublic = false
-            return write()
+            return true
         }
     }
     func deliver(_ epoch: Int, expired: Bool, write: () -> RightyoDelivery) -> RightyoDelivery {

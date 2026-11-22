@@ -57,10 +57,11 @@ final class RightyoStdinWriter: Sendable {
                     return (.discarded, false)
                 }
             }
-            let before = state.fencesAudio && admission.map { $0 <= state.through } == true
+            let before = state.precedesBoundary(admission)
             if before { state.prefixCount += 1 }
             state.queue.append(.init(epoch: before ? state.epoch - 1 : state.epoch, data: chunk,
-                                     at: DispatchTime.now().uptimeNanoseconds, silence: leadingSilenceBytes))
+                                     at: DispatchTime.now().uptimeNanoseconds, silence: leadingSilenceBytes,
+                                     admittedPrivately: state.admitsPrivately(admission)))
             state.queued += chunk.count
             // Only queued prefixes reserve space; taking or evicting the last one restores the PCM budget.
             while state.queued > timing.backlogBytes + state.queue.silenceAllowance { Self.dropOldest(&state) }
@@ -167,7 +168,7 @@ extension RightyoStdinWriter {
     private func writeOwned(_ item: RightyoPrefixedQueue.Item, offset: Int) -> WriteResult {
         state.withLock { current in
             guard !current.abandoned, !current.closed, !current.failed else { return .closed }
-            guard item.epoch >= current.discardBefore else {
+            if item.admittedPrivately && item.epoch < current.discardBefore {
                 current.discard(item, from: offset)
                 if !offset.isMultiple(of: 2) { current.needsAlignment = true }
                 return .discarded

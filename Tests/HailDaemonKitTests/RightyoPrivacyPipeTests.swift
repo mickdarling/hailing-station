@@ -53,18 +53,24 @@ import Testing
         _ = try await run.value
     }
 
-    @Test func refusedPublicEntryRollsBackBothGates() async throws {
-        let fake = try AmbientPrivacyAudioGateTests.fake("""
+    private func publicChild(version: Int) throws -> FakeRightyo {
+        try AmbientPrivacyAudioGateTests.fake("""
         /usr/bin/sed -n '1p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g" \
-          -e 's/"phase"/"duck":{"version":2},"request_outcomes":{"version":1},"phase"/'
+          -e 's/"phase"/"duck":{"version":\(version)},"request_outcomes":{"version":1},"phase"/'
         \(AmbientPrivacyEventTests.line("status", sequence: 2, at: 0))
         /bin/cat > audio.raw
         /bin/cat <&3 > control.txt
         /usr/bin/sed -n '$p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
         """)
+    }
+
+    @Test(arguments: [2, 3]) func refusedPublicEntryRollsBackBothGates(version: Int) async throws {
+        let fake = try publicChild(version: version)
         defer { fake.cleanUp() }
         let (ready, signal) = AsyncStream<Bool>.makeStream()
-        let pipeline = try AmbientPrivacyAudioGateTests.pipeline(fake, startPrivate: false, configure: { settings in
+        let clock = AmbientGapTestClock()
+        let pipeline = try AmbientPrivacyAudioGateTests.pipeline(fake, startPrivate: false, gapClock: { clock.now },
+                                                                configure: { settings in
             settings.onVoiceDuck = { if $0 == .status { signal.yield(true) } }
         })
         defer { pipeline.finishInput() }
@@ -74,20 +80,28 @@ import Testing
         }
         var started = ready.makeAsyncIterator()
         try #require(await started.next() == true)
+        var mediaLines = 0
+        if version == 3 { while pipeline.reportMedia(true) { mediaLines += 1 } }
+        let first = Data([5, 6])
+        #expect(pipeline.send(audio: first, sequence: 0).accepted)
         let previous = try #require(pipeline.requestOutcomes.generation)
         #expect(!pipeline.reportDuck(true))
         #expect(!pipeline.hearsAudio && pipeline.requestOutcomes.generation == nil)
         #expect(pipeline.send(audio: Data([1, 2])))
-        #expect(!pipeline.reportDuck(false))
+        let receipts = Mutex<[Bool]>([])
+        #expect(!pipeline.reportDuck(false) { result in receipts.withLock { $0.append(result) } })
+        #expect(receipts.withLock { $0 } == [false])
         #expect(pipeline.hearsAudio)
         let resumed = pipeline.requestOutcomes.generation
         #expect(resumed != nil && resumed != previous)
         let pcm = Data([3, 4])
-        #expect(pipeline.send(audio: pcm))
+        clock.advance(.seconds(1))
+        let frame = pipeline.send(audio: pcm, sequence: 2)
+        #expect(frame.accepted && frame.gap?.bytes == 3_200)
         pipeline.finishInput()
         _ = try await run.value
-        #expect(AmbientPrivacyAudioGateTests.heard(fake) == pcm)
-        #expect(try fake.recorded("control.txt").isEmpty)
+        #expect(AmbientPrivacyAudioGateTests.heard(fake) == first + AmbientGapFillRig.silence(1) + pcm)
+        #expect(try fake.recorded("control.txt") == String(repeating: "{\"media\":true}\n", count: mediaLines))
     }
 
     @Test func fullPipeRetriesAndKeepsBothPrivacyGatesClosed() async throws {
@@ -126,7 +140,7 @@ import Testing
     }
 }
 
-private final class ManualPrivacyTimer: Sendable {
+final class ManualPrivacyTimer: Sendable {
     private struct State {
         var now = DispatchTime(uptimeNanoseconds: 1_000_000_000)
         var scheduled: (DispatchTime, @Sendable () -> Void)?
