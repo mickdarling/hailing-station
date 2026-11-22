@@ -119,6 +119,19 @@ import Testing
 }
 
 extension RightyoPrivacyOrderingTests {
+    @Test func aPublicLaunchWithAPendingPrivacyWishOrdersTheQueuedPrefix() throws {
+        let child = try RightyoRecordingChild(startPrivate: false)
+        #expect(child.input.write(first))
+        let epoch = child.input.reserve(through: nil, privacyWanted: true)
+        #expect(child.input.write(later))
+        #expect(child.control.relax(child.input, epoch: epoch, expired: false) == .pending)
+        #expect(try child.recorded().isEmpty)
+        child.release()
+        #expect(child.control.relax(child.input, epoch: epoch, expired: false) == .delivered)
+        child.release()
+        #expect(try child.recorded() == first + off + later)
+    }
+
     @Test func idleReservationStopsANewDrain() throws {
         let child = try RightyoRecordingChild()
         child.release()

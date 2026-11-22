@@ -119,11 +119,13 @@ extension AmbientPrivacyStartPrivateTests {
         let fake = try FakeRightyo("echo $$ > child.pid\n/bin/cat > /dev/null")
         defer { fake.cleanUp() }
         let (pipeline, dispatcher) = try Self.pipeline(fake, startPrivate: true, deadline: 0.3)
+        // run() arms the deadline. First establish which live process it must reap.
+        try #require(await eventually { (try? fake.recorded("child.pid").hasSuffix("\n")) == true })
+        let pid = try #require(Int32(fake.recorded("child.pid").trimmingCharacters(in: .whitespacesAndNewlines)))
         let started = ContinuousClock.now
         await #expect(throws: RightyoPrivacyRefusal.unconfirmedStart) { _ = try await pipeline.run() }
         #expect(started.duration(to: .now) < .seconds(8))
         #expect(await dispatcher.requests.isEmpty)
-        let pid = try #require(Int32(fake.recorded("child.pid").trimmingCharacters(in: .whitespacesAndNewlines)))
         #expect(await eventually { kill(pid, 0) != 0 })
     }
 

@@ -150,13 +150,13 @@ extension RightyoChildProcess {
 }
 extension RightyoStdinWriter {
     /// A reservation also owns the idle writer. A new drain can take only its prefix.
-    func reserve(through sequence: Int?) -> Int {
+    func reserve(through sequence: Int?, privacyWanted: Bool = false) -> Int {
         state.withLock { current in
             if current.reserved { release(&current) }
             current.epoch += 1
             current.through = sequence ?? -1
             current.prefixCount = current.queue.count
-            current.ordersAudio = !current.knownPublic || sequence != nil
+            current.ordersAudio = privacyWanted || !current.knownPublic || sequence != nil
             current.reserved = true
             return current.epoch
         }

@@ -452,16 +452,11 @@ extension RightyoAmbientPipeline {
 
     /// Whether audio now reaches the child (#735 S-2b; tests).
     var hearsAudio: Bool { duck.mayHearAudio }
-    /// Whether haild has read the child's first `started` (#735; tests): a privacy wish before it is kept, not written.
+    /// Whether haild has read the child's first `started` (#735; tests).
     var childStarted: Bool { duck.started }
 
-    /// Sets privacy mode (#735, internally duck) in this stream's RightyO over the same control descriptor; true only
-    /// when the child's `started` advertised `duck` version 3 or higher and the line was written (or, while this child
-    /// already keeps privacy, an on needs no line). An older RightyO still transcribes while ducked (v1), never acks
-    /// (v2) or skips the line, so it is never written one and this is false: the host then never claims privacy is on
-    /// (fail closed). Written, the child still hears no audio until it acks (S-8), within `ackDeadline`.
-    /// Asked before `started`, the wish is kept and written once a child that advertised it starts; if its start
-    /// deadline already passed unwished, a fresh one is armed (#735 S-8 HS-C round 2). Never blocks.
+    /// An on before startup records the wish. Only a v3 or later child receives on, and audio waits for its ack.
+    /// Off returns true on delivery. A child launched public can receive off to withdraw its pending startup wish.
     @discardableResult public func reportDuck(_ on: Bool) -> Bool {
         reportDuck(on, delivered: { _ in })
     }
@@ -486,7 +481,7 @@ extension RightyoAmbientPipeline {
     /// One child and one cutoff for every attempt, including retries after a full control pipe.
     func reservePrivacyOff(through sequence: Int?) -> RightyoPrivacyOff {
         let epoch = privacyChange.withLock { pending in
-            let epoch = child.input.reserve(through: sequence)
+            let epoch = child.input.reserve(through: sequence, privacyWanted: duck.active)
             pending = epoch
             return epoch
         }
@@ -499,13 +494,11 @@ extension RightyoAmbientPipeline {
         }, attempt: { [self] expired in
             privacyChange.withLock { pending in
                 guard pending == epoch else { return .failed }
-                var result = RightyoDelivery.failed
-                if !duck.started && !expired { return .pending }
-                _ = duck.report(false, write: { _ in
-                    result = child.control.relax(child.input, epoch: epoch, expired: expired)
+                let result = duck.relax(expired: expired) {
+                    let result = child.control.relax(child.input, epoch: epoch, expired: expired)
                     if result == .delivered { requestOutcomes.setPrivate(false) }
-                    return result == .delivered
-                })
+                    return result
+                }
                 if result != .pending {
                     child.input.cancel(epoch)
                     pending = nil
@@ -1150,29 +1143,39 @@ final class AmbientDuckControl: Sendable {
     /// for a child not yet started whose start deadline already lapsed calls `restart` (a fresh deadline, round 2).
     func report(_ on: Bool, write: (Bool) -> Bool, written: (Int) -> Void = { _ in },
                 restart: () -> Void = {}) -> Bool {
-        update { state in
+        guard on else { return relax(expired: true) { write(false) ? .delivered : .failed } == .delivered }
+        return update { state in
             let kept = state.wanted && state.keeps
-            if on { state.wanted = true }
+            state.wanted = true
             guard state.started else {
-                guard on else { return false }
-                if on, state.startLapsed {
+                if state.startLapsed {
                     state.startLapsed = false
                     restart()
                 }
                 return true
             }
-            if on, kept { return true }
+            if kept { return true }
             // Refused (at a deadline, or otherwise) and being killed: nothing more is written, and it takes no on.
-            if on, state.unacknowledged || state.refused { return false }
-            let taken = state.advertised && write(on)
-            if !on {
-                guard taken else { return false }
-                state.wanted = false
-            }
-            // Private only once acked; a failed write withholds audio (fail closed). Off needs no ack.
+            if state.unacknowledged || state.refused { return false }
+            let taken = state.advertised && write(true)
             state.keeps = false
-            if on, taken { Self.count(&state, written: written) }
+            if taken { Self.count(&state, written: written) }
             return taken
+        }
+    }
+
+    /// A pending on for a public launch has withheld all subsequent audio. Serialize its off with startup so a
+    /// later `started` cannot apply a withdrawn wish. A private launch still needs its startup proof first.
+    func relax(expired: Bool, write: () -> RightyoDelivery) -> RightyoDelivery {
+        update { state in
+            if state.started {
+                guard state.advertised else { return .failed }
+            } else if state.mustConfirm || !state.wanted {
+                return expired ? .failed : .pending
+            }
+            let result = write()
+            if result == .delivered { (state.wanted, state.keeps) = (false, false) }
+            return result
         }
     }
 
