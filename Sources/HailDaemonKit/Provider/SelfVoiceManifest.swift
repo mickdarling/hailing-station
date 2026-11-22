@@ -72,7 +72,7 @@ actor SelfVoicePublisher {
 
     func withLockedDirectory<Value: Sendable>(
         observe: SelfVoiceDirectory.Observer? = nil,
-        _ operation: sending (isolated SelfVoicePublisher, SelfVoiceDirectory) async throws -> Value
+        _ operation: (isolated SelfVoicePublisher, SelfVoiceDirectory) async throws -> Value
     ) async throws -> Value {
         let directory = try SelfVoiceDirectory(path, observe: observe)
         let descriptor = directory.descriptor
