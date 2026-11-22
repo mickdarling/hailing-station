@@ -76,7 +76,6 @@ public final class RightyoAmbientPipeline: Sendable {
     public struct Configuration: Sendable {
         public var executable: URL
         public var config: URL
-        var selfVoiceManifest: URL?
         public var target: String
         public var binding: String
         public var connection: UUID
@@ -247,8 +246,7 @@ public final class RightyoAmbientPipeline: Sendable {
         let child = try RightyoChildProcess(executable: configuration.executable, config: configuration.config,
                                             session: session, timing: configuration.timing,
                                             replyControl: configuration.replyControl,
-                                            env: configuration.environment, startPrivate: configuration.startPrivate,
-                                            selfVoiceManifest: configuration.selfVoiceManifest)
+                                            env: configuration.environment, startPrivate: configuration.startPrivate)
         (self.child, self.session) = (child, session)
         onDismiss = configuration.onDismiss
         (onVoiceMute, onVoiceMedia) = (configuration.onVoiceMute, configuration.onVoiceMedia)

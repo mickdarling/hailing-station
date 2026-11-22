@@ -54,20 +54,31 @@ and change it when the voice changes. Only `reply` and origins exactly of the fo
 `http://127.0.0.1:<port>` are accepted, with a decimal port from 1 through 65535.
 An empty array publishes an empty manifest and clears enrollment.
 
-An opted-in daemon creates one preparation actor. It calls `prepare()` off the audio callback before
-every ambient stream start, including the next start after a child crash, and before each active-stream reload.
-Each call rereads enrollment, checks profile identity and verifies the manifest generation and WAVs.
-Reuse requires the configured name to resolve to the same profile ID verified for that clip.
-A new ID under the same name triggers a fresh render. Removed voices drop out of the next manifest.
-A running child retains its startup enrollment.
+An opted-in daemon starts one background preparation at utility priority. It reads enrollment, checks
+profile identity, and publishes or verifies the manifest and WAVs. A kick during an existing attempt
+coalesces with it. Each attempt has one 20-second deadline. Expiry revokes the attempt and cancels
+its render child. Daemon shutdown also cancels preparation.
 
-A successful verification for this spawn appends `--self-voice-manifest <absolute path>` as the final two arguments.
-The presence of an earlier manifest on disk never authorizes that argument. Read, validation, render,
-publication, timeout and cancellation failures launch the child with ordinary arguments. The daemon
-logs one JSON line, for example `{"detail":"off for this child (timeout)","event":"self-voice"}`.
-The whole attempt has one absolute 20-second deadline, matching the announcer's render deadline.
-At expiry `prepare()` returns `nil` with reason `timeout` without waiting for filesystem work.
-It cancels its own work and render child.
+First starts, starts after a crash, device takeovers, and active-stream reloads all launch immediately
+with respect to preparation. At argv assembly, haild checks the enrollment and manifest against the
+last generation verified in this daemon run. It securely reads each file by descriptor with the 16 KiB
+limit above. If the enrollment bytes and the manifest SHA-256 both match, the final two arguments
+are `--self-voice-manifest <absolute path>`. RightyO checks each WAV's SHA-256 against the manifest
+and skips any voice whose clip differs.
+
+Otherwise the child starts with ordinary arguments and haild kicks background preparation. The daemon
+queues a content-free log event such as `{"detail":"off for this child (pending)","event":"self-voice"}`.
+Child launch and retirement diagnostics use the same bounded queue. It drops excess events when its sink stalls.
+
+- `pending` means this daemon has yet to verify a generation.
+- `changed` means the enrollment bytes differ or the enrollment file failed its secure read.
+- `mismatch` means the on-disk manifest digest differs or the manifest failed its secure read.
+
+A running child keeps its startup enrollment. The next restart after successful preparation can use
+the new manifest. A removal or revision edit withholds the old manifest immediately at the next
+spawn. During preparation, reuse requires the configured name to resolve to the same profile ID
+verified for that clip. A new ID under the same name triggers a fresh render.
+
 The worker closes its stdout and stderr readers on cancellation even if a descendant holds the write
 ends open. It joins both closes and reaps its own child in the background.
 
@@ -99,7 +110,7 @@ removes its installed WAVs if the manifest rename has yet to occur. After replac
 the WAVs named by both the new manifest and its predecessor. A child that already opened the previous
 manifest can still open its WAVs until the next successful publication.
 
-RightyO reads the manifest at child start. During a daemon run, a profile or revision change regenerates the
+RightyO reads the manifest at child start. When preparation detects a profile or revision change, it regenerates the
 affected clip. Each regeneration sets `rendered_at` to `max(clock, previous + 1)`, seeded from the greater
 of the manifest's modification time and its highest `rendered_at`. The modification time preserves the last
 enrollment second even for an empty list. A same-UID restore of an older manifest combined with a clock

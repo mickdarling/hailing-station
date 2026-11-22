@@ -1,4 +1,5 @@
 #if os(macOS)
+import Darwin
 import Foundation
 import Testing
 @testable import HailDaemonKit
@@ -6,83 +7,136 @@ import Testing
 @Suite(.timeLimit(.minutes(1)), .frozenGuardBudget)
 struct AmbientSelfVoiceSwitchTests {
     typealias Rig = AmbientSelfVoiceSwitchRig
-    typealias Failure = SelfVoiceLaunchPreparation.Failure
-
     @Test func offDoesNotConstructPreparationOrChangeArgv() async throws {
         try await Rig.withRig(enabled: false) { rig in
             rig.start()
             try await rig.expectArgv(manifest: false)
-            #expect(rig.constructions == 0)
+            #expect(rig.constructions == 0 && rig.router.backgroundSelfVoice == nil)
             #expect(!FileManager.default.fileExists(atPath: rig.files.directory.path))
-            #expect(rig.failures.isEmpty)
         }
     }
 
-    @Test func nextStartAfterCrashRechecksEnrollmentDespiteStaleManifest() async throws {
+    @Test func firstStartAndConcurrentKicksShareOneHeldRenderThenRestartUsesManifest() async throws {
+        let held = HeldSelfVoiceRender()
+        try await Rig.withRig(crash: true, renderer: held) { rig in
+            defer { held.release() }
+            try await held.waitUntilStarted()
+            let background = try #require(rig.router.backgroundSelfVoice)
+            let flight = try #require(background.inFlight)
+            // A valid manifest left by a previous daemon still cannot authorize the first launch.
+            try FileManager.default.createDirectory(at: rig.files.directory, withIntermediateDirectories: false,
+                                                   attributes: [.posixPermissions: 0o700])
+            try SelfVoiceManifest(version: 1, voices: []).encoded().write(to: rig.files.manifest)
+            try #require(chmod(rig.files.manifest.path, 0o600) == 0)
+            let start = rig.clock.now
+            rig.start()
+            try await rig.expectArgv(manifest: false)
+            try await rig.expectReason(.pending)
+            try await rig.waitForExit()
+            await withTaskGroup(of: Void.self) { group in
+                for _ in 0..<32 { group.addTask { background.kick() } }
+            }
+            #expect(start == rig.clock.now && rig.constructions == 1)
+            held.release()
+            await flight.value
+            rig.start()
+            try await rig.expectArgv(manifest: true)
+            #expect(rig.attempts == 1)
+        }
+    }
+
+    @Test func byteOnlyEnrollmentEditKicksPreparationAndNextRestartRecovers() async throws {
         try await Rig.withRig(crash: true) { rig in
+            await rig.router.backgroundSelfVoice?.inFlight?.value
             rig.start()
             try await rig.expectArgv(manifest: true)
-            try await rig.waitForCrash()
-            let stale = try Data(contentsOf: rig.files.manifest)
-            try FileManager.default.removeItem(at: rig.files.file)
+            try await rig.waitForExit()
+            var bytes = try Data(contentsOf: rig.files.file)
+            bytes.append(0x20)
+            try bytes.write(to: rig.files.file)
             rig.start()
             try await rig.expectArgv(manifest: false)
-            #expect(try Data(contentsOf: rig.files.manifest) == stale)
-            #expect(rig.constructions == 1)
-            #expect(rig.failures == [Self.off(.read)])
+            try await rig.expectReason(.changed)
+            try await rig.waitForExit()
+            await rig.router.backgroundSelfVoice?.inFlight?.value
+            rig.start()
+            try await rig.expectArgv(manifest: true)
+            #expect(rig.attempts == 2)
         }
     }
 
-    @Test(arguments: [Failure.validation, .render, .publication, .cancelled])
-    func reloadPreparesAgainAndKeepsVoiceAvailable(on failure: Failure) async throws {
+    @Test func removedVoiceNeverReachesAnotherLaunch() async throws {
+        try await Rig.withRig(crash: true) { rig in
+            await rig.router.backgroundSelfVoice?.inFlight?.value
+            #expect(try rig.files.readManifest().voices.map(\.id) == ["one"])
+            try rig.files.write([])
+            rig.start()
+            try await rig.expectArgv(manifest: false)
+            try await rig.expectReason(.changed)
+            try await rig.waitForExit()
+            await rig.router.backgroundSelfVoice?.inFlight?.value
+            rig.start()
+            try await rig.expectArgv(manifest: true)
+            #expect(try rig.files.readManifest().voices.isEmpty)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func replacedManifestMustStillHaveVerifiedBytesAndPrivatePermissions(unsafeMode: Bool) async throws {
         try await Rig.withRig { rig in
+            await rig.router.backgroundSelfVoice?.inFlight?.value
+            var bytes = try Data(contentsOf: rig.files.manifest)
+            if !unsafeMode { bytes.append(0x20) }
+            try bytes.write(to: rig.files.manifest, options: .atomic)
+            try #require(chmod(rig.files.manifest.path, unsafeMode ? 0o644 : 0o600) == 0)
             rig.start()
-            try await rig.expectArgv(manifest: true)
-            try await rig.waitForLaunchSlot()
-            switch failure {
-            case .validation: try rig.files.write(object: ["version": 0])
-            case .render: try rig.files.write([EnrollmentFixture.voice.merging(["profile": "absent"]) { $1 }])
-            case .publication:
-                let entry = try #require(try rig.files.readManifest().voices.first)
-                try Data([0]).write(to: rig.files.directory.appendingPathComponent(entry.file))
-            case .cancelled: break
-            default:
-                Issue.record("Unexpected reload fixture")
-                return
-            }
-            let reload = Task {
-                if failure == .cancelled { withUnsafeCurrentTask { $0?.cancel() } }
-                return await rig.router.reload()
-            }
-            #expect(await reload.value == .reloaded)
             try await rig.expectArgv(manifest: false)
-            #expect(rig.constructions == 1)
-            #expect(rig.failures == [Self.off(failure)])
+            try await rig.expectReason(.mismatch)
         }
     }
 
-    @Test func childStartsAtDeadlineWithRenderStillSuspended() async throws {
+    @Test(arguments: [false, true])
+    func reloadFinishesWithRendererStillHeld(overSocket: Bool) async throws {
         let held = HeldSelfVoiceRender()
         try await Rig.withRig(renderer: held) { rig in
             defer { held.release() }
-            rig.start()
-            var started = held.started.stream.makeAsyncIterator()
-            _ = try #require(await started.next())
-            let preparation = try #require(rig.router.configuration.selfVoice)
-            let worker = try #require(await preparation.inFlightWork)
-            #expect(rig.router.liveRuns == 0)
-            let deadline = rig.clock.now + .seconds(20)
-            rig.clock.advance(by: .seconds(20))
-            try await rig.expectArgv(manifest: false)
-            #expect(rig.clock.now == deadline)
-            #expect(rig.failures == [Self.off(.timeout)])
-            held.release()
-            await worker.value
+            try await held.waitUntilStarted()
+            let now = rig.clock.now
+            let stream = rig.start()
+            let first = try await rig.expectArgv(manifest: false)
+            let before = Data(repeating: 0x11, count: 320)
+            rig.router.ambientAudio(.segment(stream: stream, sequence: 0, bytes: before))
+            // Cross the server submission budget on the preparation clock, without releasing the renderer.
+            rig.clock.advance(by: .seconds(12))
+            if overSocket {
+                #expect(try await rig.socketReload().ambient?.outcome == .reloaded)
+            } else {
+                #expect(await rig.router.reload() == .reloaded)
+            }
+            let second = try await rig.expectArgv(manifest: false)
+            #expect(try await rig.recordedAudio(first) == before)
+            let after = Data(repeating: 0x22, count: 320)
+            rig.router.ambientAudio(.segment(stream: stream, sequence: 1, bytes: after))
+            rig.router.ambientAudio(.ended(stream: stream, reason: .final))
+            #expect(try await rig.recordedAudio(second) == after)
+            #expect(rig.clock.now == now + .seconds(12) && rig.attempts == 1)
         }
     }
 
-    private static func off(_ failure: Failure) -> WebSocketListenerEvent {
-        .init(event: "self-voice", detail: "off for this child (\(failure.rawValue))")
+    @Test func anotherConnectionTakesOverBeforeRendererReturns() async throws {
+        let held = HeldSelfVoiceRender()
+        try await Rig.withRig(renderer: held) { rig in
+            defer { held.release() }
+            try await held.waitUntilStarted()
+            let now = rig.clock.now
+            let old = rig.start()
+            try await rig.expectArgv(manifest: false)
+            rig.router.ambientAudio(.ended(stream: old, reason: .superseded))
+            let next = UUID()
+            rig.start(on: next)
+            try await rig.expectArgv(manifest: false)
+            #expect(rig.router.activeConnection() == next && rig.clock.now == now)
+        }
     }
 
     static let refused: [[String]] = {

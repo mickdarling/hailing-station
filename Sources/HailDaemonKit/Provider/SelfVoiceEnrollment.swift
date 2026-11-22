@@ -4,9 +4,33 @@ import Foundation
 import HailProtocol
 import Synchronization
 
+extension SelfVoicePrivateFile {
+    /// Read through the checked parent descriptor, without acquiring the publisher's directory lock.
+    static func boundedBytes(_ path: String, privateDirectory: Bool = false) throws -> Data {
+        let parent = try openParent(path)
+        defer { close(parent.descriptor) }
+        if privateDirectory {
+            var info = stat()
+            guard fstat(parent.descriptor, &info) == 0 else { throw SelfVoiceError.directory }
+            try requirePrivate(info, type: S_IFDIR, hasACL: CodexLauncher.hasExtendedACL(descriptor: parent.descriptor))
+        }
+        guard !path.hasSuffix("/"), let (bytes, _) = try read(parent.leaf, in: parent.descriptor,
+                                                              limit: SelfVoiceManifest.limit)
+        else { throw SelfVoiceError.directory }
+        return bytes
+    }
+}
+
+struct SelfVoiceGeneration: Sendable {
+    let manifest: URL
+    let enrollmentBytes: Data
+    let manifestDigest: String
+}
+
 struct SelfVoiceEnrollment: Sendable {
     enum Failure: Error, Equatable { case relativePath, file, size, schema, version, executable, voice, ids }
 
+    let bytes: Data
     let file: URL, executable: URL
     let voices: [SelfVoiceConfiguration]
 
@@ -14,13 +38,7 @@ struct SelfVoiceEnrollment: Sendable {
         guard path.hasPrefix("/") else { throw Failure.relativePath }
         let data: Data
         do {
-            let parent = try SelfVoicePrivateFile.openParent(path)
-            defer { close(parent.descriptor) }
-            guard !path.hasSuffix("/"),
-                  let contents = try SelfVoicePrivateFile.read(parent.leaf, in: parent.descriptor,
-                                                               limit: SelfVoiceManifest.limit)
-            else { throw Failure.file }
-            data = contents.0
+            data = try SelfVoicePrivateFile.boundedBytes(path)
         } catch SelfVoiceError.manifest { throw Failure.size } catch { throw Failure.file }
         // Use the bounded JSON reader so duplicate object keys cannot disappear during decoding.
         guard case let .object(object)? = try? CodexJSONL.decode(data),
@@ -32,7 +50,7 @@ struct SelfVoiceEnrollment: Sendable {
         let executable = try validatedExecutable(wrapper, config: file)
         let voices = try entries.map(voice)
         do { try SelfVoiceManifest.checkIDs(voices.map(\.id)) } catch { throw Failure.ids }
-        return Self(file: file, executable: executable, voices: voices)
+        return Self(bytes: data, file: file, executable: executable, voices: voices)
     }
 
     static func validatedExecutable(_ path: String, config: URL) throws -> URL {
@@ -66,6 +84,7 @@ private struct VerifiedEnrollment: Sendable {
     let enrollment: SelfVoiceEnrollment
     let manifest: SelfVoiceManifest
     let profileIDs: [String]
+    let manifestDigest: String
 
     func entry(for voice: SelfVoiceConfiguration, executable: URL, profileID: String) -> SelfVoiceManifest.Voice? {
         guard enrollment.executable.path.utf8.elementsEqual(executable.path.utf8),
@@ -110,7 +129,10 @@ private extension SelfVoicePublisher {
             let manifest = SelfVoiceManifest(version: 1, voices: voices)
             try directory.finishLaunch(manifest, previous: previous?.manifest, old: old.manifest,
                                        timestamp: timestamp, check: check)
-            return VerifiedEnrollment(enrollment: enrollment, manifest: manifest, profileIDs: waves.map(\.profileID))
+            // verifyManifest above compared the on-disk bytes to this exact sorted-key encoding.
+            let digest = try SelfVoiceWave.digest(manifest.encoded())
+            return VerifiedEnrollment(enrollment: enrollment, manifest: manifest,
+                                      profileIDs: waves.map(\.profileID), manifestDigest: digest)
         } catch {
             directory.rollbackAfterFailure()
             throw error
@@ -180,20 +202,24 @@ private final class PreparationDeadline: Sendable {
     }
 }
 
-/// One instance per opted-in daemon. Call before each child spawn, never on an audio callback.
-/// A disabled daemon omits this object entirely.
+/// Publication and its hard deadline. The daemon owns one through its background preparer.
 actor SelfVoiceLaunchPreparation {
     enum Failure: String, Error { case read, validation, render, publication, timeout, cancelled }
     typealias Renderer = @Sendable (SelfVoiceEnrollment) -> any SelfVoiceEnrollmentRendering
 
-    private let enrollmentPath: String, manifestURL: URL
+    let enrollmentPath: String
+    private let manifestURL: URL
     private let publisher: SelfVoicePublisher
     private let clock: TaskProgressClock, timeout: Duration, renderer: Renderer
     private var verified: VerifiedEnrollment?
+    struct Completion: Sendable {
+        let generation: SelfVoiceGeneration?
+        let worker: Task<Void, Never>
+    }
     private struct Attempt {
         let id: UUID, deadline: PreparationDeadline
         let worker: Task<Void, Never>, timer: Task<Void, Never>
-        let waiter: CheckedContinuation<URL?, Never>
+        let waiter: CheckedContinuation<Completion, Never>
     }
     private var active: Attempt?
     /// Retirement observation for synthetic tests. A launch never joins this handle.
@@ -214,14 +240,16 @@ actor SelfVoiceLaunchPreparation {
         (self.clock, self.timeout, self.renderer) = (clock, timeout, renderer)
     }
 
-    func prepare() async -> URL? {
+    func prepare() async -> URL? { await prepareGeneration().generation?.manifest }
+
+    func prepareGeneration() async -> Completion {
         let id = UUID(), deadline = PreparationDeadline(clock: clock, timeout: timeout)
         return await withTaskCancellationHandler {
             await withCheckedContinuation { waiter in
                 if let active { finish(active.id, .failure(.cancelled)) }
                 let previous = verified
                 verified = nil
-                let worker = Task.detached {
+                let worker = Task.detached(priority: .utility) {
                     let result = await self.run(previous: previous, deadline: deadline)
                     await self.finish(id, result)
                 }
@@ -263,11 +291,13 @@ actor SelfVoiceLaunchPreparation {
         case .success(let generation):
             verified = generation
             lastFailure = nil
-            attempt.waiter.resume(returning: manifestURL)
+            let snapshot = SelfVoiceGeneration(manifest: manifestURL, enrollmentBytes: generation.enrollment.bytes,
+                                               manifestDigest: generation.manifestDigest)
+            attempt.waiter.resume(returning: Completion(generation: snapshot, worker: attempt.worker))
         case .failure(let failure):
             attempt.deadline.revoke()
             lastFailure = failure
-            attempt.waiter.resume(returning: nil)
+            attempt.waiter.resume(returning: Completion(generation: nil, worker: attempt.worker))
             // cancel() invokes arbitrary render cancellation handlers synchronously. Keep those off the spawn waiter.
             Task.detached { attempt.worker.cancel() }
         }

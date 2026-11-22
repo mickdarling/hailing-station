@@ -920,6 +920,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     public let configuration: Configuration
     let state = Mutex(State())
+    let backgroundSelfVoice: BackgroundSelfVoice?
     /// #735 meeting mode (rightyo#227): MM-C's hooks in the order state changed; never a clip (review round 2).
     let meetingChanges = SerialTaskChain()
     /// Lifecycle changes only, never PCM segments or a clock poll. Ordered refreshes read current owner state.
@@ -938,6 +939,11 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
 
     public init(configuration: Configuration, log: @escaping @Sendable (WebSocketListenerEvent) -> Void = { _ in }) {
         (self.configuration, self.log) = (configuration, log)
+        backgroundSelfVoice = configuration.selfVoice.map { preparation in
+            BackgroundSelfVoice(preparation) { reason in
+                log(WebSocketListenerEvent(event: "self-voice", detail: "off for this child (\(reason.rawValue))"))
+            }
+        }
         let (wakes, wake) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
         self.wake = wake
         let worker = Task { [weak self] in
@@ -1005,43 +1011,72 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         }
     }
 
+    private enum Admission {
+        case inline, queued, handled
+        case closed(RightyoAmbientPipeline)
+    }
+
+    /// A private segment can enter only its confirmed-private child's nonblocking input, in the same
+    /// critical section as owner-off. Never leave those bytes in the worker queue for a later public child.
+    private func admitPrivateSegment(_ event: AmbientAudioEvent, in state: State) -> Admission? {
+        guard case let .segment(stream, sequence, bytes) = event else { return nil }
+        if let active = state.active, active.stream == stream, let run = state.runs[active.run] {
+            guard state.duck[run.connection] != nil else { return nil }
+            guard !run.ending, !state.shuttingDown, !state.reloading, !state.working, state.queue.isEmpty,
+                  active.pipeline.privacySettled == .kept else { return .handled }
+            return active.pipeline.send(audio: bytes, sequence: sequence).accepted ? .handled : .closed(active.pipeline)
+        }
+        guard let connection = state.latest.first(where: { $0.value == stream })?.key else { return .handled }
+        // A queued start may still have to restore another connection's privacy or a park.
+        return state.duck[connection] != nil || !Self.admitsPrivacy(connection, in: state) ? .handled : nil
+    }
+
     /// Called in order from the gate's actor; only spawns, enqueues or signals, never awaits. A start that finds
     /// every child slot taken goes to the worker, which forces the oldest retired child out first (#366); until it
     /// is done, every later event queues behind it. A rare late start after a closed mark is pruned can re-add
     /// `latest` (and a child-admitted target). The gate's bounded ended-connection ring is the real backstop;
     /// the gate never starts streams for torn-down peers while their ids remain in that ring.
     public func ambientAudio(_ event: AmbientAudioEvent) {
-        let queued = state.withLock { state -> Bool in
-            switch event {
-            // A start never lifts `closed`: a torn-down connection id never comes back (#735), so one that did
-            // would still be dead.
-            case .started(let stream, let connection, _):
-                state.latest[connection] = stream
-            // These ends already report a refusal, supersede the stream or tear down its peer. Revoke before
-            // queueing: a held notice must not outlive an ending even while the worker is making room.
-            case .ended(let stream, let reason) where reason != .final && reason != .idle:
-                state.latest = state.latest.filter { $0.value != stream }
-                for (id, run) in state.runs where run.stream == stream {
-                    state.runs[id]?.failureReported = true
-                    run.sessionChange?.finish()
-                }
-            default: break
-            }
-            if case .started(let stream, _, _) = event { state.newestStart = stream }
-            // A source judged stale that sends audio or starts was alive (#941): it counts as a source again.
-            reapplyOnLife(event, in: &state)
-            // Shutting down: nothing more is queued (starts are refused inline as stopping).
-            if state.shuttingDown { return false }
-            // While a reload builds its child (#405), events queue too: the worker waits for the reload, so a start
-            // cannot launch beside the reload's child and the old one, past `maxLiveChildren`.
-            guard state.queue.isEmpty, !state.working, !state.reloading, !startNeedsWorker(for: event, state) else {
-                Self.enqueue(event, into: &state)
-                return true
-            }
-            return false
+        let admission = state.withLock { admit(event, in: &$0) }
+        switch admission {
+        case .inline: handle(event)
+        case .queued:
+            wake.yield()
+            if case .started = event { taskProgressOwnerChanged() }
+        case .closed(let pipeline): inputClosed(event.stream, pipeline: pipeline)
+        case .handled: break
         }
-        if queued { wake.yield() } else { handle(event) }
-        if queued, case .started = event { taskProgressOwnerChanged() }
+    }
+
+    private func admit(_ event: AmbientAudioEvent, in state: inout State) -> Admission {
+        switch event {
+        // A start never lifts `closed`: a torn-down connection id never comes back (#735), so one that did
+        // would still be dead.
+        case .started(let stream, let connection, _):
+            state.latest[connection] = stream
+            state.newestStart = stream
+        // These ends already report a refusal, supersede the stream or tear down its peer. Revoke before
+        // queueing: a held notice must not outlive an ending even while the worker is making room.
+        case .ended(let stream, let reason) where reason != .final && reason != .idle:
+            state.latest = state.latest.filter { $0.value != stream }
+            for (id, run) in state.runs where run.stream == stream {
+                state.runs[id]?.failureReported = true
+                run.sessionChange?.finish()
+            }
+        default: break
+        }
+        // A source judged stale that sends audio or starts was alive (#941): it counts as a source again.
+        reapplyOnLife(event, in: &state)
+        if let privateSegment = admitPrivateSegment(event, in: state) { return privateSegment }
+        // Shutting down: nothing more is queued (starts are refused inline as stopping).
+        if state.shuttingDown { return .inline }
+        // While a reload builds its child (#405), events queue too: the worker waits for the reload, so a start
+        // cannot launch beside the reload's child and the old one, past `maxLiveChildren`.
+        guard state.queue.isEmpty, !state.working, !state.reloading, !mustMakeRoom(for: event, state) else {
+            Self.enqueue(event, into: &state)
+            return .queued
+        }
+        return .inline
     }
 
     /// With reply control on, every admitted diagnostic batch passes through `replyPlayback` (rightyo#124).
@@ -1160,6 +1195,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             state.shuttingDown = true
             return state.worker
         }
+        backgroundSelfVoice?.stop()
         wake.finish()
         await worker?.value
         let pipelines = state.withLock { state in
@@ -1332,7 +1368,7 @@ extension AmbientRightyoRouter {
     }
 
     /// The gate's events, in order: spawn, feed, retire.
-    fileprivate func handle(_ event: AmbientAudioEvent, manifest: URL? = nil) {
+    fileprivate func handle(_ event: AmbientAudioEvent) {
         defer {
             switch event {
             case .started, .ended: taskProgressOwnerChanged()
@@ -1345,7 +1381,7 @@ extension AmbientRightyoRouter {
                 return refuse(stream, connection: connection, target: scope.target,
                               reason: "target_binding_unavailable")
             }
-            start(stream, connection: connection, destination: destination, manifest: manifest)
+            start(stream, connection: connection, destination: destination)
         case .segment(let stream, let sequence, let bytes):
             forward(stream: stream, sequence: sequence, bytes: bytes)
         case .ended(let stream, let reason):
@@ -1372,20 +1408,28 @@ extension AmbientRightyoRouter {
         if !result.accepted { inputClosed(stream, pipeline: pipeline) }
     }
 
-    /// Handles queued events in order until none is left (#366), once any reload in progress is done (#405). A reload
-    /// is bounded: a launch, then at most a short forced stop of a refused child.
+    private enum QueueStep {
+        case reload, idle, event(AmbientAudioEvent)
+    }
+
+    /// Claim each event under the same lock as reload. Preserve the existing wait for an actual child swap.
     fileprivate func drainQueue() async {
-        while state.withLock({ $0.reloading }) { try? await Task.sleep(for: .milliseconds(10)) }
-        while let event = state.withLock({ state -> AmbientAudioEvent? in
-            guard !state.queue.isEmpty else {
-                state.working = false
-                Self.pruneClosed(in: &state)
-                return nil
+        while true {
+            let next = state.withLock { state -> QueueStep in
+                if state.reloading { return .reload }
+                guard !state.queue.isEmpty else {
+                    state.working = false
+                    Self.pruneClosed(in: &state)
+                    return .idle
+                }
+                state.working = true
+                return .event(state.queue.removeFirst())
             }
-            state.working = true
-            return state.queue.removeFirst()
-        }) {
-            await work(event)
+            switch next {
+            case .reload: try? await Task.sleep(for: .milliseconds(10))
+            case .idle: return
+            case .event(let event): await work(event)
+            }
         }
     }
 
@@ -1393,28 +1437,12 @@ extension AmbientRightyoRouter {
     /// final segment, is skipped: it neither forces a child out nor spawns. The newest makes room first, then
     /// every event is handled as it would be inline.
     private func work(_ event: AmbientAudioEvent) async {
-        var manifest: URL?
         if case .started(let stream, _, let scope) = event {
             guard isLive(stream) else { return }
-            // A binding refusal keeps queue order and dead-start pruning, but never evicts a child just to refuse.
-            if destination(for: scope) != nil {
-                await makeRoom(for: stream)
-                guard isLive(stream) else { return }
-                manifest = await prepareSelfVoice()
-            }
+            if destination(for: scope) != nil { await makeRoom(for: stream) }
             guard isLive(stream) else { return }
         }
-        handle(event, manifest: manifest)
-    }
-
-    /// Opted-in starts run on the ordered worker. Its work and a claimed reload are mutually exclusive.
-    private func prepareSelfVoice() async -> URL? {
-        guard let preparation = configuration.selfVoice else { return nil }
-        if let manifest = await preparation.prepare() { return manifest }
-        if let failure = await preparation.lastFailure {
-            emit("self-voice", detail: "off for this child (\(failure.rawValue))")
-        }
-        return nil
+        handle(event)
     }
 
     /// The newest start, not shutting down, and not ended by the gate except on its final segment.
@@ -1461,11 +1489,11 @@ extension AmbientRightyoRouter {
                            selection: scope.selection)
     }
 
-    /// Queue starts that need preparation or a free slot. Refusals still queue behind work already in flight.
-    fileprivate func startNeedsWorker(for event: AmbientAudioEvent, _ state: State) -> Bool {
+    /// Queue starts that need a free slot. Refusals still queue behind work already in flight.
+    fileprivate func mustMakeRoom(for event: AmbientAudioEvent, _ state: State) -> Bool {
         guard case .started(_, _, let scope) = event, !state.shuttingDown,
               destination(for: scope) != nil else { return false }
-        return configuration.selfVoice != nil || Self.full(state)
+        return Self.full(state)
     }
 
     private static func forcingOrder(_ run: Run) -> (Int, Int) {
@@ -1494,7 +1522,7 @@ extension AmbientRightyoRouter {
                 return (id, run.pipeline)
             }
             guard let (id, pipeline) = victim else { return }
-            emit("ambient_retired_forced", detail: nil)
+            childEvent("ambient_retired_forced")
             await pipeline.stop(grace: Self.forcedStopGrace)
             state.withLock { $0.runs[id]?.reaped = true }
             for _ in 0..<50 where state.withLock({ $0.runs[id] != nil }) {
@@ -1518,7 +1546,7 @@ extension AmbientRightyoRouter {
         taskProgressOwnerChanged()
         let listener = state.withLock { $0.listener?.value }
         retire(run)
-        emit("ambient_input_closed", detail: nil)
+        childEvent("ambient_input_closed", detail: nil)
         Task { await listener?.ambientFailed(stream: stream, connection: connection,
                                              message: "ambient stopped: listener input closed") }
     }
@@ -1544,7 +1572,7 @@ extension AmbientRightyoRouter {
         return state.withLock { $0.runs.isEmpty }
     }
 
-    fileprivate func start(_ stream: UUID, connection: UUID, destination: Destination, manifest: URL?) {
+    fileprivate func start(_ stream: UUID, connection: UUID, destination: Destination) {
         let (listener, refusal) = state.withLock { state -> (WebSocketListener?, String?) in
             if state.shuttingDown { return (nil, "stopping") }
             if Self.full(state) { return (nil, "busy") }
@@ -1558,7 +1586,7 @@ extension AmbientRightyoRouter {
         let pipeline: RightyoAmbientPipeline
         do {
             pipeline = try makePipeline(connection: connection, stream: stream, destination: destination,
-                                        listener: listener, manifest: manifest)
+                                        listener: listener)
         } catch {
             return refuse(stream, connection: connection, target: destination.target, reason: Self.describe(error))
         }
@@ -1584,7 +1612,7 @@ extension AmbientRightyoRouter {
     /// One child for `connection`'s stream, launched now; a refusal launches nothing. Shared by a start and a
     /// reload (#405), so a reloaded child is configured exactly as a fresh one, on the stream's `selection` (#636).
     fileprivate func makePipeline(
-        connection: UUID, stream: UUID, destination: Destination, listener: WebSocketListener, manifest: URL?
+        connection: UUID, stream: UUID, destination: Destination, listener: WebSocketListener
     ) throws -> RightyoAmbientPipeline {
         let target = destination.target
         // One chain for this child's not-sent notices, behind its latest acknowledgement (#894 review).
@@ -1597,9 +1625,8 @@ extension AmbientRightyoRouter {
             onDismiss: dismissed(on: connection, target: target, listener: listener),
             onAcknowledge: acknowledged(on: connection, target: target, listener: listener, notices: notices)
         )
-        settings.selfVoiceManifest = manifest
         settings.gapClock = configuration.gapClock
-        settings.onGapFill = { [weak self] in self?.emit("ambient_gap_filled", detail: $0) }
+        settings.onGapFill = { [weak self] in self?.logLater("ambient_gap_filled", detail: $0) }
         (settings.replyControl, settings.onAcknowledgementSkipped) = (configuration.replyControl, skipped())
         settings.heardRequests = heardRequests(on: connection, target: target, listener: listener, notices: notices)
         settings.onOverheard = overheard(on: connection, target: target, listener: listener)
@@ -1626,7 +1653,7 @@ extension AmbientRightyoRouter {
                                                         listener: listener, notices: notices)
         let dispatcher = dispatcher(for: destination, connection: connection,
                                     listener: listener, notices: notices, mark: mark)
-        let pipeline = try RightyoAmbientPipeline(configuration: settings, dispatcher: dispatcher)
+        let pipeline = try BackgroundSelfVoice.launch(settings, dispatcher: dispatcher, selfVoice: backgroundSelfVoice)
         mark.set(pipeline.privacyControl)
         mark.pipeline = pipeline
         return pipeline
@@ -1712,8 +1739,8 @@ extension AmbientRightyoRouter {
         registerPrivacy(pipeline, connection: connection, target: target,
                         in: &state)
         state.runs[id]?.task = Task { [weak self] in
-            if reload { self?.emit("ambient_reloaded", detail: nil) }
-            self?.emit("ambient_started", connection: connection, detail: nil)
+            if reload { self?.childEvent("ambient_reloaded", detail: nil) }
+            self?.childEvent("ambient_started", connection: connection, detail: nil)
             await self?.run(pipeline, id: id, stream: stream, connection: connection)
         }
         return id
@@ -1953,7 +1980,7 @@ extension AmbientRightyoRouter {
             // stays on.
             if let refusal = error as? RightyoPrivacyRefusal, refusal != .unsupportedChild {
                 let reason = refusal == .unconfirmedStart ? "unconfirmed" : "unacknowledged"
-                emit("ambient_privacy_start", connection: connection, detail: "outcome=refused reason=\(reason)")
+                childEvent("ambient_privacy_start", connection: connection, detail: "outcome=refused reason=\(reason)")
             }
         }
         // A reload's replaced child (#405) is marked `replaced`, so `haild doctor` does not read its end as a failure.
@@ -1963,7 +1990,7 @@ extension AmbientRightyoRouter {
             state.runs[id]?.ending = true
             return state.runs[id]?.replaced == true
         }
-        emit("ambient_ended", detail: (replacedNow ? "replaced " : "") + detail)
+        childEvent("ambient_ended", detail: (replacedNow ? "replaced " : "") + detail)
         let (stillActive, replaced, reported, sessionChanged, listener, waiters) = state.withLock { state in
             let run = state.runs.removeValue(forKey: id)
             let replaced = run?.replaced ?? false
@@ -1987,7 +2014,7 @@ extension AmbientRightyoRouter {
     }
 
     private func refuse(_ stream: UUID, connection: UUID, target: String, reason: String) {
-        emit("ambient_refused", detail: reason)
+        childEvent("ambient_refused", detail: reason)
         // A start refused while private (#735 S-2b): nothing listens, privacy stays on, and the owner is told by the
         // state rule (round 4), as a child's refusal is.
         announceRefusal(nil, connection: connection, target: target)
@@ -2012,6 +2039,16 @@ extension AmbientRightyoRouter {
         case let error as LocalDispatchRefusal: "dispatch \(error.rawValue)"
         case let error as LocalReplyRefusal: "dispatch \(error.rawValue)"
         default: "failed"
+        }
+    }
+
+    /// Under opt-in, an unavailable log sink must not hold a run slot while its child starts or retires.
+    private func childEvent(_ event: String, connection: UUID? = nil, detail: String? = nil) {
+        let record = WebSocketListenerEvent(event: event, sessionID: connection, detail: detail)
+        if let backgroundSelfVoice {
+            backgroundSelfVoice.enqueueLog { [log] in log(record) }
+        } else {
+            log(record)
         }
     }
 
@@ -2053,14 +2090,13 @@ extension AmbientRightyoRouter {
         defer { state.withLock { $0.reloading = false } }
         let pipeline: RightyoAmbientPipeline
         do {
-            let manifest = await prepareSelfVoice()
             let destination = Destination(target: old.target, binding: old.binding,
                                           policyGeneration: old.policyGeneration, selection: old.selection)
             pipeline = try makePipeline(connection: connection, stream: old.stream, destination: destination,
-                                        listener: listener, manifest: manifest)
+                                        listener: listener)
         } catch {
             let reason = Self.describe(error)
-            emit("ambient_reload_refused", detail: reason)
+            childEvent("ambient_reload_refused", detail: reason)
             return .refused(reason)
         }
         let outcome = swap(old, for: pipeline, connection: connection)
@@ -2862,7 +2898,7 @@ extension AmbientRightyoRouter {
             }
             return nil
         }
-        if let silent { emit("ambient_privacy", connection: connection, detail: silent) }
+        if let silent { childEvent("ambient_privacy", connection: connection, detail: silent) }
     }
 
     /// The work that announces entry `entry` and logs its tokens. A nil target still closes the privacy ledger
