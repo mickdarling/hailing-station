@@ -39,13 +39,16 @@ struct SelfVoiceManifest: Codable, Equatable {
 actor SelfVoicePublisher {
     let path: String
     private let renderer: (any SelfVoiceRendering)?
+    let replaceLaunchManifest: SelfVoiceDirectory.ReplaceManifest
     let clock: @Sendable () -> Int
     private var cache: [String: (SelfVoiceConfiguration, SelfVoiceManifest.Voice)] = [:]
 
     init(directory: String, renderer: (any SelfVoiceRendering)? = nil,
+         replaceLaunchManifest: @escaping SelfVoiceDirectory.ReplaceManifest = SelfVoiceDirectory.renameManifest,
          clock: @escaping @Sendable () -> Int = { Int(Date().timeIntervalSince1970) }) {
         path = directory
         self.renderer = renderer
+        self.replaceLaunchManifest = replaceLaunchManifest
         self.clock = clock
     }
 
@@ -101,7 +104,15 @@ final class SelfVoiceDirectory {
 
     private var installedWaves: [String: stat] = [:]
 
-    init(_ path: String) throws {
+    typealias ReplaceManifest = @Sendable (_ directory: Int32, _ temporary: String, _ name: String) throws -> Void
+    private let replaceManifest: ReplaceManifest
+
+    static func renameManifest(in directory: Int32, from temporary: String, to name: String) throws {
+        guard renameatx_np(directory, temporary, directory, name, 0) == 0 else { throw SelfVoiceError.directory }
+    }
+
+    init(_ path: String, replaceManifest: @escaping ReplaceManifest = SelfVoiceDirectory.renameManifest) throws {
+        self.replaceManifest = replaceManifest
         let parent = try SelfVoicePrivateFile.openParent(path)
         let leaf = parent.leaf
         defer { close(parent.descriptor) }
@@ -187,12 +198,14 @@ final class SelfVoiceDirectory {
         try checkedNames()
         let named = try info(temp)
         try check()
-        guard opened.st_ino == named.st_ino, opened.st_dev == named.st_dev,
-              renameatx_np(descriptor, temp, descriptor, name, timestamp == nil ? UInt32(RENAME_EXCL) : 0) == 0
-        else { throw SelfVoiceError.directory }
+        guard opened.st_ino == named.st_ino, opened.st_dev == named.st_dev else { throw SelfVoiceError.directory }
         if timestamp == nil {
+            guard renameatx_np(descriptor, temp, descriptor, name, UInt32(RENAME_EXCL)) == 0 else {
+                throw SelfVoiceError.directory
+            }
             installedWaves[name] = opened
         } else {
+            try replaceManifest(descriptor, temp, name)
             installedWaves.removeAll() // The manifest rename committed these names, even if the next sync fails.
         }
     }

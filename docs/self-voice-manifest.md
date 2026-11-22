@@ -56,8 +56,9 @@ An empty array publishes an empty manifest and clears enrollment.
 
 Before each planned startup or respawn, including a reload, the daemon will call `prepare()` off the
 audio callback. Each call rereads enrollment, checks profile identity and verifies the manifest generation
-and WAVs. An unchanged verified generation can be reused. Changed voices render again and removed IDs
-drop out of the next manifest. A running child retains its startup enrollment.
+and WAVs. Reuse requires the configured name to resolve to the same profile ID verified for that clip.
+A new ID under the same name triggers a fresh render. Removed voices drop out of the next manifest.
+A running child retains its startup enrollment.
 
 Only a successful verification in this daemon run authorizes `--self-voice-manifest <absolute path>`.
 The presence of an earlier manifest on disk never authorizes that argument. Read, validation, render,
@@ -65,7 +66,10 @@ publication and timeout failures record a content-free reason. Preparation retur
 launches without the argument.
 The next preparation starts fresh. The whole attempt has one 20-second deadline, matching the announcer's
 render deadline. At expiry preparation returns immediately and cancels its own work and render child.
-Child reaping can finish in the background. A late render cannot authorize a publication.
+The worker closes its stdout and stderr readers on cancellation even if a descendant holds the write
+ends open. It joins both closes and reaps its own child in the background.
+There is an open publication race if the deadline expires during the final rename. The caller receives
+no launch path, but the rename can still replace the previous manifest.
 
 ## Published manifest
 

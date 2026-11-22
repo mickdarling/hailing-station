@@ -5,6 +5,15 @@ import Synchronization
 import Testing
 @testable import HailDaemonKit
 
+extension SyntheticSelfVoice: SelfVoiceEnrollmentRendering {
+    func pcm(for voice: SelfVoiceConfiguration, verifying profileID: String) throws -> Data {
+        guard try self.profileID(named: voice.profile, at: voice.origin()) == profileID else {
+            throw SelfVoiceError.configuration
+        }
+        return pcm(for: voice)
+    }
+}
+
 extension SelfVoiceLaunchPreparation {
     init(enrollmentPath: String, directory: String, clock: TaskProgressClock, timeout: Duration = .seconds(20),
          renderer: @escaping Renderer) {
@@ -56,6 +65,21 @@ struct SelfVoiceLaunchPreparationTests {
         #expect(try files.readManifest().voices.isEmpty)
         #expect(await rig.renderer.calls == ["one", "two", "one"])
         #expect(await rig.preparation.lastFailure == nil)
+    }
+
+    @Test func rerendersWhenTheSameNameResolvesToANewID() async throws {
+        let rig = try Rig()
+        defer { rig.files.remove() }
+        try #require(await rig.preparation.prepare() == rig.files.manifest)
+        let original = try #require(try rig.files.readManifest().voices.first)
+        await rig.renderer.replaceProfile(named: "Local (one)", id: "new-id")
+        try #require(await rig.preparation.prepare() == rig.files.manifest)
+        let replacement = try #require(try rig.files.readManifest().voices.first)
+        #expect(replacement.file != original.file)
+        #expect(replacement.renderedAt > original.renderedAt)
+        #expect(await rig.preparation.prepare() == rig.files.manifest)
+        #expect(try rig.files.readManifest().voices == [replacement])
+        #expect(await rig.renderer.calls == ["one", "one"])
     }
 
     @Test func staleDiskManifestNeverAuthorizesLaunchAndRecoveryRendersAgain() async throws {
@@ -133,13 +157,13 @@ struct SelfVoiceLaunchPreparationTests {
     }
 }
 
-private final class HeldRender: SelfVoiceRendering {
+private final class HeldRender: SelfVoiceEnrollmentRendering {
     let started = AsyncStream<Void>.makeStream(), terminated = AsyncStream<Void>.makeStream()
     private let pending = Mutex<CheckedContinuation<Void, Never>?>(nil)
 
     func profileID(named name: String, at origin: URL) -> String { name }
 
-    func pcm(for voice: SelfVoiceConfiguration) async throws -> Data {
+    func pcm(for voice: SelfVoiceConfiguration, verifying profileID: String) async throws -> Data {
         await withTaskCancellationHandler {
             await withCheckedContinuation { waiter in
                 pending.withLock { $0 = waiter }

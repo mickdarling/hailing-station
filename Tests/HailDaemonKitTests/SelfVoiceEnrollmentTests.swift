@@ -69,7 +69,7 @@ struct SelfVoiceEnrollmentTests {
     @Test func rejectsRelativePathSymlinksAndHardLinks() throws {
         let fixture = try EnrollmentFixture()
         defer { fixture.remove() }
-        #expect(throws: Failure.file) { try SelfVoiceEnrollment.load("voices.json") }
+        #expect(throws: Failure.relativePath) { try SelfVoiceEnrollment.load("voices.json") }
         let alias = fixture.root.appendingPathComponent("alias")
         try #require(symlink(fixture.file.path, alias.path) == 0)
         #expect(throws: Failure.file) { try SelfVoiceEnrollment.load(alias.path) }
