@@ -33,6 +33,7 @@ struct SelfVoiceConfiguration: Equatable, Sendable {
 
 /// The only input audio is renderer stdout, mono signed 16-bit little-endian PCM at 24 kHz.
 protocol SelfVoiceRendering: Sendable {
+    func profileID(named name: String, at origin: URL) async throws -> String
     func pcm(for voice: SelfVoiceConfiguration) async throws -> Data
 }
 
@@ -56,7 +57,7 @@ struct SelfVoiceRenderer: SelfVoiceRendering {
     func pcm(for voice: SelfVoiceConfiguration) async throws -> Data {
         let origin = try voice.origin()
         // vbsay prefers the exact name. Check that it maps uniquely to the same ID before and after rendering.
-        let profileID = try await Self.profileID(named: voice.profile, at: origin)
+        let expectedID = try await profileID(named: voice.profile, at: origin)
         let path = try RightyoChildProcess.validate(executable: executable, config: executable) as NSString
         guard path.lastPathComponent == "vbsay", !path.contains(":") else { throw SelfVoiceError.configuration }
         // As for spoken replies, the pinned wrapper and local engine are trusted to confine synthesis traffic.
@@ -71,7 +72,7 @@ struct SelfVoiceRenderer: SelfVoiceRendering {
         let bytes = try await withTaskCancellationHandler {
             try await Self.collect(child)
         } onCancel: { child.cancel() }
-        guard try await Self.profileID(named: voice.profile, at: origin) == profileID else {
+        guard try await profileID(named: voice.profile, at: origin) == expectedID else {
             throw SelfVoiceError.configuration
         }
         return bytes
@@ -107,7 +108,7 @@ struct SelfVoiceRenderer: SelfVoiceRendering {
         return id
     }
 
-    private static func profileID(named name: String, at origin: URL) async throws -> String {
+    func profileID(named name: String, at origin: URL) async throws -> String {
         let config = URLSessionConfiguration.ephemeral
         config.connectionProxyDictionary = [:]
         let session = URLSession(configuration: config, delegate: LocalCatalogDelegate(), delegateQueue: nil)
@@ -119,7 +120,7 @@ struct SelfVoiceRenderer: SelfVoiceRendering {
             guard data.count < 1_048_576 else { throw SelfVoiceError.configuration }
             data.append(byte)
         }
-        return try exactID(named: name, in: JSONDecoder().decode([Profile].self, from: data))
+        return try Self.exactID(named: name, in: JSONDecoder().decode([Profile].self, from: data))
     }
 }
 

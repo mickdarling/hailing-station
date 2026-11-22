@@ -13,6 +13,16 @@ func voiceFixture(_ id: String = "one", profile: String = "Local (one)", revisio
 
 actor SyntheticSelfVoice: SelfVoiceRendering {
     private(set) var calls: [String] = []
+    private var profiles: [SelfVoiceRenderer.Profile] = [.init(id: "1", name: "Local (one)"),
+                                                         .init(id: "2", name: "Local (two)")]
+    func addProfile(id: String, name: String) {
+        profiles.append(.init(id: id, name: name))
+    }
+
+    func profileID(named name: String, at origin: URL) throws -> String {
+        try SelfVoiceRenderer.exactID(named: name, in: profiles)
+    }
+
     func pcm(for voice: SelfVoiceConfiguration) -> Data {
         calls.append(voice.id)
         return Data(count: 8 * 48_000)
@@ -120,6 +130,25 @@ struct SelfVoiceManifestTests {
         let calls = await fixture.renderer.calls
         #expect(calls.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: fixture.directory.path))
+    }
+
+    @Test(arguments: [false, true])
+    func ambiguousSecondProfileRefusesPublication(withCache: Bool) async throws {
+        let fixture = try SelfVoiceFixture()
+        defer { fixture.remove() }
+        let voices = [voiceFixture(), voiceFixture("two", profile: "Local (two)")]
+        if withCache { try await fixture.publisher.publish(voices) }
+        let calls = await fixture.renderer.calls
+        let manifest = withCache ? try fixture.read(SelfVoiceManifest.name) : nil
+        await fixture.renderer.addProfile(id: "duplicate", name: "Local (two)")
+
+        await #expect(throws: SelfVoiceError.configuration) { try await fixture.publisher.publish(voices) }
+        #expect(await fixture.renderer.calls == calls)
+        if let manifest {
+            #expect(try fixture.read(SelfVoiceManifest.name) == manifest)
+        } else {
+            #expect(!FileManager.default.fileExists(atPath: fixture.directory.path))
+        }
     }
 
     @Test func oversizedOnDiskManifestRefusesReplacement() async throws {

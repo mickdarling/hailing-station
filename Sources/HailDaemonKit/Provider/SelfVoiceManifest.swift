@@ -1,6 +1,7 @@
 #if os(macOS)
 import Darwin
 import Foundation
+import os
 
 struct SelfVoiceManifest: Codable, Equatable {
     struct Voice: Codable, Equatable {
@@ -51,12 +52,20 @@ actor SelfVoicePublisher {
     func publish(_ configurations: [SelfVoiceConfiguration],
                  beforeManifest: @Sendable () throws -> Void = {}) async throws -> SelfVoiceManifest {
         try SelfVoiceManifest.checkIDs(configurations.map(\.id))
-        for voice in configurations { _ = try voice.origin() }
+        let origins = try configurations.map { try $0.origin() }
+        for (voice, origin) in zip(configurations, origins) {
+            _ = try await renderer.profileID(named: voice.profile, at: origin)
+        }
         let directory = try SelfVoiceDirectory(path)
         do {
             return try await publish(configurations, in: directory, beforeManifest: beforeManifest)
         } catch {
-            try directory.rollbackWaves()
+            do {
+                try directory.rollbackWaves()
+            } catch {
+                Logger(subsystem: "com.mickdarling.hailing-station", category: "self-voice")
+                    .error("Failed to roll back self-voice WAVs")
+            }
             throw error
         }
     }
@@ -235,17 +244,24 @@ final class SelfVoiceDirectory {
         }
         if failed { throw SelfVoiceError.directory }
     }
-
-    func removeSuperseded(keeping files: Set<String>) throws {
-        for name in try checkedNames() where !files.contains(name) {
-            guard Self.generated(name, prefix: "self-", suffix: ".wav") else { continue }
-            _ = try info(name)
-            guard unlinkat(descriptor, name, 0) == 0 else { throw SelfVoiceError.directory }
-        }
-    }
 }
 
 extension SelfVoiceDirectory {
+    func removeSuperseded(keeping files: Set<String>) throws {
+        let names = try checkedNames()
+        let retained = try files.compactMap { name -> stat? in
+            var item = stat()
+            if fstatat(descriptor, name, &item, AT_SYMLINK_NOFOLLOW) == 0 { return item }
+            if errno == ENOENT { return nil }
+            throw SelfVoiceError.directory
+        }
+        for name in names where Self.generated(name, prefix: "self-", suffix: ".wav") {
+            let candidate = try info(name)
+            if retained.contains(where: { $0.st_dev == candidate.st_dev && $0.st_ino == candidate.st_ino }) { continue }
+            guard unlinkat(descriptor, name, 0) == 0 else { throw SelfVoiceError.directory }
+        }
+    }
+
     private static func checkAncestors(_ parent: String) throws {
         var path = parent
         let home = FileManager.default.homeDirectoryForCurrentUser.path

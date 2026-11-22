@@ -42,6 +42,18 @@ struct SelfVoicePublicationSecurityTests {
         #expect(throws: SelfVoiceError.directory) { try SelfVoiceDirectory.requireAncestor(item, writableACL: false) }
     }
 
+    @Test func publishesBelowAncestorWithHomeDirectoryDenyDeleteACL() async throws {
+        let fixture = try SelfVoiceFixture()
+        defer { fixture.remove() }
+        try CodexLauncherTests.addACL("everyone deny delete", to: fixture.root.path)
+        defer { CodexLauncherTests.clearACLs(fixture.root.path) }
+
+        let manifest = try await fixture.publisher.publish([voiceFixture()])
+        let wave = try #require(manifest.voices.first)
+        #expect(try fixture.read(SelfVoiceManifest.name) == manifest.encoded())
+        #expect(try SelfVoiceWave.digest(fixture.read(wave.file)) == wave.sha256)
+    }
+
     @Test(arguments: ["ancestor", "directory", "manifest.json", "previous-wave", "foreign"])
     func rejectsACLAtEachPublicationBoundary(target: String) async throws {
         let fixture = try SelfVoiceFixture()

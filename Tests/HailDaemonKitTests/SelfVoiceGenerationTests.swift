@@ -23,6 +23,30 @@ struct SelfVoiceGenerationTests {
         #expect(try fixture.names() == [SelfVoiceManifest.name, second.voices[0].file])
     }
 
+    @Test func previousManifestRetainsWaveByFilesystemIdentity() async throws {
+        let fixture = try SelfVoiceFixture()
+        defer { fixture.remove() }
+        let first = try await fixture.publisher.publish([voiceFixture()])
+        let wave = try #require(first.voices.first)
+        let upper = "self-12345678-ABCD-4ABC-8ABC-0123456789AB.wav"
+        let lower = upper.lowercased()
+        let upperURL = fixture.directory.appendingPathComponent(upper)
+        let lowerURL = fixture.directory.appendingPathComponent(lower)
+        try FileManager.default.moveItem(at: fixture.directory.appendingPathComponent(wave.file), to: upperURL)
+        let sameFile = FileManager.default.fileExists(atPath: lowerURL.path)
+        if !sameFile { try FileManager.default.copyItem(at: upperURL, to: lowerURL) }
+        let previous = SelfVoiceManifest.Voice(id: wave.id, file: lower, source: wave.source,
+                                               renderedAt: wave.renderedAt, sha256: wave.sha256)
+        let file = try FileHandle(forWritingTo: fixture.directory.appendingPathComponent(SelfVoiceManifest.name))
+        defer { try? file.close() }
+        try file.truncate(atOffset: 0)
+        try file.write(contentsOf: SelfVoiceManifest(version: 1, voices: [previous]).encoded())
+
+        _ = try await fixture.publisher.publish([])
+        #expect(try fixture.names() == [SelfVoiceManifest.name, sameFile ? upper : lower])
+        #expect(try SelfVoiceWave.digest(fixture.read(lower)) == wave.sha256)
+    }
+
     @Test func emptyPublishReplacesExtraKeysWithExactV1Bytes() async throws {
         let fixture = try SelfVoiceFixture()
         defer { fixture.remove() }
@@ -36,6 +60,8 @@ struct SelfVoiceGenerationTests {
     }
 
     private struct FailsLastVoice: SelfVoiceRendering {
+        func profileID(named name: String, at origin: URL) -> String { name }
+
         func pcm(for voice: SelfVoiceConfiguration) throws -> Data {
             guard voice.id != "broken" else { throw SelfVoiceError.audio }
             return Data(count: 8 * 48_000)
@@ -58,6 +84,29 @@ struct SelfVoiceGenerationTests {
             #expect(try fixture.names() == before)
             #expect(try fixture.read(SelfVoiceManifest.name) == manifest)
         }
+    }
+
+    @Test func rollbackPreservesReplacementAndRemovesOtherInstalledWave() async throws {
+        enum Interrupted: Error { case beforeManifest }
+        let fixture = try SelfVoiceFixture()
+        defer { fixture.remove() }
+        let replacement = fixture.root.appendingPathComponent("replacement")
+        let marker = Data("replacement".utf8)
+        try marker.write(to: replacement)
+        await #expect(throws: Interrupted.beforeManifest) {
+            try await fixture.publisher.publish([voiceFixture(), voiceFixture("two")]) {
+                let waves = try fixture.names().filter { $0.hasSuffix(".wav") }
+                try #require(waves.count == 2)
+                let name = try #require(waves.sorted().first)
+                let target = fixture.directory.appendingPathComponent(name)
+                try #require(rename(replacement.path, target.path) == 0)
+                throw Interrupted.beforeManifest
+            }
+        }
+        let remaining = try fixture.names()
+        #expect(remaining.count == 1)
+        let survivor = try #require(remaining.first)
+        #expect(try fixture.read(survivor) == marker)
     }
 
     @Test func sweepRemovesOnlyExactTemporaryNamesAfterCheckingAllEntries() async throws {
