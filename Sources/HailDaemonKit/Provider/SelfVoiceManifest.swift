@@ -37,11 +37,12 @@ struct SelfVoiceManifest: Codable, Equatable {
 
 /// One owner per daemon start and target. The nonblocking directory lock covers suspension and other writers.
 actor SelfVoicePublisher {
-    private let path: String, renderer: any SelfVoiceRendering
-    private let clock: @Sendable () -> Int
+    let path: String
+    private let renderer: (any SelfVoiceRendering)?
+    let clock: @Sendable () -> Int
     private var cache: [String: (SelfVoiceConfiguration, SelfVoiceManifest.Voice)] = [:]
 
-    init(directory: String, renderer: any SelfVoiceRendering,
+    init(directory: String, renderer: (any SelfVoiceRendering)? = nil,
          clock: @escaping @Sendable () -> Int = { Int(Date().timeIntervalSince1970) }) {
         path = directory
         self.renderer = renderer
@@ -51,6 +52,7 @@ actor SelfVoicePublisher {
     @discardableResult
     func publish(_ configurations: [SelfVoiceConfiguration],
                  beforeManifest: @Sendable () throws -> Void = {}) async throws -> SelfVoiceManifest {
+        guard let renderer else { throw SelfVoiceError.configuration }
         try SelfVoiceManifest.checkIDs(configurations.map(\.id))
         let origins = try configurations.map { try $0.origin() }
         for (voice, origin) in zip(configurations, origins) {
@@ -58,19 +60,15 @@ actor SelfVoicePublisher {
         }
         let directory = try SelfVoiceDirectory(path)
         do {
-            return try await publish(configurations, in: directory, beforeManifest: beforeManifest)
+            return try await publish(configurations, in: directory, using: renderer, beforeManifest: beforeManifest)
         } catch {
-            do {
-                try directory.rollbackWaves()
-            } catch {
-                Logger(subsystem: "com.mickdarling.hailing-station", category: "self-voice")
-                    .error("Failed to roll back self-voice WAVs")
-            }
+            directory.rollbackAfterFailure()
             throw error
         }
     }
 
     private func publish(_ configurations: [SelfVoiceConfiguration], in directory: SelfVoiceDirectory,
+                         using renderer: any SelfVoiceRendering,
                          beforeManifest: @Sendable () throws -> Void) async throws -> SelfVoiceManifest {
         let old = try directory.previous()
         var timestamp = old.timestamp
@@ -89,10 +87,7 @@ actor SelfVoicePublisher {
         let manifest = SelfVoiceManifest(version: 1, voices: voices)
         try beforeManifest()
         try Task.checkCancellation()
-        for entry in voices where try !directory.matches(entry) { throw SelfVoiceError.manifest }
-        try directory.sync()
-        try directory.install(manifest.encoded(), as: SelfVoiceManifest.name, timestamp: max(0, timestamp))
-        try directory.sync()
+        try directory.commit(manifest, timestamp: timestamp)
         cache = Dictionary(uniqueKeysWithValues: zip(configurations, voices).map { ($0.0.id, ($0.0, $0.1)) })
         // A child may have opened the previous manifest and still need to open its WAVs by name.
         let retained = Set((voices + (old.manifest?.voices ?? [])).map(\.file))
@@ -103,23 +98,17 @@ actor SelfVoicePublisher {
 
 final class SelfVoiceDirectory {
     let path: String, descriptor: Int32
-    private static let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW_ANY | O_CLOEXEC
 
     private var installedWaves: [String: stat] = [:]
 
     init(_ path: String) throws {
-        let parts = path.split(separator: "/")
-        guard path.hasPrefix("/"), !path.contains("\0"), let leaf = parts.last,
-              !parts.contains("."), !parts.contains("..") else { throw SelfVoiceError.directory }
-        let parentPath = "/" + parts.dropLast().joined(separator: "/")
-        try Self.checkAncestors(parentPath)
-        let parent = open(parentPath, Self.flags)
-        guard parent >= 0 else { throw SelfVoiceError.directory }
-        defer { close(parent) }
-        guard mkdirat(parent, String(leaf), 0o700) == 0 || errno == EEXIST else { throw SelfVoiceError.directory }
-        let dir = openat(parent, String(leaf), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        let parent = try SelfVoicePrivateFile.openParent(path)
+        let leaf = parent.leaf
+        defer { close(parent.descriptor) }
+        guard mkdirat(parent.descriptor, leaf, 0o700) == 0 || errno == EEXIST else { throw SelfVoiceError.directory }
+        let dir = openat(parent.descriptor, leaf, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard dir >= 0 else { throw SelfVoiceError.directory }
-        self.path = "/" + parts.joined(separator: "/")
+        self.path = parent.normalizedPath
         descriptor = dir
         guard flock(dir, LOCK_EX | LOCK_NB) == 0 else { throw SelfVoiceError.directory }
         for name in try checkedNames() where Self.generated(name, prefix: ".self-", suffix: ".tmp") {
@@ -136,14 +125,15 @@ final class SelfVoiceDirectory {
     deinit { close(descriptor) }
 
     @discardableResult private func checkedNames() throws -> [String] {
-        try Self.checkAncestors((path as NSString).deletingLastPathComponent)
-        let current = open(path, Self.flags)
+        try SelfVoicePrivateFile.checkAncestors((path as NSString).deletingLastPathComponent)
+        let current = open(path, SelfVoicePrivateFile.flags)
         guard current >= 0 else { throw SelfVoiceError.directory }
         defer { close(current) }
         var named = stat(), held = stat()
         guard fstat(current, &named) == 0, fstat(descriptor, &held) == 0,
               named.st_dev == held.st_dev, named.st_ino == held.st_ino else { throw SelfVoiceError.directory }
-        try Self.requirePrivate(held, type: S_IFDIR, hasACL: CodexLauncher.hasExtendedACL(descriptor: descriptor))
+        let hasACL = CodexLauncher.hasExtendedACL(descriptor: descriptor)
+        try SelfVoicePrivateFile.requirePrivate(held, type: S_IFDIR, hasACL: hasACL)
         let names = try AuditLog.directoryNames(in: descriptor, at: URL(fileURLWithPath: path))
             .filter { $0 != "." && $0 != ".." }
         for name in names { _ = try info(name) }
@@ -154,39 +144,13 @@ final class SelfVoiceDirectory {
         let file = openat(descriptor, name, O_EVTONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard file >= 0 else { throw SelfVoiceError.directory }
         defer { close(file) }
-        return try privateFileInfo(file)
-    }
-
-    private func privateFileInfo(_ file: Int32) throws -> stat {
-        var item = stat()
-        guard fstat(file, &item) == 0 else { throw SelfVoiceError.directory }
-        try Self.requirePrivate(item, type: S_IFREG, hasACL: CodexLauncher.hasExtendedACL(descriptor: file))
-        return item
-    }
-
-    static func requirePrivate(_ info: stat, type: mode_t, hasACL: Bool) throws {
-        guard !hasACL, info.st_uid == getuid(), info.st_mode & S_IFMT == type,
-              info.st_mode & 0o7777 == (type == S_IFDIR ? 0o700 : 0o600),
-              type == S_IFDIR || info.st_nlink == 1 else { throw SelfVoiceError.directory }
-    }
-
-    private func read(_ name: String, limit: Int) throws -> (Data, Int)? {
-        let file = openat(descriptor, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
-        guard file >= 0 else {
-            if errno == ENOENT { return nil }
-            throw SelfVoiceError.directory
-        }
-        defer { close(file) }
-        let item = try privateFileInfo(file)
-        guard item.st_size <= limit else { throw SelfVoiceError.manifest }
-        let handle = FileHandle(fileDescriptor: file, closeOnDealloc: false)
-        let data = try handle.read(upToCount: limit + 1) ?? Data()
-        guard data.count == item.st_size else { throw SelfVoiceError.manifest }
-        return (data, item.st_mtimespec.tv_sec)
+        return try SelfVoicePrivateFile.privateFileInfo(file)
     }
 
     func previous() throws -> (manifest: SelfVoiceManifest?, timestamp: Int) {
-        guard let (data, modified) = try read(SelfVoiceManifest.name, limit: SelfVoiceManifest.limit) else {
+        let previous = try SelfVoicePrivateFile.read(SelfVoiceManifest.name, in: descriptor,
+                                                     limit: SelfVoiceManifest.limit)
+        guard let (data, modified) = previous else {
             return (nil, -1)
         }
         let old = try JSONDecoder().decode(SelfVoiceManifest.self, from: data)
@@ -196,7 +160,8 @@ final class SelfVoiceDirectory {
     }
 
     func matches(_ voice: SelfVoiceManifest.Voice) throws -> Bool {
-        guard let (data, _) = try read(voice.file, limit: SelfVoiceWave.maxBytes) else { return false }
+        let wave = try SelfVoicePrivateFile.read(voice.file, in: descriptor, limit: SelfVoiceWave.maxBytes)
+        guard let (data, _) = wave else { return false }
         return SelfVoiceWave.digest(data) == voice.sha256
     }
 
@@ -204,14 +169,14 @@ final class SelfVoiceDirectory {
         guard fsync(descriptor) == 0 else { throw SelfVoiceError.directory }
     }
 
-    func install(_ data: Data, as name: String, timestamp: Int? = nil) throws {
+    func install(_ data: Data, as name: String, timestamp: Int? = nil, check: () throws -> Void = {}) throws {
         try checkedNames()
         let temp = ".self-\(UUID().uuidString).tmp"
         let file = openat(descriptor, temp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard file >= 0 else { throw SelfVoiceError.directory }
         defer { close(file); unlinkat(descriptor, temp, 0) }
         let handle = FileHandle(fileDescriptor: file, closeOnDealloc: false)
-        let opened = try privateFileInfo(file)
+        let opened = try SelfVoicePrivateFile.privateFileInfo(file)
         try handle.write(contentsOf: data)
         if let timestamp {
             // Carry the last enrollment second across restarts, including an empty manifest, without a v1 extension.
@@ -221,6 +186,7 @@ final class SelfVoiceDirectory {
         try handle.synchronize()
         try checkedNames()
         let named = try info(temp)
+        try check()
         guard opened.st_ino == named.st_ino, opened.st_dev == named.st_dev,
               renameatx_np(descriptor, temp, descriptor, name, timestamp == nil ? UInt32(RENAME_EXCL) : 0) == 0
         else { throw SelfVoiceError.directory }
@@ -247,6 +213,33 @@ final class SelfVoiceDirectory {
 }
 
 extension SelfVoiceDirectory {
+    func rollbackAfterFailure() {
+        do {
+            try rollbackWaves()
+        } catch {
+            Logger(subsystem: "com.mickdarling.hailing-station", category: "self-voice")
+                .error("Failed to roll back self-voice WAVs")
+        }
+    }
+
+    func verifyManifest(_ manifest: SelfVoiceManifest) throws {
+        try checkedNames()
+        let bytes = try SelfVoicePrivateFile.read(SelfVoiceManifest.name, in: descriptor,
+                                                  limit: SelfVoiceManifest.limit)
+        guard try bytes?.0 == manifest.encoded() else { throw SelfVoiceError.manifest }
+    }
+
+    func verifyWaves(_ manifest: SelfVoiceManifest) throws {
+        for entry in manifest.voices where try !matches(entry) { throw SelfVoiceError.manifest }
+    }
+
+    func commit(_ manifest: SelfVoiceManifest, timestamp: Int, check: () throws -> Void = {}) throws {
+        try verifyWaves(manifest)
+        try sync()
+        try install(manifest.encoded(), as: SelfVoiceManifest.name, timestamp: max(0, timestamp), check: check)
+        try sync()
+    }
+
     func removeSuperseded(keeping files: Set<String>) throws {
         let names = try checkedNames()
         let retained = try files.compactMap { name -> stat? in
@@ -261,8 +254,67 @@ extension SelfVoiceDirectory {
             guard unlinkat(descriptor, name, 0) == 0 else { throw SelfVoiceError.directory }
         }
     }
+}
 
-    private static func checkAncestors(_ parent: String) throws {
+// Slice 1's predicate entry points also serve its existing pure security tests.
+extension SelfVoiceDirectory {
+    static func requirePrivate(_ info: stat, type: mode_t, hasACL: Bool) throws {
+        try SelfVoicePrivateFile.requirePrivate(info, type: type, hasACL: hasACL)
+    }
+
+    static func requireAncestor(_ info: stat, writableACL: Bool) throws {
+        try SelfVoicePrivateFile.requireAncestor(info, writableACL: writableACL)
+    }
+}
+
+enum SelfVoicePrivateFile {
+    static let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW_ANY | O_CLOEXEC
+
+    struct Parent {
+        let descriptor: Int32
+        let leaf: String, normalizedPath: String
+    }
+
+    static func openParent(_ path: String) throws -> Parent {
+        let parts = path.split(separator: "/")
+        guard path.hasPrefix("/"), !path.contains("\0"), let leaf = parts.last,
+              !parts.contains("."), !parts.contains("..") else { throw SelfVoiceError.directory }
+        let parentPath = "/" + parts.dropLast().joined(separator: "/")
+        try checkAncestors(parentPath)
+        let parent = open(parentPath, flags)
+        guard parent >= 0 else { throw SelfVoiceError.directory }
+        return Parent(descriptor: parent, leaf: String(leaf), normalizedPath: "/" + parts.joined(separator: "/"))
+    }
+
+    static func privateFileInfo(_ file: Int32) throws -> stat {
+        var item = stat()
+        guard fstat(file, &item) == 0 else { throw SelfVoiceError.directory }
+        try Self.requirePrivate(item, type: S_IFREG, hasACL: CodexLauncher.hasExtendedACL(descriptor: file))
+        return item
+    }
+
+    static func requirePrivate(_ info: stat, type: mode_t, hasACL: Bool) throws {
+        guard !hasACL, info.st_uid == getuid(), info.st_mode & S_IFMT == type,
+              info.st_mode & 0o7777 == (type == S_IFDIR ? 0o700 : 0o600),
+              type == S_IFDIR || info.st_nlink == 1 else { throw SelfVoiceError.directory }
+    }
+
+    static func read(_ name: String, in descriptor: Int32, limit: Int) throws -> (Data, Int)? {
+        let file = openat(descriptor, name, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard file >= 0 else {
+            if errno == ENOENT { return nil }
+            throw SelfVoiceError.directory
+        }
+        defer { close(file) }
+        let item = try privateFileInfo(file)
+        guard item.st_size <= limit else { throw SelfVoiceError.manifest }
+        let handle = FileHandle(fileDescriptor: file, closeOnDealloc: false)
+        let data = try handle.read(upToCount: limit + 1) ?? Data()
+        guard data.count == item.st_size else { throw SelfVoiceError.manifest }
+        return (data, item.st_mtimespec.tv_sec)
+    }
+
+    static func checkAncestors(_ parent: String) throws {
         var path = parent
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var ancestors = [path]
