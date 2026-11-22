@@ -63,7 +63,11 @@ public enum RightyoReplyPhase: String, Sendable { case started, ended }
 /// is under `PIPE_BUF`, so each write is atomic: whole, or refused (a full pipe or a gone child) and dropped.
 final class RightyoControlWriter: Sendable {
     private let descriptor: Mutex<Int32?>
-    init(_ descriptor: Int32?) { self.descriptor = Mutex(descriptor) }
+    private let beforeWrite: (@Sendable () -> Void)?
+    init(_ descriptor: Int32?, beforeWrite: (@Sendable () -> Void)? = nil) {
+        self.descriptor = Mutex(descriptor)
+        self.beforeWrite = beforeWrite
+    }
     /// Startup applies the existing wish and preserves an off already reserved behind it.
     func tighten(_ input: RightyoStdinWriter, starting: Bool = false) -> Bool {
         input.tighten(starting: starting) { write("{\"duck\":true}\n") }
@@ -72,13 +76,13 @@ final class RightyoControlWriter: Sendable {
     func relax(_ input: RightyoStdinWriter, epoch: Int, expired: Bool) -> RightyoDelivery {
         input.deliver(epoch, expired: expired) { send("{\"duck\":false}\n") }
     }
-    func write(_ text: String) -> Bool {
-        send(text) == .delivered
-    }
+
+    func write(_ text: String) -> Bool { send(text) == .delivered }
     private func send(_ text: String) -> RightyoDelivery {
         let line = Array(text.utf8)
         return descriptor.withLock { fd in
             guard let fd else { return .failed }
+            beforeWrite?()
             let count = line.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
             if count == line.count { return .delivered }
             return count < 0 && (errno == EAGAIN || errno == EINTR) ? .pending : .failed
@@ -149,14 +153,14 @@ extension RightyoChildProcess {
     }
 }
 extension RightyoStdinWriter {
-    /// A reservation also owns the idle writer. A new drain can take only its prefix.
+    /// A private reservation fences even an idle writer. A redundant public off reserves only its control retry.
     func reserve(through sequence: Int?, privacyWanted: Bool = false) -> Int {
         state.withLock { current in
             if current.reserved { release(&current) }
             current.epoch += 1
             current.through = sequence ?? -1
             current.prefixCount = current.queue.count
-            current.ordersAudio = privacyWanted || !current.knownPublic || sequence != nil
+            current.ordersAudio = privacyWanted || !current.knownPublic
             current.reserved = true
             return current.epoch
         }
@@ -170,12 +174,6 @@ extension RightyoStdinWriter {
             return write()
         }
     }
-    func cancel(_ epoch: Int) {
-        state.withLock { current in
-            if current.reserved, current.epoch == epoch { release(&current) }
-        }
-    }
-
     func deliver(_ epoch: Int, expired: Bool, write: () -> RightyoDelivery) -> RightyoDelivery {
         state.withLock { current in
             guard current.reserved, current.epoch == epoch else { return .failed }
@@ -186,11 +184,13 @@ extension RightyoStdinWriter {
             let busy = (current.inFlight ?? epoch) < epoch || current.prefixCount > 0
                 || current.handed < current.through
             if current.ordersAudio && busy && !expired { return .pending }
-            // Seal both late handoffs and the unwritten suffix of an in-flight item.
-            current.discardedThrough = max(current.discardedThrough, current.through)
-            if current.ordersAudio { current.discardBefore = epoch }
             let result = exit.whileRunning(write)
             if result == .pending && !expired { return .pending }
+            // Still under the stdin lock: seal late private handoffs and retire unwritten PCM at the deadline.
+            if current.ordersAudio && (expired || result == .delivered) {
+                current.discardedThrough = max(current.discardedThrough, current.through)
+                if expired { current.discardBefore = epoch }
+            }
             if result == .delivered { current.knownPublic = true }
             release(&current)
             return result == .pending ? .failed : result

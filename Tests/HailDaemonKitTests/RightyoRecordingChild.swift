@@ -14,7 +14,7 @@ final class RightyoRecordingChild {
     private let readEnd: Int32
     private var held = true
 
-    init(startPrivate: Bool = true, audioPipe: Pipe? = nil) throws {
+    init(startPrivate: Bool = true, audioPipe: Pipe? = nil, beforeWrite: (@Sendable () -> Void)? = nil) throws {
         var ends: [Int32] = [-1, -1]
         try #require(pipe(&ends) == 0)
         readEnd = ends[0]
@@ -26,10 +26,10 @@ final class RightyoRecordingChild {
             for descriptor in ends + [inputEnd] where descriptor >= 0 { Darwin.close(descriptor) }
             throw POSIXError(.EIO)
         }
-        input = RightyoStdinWriter(input: inputEnd, exit: exit, timing: .init(backlogBytes: 2_097_152, backlogAge: 60),
-                                   writer: worker)
-        control = RightyoControlWriter(ends[1])
-        if !startPrivate { input.startedPublic() }
+        let endpoint = RightyoStdinWriter.Endpoint(descriptor: inputEnd, startPrivate: startPrivate)
+        input = RightyoStdinWriter(input: endpoint, exit: exit,
+                                   timing: .init(backlogBytes: 2_097_152, backlogAge: 60), writer: worker)
+        control = RightyoControlWriter(ends[1], beforeWrite: beforeWrite)
         worker.suspend()
     }
 
@@ -44,6 +44,12 @@ final class RightyoRecordingChild {
     }
 
     func recorded() throws -> Data { try Self.available(readEnd) }
+
+    func take(_ count: Int) throws -> Data {
+        var bytes = [UInt8](repeating: 0, count: count)
+        try #require(Darwin.read(readEnd, &bytes, count) == count)
+        return Data(bytes)
+    }
 
     static func available(_ descriptor: Int32) throws -> Data {
         var bytes = [UInt8](repeating: 0, count: 256)

@@ -129,7 +129,7 @@ import Testing
                 for _ in 0..<20 {
                     let child = try RightyoChildProcess.spawn(truth.path, arguments: [], environment: [],
                                                              directory: fake.directory.path)
-                    [child.input, child.output, child.errors].forEach { close($0) }
+                    [child.input.descriptor, child.output, child.errors].forEach { close($0) }
                     let owned = RightyoChildGroup(leader: child.pid, termGrace: Self.quick.termGrace) { false }
                     group.addTask {
                         let exit = await owned.settled.wait(timeout: 20)

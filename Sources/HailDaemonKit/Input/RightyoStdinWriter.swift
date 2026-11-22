@@ -10,6 +10,7 @@ final class RightyoStdinWriter: Sendable {
         var epoch = 0, discardBefore = 0
         var needsAlignment = false
         var reserved = false, knownPublic = false, ordersAudio = true, inFlight: Int?
+        var fencesAudio: Bool { reserved && ordersAudio }
         var through = -1, handed = -1, discardedThrough = -1, prefixCount = 0
         var writing = false, closing = false, closed = false, abandoned = false, failed = false
 
@@ -19,15 +20,17 @@ final class RightyoStdinWriter: Sendable {
         }
     }
     private let input: Int32
-    let state = Mutex(State())
+    let state: Mutex<State>
     let exit: RightyoExitLatch
     private let timing: RightyoChildProcess.Timing
     private let onFailure: @Sendable () -> Void
     private let writer: DispatchQueue
-    init(input: Int32, exit: RightyoExitLatch, timing: RightyoChildProcess.Timing,
+    struct Endpoint { let descriptor: Int32, startPrivate: Bool }
+    init(input: Endpoint, exit: RightyoExitLatch, timing: RightyoChildProcess.Timing,
          writer: DispatchQueue = DispatchQueue(label: "hailing.rightyo-child.stdin"),
          failed: @escaping @Sendable () -> Void = {}) {
-        (self.input, self.exit, self.timing) = (input, exit, timing); onFailure = failed
+        state = Mutex(State(knownPublic: !input.startPrivate))
+        (self.input, self.exit, self.timing) = (input.descriptor, exit, timing); onFailure = failed
         self.writer = writer
     }
 
@@ -54,7 +57,7 @@ final class RightyoStdinWriter: Sendable {
                     return (.discarded, false)
                 }
             }
-            let before = state.reserved && admission.map { $0 <= state.through } == true
+            let before = state.fencesAudio && admission.map { $0 <= state.through } == true
             if before { state.prefixCount += 1 }
             state.queue.append(.init(epoch: before ? state.epoch - 1 : state.epoch, data: chunk,
                                      at: DispatchTime.now().uptimeNanoseconds, silence: leadingSilenceBytes))
@@ -67,8 +70,6 @@ final class RightyoStdinWriter: Sendable {
         if start { writer.async { self.drain() } }
         return accepted
     }
-
-    func startedPublic() { state.withLock { $0.knownPublic = true } }
 
     /// EOF after queued audio, or with `abandon` at once: pending audio is dropped and an in-flight write gives up.
     func close(abandon: Bool) {
@@ -92,7 +93,7 @@ final class RightyoStdinWriter: Sendable {
 extension RightyoStdinWriter {
     private static func dropOldest(_ state: inout State) {
         let item = state.queue.removeFirst()
-        if state.reserved, item.epoch < state.epoch { state.prefixCount -= 1 }
+        if state.fencesAudio, item.epoch < state.epoch { state.prefixCount -= 1 }
         state.queued -= item.data.count
         state.discard(item)
     }
@@ -118,13 +119,13 @@ extension RightyoStdinWriter {
             if state.abandoned { while !state.queue.isEmpty { Self.dropOldest(&state) } }
             state.inFlight = nil
             guard let first = state.queue.first,
-                  state.closing || !state.reserved || first.epoch < state.epoch else {
+                  state.closing || !state.fencesAudio || first.epoch < state.epoch else {
                 state.writing = false
                 if state.closing, !state.closed { state.closed = true; Darwin.close(input) }
                 return nil
             }
             let chunk = state.queue.removeFirst()
-            if state.reserved, chunk.epoch < state.epoch { state.prefixCount -= 1 }
+            if state.fencesAudio, chunk.epoch < state.epoch { state.prefixCount -= 1 }
             state.queued -= chunk.data.count
             state.inFlight = chunk.epoch
             return chunk

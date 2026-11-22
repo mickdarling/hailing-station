@@ -3,9 +3,7 @@ import Darwin
 public import Foundation
 import Synchronization
 
-/// Why the RightyO child refused to start or its output ended (#203). Cases name rules, never content:
-/// `unsafeExecutable`/`unsafeConfig` (see `validate`), `lineTooLong` (a stdout line past `maxLineBytes`),
-/// `backlog` (untaken lines past `maxQueuedBytes`), `transportLost`.
+/// Why the RightyO child refused to start or its output ended (#203).
 public enum RightyoChildError: Error, Sendable, Equatable {
     case unsafeExecutable, unsafeConfig, lineTooLong, backlog, transportLost
 }
@@ -118,11 +116,13 @@ extension RightyoChildProcess {
         }
         [input[0], output[1], errors[1], control[0]].filter { $0 >= 0 }.forEach { close($0) }
         launched = true
-        return SpawnedChild(pid: pid, input: input[1], output: output[0], errors: errors[0],
-                            control: replyControl ? control[1] : nil)
+        return .init(pid: pid, input: .init(descriptor: input[1], startPrivate: arguments.last == startPrivateFlag),
+                     output: output[0], errors: errors[0], control: replyControl ? control[1] : nil)
     }
 
-    struct SpawnedChild { let pid: pid_t, input: Int32, output: Int32, errors: Int32, control: Int32? }
+    struct SpawnedChild {
+        let pid: pid_t, input: RightyoStdinWriter.Endpoint, output: Int32, errors: Int32, control: Int32?
+    }
 
     /// Counts stderr bytes and discards them; diagnostics may quote audio-derived text.
     static func drainErrors(_ errors: Int32, counting: (Int) -> Void) {
@@ -165,10 +165,10 @@ final class RightyoExitLatch: Sendable {
         var waiters: [UUID: CheckedContinuation<RightyoChildExit?, Never>] = [:]
     }
     private let state = Mutex(Waiting())
-    /// Timeouts fire on a labelled serial queue, which targets the overcommit root queue (#980). The default global
-    /// queue runs only while the process has a constrained worker free, so a starved one held `stop()`'s escalation.
+    /// The serial queue targets the overcommit root so worker starvation cannot hold stop escalation (#980).
     private static let timeouts = DispatchQueue(label: "hailing.rightyo-child.exit-timeout")
     var value: RightyoChildExit? { state.withLock { $0.exit } }
+    var observationAvailable: Bool { state.withLockIfAvailable { _ in true } != nil }
     func whileRunning(_ write: () -> RightyoDelivery) -> RightyoDelivery {
         state.withLock { $0.exit == nil ? write() : .failed }
     }

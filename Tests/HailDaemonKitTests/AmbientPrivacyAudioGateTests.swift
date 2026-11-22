@@ -35,7 +35,8 @@ import Testing
 
     static func pipeline(_ fake: FakeRightyo, startPrivate: Bool, deadline: TimeInterval = 10,
                          unsupported: (@Sendable () -> Bool)? = nil,
-                         gapClock: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
+                         gapClock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+                         configure: (inout RightyoAmbientPipeline.Configuration) -> Void = { _ in }
     ) throws -> RightyoAmbientPipeline {
         var configuration = RightyoAmbientPipeline.Configuration(
             executable: fake.executable, config: fake.config, target: "tmux:demo", binding: "pinned",
@@ -45,6 +46,7 @@ import Testing
         (configuration.onVoiceDuck, configuration.startDeadline) = ({ _ in }, deadline)
         configuration.onDuckUnsupported = unsupported
         configuration.gapClock = gapClock
+        configure(&configuration)
         return try RightyoAmbientPipeline(configuration: configuration, dispatcher: RecordingAmbientDispatcher())
     }
 
