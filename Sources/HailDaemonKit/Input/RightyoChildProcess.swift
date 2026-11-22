@@ -23,14 +23,16 @@ public final class RightyoChildProcess: Sendable {
     /// `startPrivate` (#735 S-2b) adds RightyO's start-private option; never with coaching.
     public init(executable: URL, config: URL, session: String, provenance: RightyoAudioProvenance = .liveMicrophone,
                 timing: Timing = .init(), replyControl: Bool = false, env: [String: String] = [:],
-                coaching: RightyoCoachingLaunch? = nil, startPrivate: Bool = false) throws {
+                coaching: RightyoCoachingLaunch? = nil, startPrivate: Bool = false,
+                selfVoiceManifest: URL? = nil) throws {
         guard coaching == nil || (!replyControl && !startPrivate) else { throw RightyoChildError.unsafeConfig }
         let extra = try coaching?.arguments(session: session, provenance: provenance) ?? []
         let hasControl = replyControl || coaching != nil
         let resolved = try Self.validate(executable: executable, config: config)
         try RightyoChildGroup.requireOwnedRuntime()
-        let argv = Self.arguments(session: session, config: config, provenance: provenance,
+        var argv = Self.arguments(session: session, config: config, provenance: provenance,
                                   replyControl: hasControl) + (startPrivate ? [Self.startPrivateFlag] : []) + extra
+        if let selfVoiceManifest { argv += ["--self-voice-manifest", selfVoiceManifest.path] }
         let environment = Self.environment().merging(env.filter { $0.key.hasPrefix("RIGHTYO_") }) { old, _ in old }
         let child = try Self.spawn(resolved, arguments: argv, environment: environment.map { "\($0.key)=\($0.value)" },
                                    directory: config.deletingLastPathComponent().path, replyControl: hasControl)

@@ -1,9 +1,8 @@
 # Self-voice reference clips
 
 The publisher prepares a local reference for RightyO to recognize synthesized replies as a non-person voice.
-The feature is off until slice 2b wires the daemon switch and passes the absolute manifest path to the child.
-The planned default is `~/.config/hail/self-voice/manifest.json`. The publisher takes an absolute directory
-path with an existing parent and creates the final directory when needed.
+Self-voice is off by default. The daemon publishes to `~/.config/hail/self-voice/manifest.json`.
+The publisher takes an absolute directory path with an existing parent and creates the final directory when needed.
 
 Enroll only explicitly configured local reply profiles. Never enroll a reply profile cloned from the owner's
 voice. RightyO would classify the owner's speech as self and discard it as evidence, defeating the feature.
@@ -20,9 +19,10 @@ the same neutral English passage. Enrollment takes no microphone input or conver
 
 ## Enrollment before child launch
 
-The planned `--ambient-self-voice` switch takes the absolute path of an explicit UTF-8 JSON enrollment file.
-Slice 2a provides the loader and preparation API. The daemon switch stays off until slice 2b connects them.
-A disabled daemon constructs no preparer and performs no enrollment I/O.
+Pass `--ambient-self-voice <absolute enrollment path>` once to `haild run`. It requires
+`--ambient-rightyo`, `--ambient-rightyo-config`, `--ambient-target`, `--personal-terminal` and
+`--single-terminal-reply-fallback`. Omit the switch to keep ordinary child arguments and skip all
+enrollment and manifest I/O. The enrollment file uses UTF-8 JSON.
 
 ```json
 {
@@ -54,16 +54,17 @@ and change it when the voice changes. Only `reply` and origins exactly of the fo
 `http://127.0.0.1:<port>` are accepted, with a decimal port from 1 through 65535.
 An empty array publishes an empty manifest and clears enrollment.
 
-Before each planned startup or respawn, including a reload, the daemon will call `prepare()` off the
-audio callback. Each call rereads enrollment, checks profile identity and verifies the manifest generation
-and WAVs. Reuse requires the configured name to resolve to the same profile ID verified for that clip.
+An opted-in daemon creates one preparation actor. It calls `prepare()` off the audio callback before
+every ambient stream start, including the next start after a child crash, and before each active-stream reload.
+Each call rereads enrollment, checks profile identity and verifies the manifest generation and WAVs.
+Reuse requires the configured name to resolve to the same profile ID verified for that clip.
 A new ID under the same name triggers a fresh render. Removed voices drop out of the next manifest.
 A running child retains its startup enrollment.
 
-Only a successful verification in this daemon run authorizes `--self-voice-manifest <absolute path>`.
+A successful verification for this spawn appends `--self-voice-manifest <absolute path>` as the final two arguments.
 The presence of an earlier manifest on disk never authorizes that argument. Read, validation, render,
-publication and timeout failures record a content-free reason. Preparation returns no path and the child
-launches without the argument.
+publication, timeout and cancellation failures launch the child with ordinary arguments. The daemon
+logs one JSON line, for example `{"detail":"off for this child (timeout)","event":"self-voice"}`.
 The whole attempt has one absolute 20-second deadline, matching the announcer's render deadline.
 At expiry `prepare()` returns `nil` with reason `timeout` without waiting for filesystem work.
 It cancels its own work and render child.

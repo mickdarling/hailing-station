@@ -736,6 +736,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         public var binding: String
         /// Admit turns that are not `live-microphone`. Tests only; the daemon leaves it false.
         public var allowSynthetic: Bool
+        var selfVoice: SelfVoiceLaunchPreparation?
         public var timing: RightyoChildProcess.Timing
         /// How long daemon shutdown waits for runs still dispatching. Past it the daemon exits anyway: a tmux
         /// prompt still being typed may be left partly typed and unsubmitted in the pane (as #204's taint rule
@@ -1033,7 +1034,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             if state.shuttingDown { return false }
             // While a reload builds its child (#405), events queue too: the worker waits for the reload, so a start
             // cannot launch beside the reload's child and the old one, past `maxLiveChildren`.
-            guard state.queue.isEmpty, !state.working, !state.reloading, !mustMakeRoom(for: event, state) else {
+            guard state.queue.isEmpty, !state.working, !state.reloading, !startNeedsWorker(for: event, state) else {
                 Self.enqueue(event, into: &state)
                 return true
             }
@@ -1294,10 +1295,7 @@ extension AmbientRightyoRouter {
         let target: String
         let binding: String
         let policyGeneration: TargetPolicyGeneration?
-
-        init(target: String, binding: String, policyGeneration: TargetPolicyGeneration? = nil) {
-            (self.target, self.binding, self.policyGeneration) = (target, binding, policyGeneration)
-        }
+        let selection: UUID?
     }
 
     /// The stream feeding audio now, retaining its destination and opening selection generation (#636).
@@ -1334,7 +1332,7 @@ extension AmbientRightyoRouter {
     }
 
     /// The gate's events, in order: spawn, feed, retire.
-    fileprivate func handle(_ event: AmbientAudioEvent) {
+    fileprivate func handle(_ event: AmbientAudioEvent, manifest: URL? = nil) {
         defer {
             switch event {
             case .started, .ended: taskProgressOwnerChanged()
@@ -1347,7 +1345,7 @@ extension AmbientRightyoRouter {
                 return refuse(stream, connection: connection, target: scope.target,
                               reason: "target_binding_unavailable")
             }
-            start(stream, connection: connection, destination: destination, selection: scope.selection)
+            start(stream, connection: connection, destination: destination, manifest: manifest)
         case .segment(let stream, let sequence, let bytes):
             forward(stream: stream, sequence: sequence, bytes: bytes)
         case .ended(let stream, let reason):
@@ -1395,13 +1393,28 @@ extension AmbientRightyoRouter {
     /// final segment, is skipped: it neither forces a child out nor spawns. The newest makes room first, then
     /// every event is handled as it would be inline.
     private func work(_ event: AmbientAudioEvent) async {
+        var manifest: URL?
         if case .started(let stream, _, let scope) = event {
             guard isLive(stream) else { return }
             // A binding refusal keeps queue order and dead-start pruning, but never evicts a child just to refuse.
-            if destination(for: scope) != nil { await makeRoom(for: stream) }
+            if destination(for: scope) != nil {
+                await makeRoom(for: stream)
+                guard isLive(stream) else { return }
+                manifest = await prepareSelfVoice()
+            }
             guard isLive(stream) else { return }
         }
-        handle(event)
+        handle(event, manifest: manifest)
+    }
+
+    /// Opted-in starts run on the ordered worker. Its work and a claimed reload are mutually exclusive.
+    private func prepareSelfVoice() async -> URL? {
+        guard let preparation = configuration.selfVoice else { return nil }
+        if let manifest = await preparation.prepare() { return manifest }
+        if let failure = await preparation.lastFailure {
+            emit("self-voice", detail: "off for this child (\(failure.rawValue))")
+        }
+        return nil
     }
 
     /// The newest start, not shutting down, and not ended by the gate except on its final segment.
@@ -1444,14 +1457,15 @@ extension AmbientRightyoRouter {
     private func destination(for scope: AmbientStreamScope) -> Destination? {
         guard let binding = scope.binding, !binding.isEmpty else { return nil }
         guard scope.target != configuration.target || scope.policyGeneration != nil else { return nil }
-        return Destination(target: scope.target, binding: binding, policyGeneration: scope.policyGeneration)
+        return Destination(target: scope.target, binding: binding, policyGeneration: scope.policyGeneration,
+                           selection: scope.selection)
     }
 
-    /// Only a start able to spawn may make room. Refusals still queue behind work/reload already in flight.
-    fileprivate func mustMakeRoom(for event: AmbientAudioEvent, _ state: State) -> Bool {
+    /// Queue starts that need preparation or a free slot. Refusals still queue behind work already in flight.
+    fileprivate func startNeedsWorker(for event: AmbientAudioEvent, _ state: State) -> Bool {
         guard case .started(_, _, let scope) = event, !state.shuttingDown,
               destination(for: scope) != nil else { return false }
-        return Self.full(state)
+        return configuration.selfVoice != nil || Self.full(state)
     }
 
     private static func forcingOrder(_ run: Run) -> (Int, Int) {
@@ -1530,7 +1544,7 @@ extension AmbientRightyoRouter {
         return state.withLock { $0.runs.isEmpty }
     }
 
-    fileprivate func start(_ stream: UUID, connection: UUID, destination: Destination, selection: UUID?) {
+    fileprivate func start(_ stream: UUID, connection: UUID, destination: Destination, manifest: URL?) {
         let (listener, refusal) = state.withLock { state -> (WebSocketListener?, String?) in
             if state.shuttingDown { return (nil, "stopping") }
             if Self.full(state) { return (nil, "busy") }
@@ -1543,8 +1557,8 @@ extension AmbientRightyoRouter {
         }
         let pipeline: RightyoAmbientPipeline
         do {
-            pipeline = try makePipeline(connection: connection, stream: stream,
-                                        destination: destination, selection: selection, listener: listener)
+            pipeline = try makePipeline(connection: connection, stream: stream, destination: destination,
+                                        listener: listener, manifest: manifest)
         } catch {
             return refuse(stream, connection: connection, target: destination.target, reason: Self.describe(error))
         }
@@ -1554,10 +1568,10 @@ extension AmbientRightyoRouter {
             // Fail closed (#941): a child that may have been made public while privacy is parked never hears audio.
             if !Self.admitsPrivacy(connection, in: state) { return "private" }
             let id = register(pipeline, stream: stream, connection: connection, target: destination.target,
-                              selection: selection, in: &state)
+                              selection: destination.selection, in: &state)
             state.active = Active(stream: stream, run: id, pipeline: pipeline, since: Date(),
-                                  selection: selection, target: destination.target, binding: destination.binding,
-                                  policyGeneration: destination.policyGeneration)
+                                  selection: destination.selection, target: destination.target,
+                                  binding: destination.binding, policyGeneration: destination.policyGeneration)
             // Under register's own lock (MM-E): a parked or stale-held mode reaches this child as its first mode write.
             carryModes(to: connection, stream: stream, pipeline: pipeline, in: &state)
             return nil
@@ -1570,8 +1584,7 @@ extension AmbientRightyoRouter {
     /// One child for `connection`'s stream, launched now; a refusal launches nothing. Shared by a start and a
     /// reload (#405), so a reloaded child is configured exactly as a fresh one, on the stream's `selection` (#636).
     fileprivate func makePipeline(
-        connection: UUID, stream: UUID, destination: Destination, selection: UUID?,
-        listener: WebSocketListener
+        connection: UUID, stream: UUID, destination: Destination, listener: WebSocketListener, manifest: URL?
     ) throws -> RightyoAmbientPipeline {
         let target = destination.target
         // One chain for this child's not-sent notices, behind its latest acknowledgement (#894 review).
@@ -1584,6 +1597,7 @@ extension AmbientRightyoRouter {
             onDismiss: dismissed(on: connection, target: target, listener: listener),
             onAcknowledge: acknowledged(on: connection, target: target, listener: listener, notices: notices)
         )
+        settings.selfVoiceManifest = manifest
         settings.gapClock = configuration.gapClock
         settings.onGapFill = { [weak self] in self?.emit("ambient_gap_filled", detail: $0) }
         (settings.replyControl, settings.onAcknowledgementSkipped) = (configuration.replyControl, skipped())
@@ -1610,7 +1624,7 @@ extension AmbientRightyoRouter {
         settings.routing = voiceRouting(listener)
         settings.onVoiceRouteRefused = voiceRouteRefused(on: connection, target: target,
                                                         listener: listener, notices: notices)
-        let dispatcher = dispatcher(for: destination, connection: connection, selection: selection,
+        let dispatcher = dispatcher(for: destination, connection: connection,
                                     listener: listener, notices: notices, mark: mark)
         let pipeline = try RightyoAmbientPipeline(configuration: settings, dispatcher: dispatcher)
         mark.set(pipeline.privacyControl)
@@ -1618,9 +1632,8 @@ extension AmbientRightyoRouter {
         return pipeline
     }
 
-    // swiftlint:disable:next function_parameter_count
     private func dispatcher(
-        for destination: Destination, connection: UUID, selection: UUID?, listener: WebSocketListener,
+        for destination: Destination, connection: UUID, listener: WebSocketListener,
         notices: AmbientRefusalNotices, mark: AmbientRunMark
     ) -> AmbientListenerDispatcher {
         let refused = deliveryRefused(on: connection, target: destination.target, listener: listener, notices: notices)
@@ -1648,8 +1661,9 @@ extension AmbientRightyoRouter {
             }
         }
         let configured = destination.target == configuration.target
-        return AmbientListenerDispatcher(listener: listener, audit: configuration.audit, selection: selection,
-                                         streamTarget: destination.target, refusalNotices: notices,
+        return AmbientListenerDispatcher(listener: listener, audit: configuration.audit,
+                                         selection: destination.selection, streamTarget: destination.target,
+                                         refusalNotices: notices,
                                          binding: destination.binding, policyGeneration: destination.policyGeneration,
                                          bindingChanged: configured ? bindingChanged : nil)
     }
@@ -2039,10 +2053,11 @@ extension AmbientRightyoRouter {
         defer { state.withLock { $0.reloading = false } }
         let pipeline: RightyoAmbientPipeline
         do {
-            pipeline = try makePipeline(connection: connection, stream: old.stream,
-                                        destination: Destination(target: old.target, binding: old.binding,
-                                                                 policyGeneration: old.policyGeneration),
-                                        selection: old.selection, listener: listener)
+            let manifest = await prepareSelfVoice()
+            let destination = Destination(target: old.target, binding: old.binding,
+                                          policyGeneration: old.policyGeneration, selection: old.selection)
+            pipeline = try makePipeline(connection: connection, stream: old.stream, destination: destination,
+                                        listener: listener, manifest: manifest)
         } catch {
             let reason = Self.describe(error)
             emit("ambient_reload_refused", detail: reason)

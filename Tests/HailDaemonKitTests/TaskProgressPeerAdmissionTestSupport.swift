@@ -27,13 +27,17 @@ final class TaskProgressPeerFileWatch: Sendable {
     deinit { source.cancel(); events.continuation.finish() }
 
     func wait(_ name: String, in fixture: SlowTmuxCommandFixture) async throws {
+        try await wait(for: fixture.directory.appendingPathComponent(name))
+    }
+
+    func wait(for file: URL) async throws {
         let continuation = events.continuation
         let watchdog = DispatchWorkItem { continuation.finish() }
         queue.asyncAfter(deadline: .now() + .seconds(15), execute: watchdog)
         defer { watchdog.cancel() }
         var iterator = events.stream.makeAsyncIterator()
-        while !fixture.exists(name) {
-            try #require(await iterator.next() != nil, "fixture acknowledgement: \(name)")
+        while !FileManager.default.fileExists(atPath: file.path) {
+            try #require(await iterator.next() != nil, "fixture acknowledgement: \(file.lastPathComponent)")
         }
     }
 }

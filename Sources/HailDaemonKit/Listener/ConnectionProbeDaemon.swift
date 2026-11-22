@@ -112,7 +112,7 @@ public enum ConnectionProbeDaemon {
                  "--ambient-reply-control", "--session-updates", "--task-progress", "--host-health":
                 switches.insert(flag)
             case "--ambient-rightyo", "--ambient-rightyo-config", "--ambient-target", "--ambient-ack-clips",
-                 "--ambient-destinations", "--ambient-duck-timeout":
+                 "--ambient-destinations", "--ambient-duck-timeout", "--ambient-self-voice":
                 try parseAmbient(flag, from: &rest, into: &ambient)
             default: throw WebSocketListenerError.invalidArguments
             }
@@ -226,6 +226,7 @@ extension ConnectionProbeDaemon {
         var destinations: URL? // `--ambient-destinations` (#552); a missing file leaves spoken notes off.
         /// `--ambient-duck-timeout` (#735): seconds in `AmbientRightyoRouter.duckTimeoutRange`; nil uses the default.
         var duckTimeout: TimeInterval?
+        var selfVoiceEnrollment: String?
         /// Where spoken notes keep their Shortcut inputs (#552); tests point it at a scratch folder.
         var noteInputs = VoiceNoteInputs()
     }
@@ -267,7 +268,7 @@ extension ConnectionProbeDaemon {
                               target: target, ackClips: ambient["--ambient-ack-clips"].map(URL.init(fileURLWithPath:)),
                               replyControl: control,
                               destinations: ambient["--ambient-destinations"].map(URL.init(fileURLWithPath:)),
-                              duckTimeout: duckTimeout)
+                              duckTimeout: duckTimeout, selfVoiceEnrollment: ambient["--ambient-self-voice"])
     }
 
     #if os(macOS)
@@ -298,7 +299,9 @@ extension ConnectionProbeDaemon {
     /// their own binding against the owner's current policy generation before admission.
     static func ambientRouter(
         _ options: AmbientOptions, host: HailHost, timing: RightyoChildProcess.Timing = .init(),
-        audit: AuditLog? = nil, log: @escaping @Sendable (WebSocketListenerEvent) -> Void
+        audit: AuditLog? = nil, selfVoiceDirectory: URL? = nil,
+        makePreparation: (String, String) -> SelfVoiceLaunchPreparation = SelfVoiceLaunchPreparation.init,
+        log: @escaping @Sendable (WebSocketListenerEvent) -> Void
     ) async throws -> AmbientRightyoRouter {
         // The reply block quotes the target: an unsafe or guarded id would refuse every stream, so refuse now.
         try RightyoInputConsumer.validateTarget(options.target)
@@ -318,6 +321,11 @@ extension ConnectionProbeDaemon {
             executable: options.executable, config: options.config, target: options.target, binding: binding,
             timing: timing, audit: audit, acknowledgements: clips, replyControl: options.replyControl
         )
+        configuration.selfVoice = options.selfVoiceEnrollment.map { path in
+            let directory = selfVoiceDirectory ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/hail/self-voice", isDirectory: true)
+            return makePreparation(path, directory.path)
+        }
         if let duckTimeout = options.duckTimeout { configuration.duckTimeout = duckTimeout }
         // Spoken notes (#552): a malformed file leaves them off and says so, rather than refusing to start.
         if let file = options.destinations {

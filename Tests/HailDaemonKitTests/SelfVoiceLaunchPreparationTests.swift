@@ -119,7 +119,7 @@ struct SelfVoiceLaunchPreparationTests {
     }
 
     @Test func timeoutTerminatesOnlyItsRenderAndLateCompletionCannotPublish() async throws {
-        let files = try EnrollmentFixture(), clock = ProgressTestClock(), held = HeldRender()
+        let files = try EnrollmentFixture(), clock = ProgressTestClock(), held = HeldSelfVoiceRender()
         defer { files.remove() }
         let normal = SyntheticSelfVoice()
         let preparations = Mutex(0)
@@ -157,7 +157,7 @@ struct SelfVoiceLaunchPreparationTests {
     }
 }
 
-private final class HeldRender: SelfVoiceEnrollmentRendering {
+final class HeldSelfVoiceRender: SelfVoiceEnrollmentRendering {
     let started = AsyncStream<Void>.makeStream(), terminated = AsyncStream<Void>.makeStream()
     private let pending = Mutex<CheckedContinuation<Void, Never>?>(nil)
 
