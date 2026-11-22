@@ -35,7 +35,12 @@ struct SelfVoiceFixture {
     let publisher: SelfVoicePublisher
 
     init() throws {
-        let temp = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        // Foundation keeps the /var symlink; the publisher refuses symlinked ancestors, so use the kernel path.
+        guard let resolved = realpath(FileManager.default.temporaryDirectory.path, nil) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        defer { free(resolved) }
+        let temp = URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
         root = temp.appendingPathComponent(UUID().uuidString)
         directory = root.appendingPathComponent("clips")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
