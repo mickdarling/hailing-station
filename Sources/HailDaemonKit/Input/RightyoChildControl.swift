@@ -23,47 +23,33 @@ final class RightyoOutputRevocation: Sendable {
     }
 }
 
-/// The existing byte-bounded stdout reader with a coaching-only fence before and after suspension.
-public struct RightyoChildOutput: AsyncSequence, Sendable {
-    let base: RightyoChildLines
-    let revocation: RightyoOutputRevocation?
-    let control: RightyoCoachingControlWriter?
-    let exit: RightyoExitLatch?
-    init(base: RightyoChildLines, revocation: RightyoOutputRevocation?,
-         control: RightyoCoachingControlWriter? = nil, exit: RightyoExitLatch? = nil) {
-        self.base = base; self.revocation = revocation; self.control = control; self.exit = exit
-    }
-    public struct AsyncIterator: AsyncIteratorProtocol {
-        var base: RightyoChildLines.AsyncIterator
-        let revocation: RightyoOutputRevocation?
-        let control: RightyoCoachingControlWriter?
-        let exit: RightyoExitLatch?
-        private func check() throws {
-            if exit?.value != nil { revocation?.ownedGroupEnded() }
-            try revocation?.check()
-            guard control?.peerAvailable() != false else { throw RightyoChildError.transportLost }
-        }
-        public mutating func next() async throws -> Data? {
-            try check()
-            let line = try await base.next()
-            try check()
-            return line
-        }
-    }
-    public func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(base: base.makeAsyncIterator(), revocation: revocation, control: control, exit: exit)
-    }
-    func revokeCoaching() { revocation?.revoke() }
-}
-
 /// What the host reports about the assistant's spoken reply (rightyo#124).
 public enum RightyoReplyPhase: String, Sendable { case started, ended }
 
 /// The child's control descriptor (rightyo#124): one short JSON line per report, written without blocking. A line
 /// is under `PIPE_BUF`, so each write is atomic: whole, or refused (a full pipe or a gone child) and dropped.
 final class RightyoControlWriter: Sendable {
-    private let descriptor: Mutex<Int32?>
-    init(_ descriptor: Int32?) { self.descriptor = Mutex(descriptor) }
+    typealias Schedule = @Sendable (@escaping @Sendable () -> Void) -> Void
+    private static let deadlines = DispatchQueue(label: "hailing.rightyo-child.duck-deadline")
+    private struct State {
+        var descriptor: Int32?, pending: UUID?
+        var duckOn: Bool
+
+        mutating func writeDuck(_ on: Bool, to descriptor: Int32) -> Bool {
+            guard RightyoControlWriter.write("{\"duck\":\(on)}\n", to: descriptor) else { return false }
+            duckOn = on
+            return true
+        }
+    }
+    private let state: Mutex<State>
+    private let schedule: Schedule
+
+    init(_ descriptor: Int32?, startPrivate: Bool = false, schedule: @escaping Schedule = { action in
+        RightyoControlWriter.deadlines.asyncAfter(deadline: .now() + .milliseconds(500), execute: action)
+    }) {
+        state = Mutex(State(descriptor: descriptor, duckOn: startPrivate))
+        self.schedule = schedule
+    }
     /// `asked` (rightyo#199) rides only on an end: a RightyO without it skips the line, as for an unknown key.
     func report(_ phase: RightyoReplyPhase, asked: Bool = false) -> Bool {
         asked && phase == .ended
@@ -72,9 +58,39 @@ final class RightyoControlWriter: Sendable {
     }
     /// Media mode (#551, rightyo#195): a RightyO without it skips the line and attends as before.
     func media(_ on: Bool) -> Bool { write("{\"media\":\(on)}\n") }
-    /// Duck mode (#735, rightyo R-2). An older RightyO skips the line and keeps deciding turns, so the pipeline writes
-    /// it only to a child whose `started` advertised `duck` (`AmbientDuckControl`).
-    func duck(_ on: Bool) -> Bool { write("{\"duck\":\(on)}\n") }
+    func duck(_ on: Bool, after input: RightyoStdinWriter) -> Bool {
+        state.withLock { current in
+            guard let descriptor = current.descriptor else { return false }
+            if on || !current.duckOn {
+                current.pending = nil
+                return current.writeDuck(on, to: descriptor)
+            }
+            if current.pending != nil { return true }
+            let token = UUID()
+            let boundary = input.afterQueued { [weak self, weak input] in
+                self?.finish(token, input: input, discardBefore: nil)
+            }
+            switch boundary {
+            case .closed: return false
+            case .ready: return current.writeDuck(false, to: descriptor)
+            case .pending(let epoch):
+                current.pending = token
+                schedule { [weak self, weak input] in self?.finish(token, input: input, discardBefore: epoch) }
+                return true
+            }
+        }
+    }
+
+    private func finish(_ token: UUID, input: RightyoStdinWriter?, discardBefore epoch: Int?) {
+        state.withLock { current in
+            guard current.pending == token else { return }
+            current.pending = nil
+            guard let descriptor = current.descriptor, let input,
+                  input.finishBoundary(discardBefore: epoch) else { return }
+            _ = current.writeDuck(false, to: descriptor)
+        }
+    }
+
     /// Meeting mode (#735 MM-D, rightyo#227): written only to a child whose `started` advertised `meeting` v1
     /// (`AmbientMeetingControl`); exactly that key and a boolean.
     func meeting(_ on: Bool) -> Bool { write("{\"meeting\":\(on)}\n") }
@@ -83,13 +99,25 @@ final class RightyoControlWriter: Sendable {
         return write(line)
     }
     private func write(_ text: String) -> Bool {
-        let line = Array(text.utf8)
-        return descriptor.withLock { fd in
-            guard let fd else { return false }
-            return line.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) } == line.count
+        state.withLock { current in
+            guard let descriptor = current.descriptor else { return false }
+            return Self.write(text, to: descriptor)
         }
     }
-    func close() { descriptor.withLock { fd in if let open = fd { Darwin.close(open) }; fd = nil } }
+
+    private static func write(_ text: String, to descriptor: Int32) -> Bool {
+        let line = Array(text.utf8)
+        return line.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress, $0.count) } == line.count
+    }
+
+    func close() {
+        state.withLock { current in
+            if let descriptor = current.descriptor { Darwin.close(descriptor) }
+            current.descriptor = nil
+            current.pending = nil
+        }
+    }
+
     deinit { close() }
 }
 
@@ -128,9 +156,8 @@ extension RightyoChildProcess {
     }
     /// Sets the child's media mode (#551) the same way; false when it could not be written.
     @discardableResult public func reportMedia(_ on: Bool) -> Bool { control.media(on) }
-    /// Writes the child's duck mode line (#735) the same way; false when it could not be written. Whether the child
-    /// understands it is the caller's to know: `RightyoAmbientPipeline.reportDuck` checks.
-    @discardableResult public func reportDuck(_ on: Bool) -> Bool { control.duck(on) }
+    /// An on is written immediately. An off can be admitted for delivery after queued stdin.
+    @discardableResult public func reportDuck(_ on: Bool) -> Bool { control.duck(on, after: input) }
     /// Writes the child's meeting line (#735 MM-D) the same way; whether it advertised it is the pipeline's to know.
     @discardableResult func reportMeeting(_ on: Bool) -> Bool { control.meeting(on) }
 

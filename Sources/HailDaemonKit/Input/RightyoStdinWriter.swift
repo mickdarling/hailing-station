@@ -7,7 +7,15 @@ import Synchronization
 final class RightyoStdinWriter: Sendable {
     private struct State {
         var queue = RightyoPrefixedQueue(), queued = 0, counters = RightyoChildProcess.Counters()
+        var epoch = 0, discardBefore = 0
+        var needsAlignment = false
+        var drained: (@Sendable () -> Void)?
         var writing = false, closing = false, closed = false, abandoned = false, failed = false
+
+        mutating func discard(_ item: RightyoPrefixedQueue.Item, from offset: Int = 0) {
+            counters.droppedChunks += 1
+            counters.droppedBytes += item.data.count - max(offset, item.silence)
+        }
     }
     private let input: Int32
     private let state = Mutex(State())
@@ -35,7 +43,7 @@ final class RightyoStdinWriter: Sendable {
         }
         let (accepted, start) = state.withLock { state -> (Bool, Bool) in
             guard !state.closing, !state.failed else { return (false, false) }
-            state.queue.append(.init(data: chunk, at: DispatchTime.now().uptimeNanoseconds,
+            state.queue.append(.init(epoch: state.epoch, data: chunk, at: DispatchTime.now().uptimeNanoseconds,
                                      silence: leadingSilenceBytes))
             state.queued += chunk.count
             // Only queued prefixes reserve space; taking or evicting the last one restores the PCM budget.
@@ -56,32 +64,63 @@ final class RightyoStdinWriter: Sendable {
         }
     }
 
+    enum Boundary { case closed, ready, pending(Int) }
+
+    func afterQueued(_ drained: @escaping @Sendable () -> Void) -> Boundary {
+        state.withLock { current in
+            guard !current.closing, !current.failed, exit.value == nil else { return .closed }
+            guard current.writing else { return .ready }
+            current.epoch += 1
+            current.drained = drained
+            return .pending(current.epoch)
+        }
+    }
+
+    /// Invalidate the old epochs under the same ownership as each nonblocking stdin write.
+    func finishBoundary(discardBefore epoch: Int?) -> Bool {
+        state.withLock { current in
+            guard !current.closing, !current.failed, exit.value == nil else { return false }
+            if let epoch { current.discardBefore = epoch }
+            return true
+        }
+    }
+
     private static func dropOldest(_ state: inout State) {
         let item = state.queue.removeFirst()
         state.queued -= item.data.count
-        let dropped = item.data.count - item.silence
-        state.counters.droppedChunks += 1
-        state.counters.droppedBytes += dropped
+        state.discard(item)
     }
     private func drain() {
-        while let item = next() {
-            guard push(item) else {
-                state.withLock { state in
-                    fail(&state)
-                    while !state.queue.isEmpty { Self.dropOldest(&state) }
-                    (state.closing, state.writing) = (true, false)
-                    if !state.closed { state.closed = true; Darwin.close(input) }
-                }
-                return
+        while let work = next() {
+            switch work {
+            case .boundary(let drained): drained()
+            case .audio(let item):
+                guard push(item) else { stopAfterFailure(); return }
             }
         }
     }
 
-    private func next() -> RightyoPrefixedQueue.Item? {
+    private func stopAfterFailure() {
+        state.withLock { state in
+            fail(&state)
+            while !state.queue.isEmpty { Self.dropOldest(&state) }
+            (state.closing, state.writing) = (true, false)
+            if !state.closed { state.closed = true; Darwin.close(input) }
+        }
+    }
+
+    private enum Work { case audio(RightyoPrefixedQueue.Item), boundary(@Sendable () -> Void) }
+
+    private func next() -> Work? {
         state.withLock { state in
             let limit = UInt64(timing.backlogAge * 1e9), now = DispatchTime.now().uptimeNanoseconds
             while let first = state.queue.first, now - first.at > limit { Self.dropOldest(&state) }
             if state.abandoned { while !state.queue.isEmpty { Self.dropOldest(&state) } }
+            let nextEpoch = state.queue.first?.epoch ?? state.epoch
+            if let drained = state.drained, nextEpoch == state.epoch {
+                state.drained = nil
+                return .boundary(drained)
+            }
             guard !state.queue.isEmpty else {
                 state.writing = false
                 if state.closing, !state.closed { state.closed = true; Darwin.close(input) }
@@ -89,29 +128,25 @@ final class RightyoStdinWriter: Sendable {
             }
             let chunk = state.queue.removeFirst()
             state.queued -= chunk.data.count
-            return chunk
+            return .audio(chunk)
         }
     }
+}
 
-    /// Every nonblocking write shares abandonment ownership; waiting chunks retain their original age.
+extension RightyoStdinWriter {
     private func push(_ item: RightyoPrefixedQueue.Item) -> Bool {
-        let chunk = item.data, at = item.at
         var offset = 0
-        while offset < chunk.count {
-            let result = writeOwned(chunk, offset: offset, silence: item.silence)
-            guard let count = result else { return false }
-            if count > 0 {
-                offset += count
-            } else if count < 0, errno == EINTR { continue } else {
-                guard count < 0, errno == EAGAIN, exit.value == nil, !state.withLock({ $0.abandoned }) else {
-                    return false
-                }
-                let age = DispatchTime.now().uptimeNanoseconds - at
+        while offset < item.data.count {
+            switch writeOwned(item, offset: offset) {
+            case .discarded: return true
+            case .closed: return false
+            case .advanced(let count): offset += count
+            case .interrupted: continue
+            case .blocked:
+                guard exit.value == nil, !state.withLock({ $0.abandoned }) else { return false }
+                let age = DispatchTime.now().uptimeNanoseconds - item.at
                 if offset.isMultiple(of: 2), age > UInt64(timing.backlogAge * 1e9) {
-                    state.withLock {
-                        $0.counters.droppedChunks += 1
-                        $0.counters.droppedBytes += chunk.count - max(offset, item.silence)
-                    }
+                    state.withLock { $0.discard(item, from: offset) }
                     return true
                 }
                 var ready = pollfd(fd: input, events: Int16(POLLOUT), revents: 0)
@@ -127,72 +162,38 @@ final class RightyoStdinWriter: Sendable {
         current.failed = true; onFailure()
     }
 
-    private func writeOwned(_ chunk: Data, offset: Int, silence: Int) -> Int? {
+    private enum WriteResult { case discarded, closed, advanced(Int), interrupted, blocked }
+
+    private func writeOwned(_ item: RightyoPrefixedQueue.Item, offset: Int) -> WriteResult {
         state.withLock { current in
-            guard !current.abandoned, !current.closed, !current.failed else { return nil }
-            let count = chunk.withUnsafeBytes {
-                Darwin.write(input, $0.baseAddress?.advanced(by: offset), chunk.count - offset)
+            guard !current.abandoned, !current.closed, !current.failed else { return .closed }
+            guard item.epoch >= current.discardBefore else {
+                current.discard(item, from: offset)
+                if !offset.isMultiple(of: 2) { current.needsAlignment = true }
+                return .discarded
+            }
+            // Complete a truncated sample with zero before starting the next retained sample.
+            if current.needsAlignment {
+                var padding: UInt8 = 0
+                let count = Darwin.write(input, &padding, 1)
+                guard count == 1 else { return refusedWrite(count, in: &current) }
+                current.needsAlignment = false
+            }
+            let count = item.data.withUnsafeBytes {
+                Darwin.write(input, $0.baseAddress?.advanced(by: offset), item.data.count - offset)
             }
             // Existing public counters describe real PCM only, even for a partial prefix write.
-            if count > 0 { current.counters.writtenBytes += max(0, offset + count - max(offset, silence)) }
-            if count < 0, errno != EINTR, errno != EAGAIN {
-                let saved = errno; fail(&current); errno = saved
-            }
-            return count
+            guard count > 0 else { return refusedWrite(count, in: &current) }
+            current.counters.writtenBytes += max(0, offset + count - max(offset, item.silence))
+            return .advanced(count)
         }
     }
-}
 
-/// FIFO metadata beside each PCM item; no-gap Data keeps its original storage. O(1) amortised removal.
-private struct RightyoPrefixedQueue {
-    struct Item {
-        let data: Data
-        let at: UInt64
-        let silence: Int
-    }
-    private var items: [Item?] = [], head = 0
-    private var prefixes: [Int: Int] = [:]
-    var silenceAllowance: Int { prefixes.keys.max() ?? 0 } // At most 30 whole-slice prefix sizes.
-    var isEmpty: Bool { head == items.count }
-    var first: Item? { isEmpty ? nil : items[head] }
-    mutating func append(_ item: Item) {
-        items.append(item)
-        if item.silence > 0 { prefixes[item.silence, default: 0] += 1 }
-    }
-    mutating func removeFirst() -> Item {
-        guard let item = items[head] else { preconditionFailure("stdin slot already taken") }
-        if item.silence > 0 {
-            let remaining = (prefixes[item.silence] ?? 1) - 1
-            prefixes[item.silence] = remaining == 0 ? nil : remaining
-        }
-        (items[head], head) = (nil, head + 1)
-        if isEmpty { items.removeAll(keepingCapacity: true); head = 0 } else if head >= items.count - head {
-            items.removeFirst(head); head = 0
-        }
-        return item
+    private func refusedWrite(_ count: Int, in current: inout State) -> WriteResult {
+        if count < 0, errno == EINTR { return .interrupted }
+        if count < 0, errno == EAGAIN { return .blocked }
+        fail(&current)
+        return .closed
     }
 }
-
-/// Host duration pinned to AmbientAudioFormat.chunkBytes by the cross-module format test.
-struct AmbientGapFill: Sendable, Equatable {
-    static let chunkBytes = 3_200
-    static let maxSegments = 30
-    static let maxBytes = chunkBytes * maxSegments
-    let missing: Int
-    let segments: Int
-    var bytes: Int { segments * Self.chunkBytes }
-    var detail: String {
-        "missing=\(missing) filled_ms=\(segments * 100) capped=\(segments < missing)"
-    }
-
-    init?(after last: Int?, sequence: Int, budget: Duration) {
-        guard let last, last >= 0, sequence > last, sequence - last > 1 else { return nil }
-        missing = sequence - last - 1
-        let available = max(.zero, min(.seconds(3), budget)).components
-        // Integer floor, never ceil: even a tiny positive elapsed time cannot buy a 100 ms slice.
-        let slices = Int(available.seconds * 10 + available.attoseconds / 100_000_000_000_000_000)
-        segments = min(missing, slices)
-    }
-}
-
 #endif
