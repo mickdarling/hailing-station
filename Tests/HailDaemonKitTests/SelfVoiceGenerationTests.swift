@@ -146,7 +146,8 @@ struct SelfVoiceGenerationTests {
 
         #expect(chmod(unsafe.path, 0o600) == 0)
         _ = try await fixture.publisher.publish([]) {
-            #expect(try fixture.names() == Set(foreign + [SelfVoiceManifest.name]))
+            // A single-expression hook closure is type-checked as non-throwing here; a failed read yields [] and fails the expectation.
+            #expect((try? fixture.names()) ?? [] == Set(foreign + [SelfVoiceManifest.name]))
         }
         for name in foreign { #expect(try fixture.read(name) == marker) }
     }
