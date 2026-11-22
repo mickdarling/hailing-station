@@ -169,7 +169,9 @@ final class RightyoExitLatch: Sendable {
     /// queue runs only while the process has a constrained worker free, so a starved one held `stop()`'s escalation.
     private static let timeouts = DispatchQueue(label: "hailing.rightyo-child.exit-timeout")
     var value: RightyoChildExit? { state.withLock { $0.exit } }
-
+    func whileRunning(_ write: () -> RightyoDelivery) -> RightyoDelivery {
+        state.withLock { $0.exit == nil ? write() : .failed }
+    }
     func signal(_ exit: RightyoChildExit) {
         let waiters = state.withLock { state in
             state.exit = exit
@@ -178,7 +180,6 @@ final class RightyoExitLatch: Sendable {
         }
         waiters.forEach { $0.resume(returning: exit) }
     }
-
     /// The exit, or nil when `timeout` (seconds) passes first; a nil timeout waits for the exit.
     func wait(timeout: TimeInterval?) async -> RightyoChildExit? {
         let id = UUID()

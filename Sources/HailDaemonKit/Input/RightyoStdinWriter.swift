@@ -5,11 +5,12 @@ import Synchronization
 
 /// Bounded nonblocking stdin queue (#203); workers hold fd/state/exit only, never retain the child.
 final class RightyoStdinWriter: Sendable {
-    private struct State {
+    struct State {
         var queue = RightyoPrefixedQueue(), queued = 0, counters = RightyoChildProcess.Counters()
         var epoch = 0, discardBefore = 0
         var needsAlignment = false
-        var drained: (@Sendable () -> Void)?
+        var reserved = false, knownPublic = false, ordersAudio = true, inFlight: Int?
+        var through = -1, handed = -1, discardedThrough = -1, prefixCount = 0
         var writing = false, closing = false, closed = false, abandoned = false, failed = false
 
         mutating func discard(_ item: RightyoPrefixedQueue.Item, from offset: Int = 0) {
@@ -18,8 +19,8 @@ final class RightyoStdinWriter: Sendable {
         }
     }
     private let input: Int32
-    private let state = Mutex(State())
-    private let exit: RightyoExitLatch
+    let state = Mutex(State())
+    let exit: RightyoExitLatch
     private let timing: RightyoChildProcess.Timing
     private let onFailure: @Sendable () -> Void
     private let writer: DispatchQueue
@@ -31,7 +32,7 @@ final class RightyoStdinWriter: Sendable {
     }
 
     var counters: RightyoChildProcess.Counters { state.withLock { $0.counters } }
-    func write(_ pcm: Data, leadingSilenceBytes: Int = 0) -> Bool {
+    func write(_ pcm: Data, leadingSilenceBytes: Int = 0, admission: Int? = nil) -> Bool {
         guard !pcm.isEmpty, pcm.count.isMultiple(of: 2), pcm.count <= timing.backlogBytes else { return false }
         guard (0...AmbientGapFill.maxBytes).contains(leadingSilenceBytes),
               leadingSilenceBytes.isMultiple(of: AmbientGapFill.chunkBytes) else { return false }
@@ -43,8 +44,18 @@ final class RightyoStdinWriter: Sendable {
         }
         let (accepted, start) = state.withLock { state -> (Bool, Bool) in
             guard !state.closing, !state.failed else { return (false, false) }
-            state.queue.append(.init(epoch: state.epoch, data: chunk, at: DispatchTime.now().uptimeNanoseconds,
-                                     silence: leadingSilenceBytes))
+            if let admission {
+                state.handed = max(state.handed, admission)
+                if admission <= state.discardedThrough {
+                    state.counters.droppedBytes += pcm.count
+                    state.counters.droppedChunks += 1
+                    return (true, false)
+                }
+            }
+            let before = state.reserved && admission.map { $0 <= state.through } == true
+            if before { state.prefixCount += 1 }
+            state.queue.append(.init(epoch: before ? state.epoch - 1 : state.epoch, data: chunk,
+                                     at: DispatchTime.now().uptimeNanoseconds, silence: leadingSilenceBytes))
             state.queued += chunk.count
             // Only queued prefixes reserve space; taking or evicting the last one restores the PCM budget.
             while state.queued > timing.backlogBytes + state.queue.silenceAllowance { Self.dropOldest(&state) }
@@ -55,48 +66,37 @@ final class RightyoStdinWriter: Sendable {
         return accepted
     }
 
+    func startedPublic() { state.withLock { $0.knownPublic = true } }
+
     /// EOF after queued audio, or with `abandon` at once: pending audio is dropped and an in-flight write gives up.
     func close(abandon: Bool) {
         state.withLock { state in
             state.closing = true
             if abandon { state.abandoned = true }
+            if state.reserved { release(&state) }
             if !state.writing, !state.closed { state.closed = true; Darwin.close(input) }
         }
     }
 
-    enum Boundary { case closed, ready, pending(Int) }
-
-    func afterQueued(_ drained: @escaping @Sendable () -> Void) -> Boundary {
-        state.withLock { current in
-            guard !current.closing, !current.failed, exit.value == nil else { return .closed }
-            guard current.writing else { return .ready }
-            current.epoch += 1
-            current.drained = drained
-            return .pending(current.epoch)
+    func release(_ current: inout State) {
+        current.reserved = false
+        if !current.writing, !current.queue.isEmpty {
+            current.writing = true
+            writer.async { self.drain() }
         }
     }
+}
 
-    /// Invalidate the old epochs under the same ownership as each nonblocking stdin write.
-    func finishBoundary(discardBefore epoch: Int?) -> Bool {
-        state.withLock { current in
-            guard !current.closing, !current.failed, exit.value == nil else { return false }
-            if let epoch { current.discardBefore = epoch }
-            return true
-        }
-    }
-
+extension RightyoStdinWriter {
     private static func dropOldest(_ state: inout State) {
         let item = state.queue.removeFirst()
+        if state.reserved, item.epoch < state.epoch { state.prefixCount -= 1 }
         state.queued -= item.data.count
         state.discard(item)
     }
     private func drain() {
-        while let work = next() {
-            switch work {
-            case .boundary(let drained): drained()
-            case .audio(let item):
-                guard push(item) else { stopAfterFailure(); return }
-            }
+        while let item = next() {
+            guard push(item) else { stopAfterFailure(); return }
         }
     }
 
@@ -109,26 +109,23 @@ final class RightyoStdinWriter: Sendable {
         }
     }
 
-    private enum Work { case audio(RightyoPrefixedQueue.Item), boundary(@Sendable () -> Void) }
-
-    private func next() -> Work? {
+    private func next() -> RightyoPrefixedQueue.Item? {
         state.withLock { state in
             let limit = UInt64(timing.backlogAge * 1e9), now = DispatchTime.now().uptimeNanoseconds
             while let first = state.queue.first, now - first.at > limit { Self.dropOldest(&state) }
             if state.abandoned { while !state.queue.isEmpty { Self.dropOldest(&state) } }
-            let nextEpoch = state.queue.first?.epoch ?? state.epoch
-            if let drained = state.drained, nextEpoch == state.epoch {
-                state.drained = nil
-                return .boundary(drained)
-            }
-            guard !state.queue.isEmpty else {
+            state.inFlight = nil
+            guard let first = state.queue.first,
+                  state.closing || !state.reserved || first.epoch < state.epoch else {
                 state.writing = false
                 if state.closing, !state.closed { state.closed = true; Darwin.close(input) }
                 return nil
             }
             let chunk = state.queue.removeFirst()
+            if state.reserved, chunk.epoch < state.epoch { state.prefixCount -= 1 }
             state.queued -= chunk.data.count
-            return .audio(chunk)
+            state.inFlight = chunk.epoch
+            return chunk
         }
     }
 }

@@ -92,15 +92,17 @@ import Testing
         #expect(!Self.heard(fake).contains(0x11))
     }
 
-    /// Privacy that ends before the confirm lets audio through again at once.
+    /// Off before startup proof keeps the gate closed until the control line is delivered.
     @Test func privacyEndingBeforeTheConfirmResumesAudio() async throws {
-        let fake = try Self.fake(Self.script(advertises: true))
+        let fake = try Self.fake(Self.script(advertises: true, delay: "0"))
         defer { fake.cleanUp() }
         let pipeline = try Self.pipeline(fake, startPrivate: true)
-        let run = Task { try await pipeline.run() }
+        let change = pipeline.reservePrivacyOff(through: nil)
+        #expect(change.attempt(false) == .pending && !pipeline.hearsAudio)
         #expect(pipeline.send(audio: Self.chunk(0x11)))
-        _ = pipeline.reportDuck(false)
-        #expect(pipeline.hearsAudio)
+        let run = Task { try await pipeline.run() }
+        #expect(await pipeline.privacyKept())
+        #expect(change.attempt(false) == .delivered && pipeline.hearsAudio)
         #expect(pipeline.send(audio: Self.chunk(0x33)))
         pipeline.finishInput()
         _ = try await run.value

@@ -27,11 +27,12 @@ import Testing
         #expect(written.all == [false])
     }
 
-    /// Privacy that ended while the child was starting is written off once the child confirms it started private.
+    /// A starting private child cannot confirm off until its capability is known.
     @Test func aConfirmedStartWhosePrivacyEndedIsWrittenOff() {
         let (control, written) = (AmbientDuckControl(startPrivate: true), AmbientDuckControlTests.Written())
-        #expect(control.report(false, write: written.write))
+        #expect(!control.report(false, write: written.write) && control.active)
         #expect(control.observe(started: Data(Self.confirmed.utf8), write: written.write) == .kept)
+        #expect(control.report(false, write: written.write))
         #expect(written.all == [false])
     }
 
@@ -96,8 +97,9 @@ import Testing
         #expect(rig.details("ambient_privacy_start").isEmpty)
         await rig.env.listener.stop(reason: "synthetic test complete")
     }
+}
 
-    // MARK: Round 2: no `lost` (#735 S-2b)
+extension AmbientPrivacyStartPrivateTests {
 
     /// A pipeline launched for one stream on the given script, with privacy wished for as `startPrivate` says.
     static func pipeline(_ fake: FakeRightyo, startPrivate: Bool, deadline: TimeInterval = 10)

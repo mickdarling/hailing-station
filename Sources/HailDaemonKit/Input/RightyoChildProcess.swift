@@ -51,7 +51,7 @@ public final class RightyoChildProcess: Sendable {
             guard let revocation else { return }
             revocation.revoke(); continuation.finish(throwing: RightyoChildError.transportLost)
         }
-        control = RightyoControlWriter(coaching == nil ? child.control : nil, startPrivate: startPrivate)
+        control = RightyoControlWriter(coaching == nil ? child.control : nil)
         coachingControl = coaching == nil ? nil
             : Self.coachingWriter(child.control, input: input, continuation: continuation, revocation: revocation)
         lines = RightyoChildOutput(base: RightyoChildLines(stream: pair.stream, queued: queued),
@@ -97,36 +97,4 @@ public final class RightyoChildProcess: Sendable {
     }
 }
 
-/// The existing byte-bounded stdout reader with a coaching-only fence before and after suspension.
-public struct RightyoChildOutput: AsyncSequence, Sendable {
-    let base: RightyoChildLines
-    let revocation: RightyoOutputRevocation?
-    let control: RightyoCoachingControlWriter?
-    let exit: RightyoExitLatch?
-    init(base: RightyoChildLines, revocation: RightyoOutputRevocation?,
-         control: RightyoCoachingControlWriter? = nil, exit: RightyoExitLatch? = nil) {
-        self.base = base; self.revocation = revocation; self.control = control; self.exit = exit
-    }
-    public struct AsyncIterator: AsyncIteratorProtocol {
-        var base: RightyoChildLines.AsyncIterator
-        let revocation: RightyoOutputRevocation?
-        let control: RightyoCoachingControlWriter?
-        let exit: RightyoExitLatch?
-        private func check() throws {
-            if exit?.value != nil { revocation?.ownedGroupEnded() }
-            try revocation?.check()
-            guard control?.peerAvailable() != false else { throw RightyoChildError.transportLost }
-        }
-        public mutating func next() async throws -> Data? {
-            try check()
-            let line = try await base.next()
-            try check()
-            return line
-        }
-    }
-    public func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(base: base.makeAsyncIterator(), revocation: revocation, control: control, exit: exit)
-    }
-    func revokeCoaching() { revocation?.revoke() }
-}
 #endif

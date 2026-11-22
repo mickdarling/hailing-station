@@ -42,8 +42,11 @@ import Testing
         let fake = try Gate.fake(Gate.script(advertises: true))
         defer { fake.cleanUp() }
         let pipeline = try Gate.pipeline(fake, startPrivate: true)
+        let change = pipeline.reservePrivacyOff(through: nil)
+        #expect(change.attempt(false) == .pending)
         let run = Task { try await pipeline.run() }
-        _ = pipeline.reportDuck(false)
+        #expect(await pipeline.privacyKept())
+        #expect(change.attempt(false) == .delivered)
         #expect(await eventually { (try? fake.recorded("control.txt")) == "{\"duck\":false}\n" })
         pipeline.finishInput()
         _ = try await run.value

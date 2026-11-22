@@ -69,10 +69,11 @@ import Testing
 
     @Test(arguments: [false, true])
     func privacySuppressionWritesNeitherPCMNorSilenceAndResumeIsCapped(_ suppressFirst: Bool) async throws {
-        // Hold the child's started proof until EOF: privacy cannot become confirmed during the suppression.
+        // The control reader stays open without acknowledging on. Off can still be delivered.
         let fake = try FakeRightyo("""
+        /usr/bin/sed -n '1p' events.jsonl | /usr/bin/sed -e "s/formed-demo/$7/g"\(FakeRightyo.duckV3)
         /bin/cat > audio.raw
-        /usr/bin/sed -n -e '1p' -e '$p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
+        /usr/bin/sed -n '$p' events.jsonl | /usr/bin/sed "s/formed-demo/$7/g"
         """)
         defer { fake.cleanUp() }
         try fake.install(fixture: "enrolled-formed-request.jsonl")
@@ -86,12 +87,17 @@ import Testing
             #expect(result.accepted && result.gap == nil)
         }
         clock.advance(.seconds(4))
-        _ = pipeline.reportDuck(false)
+        let run = Task { try await pipeline.run() }
+        while !pipeline.childStarted { await Task.yield() }
+        let delivered = await withCheckedContinuation { receipt in
+            _ = pipeline.reportDuck(false) { receipt.resume(returning: $0) }
+        }
+        #expect(delivered)
         let resumed = pipeline.send(audio: AmbientGapFillRig.chunk(100), sequence: 100)
         #expect(resumed.accepted)
         #expect(resumed.gap?.detail == (suppressFirst ? nil : "missing=99 filled_ms=3000 capped=true"))
         pipeline.finishInput()
-        let summary = try await pipeline.run()
+        let summary = try await run.value
         #expect(summary.child.droppedBytes == 0)
         let before = suppressFirst ? Data() : AmbientGapFillRig.chunk(0) + AmbientGapFillRig.silence(99)
         #expect(try Data(contentsOf: fake.directory.appendingPathComponent("audio.raw"))
