@@ -7,6 +7,7 @@ import Synchronization
 final class RightyoStdinWriter: Sendable {
     private struct State {
         var queue = RightyoPrefixedQueue(), queued = 0, counters = RightyoChildProcess.Counters()
+        var streamBytesWritten = 0, inFlightRemaining = 0
         var writing = false, closing = false, closed = false, abandoned = false, failed = false
     }
     private let input: Int32
@@ -23,6 +24,15 @@ final class RightyoStdinWriter: Sendable {
     }
 
     var counters: RightyoChildProcess.Counters { state.withLock { $0.counters } }
+    /// The tail includes silence and the unfinished write. Later backlog eviction may leave a positioned off
+    /// beyond the actual boundary, keeping some public samples private. A private launch awaiting its first
+    /// started has admitted only public PCM since withdrawal, so it uses just the complete samples written.
+    func samplePosition(atStartup: Bool) -> Int {
+        state.withLock { state in
+            let pending = atStartup ? 0 : state.inFlightRemaining + state.queued
+            return (state.streamBytesWritten + pending) / 2
+        }
+    }
     func write(_ pcm: Data, leadingSilenceBytes: Int = 0) -> Bool {
         guard !pcm.isEmpty, pcm.count.isMultiple(of: 2), pcm.count <= timing.backlogBytes else { return false }
         guard (0...AmbientGapFill.maxBytes).contains(leadingSilenceBytes),
@@ -67,6 +77,7 @@ final class RightyoStdinWriter: Sendable {
         while let item = next() {
             guard push(item) else {
                 state.withLock { state in
+                    state.inFlightRemaining = 0
                     fail(&state)
                     while !state.queue.isEmpty { Self.dropOldest(&state) }
                     (state.closing, state.writing) = (true, false)
@@ -89,6 +100,7 @@ final class RightyoStdinWriter: Sendable {
             }
             let chunk = state.queue.removeFirst()
             state.queued -= chunk.data.count
+            state.inFlightRemaining = chunk.data.count
             return chunk
         }
     }
@@ -109,6 +121,7 @@ final class RightyoStdinWriter: Sendable {
                 let age = DispatchTime.now().uptimeNanoseconds - at
                 if offset.isMultiple(of: 2), age > UInt64(timing.backlogAge * 1e9) {
                     state.withLock {
+                        $0.inFlightRemaining = 0
                         $0.counters.droppedChunks += 1
                         $0.counters.droppedBytes += chunk.count - max(offset, item.silence)
                     }
@@ -134,7 +147,11 @@ final class RightyoStdinWriter: Sendable {
                 Darwin.write(input, $0.baseAddress?.advanced(by: offset), chunk.count - offset)
             }
             // Existing public counters describe real PCM only, even for a partial prefix write.
-            if count > 0 { current.counters.writtenBytes += max(0, offset + count - max(offset, silence)) }
+            if count > 0 {
+                current.streamBytesWritten += count
+                current.inFlightRemaining -= count
+                current.counters.writtenBytes += max(0, offset + count - max(offset, silence))
+            }
             if count < 0, errno != EINTR, errno != EAGAIN {
                 let saved = errno; fail(&current); errno = saved
             }
@@ -170,28 +187,6 @@ private struct RightyoPrefixedQueue {
             items.removeFirst(head); head = 0
         }
         return item
-    }
-}
-
-/// Host duration pinned to AmbientAudioFormat.chunkBytes by the cross-module format test.
-struct AmbientGapFill: Sendable, Equatable {
-    static let chunkBytes = 3_200
-    static let maxSegments = 30
-    static let maxBytes = chunkBytes * maxSegments
-    let missing: Int
-    let segments: Int
-    var bytes: Int { segments * Self.chunkBytes }
-    var detail: String {
-        "missing=\(missing) filled_ms=\(segments * 100) capped=\(segments < missing)"
-    }
-
-    init?(after last: Int?, sequence: Int, budget: Duration) {
-        guard let last, last >= 0, sequence > last, sequence - last > 1 else { return nil }
-        missing = sequence - last - 1
-        let available = max(.zero, min(.seconds(3), budget)).components
-        // Integer floor, never ceil: even a tiny positive elapsed time cannot buy a 100 ms slice.
-        let slices = Int(available.seconds * 10 + available.attoseconds / 100_000_000_000_000_000)
-        segments = min(missing, slices)
     }
 }
 
