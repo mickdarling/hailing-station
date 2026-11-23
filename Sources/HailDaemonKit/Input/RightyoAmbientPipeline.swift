@@ -162,7 +162,6 @@ public final class RightyoAmbientPipeline: Sendable {
         public var startDeadline: TimeInterval = RightyoAmbientPipeline.defaultStartDeadline
         /// Monotonic gap accounting clock; tests advance it without waiting.
         var gapClock: @Sendable () -> ContinuousClock.Instant = { .now }
-        var privacyRetryClock = RightyoPrivacyOff.Clock()
         var onGapFill: (@Sendable (String) -> Void)?
         /// How long a child has to ack each `{"duck":true}` (#735 S-8) before it is killed and refused. Not
         /// configurable: tests only shorten it.
@@ -204,8 +203,6 @@ public final class RightyoAmbientPipeline: Sendable {
     private let onVoiceMedia: (@Sendable (Bool) -> Void)?
     private let onVoiceMeeting: (@Sendable (Bool, MeetingProfile?) -> Void)?
     private let onVoiceDuck: (@Sendable (PrivacyCommand) -> Void)?
-    private let privacyRetryClock: RightyoPrivacyOff.Clock
-    private let privacyChange = Mutex<Int?>(nil)
     private let duck: AmbientDuckControl
     /// The dedicated meeting control (#735 MM-D), told only to a child whose `started` advertised it.
     private let meeting = AmbientMeetingControl()
@@ -250,7 +247,6 @@ public final class RightyoAmbientPipeline: Sendable {
                                             session: session, timing: configuration.timing,
                                             replyControl: configuration.replyControl,
                                             env: configuration.environment, startPrivate: configuration.startPrivate)
-        privacyRetryClock = configuration.privacyRetryClock
         (self.child, self.session) = (child, session)
         onDismiss = configuration.onDismiss
         (onVoiceMute, onVoiceMedia) = (configuration.onVoiceMute, configuration.onVoiceMedia)
@@ -390,43 +386,31 @@ extension RightyoAmbientPipeline {
     /// confirms `private` for a start-private child; S-8: a v3 child's ack of every `{"duck":true}`), the chunk is dropped,
     /// never written, and this returns true: the child hears no private audio, and the stream is not ended for it.
     @discardableResult public func send(audio pcm: Data) -> Bool {
-        privacyChange.withLock { _ in duck.mayHearAudio ? child.write(pcm) : true }
+        guard duck.mayHearAudio else { return true }
+        return child.write(pcm)
     }
 
     /// Sequence-aware ambient input only. Suppressed input advances nothing; a later gap remains bounded.
     /// Confirmed-private input keeps its existing in-memory exit recognition, without synthesizing silence.
-    func send(audio pcm: Data, sequence: Int, admission: Int? = nil) -> (accepted: Bool, gap: AmbientGapFill?) {
-        let (result, detail) = privacyChange.withLock { _ in enqueue(pcm, sequence: sequence, admission: admission) }
-        if let detail { gapLog.emit?(detail) }
-        return result
-    }
-
-    private func enqueue(_ pcm: Data, sequence: Int, admission: Int?)
-        -> ((accepted: Bool, gap: AmbientGapFill?), String?) {
-        lastForwardedSequence.withLock { progress ->
+    func send(audio pcm: Data, sequence: Int) -> (accepted: Bool, gap: AmbientGapFill?) {
+        let (result, detail) = lastForwardedSequence.withLock { progress ->
             ((accepted: Bool, gap: AmbientGapFill?), String?) in
-            guard duck.mayHearAudio else {
-                if let admission { child.input.suppress(admission) }
-                return ((true, nil), nil)
-            }
+            guard duck.mayHearAudio else { return ((true, nil), nil) }
             let now = gapClock()
             let elapsed = progress.first.map { now - $0 } ?? .zero
             // Persist the three-second bucket depth, including on refused writes: old credit expires.
             progress.writtenDuration = max(progress.writtenDuration, elapsed - .seconds(3))
-            let isPrivate = child.input.state.withLock { $0.admitsPrivately(admission) }
-            let gap = isPrivate ? nil : AmbientGapFill(after: progress.last, sequence: sequence,
-                                                       budget: elapsed - progress.writtenDuration)
-            switch child.input.enqueue(pcm, leadingSilenceBytes: gap?.bytes ?? 0, admission: admission) {
-            case .closed: return ((false, nil), nil)
-            case .discarded: return ((true, nil), nil)
-            case .accepted: break
-            }
+            let gap = duck.active ? nil : AmbientGapFill(after: progress.last, sequence: sequence,
+                                                        budget: elapsed - progress.writtenDuration)
+            guard child.input.write(pcm, leadingSilenceBytes: gap?.bytes ?? 0) else { return ((false, nil), nil) }
             progress.first = progress.first ?? now
             progress.writtenDuration += .nanoseconds(Int64(pcm.count + (gap?.bytes ?? 0)) * 31_250)
             progress.last = max(progress.last ?? sequence, sequence)
             let detail = gapLog.record(gap, at: now)
             return ((true, gap.flatMap { $0.bytes > 0 ? $0 : nil }), detail)
         }
+        if let detail { gapLog.emit?(detail) }
+        return result
     }
 
     /// Sets meeting mode (#735 MM-D, rightyo#227) in this stream's RightyO over the same control descriptor, only for a
@@ -455,62 +439,20 @@ extension RightyoAmbientPipeline {
 
     /// Whether audio now reaches the child (#735 S-2b; tests).
     var hearsAudio: Bool { duck.mayHearAudio }
-    /// Whether haild has read the child's first `started` (#735; tests).
+    /// Whether haild has read the child's first `started` (#735; tests): a privacy wish before it is kept, not written.
     var childStarted: Bool { duck.started }
 
-    /// An on before startup records the wish. Only a v3 or later child receives on, and audio waits for its ack.
-    /// Off returns true on delivery. A child launched public can receive off to withdraw its pending startup wish.
+    /// Sets privacy mode (#735, internally duck) in this stream's RightyO over the same control descriptor; true only
+    /// when the child's `started` advertised `duck` version 3 or higher and the line was written (or, while this child
+    /// already keeps privacy, an on needs no line). An older RightyO still transcribes while ducked (v1), never acks
+    /// (v2) or skips the line, so it is never written one and this is false: the host then never claims privacy is on
+    /// (fail closed). Written, the child still hears no audio until it acks (S-8), within `ackDeadline`.
+    /// Asked before `started`, the wish is kept and written once a child that advertised it starts; if its start
+    /// deadline already passed unwished, a fresh one is armed (#735 S-8 HS-C round 2). Never blocks.
     @discardableResult public func reportDuck(_ on: Bool) -> Bool {
-        reportDuck(on, delivered: { _ in })
-    }
-
-    /// The return value describes immediate delivery. The callback receives the final result exactly once.
-    @discardableResult public func reportDuck(_ on: Bool, delivered: @escaping @Sendable (Bool) -> Void) -> Bool {
-        if !on {
-            if !startsPrivate, !duck.active, !duck.started { delivered(false); return false }
-            return reservePrivacyOff(through: nil).start(delivered: delivered) == .delivered
-        }
-        let taken = privacyChange.withLock { pending in
-            if let pending { child.input.cancel(pending) }
-            pending = nil
-            requestOutcomes.setPrivate(true)
-            return duck.report(true, write: { [child] in child.reportDuck($0) }, written: armAckDeadline,
-                               restart: armFreshStartDeadline)
-        }
-        delivered(taken)
-        return taken
-    }
-
-    /// One child and one cutoff for every attempt, including retries after a full control pipe.
-    func reservePrivacyOff(through sequence: Int?) -> RightyoPrivacyOff {
-        let epoch = privacyChange.withLock { pending in
-            let startupWish = !duck.started && duck.active
-            let epoch = child.input.reserve(through: sequence, privacyWanted: startupWish)
-            pending = epoch
-            return epoch
-        }
-        return RightyoPrivacyOff(clock: privacyRetryClock, startup: startsPrivate ? duck : nil, cancel: { [weak self] in
-            guard let self else { return }
-            privacyChange.withLock { pending in
-                guard pending == epoch else { return }
-                self.child.input.cancel(epoch)
-                pending = nil
-            }
-        }, attempt: { [weak self] expired in
-            guard let self else { return .failed }
-            return privacyChange.withLock { pending in
-                guard pending == epoch else { return .failed }
-                let result = self.duck.relax(expired: expired, resume: {
-                    self.requestOutcomes.setPrivate(false)
-                }, write: {
-                    self.child.control.relax(self.child.input, epoch: epoch, expired: expired)
-                })
-                if result == .pending, self.child.input.isLive { return .pending }
-                self.child.input.cancel(epoch)
-                pending = nil
-                return result == .pending ? .failed : result
-            }
-        })
+        requestOutcomes.setPrivate(on)
+        return duck.report(on, write: { [child] on in child.reportDuck(on) }, written: armAckDeadline,
+                           restart: armFreshStartDeadline)
     }
 
     /// True once this child keeps the privacy wished for (#735 S-8: its ack came, or it started private); false when
@@ -555,13 +497,10 @@ extension RightyoAmbientPipeline {
     private func observeStarted(_ event: RightyoInputEvent, line: Data) async throws {
         guard event.type == "session", event.phase == "started" else { return }
         meeting.observe(started: line, write: { [child] on in child.reportMeeting(on) })
-        guard duck.observe(started: line, at: privacyRetryClock.now(), write: { [child] _ in
-            child.control.tighten(child.input, starting: true)
-        }, written: armAckDeadline) == .refused else { return }
+        guard duck.observe(started: line, write: { [child] on in child.reportDuck(on) },
+                           written: armAckDeadline) == .refused else { return }
         guard startsPrivate || onDuckUnsupported?() ?? true else {
-            privacyChange.withLock { _ in
-                duck.release { requestOutcomes.setPrivate(false) }
-            }
+            duck.release()
             return
         }
         duck.refuseStart(as: startsPrivate ? .unconfirmedStart : .unsupportedChild)
@@ -1060,15 +999,12 @@ final class AmbientDuckControl: Sendable {
     /// Whether this child keeps the privacy wished for, as `kept()` answers it.
     enum Proof: Equatable { case kept, never, pending }
     private struct State {
-        var startedAt: DispatchTime?
-        var started: Bool { startedAt != nil || expired }
-        var advertised = false, wanted = false, mustConfirm = false, expired = false
+        var started = false, advertised = false, wanted = false, mustConfirm = false, expired = false
         /// This child has shown it keeps privacy: a confirmed start-private `started`, or (S-8) an ack for every
         /// `{"duck":true}` written to it. Until then, while privacy is wished for, it hears no audio.
         var keeps = false
         /// `{"duck":true}` lines written to this child, and the acks counted against them (#735 S-8).
         var onWrites = 0, acks = 0
-        var awaitingProof: Int?
         /// An on-write's ack deadline passed while privacy was wished for (S-8); the run has ended (no more proof).
         var unacknowledged = false, ended = false
         /// The start deadline passed while privacy was not wished for (S-8 HS-C round 2): a later wish arms a fresh one.
@@ -1092,7 +1028,7 @@ final class AmbientDuckControl: Sendable {
             if wanted, keeps, !ended, !unacknowledged, !refused { return .kept }
             if !wanted || ended || expired || unacknowledged || refused { return .never }
             // Started with no on-write waiting for an ack (refused, or the write failed): nothing will prove it.
-            return started && awaitingProof == nil ? .never : .pending
+            return started && acks >= onWrites ? .never : .pending
         }
 
         /// What `answer()` says once the proof is settled (round 2).
@@ -1120,7 +1056,7 @@ final class AmbientDuckControl: Sendable {
                 (unacknowledged, keeps) = (true, false)
                 refuse(as: .unacknowledged)
             } else {
-                expired = true
+                (started, expired) = (true, true)
                 refuse(as: .unconfirmedStart)
             }
         }
@@ -1136,18 +1072,11 @@ final class AmbientDuckControl: Sendable {
     var mayHearAudio: Bool { state.withLock { !$0.wanted || $0.keeps } }
 
     /// The host says privacy already ended for a child that could not keep it: it runs on, public.
-    func release(resume: () -> Void = {}) {
-        update { state in
-            guard state.deciding, !state.mustConfirm, !state.refused, !state.ended else { return }
-            (state.wanted, state.deciding) = (false, false)
-            resume()
-        }
-    }
+    func release() { update { ($0.wanted, $0.deciding) = (false, false) } }
     /// The start deadline passed before `started` (#735 S-2b).
     var expired: Bool { state.withLock { $0.expired } }
     /// The child's first `started` was read, not the start deadline passed (tests).
-    var startedAt: DispatchTime? { state.withLock { $0.startedAt } }
-    var started: Bool { startedAt != nil }
+    var started: Bool { state.withLock { $0.started && !$0.expired } }
     /// Why this child was refused privacy after the fact, if it was: no `started` by its deadline (S-2b), or an on-write
     /// not acked by its deadline (S-8).
     var refusal: RightyoPrivacyRefusal? {
@@ -1161,64 +1090,35 @@ final class AmbientDuckControl: Sendable {
     /// for a child not yet started whose start deadline already lapsed calls `restart` (a fresh deadline, round 2).
     func report(_ on: Bool, write: (Bool) -> Bool, written: (Int) -> Void = { _ in },
                 restart: () -> Void = {}) -> Bool {
-        guard on else { return relax(expired: true) { write(false) ? .delivered : .failed } == .delivered }
-        return update { state in
+        update { state in
             let kept = state.wanted && state.keeps
-            state.wanted = true
+            state.wanted = on
             guard state.started else {
-                if state.startLapsed {
+                if on, state.startLapsed {
                     state.startLapsed = false
                     restart()
                 }
                 return true
             }
-            if kept { return true }
+            if on, kept { return true }
             // Refused (at a deadline, or otherwise) and being killed: nothing more is written, and it takes no on.
-            if state.unacknowledged || state.refused { return false }
-            // A fresh entry on a running public child supersedes an outstanding startup decision.
-            if !state.mustConfirm { state.deciding = false }
-            let taken = state.advertised && write(true)
+            if on, state.unacknowledged || state.refused { return false }
+            let taken = state.advertised && write(on)
+            // Private only once acked; a failed write withholds audio (fail closed). Off needs no ack.
             state.keeps = false
-            if taken { Self.count(&state, written: written) }
+            if on, taken { Self.count(&state, written: written) }
             return taken
-        }
-    }
-
-    /// A pending on for a public launch has withheld all subsequent audio. Serialize its off with startup so a
-    /// later `started` cannot apply a withdrawn wish. A private launch still needs its startup proof first.
-    func relax(expired: Bool, resume: () -> Void = {}, write: () -> RightyoDelivery) -> RightyoDelivery {
-        update { state in
-            if state.started {
-                // No private start or successful on in this interval. A refused entry only closed local gates.
-                if state.wanted, state.proof == .never, !state.refused, !state.ended {
-                    state.wanted = false
-                    resume()
-                    return .failed
-                }
-                guard state.advertised else { return .failed }
-            } else if state.mustConfirm {
-                return state.ended ? .failed : .pending
-            } else if !state.wanted {
-                return expired ? .failed : .pending
-            }
-            let result = write()
-            if result == .delivered {
-                (state.wanted, state.keeps, state.awaitingProof) = (false, false, nil)
-                resume()
-            }
-            return result
         }
     }
 
     /// Records the child's first `started`. A child that cannot keep the privacy wished for is never written and stays
     /// wished private (its words stay held) until it is killed. A confirmed start-private one the host no longer wants
     /// private is written off.
-    func observe(started line: Data, at time: DispatchTime = .now(), write: (Bool) -> Bool,
-                 written: (Int) -> Void = { _ in }) -> Started {
+    func observe(started line: Data, write: (Bool) -> Bool, written: (Int) -> Void = { _ in }) -> Started {
         let (advertised, confirmed) = (Self.advertises(line), Self.confirmsPrivate(line))
         return update { state in
             guard !state.started else { return .kept }
-            state.startedAt = time
+            state.started = true
             if state.mustConfirm, !confirmed {
                 (state.wanted, state.deciding) = (true, true)
                 return .refused
@@ -1226,6 +1126,7 @@ final class AmbientDuckControl: Sendable {
             state.advertised = advertised
             if state.mustConfirm {
                 state.keeps = true
+                if !state.wanted { _ = write(false) }
                 return .kept
             }
             guard state.wanted else { return .kept }
@@ -1237,9 +1138,7 @@ final class AmbientDuckControl: Sendable {
             return .kept
         }
     }
-}
 
-extension AmbientDuckControl {
     /// Counts the child's `privacy` `on` ack (#735 S-8) against the on-writes still waiting for one. Only the ack that
     /// matches the latest on-write proves privacy, so one for an earlier write (on, off, on) never opens the gate. An
     /// ack with nothing outstanding is `excess` and is not counted: no ack sent ahead is banked for a later write.
@@ -1247,17 +1146,13 @@ extension AmbientDuckControl {
         update { state in
             guard state.acks < state.onWrites else { return .excess }
             state.acks += 1
-            if state.acks == state.awaitingProof {
-                state.awaitingProof = nil
-                state.keeps = state.wanted && !state.unacknowledged && !state.ended && !state.refused
-            }
+            if state.wanted, !state.unacknowledged, !state.ended, state.acks == state.onWrites { state.keeps = true }
             return .counted
         }
     }
 
     private static func count(_ state: inout State, written: (Int) -> Void) {
         state.onWrites += 1
-        state.awaitingProof = state.onWrites
         written(state.onWrites)
     }
 
@@ -1377,7 +1272,7 @@ extension AmbientDuckControl {
                 state.startLapsed = true
                 return false
             }
-            state.expired = true
+            (state.started, state.expired) = (true, true)
             state.refuse(as: .unconfirmedStart)
             return true
         }
@@ -1649,191 +1544,6 @@ final class AmbientGapLog: Sendable {
     }
     func flush() {
         if let detail = state.withLock({ $0.take() }) { emit?(detail) }
-    }
-}
-
-extension RightyoStdinWriter.State {
-    func precedesBoundary(_ admission: Int?) -> Bool {
-        fencesAudio && admission.map { $0 <= through } == true
-    }
-
-    func admitsPrivately(_ admission: Int?) -> Bool {
-        !knownPublic && (!fencesAudio || precedesBoundary(admission))
-    }
-}
-
-extension RightyoStdinWriter {
-    var isLive: Bool { state.withLock { !$0.closing && !$0.failed && exit.value == nil } }
-
-    func cancel(_ epoch: Int) {
-        state.withLock { current in
-            if current.reserved, current.epoch == epoch { release(&current) }
-        }
-    }
-
-    convenience init(input: Int32, exit: RightyoExitLatch, timing: RightyoChildProcess.Timing,
-                     writer: DispatchQueue = DispatchQueue(label: "hailing.rightyo-child.stdin"),
-                     failed: @escaping @Sendable () -> Void = {}) {
-        self.init(input: Endpoint(descriptor: input, startPrivate: false), exit: exit,
-                  timing: timing, writer: writer, failed: failed)
-    }
-
-    func write(_ pcm: Data, leadingSilenceBytes: Int = 0, admission: Int? = nil) -> Bool {
-        enqueue(pcm, leadingSilenceBytes: leadingSilenceBytes, admission: admission) != .closed
-    }
-
-    /// Input already withheld by the pipeline completes its ordered handoff without advancing gap accounting.
-    func suppress(_ admission: Int) { state.withLock { $0.handed = max($0.handed, admission) } }
-}
-
-/// FIFO metadata beside each PCM item; no-gap Data keeps its original storage. O(1) amortised removal.
-struct RightyoPrefixedQueue {
-    struct Item {
-        let epoch: Int
-        let data: Data
-        let at: UInt64
-        let silence: Int
-        let admittedPrivately: Bool
-    }
-    private var items: [Item?] = [], head = 0
-    private var prefixes: [Int: Int] = [:]
-    var silenceAllowance: Int { prefixes.keys.max() ?? 0 } // At most 30 whole-slice prefix sizes.
-    var count: Int { items.count - head }
-    var isEmpty: Bool { head == items.count }
-    var first: Item? { isEmpty ? nil : items[head] }
-    mutating func append(_ item: Item) {
-        items.append(item)
-        if item.silence > 0 { prefixes[item.silence, default: 0] += 1 }
-    }
-    mutating func removeFirst() -> Item {
-        guard let item = items[head] else { preconditionFailure("stdin slot already taken") }
-        if item.silence > 0 {
-            let remaining = (prefixes[item.silence] ?? 1) - 1
-            prefixes[item.silence] = remaining == 0 ? nil : remaining
-        }
-        (items[head], head) = (nil, head + 1)
-        if isEmpty { items.removeAll(keepingCapacity: true); head = 0 } else if head >= items.count - head {
-            items.removeFirst(head); head = 0
-        }
-        return item
-    }
-}
-
-/// Host duration pinned to AmbientAudioFormat.chunkBytes by the cross-module format test.
-struct AmbientGapFill: Sendable, Equatable {
-    static let chunkBytes = 3_200
-    static let maxSegments = 30
-    static let maxBytes = chunkBytes * maxSegments
-    let missing: Int
-    let segments: Int
-    var bytes: Int { segments * Self.chunkBytes }
-    var detail: String {
-        "missing=\(missing) filled_ms=\(segments * 100) capped=\(segments < missing)"
-    }
-
-    init?(after last: Int?, sequence: Int, budget: Duration) {
-        guard let last, last >= 0, sequence > last, sequence - last > 1 else { return nil }
-        missing = sequence - last - 1
-        let available = max(.zero, min(.seconds(3), budget)).components
-        // Integer floor, never ceil: even a tiny positive elapsed time cannot buy a 100 ms slice.
-        let slices = Int(available.seconds * 10 + available.attoseconds / 100_000_000_000_000_000)
-        segments = min(missing, slices)
-    }
-}
-
-enum RightyoDelivery: Sendable { case pending, failed, delivered }
-
-/// Each attempt is nonblocking. The same deadline covers prefix drain and control pipe retries.
-struct RightyoPrivacyOff: Sendable {
-    typealias Attempt = @Sendable (_ expired: Bool) -> RightyoDelivery
-    private static let retries = DispatchQueue(label: "hailing.rightyo-child.privacy-off")
-    struct Clock: Sendable {
-        var now: @Sendable () -> DispatchTime = { .now() }
-        var schedule: @Sendable (DispatchTime, @escaping @Sendable () -> Void) -> Void = {
-            RightyoPrivacyOff.retries.asyncAfter(deadline: $0, execute: $1)
-        }
-    }
-    private let clock: Clock
-    private let requested: DispatchTime
-    private let startup: AmbientDuckControl?
-    var deadline: DispatchTime {
-        guard let startup else { return requested + .milliseconds(500) }
-        guard let started = startup.startedAt else { return .distantFuture }
-        return max(requested, started) + .milliseconds(500)
-    }
-    let attempt: Attempt
-    let cancel: @Sendable () -> Void
-
-    init(clock: Clock = Clock(), startup: AmbientDuckControl? = nil,
-         cancel: @escaping @Sendable () -> Void = {}, attempt: @escaping Attempt) {
-        self.cancel = cancel
-        self.clock = clock
-        requested = clock.now()
-        self.startup = startup
-        self.attempt = attempt
-    }
-
-    func retry(_ work: @escaping @Sendable () -> Void) {
-        clock.schedule(min(deadline, clock.now() + .milliseconds(5)), work)
-    }
-
-    @discardableResult func start(delivered: @escaping @Sendable (Bool) -> Void = { _ in }) -> RightyoDelivery {
-        let result = attempt(clock.now() >= deadline)
-        if result == .pending {
-            retry { self.start(delivered: delivered) }
-        }
-        if result != .pending { delivered(result == .delivered) }
-        return result
-    }
-}
-
-extension RightyoChildProcess {
-    /// Reports the assistant's spoken reply to the child (rightyo#124) without blocking; false when the child was
-    /// started without `replyControl`, its control input is closed, or the pipe is full (the report is dropped).
-    @discardableResult public func reportReply(_ phase: RightyoReplyPhase, asked: Bool = false) -> Bool {
-        control.report(phase, asked: asked)
-    }
-    @discardableResult func reportRequestOutcome(_ value: RightyoRequestOutcome) -> Bool {
-        control.outcome(value)
-    }
-    /// Sets the child's media mode (#551) the same way; false when it could not be written.
-    @discardableResult public func reportMedia(_ on: Bool) -> Bool { control.media(on) }
-    /// Writes the child's duck mode line (#735) the same way; false when it could not be written. Whether the child
-    /// understands it is the caller's to know: `RightyoAmbientPipeline.reportDuck` checks.
-    @discardableResult public func reportDuck(_ on: Bool) -> Bool {
-        reportDuck(on, delivered: { _ in })
-    }
-
-    @discardableResult public func reportDuck(_ on: Bool, delivered: @escaping @Sendable (Bool) -> Void) -> Bool {
-        if on {
-            let result = control.tighten(input)
-            delivered(result)
-            return result
-        }
-        let epoch = input.reserve(through: nil)
-        return RightyoPrivacyOff { [control, input] expired in
-            control.relax(input, epoch: epoch, expired: expired)
-        }.start(delivered: delivered) == .delivered
-    }
-    /// Writes the child's meeting line (#735 MM-D) the same way; whether it advertised it is the pipeline's to know.
-    @discardableResult func reportMeeting(_ on: Bool) -> Bool { control.meeting(on) }
-}
-
-extension RightyoControlWriter {
-    /// `asked` (rightyo#199) rides only on an end: a RightyO without it skips the line, as for an unknown key.
-    func report(_ phase: RightyoReplyPhase, asked: Bool = false) -> Bool {
-        asked && phase == .ended
-            ? write("{\"reply\":\"ended\",\"asked\":true}\n")
-            : write("{\"reply\":\"\(phase.rawValue)\"}\n")
-    }
-    /// Media mode (#551, rightyo#195): a RightyO without it skips the line and attends as before.
-    func media(_ on: Bool) -> Bool { write("{\"media\":\(on)}\n") }
-    /// Meeting mode (#735 MM-D, rightyo#227): written only to a child whose `started` advertised `meeting` v1
-    /// (`AmbientMeetingControl`); exactly that key and a boolean.
-    func meeting(_ on: Bool) -> Bool { write("{\"meeting\":\(on)}\n") }
-    func outcome(_ outcome: RightyoRequestOutcome) -> Bool {
-        guard let line = outcome.line else { return false }
-        return write(line)
     }
 }
 #endif

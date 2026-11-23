@@ -63,10 +63,9 @@ import Testing
         try await recipientSocketSend(frame, on: rig.socket)
         #expect(await eventually { await rig.env.rig.adapter.contexts.contains { $0.utteranceID == frame.id } })
         let id = try #require(await rig.env.rig.adapter.contexts.first { $0.utteranceID == frame.id }).id
-        // Publication checks the dispatch commit before consulting the privacy hold.
+        // Its reply record must be pending before privacy is entered next, so the entry's drop counts it.
         #expect(await eventually {
-            let peers = await rig.env.listener.peers.values
-            for peer in peers where await peer.session.replyRequests[id]?.committed == true {
+            for peer in await rig.env.listener.peers.values where await peer.session.replyRequests[id] != nil {
                 return true
             }
             return false

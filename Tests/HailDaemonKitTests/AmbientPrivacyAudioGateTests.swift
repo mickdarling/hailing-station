@@ -35,8 +35,7 @@ import Testing
 
     static func pipeline(_ fake: FakeRightyo, startPrivate: Bool, deadline: TimeInterval = 10,
                          unsupported: (@Sendable () -> Bool)? = nil,
-                         gapClock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
-                         configure: (inout RightyoAmbientPipeline.Configuration) -> Void = { _ in }
+                         gapClock: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
     ) throws -> RightyoAmbientPipeline {
         var configuration = RightyoAmbientPipeline.Configuration(
             executable: fake.executable, config: fake.config, target: "tmux:demo", binding: "pinned",
@@ -46,7 +45,6 @@ import Testing
         (configuration.onVoiceDuck, configuration.startDeadline) = ({ _ in }, deadline)
         configuration.onDuckUnsupported = unsupported
         configuration.gapClock = gapClock
-        configure(&configuration)
         return try RightyoAmbientPipeline(configuration: configuration, dispatcher: RecordingAmbientDispatcher())
     }
 
@@ -94,17 +92,15 @@ import Testing
         #expect(!Self.heard(fake).contains(0x11))
     }
 
-    /// Off before startup proof keeps the gate closed until the control line is delivered.
+    /// Privacy that ends before the confirm lets audio through again at once.
     @Test func privacyEndingBeforeTheConfirmResumesAudio() async throws {
-        let fake = try Self.fake(Self.script(advertises: true, delay: "0"))
+        let fake = try Self.fake(Self.script(advertises: true))
         defer { fake.cleanUp() }
         let pipeline = try Self.pipeline(fake, startPrivate: true)
-        let change = pipeline.reservePrivacyOff(through: nil)
-        #expect(change.attempt(false) == .pending && !pipeline.hearsAudio)
-        #expect(pipeline.send(audio: Self.chunk(0x11)))
         let run = Task { try await pipeline.run() }
-        #expect(await pipeline.privacyKept())
-        #expect(change.attempt(false) == .delivered && pipeline.hearsAudio)
+        #expect(pipeline.send(audio: Self.chunk(0x11)))
+        _ = pipeline.reportDuck(false)
+        #expect(pipeline.hearsAudio)
         #expect(pipeline.send(audio: Self.chunk(0x33)))
         pipeline.finishInput()
         _ = try await run.value

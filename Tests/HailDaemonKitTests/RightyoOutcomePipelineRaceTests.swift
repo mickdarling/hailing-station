@@ -33,7 +33,6 @@ private final class OutcomeRaceMark: Sendable { let muted = Mutex(false) }
         var config = RightyoAmbientPipeline.Configuration(
             executable: fake.executable, config: fake.config, target: "tmux:demo", binding: "pinned",
             connection: UUID(), allowSynthetic: true, timing: .init(eofGrace: 0.2, termGrace: 0.2))
-        config.replyControl = true
         config.onVoiceMute = { _ in mark.muted.withLock { $0 = true } }
         let pipeline = try RightyoAmbientPipeline(configuration: config, dispatcher: dispatcher)
         let run = Task { try await pipeline.run() }
@@ -54,7 +53,6 @@ private final class OutcomeRaceMark: Sendable { let muted = Mutex(false) }
         var events = try String(contentsOf: file, encoding: .utf8).split(separator: "\n").map {
             try JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] ?? [:]
         }
-        events[0]["duck"] = ["version": 3]
         events[0]["request_outcomes"] = ["version": 1]
         try write(events, to: file)
         let second = events[3...5].map { old -> [String: Any] in

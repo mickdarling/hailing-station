@@ -63,29 +63,30 @@ public enum RightyoReplyPhase: String, Sendable { case started, ended }
 /// is under `PIPE_BUF`, so each write is atomic: whole, or refused (a full pipe or a gone child) and dropped.
 final class RightyoControlWriter: Sendable {
     private let descriptor: Mutex<Int32?>
-    private let beforeWrite: (@Sendable () -> Void)?
-    init(_ descriptor: Int32?, beforeWrite: (@Sendable () -> Void)? = nil) {
-        self.descriptor = Mutex(descriptor)
-        self.beforeWrite = beforeWrite
+    init(_ descriptor: Int32?) { self.descriptor = Mutex(descriptor) }
+    /// `asked` (rightyo#199) rides only on an end: a RightyO without it skips the line, as for an unknown key.
+    func report(_ phase: RightyoReplyPhase, asked: Bool = false) -> Bool {
+        asked && phase == .ended
+            ? write("{\"reply\":\"ended\",\"asked\":true}\n")
+            : write("{\"reply\":\"\(phase.rawValue)\"}\n")
     }
-    /// Startup applies the existing wish and preserves an off already reserved behind it.
-    func tighten(_ input: RightyoStdinWriter, starting: Bool = false) -> Bool {
-        input.tighten(starting: starting) { write("{\"duck\":true}\n") }
+    /// Media mode (#551, rightyo#195): a RightyO without it skips the line and attends as before.
+    func media(_ on: Bool) -> Bool { write("{\"media\":\(on)}\n") }
+    /// Duck mode (#735, rightyo R-2). An older RightyO skips the line and keeps deciding turns, so the pipeline writes
+    /// it only to a child whose `started` advertised `duck` (`AmbientDuckControl`).
+    func duck(_ on: Bool) -> Bool { write("{\"duck\":\(on)}\n") }
+    /// Meeting mode (#735 MM-D, rightyo#227): written only to a child whose `started` advertised `meeting` v1
+    /// (`AmbientMeetingControl`); exactly that key and a boolean.
+    func meeting(_ on: Bool) -> Bool { write("{\"meeting\":\(on)}\n") }
+    func outcome(_ outcome: RightyoRequestOutcome) -> Bool {
+        guard let line = outcome.line else { return false }
+        return write(line)
     }
-
-    func relax(_ input: RightyoStdinWriter, epoch: Int, expired: Bool) -> RightyoDelivery {
-        input.deliver(epoch, expired: expired) { send("{\"duck\":false}\n") }
-    }
-
-    func write(_ text: String) -> Bool { send(text) == .delivered }
-    private func send(_ text: String) -> RightyoDelivery {
+    private func write(_ text: String) -> Bool {
         let line = Array(text.utf8)
         return descriptor.withLock { fd in
-            guard let fd else { return .failed }
-            beforeWrite?()
-            let count = line.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
-            if count == line.count { return .delivered }
-            return count < 0 && (errno == EAGAIN || errno == EINTR) ? .pending : .failed
+            guard let fd else { return false }
+            return line.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) } == line.count
         }
     }
     func close() { descriptor.withLock { fd in if let open = fd { Darwin.close(open) }; fd = nil } }
@@ -117,6 +118,22 @@ extension RightyoChildProcess {
         return pipe(&ends) == 0 && secure(&ends, child: 0)
             && fcntl(ends[1], F_SETNOSIGPIPE, 1) == 0 && fcntl(ends[1], F_SETFL, O_NONBLOCK) == 0
     }
+    /// Reports the assistant's spoken reply to the child (rightyo#124) without blocking; false when the child was
+    /// started without `replyControl`, its control input is closed, or the pipe is full (the report is dropped).
+    @discardableResult public func reportReply(_ phase: RightyoReplyPhase, asked: Bool = false) -> Bool {
+        control.report(phase, asked: asked)
+    }
+    @discardableResult func reportRequestOutcome(_ value: RightyoRequestOutcome) -> Bool {
+        control.outcome(value)
+    }
+    /// Sets the child's media mode (#551) the same way; false when it could not be written.
+    @discardableResult public func reportMedia(_ on: Bool) -> Bool { control.media(on) }
+    /// Writes the child's duck mode line (#735) the same way; false when it could not be written. Whether the child
+    /// understands it is the caller's to know: `RightyoAmbientPipeline.reportDuck` checks.
+    @discardableResult public func reportDuck(_ on: Bool) -> Bool { control.duck(on) }
+    /// Writes the child's meeting line (#735 MM-D) the same way; whether it advertised it is the pipeline's to know.
+    @discardableResult func reportMeeting(_ on: Bool) -> Bool { control.meeting(on) }
+
     /// Trusted coaching controls only: one ASCII JSON object without newline. The receiver validates
     /// the exact envelope. Queue admission is not receipt; original host advice deadlines still apply.
     @discardableResult public func sendCoachingControl(_ data: Data, validUntil: ContinuousClock.Instant) -> Bool {
@@ -149,51 +166,6 @@ extension RightyoChildProcess {
             revocation?.revoke()
             input.close(abandon: true)
             continuation.finish(throwing: RightyoChildError.transportLost)
-        }
-    }
-}
-extension RightyoStdinWriter {
-    /// A private reservation fences even an idle writer. A redundant public off reserves only its control retry.
-    func reserve(through sequence: Int?, privacyWanted: Bool = false) -> Int {
-        state.withLock { current in
-            if current.reserved { release(&current) }
-            current.epoch += 1
-            current.through = sequence ?? -1
-            current.prefixCount = current.queue.count
-            current.ordersAudio = privacyWanted || !current.knownPublic
-            current.reserved = true
-            return current.epoch
-        }
-    }
-
-    func tighten(starting: Bool, _ write: () -> Bool) -> Bool {
-        state.withLock { current in
-            if current.reserved && !starting { release(&current) }
-            guard write() else { return false }
-            current.knownPublic = false
-            return true
-        }
-    }
-    func deliver(_ epoch: Int, expired: Bool, write: () -> RightyoDelivery) -> RightyoDelivery {
-        state.withLock { current in
-            guard current.reserved, current.epoch == epoch else { return .failed }
-            guard !current.closing, !current.failed, exit.value == nil else {
-                release(&current)
-                return .failed
-            }
-            let busy = (current.inFlight ?? epoch) < epoch || current.prefixCount > 0
-                || current.handed < current.through
-            if current.ordersAudio && busy && !expired { return .pending }
-            let result = exit.whileRunning(write)
-            if result == .pending && !expired { return .pending }
-            // Still under the stdin lock: seal late private handoffs and retire unwritten PCM at the deadline.
-            if current.ordersAudio && (expired || result == .delivered) {
-                current.discardedThrough = max(current.discardedThrough, current.through)
-                if expired { current.discardBefore = epoch }
-            }
-            if result == .delivered { current.knownPublic = true }
-            release(&current)
-            return result == .pending ? .failed : result
         }
     }
 }

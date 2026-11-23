@@ -27,12 +27,11 @@ import Testing
         #expect(written.all == [false])
     }
 
-    /// A starting private child cannot confirm off until its capability is known.
+    /// Privacy that ended while the child was starting is written off once the child confirms it started private.
     @Test func aConfirmedStartWhosePrivacyEndedIsWrittenOff() {
         let (control, written) = (AmbientDuckControl(startPrivate: true), AmbientDuckControlTests.Written())
-        #expect(!control.report(false, write: written.write) && control.active)
-        #expect(control.observe(started: Data(Self.confirmed.utf8), write: written.write) == .kept)
         #expect(control.report(false, write: written.write))
+        #expect(control.observe(started: Data(Self.confirmed.utf8), write: written.write) == .kept)
         #expect(written.all == [false])
     }
 
@@ -97,9 +96,8 @@ import Testing
         #expect(rig.details("ambient_privacy_start").isEmpty)
         await rig.env.listener.stop(reason: "synthetic test complete")
     }
-}
 
-extension AmbientPrivacyStartPrivateTests {
+    // MARK: Round 2: no `lost` (#735 S-2b)
 
     /// A pipeline launched for one stream on the given script, with privacy wished for as `startPrivate` says.
     static func pipeline(_ fake: FakeRightyo, startPrivate: Bool, deadline: TimeInterval = 10)
@@ -119,13 +117,11 @@ extension AmbientPrivacyStartPrivateTests {
         let fake = try FakeRightyo("echo $$ > child.pid\n/bin/cat > /dev/null")
         defer { fake.cleanUp() }
         let (pipeline, dispatcher) = try Self.pipeline(fake, startPrivate: true, deadline: 0.3)
-        // run() arms the deadline. First establish which live process it must reap.
-        try #require(await eventually { (try? fake.recorded("child.pid").hasSuffix("\n")) == true })
-        let pid = try #require(Int32(fake.recorded("child.pid").trimmingCharacters(in: .whitespacesAndNewlines)))
         let started = ContinuousClock.now
         await #expect(throws: RightyoPrivacyRefusal.unconfirmedStart) { _ = try await pipeline.run() }
         #expect(started.duration(to: .now) < .seconds(8))
         #expect(await dispatcher.requests.isEmpty)
+        let pid = try #require(Int32(fake.recorded("child.pid").trimmingCharacters(in: .whitespacesAndNewlines)))
         #expect(await eventually { kill(pid, 0) != 0 })
     }
 
