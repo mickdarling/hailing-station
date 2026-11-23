@@ -12,6 +12,7 @@ import Testing
         #expect(rig.store.privacyLocal[rig.endpoint.id]?.request != nil)
         try await rig.drop()
         try await rig.expectStopped(.privacy)
+        #expect(rig.controller.listeningState == .stopped(.legacy(.privacyUnconfirmed)))
         await rig.close()
     }
     /// #982: a call also retains intent when the transport drops just before the microphone is interrupted.
@@ -39,6 +40,7 @@ import Testing
         try await rig.drop()
         rig.capture.stop()
         try await waitUntil { await MainActor.run { !rig.controller.isOn } }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.systemCaptureEnded)))
         #expect(rig.notices.count == 1 && rig.notices[0].outcome == .failed)
         #expect(rig.unexpected.isEmpty)
         await rig.close()

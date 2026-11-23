@@ -28,6 +28,7 @@ import Testing
         await rig.socket.releaseSends()
         await veto.value
         try await rig.expectStopped(ownerStop ? .ownerStop : .privacy)
+        #expect(rig.controller.listeningState == .stopped(ownerStop ? .ownerOff : .privacyStop))
         #expect(rig.notices.count == 1)
         await rig.close()
     }
@@ -63,6 +64,7 @@ import Testing
         if outcome == .failed {
             rig.capture.stop()
             try await waitUntil { await MainActor.run { !rig.controller.isOn } }
+            #expect(rig.controller.listeningState == .stopped(.legacy(.systemCaptureEnded)))
         }
         if outcome == .applied { try await rig.reconnect() }
         #expect(rig.notices.count == 1 && rig.notices.last?.outcome == outcome)

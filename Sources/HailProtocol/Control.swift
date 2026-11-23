@@ -868,6 +868,15 @@ public enum DiagnosticLimits {
     public static let playbackStreamFields: Set<DiagnosticField> = [
         .lastSequence, .expectedSequence, .gap, .receivedFrames, .scheduledFrames, .terminal, .lastFrameMs
     ]
+    /// Route observations (#1260) are projected onto the original shapes at send time.
+    public static let routeSnapshotCapability = "device_diagnostics_route_snapshot"
+    public static let routeSnapshotFields: Set<DiagnosticField> = [
+        .phase, .routeSequence, .input, .output, .inputCount, .outputCount,
+        .previousInput, .previousOutput, .previousInputCount, .previousOutputCount,
+        .preInput, .preOutput, .preInputCount, .preOutputCount, .category, .defaultToSpeaker,
+        .allowA2DP, .allowHFP, .mixWithOthers, .hfpPreference, .policyApply, .writeSucceeded,
+        .decision, .userChoseBuiltIn, .appAttributed, .captureOwnsEngine
+    ]
     /// Effective capture masking edges (#1213); older hosts receive only the legacy busy records.
     public static let replyMaskingCapability = "device_diagnostics_reply_masking"
     public static let replyMaskingReasons = ["setting", "reply_not_routed", "plain_capture", "tap_to_talk"]
@@ -943,27 +952,95 @@ public enum DiagnosticField: String, Codable, Sendable, CaseIterable, Comparable
     case lastFrameMs = "last_frame_ms"
     case gap, terminal
 
+    case phase, input, output, category, decision
+    case routeSequence = "route_sequence"
+    case inputCount = "input_count"
+    case outputCount = "output_count"
+    case previousInput = "previous_input"
+    case previousOutput = "previous_output"
+    case previousInputCount = "previous_input_count"
+    case previousOutputCount = "previous_output_count"
+    case preInput = "pre_input"
+    case preOutput = "pre_output"
+    case preInputCount = "pre_input_count"
+    case preOutputCount = "pre_output_count"
+    case defaultToSpeaker = "default_to_speaker"
+    case allowA2DP = "allow_a2dp"
+    case allowHFP = "allow_hfp"
+    case mixWithOthers = "mix_with_others"
+    case hfpPreference = "hfp_preference"
+    case policyApply = "policy_apply"
+    case writeSucceeded = "write_succeeded"
+    case userChoseBuiltIn = "user_chose_built_in"
+    case appAttributed = "app_attributed"
+    case captureOwnsEngine = "capture_owns_engine"
+
     public enum Kind: Sendable { case token, version, integer, boolean }
 
     public var kind: Kind {
         switch self {
-        case .reason, .state, .code, .domain, .route, .device, .capture: .token
+        case .reason, .state, .code, .domain, .route, .device, .capture, .phase, .category, .decision,
+             .input, .output, .preInput, .preOutput, .previousInput, .previousOutput: .token
         case .app, .build, .os: .version
         case .error, .attempt, .count, .ms, .lastSequence, .expectedSequence,
-             .receivedFrames, .scheduledFrames, .lastFrameMs: .integer
-        case .on, .masking, .gap, .terminal: .boolean
+             .receivedFrames, .scheduledFrames, .lastFrameMs, .routeSequence, .inputCount, .outputCount,
+             .preInputCount, .preOutputCount, .previousInputCount, .previousOutputCount: .integer
+        case .on, .masking, .gap, .terminal, .defaultToSpeaker, .allowA2DP, .allowHFP, .mixWithOthers,
+             .hfpPreference, .policyApply, .writeSucceeded, .userChoseBuiltIn, .appAttributed,
+             .captureOwnsEngine: .boolean
         }
     }
 
     /// The vocabulary of a token field, empty for every other kind.
-    public var tokens: [String] { DiagnosticVocabulary.tokens[self] ?? [] }
+    public var tokens: [String] {
+        switch self {
+        case .input, .output, .preInput, .preOutput, .previousInput, .previousOutput:
+            DiagnosticField.route.tokens
+        default: DiagnosticVocabulary.tokens[self] ?? []
+        }
+    }
+
+    var integerRange: ClosedRange<Int64> {
+        switch self {
+        case .inputCount, .outputCount, .previousInputCount, .previousOutputCount, .preInputCount, .preOutputCount:
+            0...Int64(UInt8.max)
+        case .routeSequence: 1...DiagnosticLimits.integers.upperBound
+        default: DiagnosticLimits.integers
+        }
+    }
 
     public static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
 }
 
-/// Every value a token field may take (#234). Each list ends in `other`.
+/// Type-only first port from a route description. Unknown hardware maps to `other`.
+public enum DiagnosticRoutePort: String, CaseIterable, Sendable {
+    case none
+    case builtInMic = "built_in_mic"
+    case builtInSpeaker = "built_in_speaker"
+    case builtInReceiver = "built_in_receiver"
+    case headphones
+    case headsetMic = "headset_mic"
+    case lineIn = "line_in"
+    case lineOut = "line_out"
+    case bluetoothA2DP = "bluetooth_a2dp"
+    case bluetoothHFP = "bluetooth_hfp"
+    case bluetoothLE = "bluetooth_le"
+    case airPlay = "airplay"
+    case hdmi
+    case carAudio = "car_audio"
+    case usbAudio = "usb_audio"
+    case other
+}
+
+/// Every value a token field may take (#234). Only the two instrumentation sites can supply a phase.
 public enum DiagnosticVocabulary {
     static let tokens: [DiagnosticField: [String]] = [
+        .phase: ["configure", "change"],
+        .category: ["play_and_record", "playback", "other"],
+        .decision: [
+            "repair_requested", "user_choice_assumed", "no_hardware_episode", "keepalive", "unsupported_category",
+            "no_external_evidence", "external_output_active", "awaiting_route", "other"
+        ],
         .reason: [
             // AVAudioSession route-change reasons
             "unknown", "new_device_available", "old_device_unavailable", "category_change", "override",
@@ -991,11 +1068,7 @@ public enum DiagnosticVocabulary {
             "media_services_reset", "other"
         ],
         .domain: ["avfoundation", "coreaudio", "network", "posix", "other"],
-        .route: [
-            "none", "built_in_mic", "built_in_speaker", "built_in_receiver", "headphones", "headset_mic",
-            "line_in", "line_out", "bluetooth_a2dp", "bluetooth_hfp", "bluetooth_le", "airplay", "hdmi",
-            "car_audio", "usb_audio", "other"
-        ],
+        .route: DiagnosticRoutePort.allCases.map(\.rawValue),
         .capture: ["plain", "vpio", "other"],
         .device: ["phone", "pad", "mac", "other"]
     ]
@@ -1011,7 +1084,7 @@ public enum DiagnosticValue: Sendable, Equatable {
         switch (self, field.kind) {
         case (.token(let value), .token): DiagnosticLimits.isOne(of: field.tokens, value)
         case (.token(let value), .version): DiagnosticLimits.isVersion(value)
-        case (.integer(let value), .integer): DiagnosticLimits.integers.contains(value)
+        case (.integer(let value), .integer): field.integerRange.contains(value)
         case (.boolean, .boolean): true
         default: false
         }
@@ -1352,8 +1425,8 @@ extension Schema {
             ])
         case .integer:
             .object([
-                "type": .string("integer"), "minimum": .integer(DiagnosticLimits.integers.lowerBound),
-                "maximum": .integer(DiagnosticLimits.integers.upperBound)
+                "type": .string("integer"), "minimum": .integer(field.integerRange.lowerBound),
+                "maximum": .integer(field.integerRange.upperBound)
             ])
         case .boolean: .object(["type": .string("boolean")])
         }

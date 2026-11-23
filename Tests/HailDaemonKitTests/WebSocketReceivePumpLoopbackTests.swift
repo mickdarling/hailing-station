@@ -1,5 +1,6 @@
 import Foundation
 import HailProtocol
+import Network
 import Testing
 @testable import HailDaemonKit
 
@@ -18,9 +19,11 @@ extension WebSocketReceivePumpTests {
         try await recipientSocketSend(sessionFrame(
             target: "tmux:codex", payload: .text(TextPayload(text: "later input"))
         ), on: socket)
+        try #require(await rig.peer.isLive)
         socket.cancel(with: .normalClosure, reason: nil)
         let reason = try await rig.ended.wait("close observed during delivery")
-        #expect(["peer closed", "cancelled"].contains(reason))
+        // Network can report EPIPE on the outstanding receive during URLSession teardown.
+        #expect(["peer closed", "cancelled", "receive failed: \(NWError.posix(.EPIPE))"].contains(reason))
         #expect(rig.peer.replyTransport.isRetired)
         #expect(await rig.peer.ended)
         #expect(await rig.runner.delivered == (admitted ? ["synthetic input"] : []))

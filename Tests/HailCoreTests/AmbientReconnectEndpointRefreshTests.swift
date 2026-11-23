@@ -63,6 +63,7 @@ import Testing
         if pending { try await rig.drop() }
         await rig.store.upsert(rig.endpoint)
         try await rig.expectStopped(.endpointChanged)
+        #expect(rig.controller.listeningState == .stopped(.unsafeEndpointChange))
         await rig.close()
     }
 
@@ -76,6 +77,7 @@ import Testing
                                        connectionGeneration: UUID(), selection: 0)
         await rig.controller.update(binding: other, scene: .background)
         try await rig.expectStopped(.bindingChanged)
+        #expect(rig.controller.listeningState == .stopped(.legacy(.socketBindingLost)))
         await rig.close()
     }
 
@@ -98,6 +100,7 @@ import Testing
         target.alive = false
         try await rig.socket.push(.targets(dead ? [target] : []))
         try await rig.expectStopped(.targetChanged)
+        #expect(rig.controller.listeningState == .stopped(.targetRemoved))
         #expect(try await audioFrames(rig.socket).isEmpty)
         await rig.close()
     }

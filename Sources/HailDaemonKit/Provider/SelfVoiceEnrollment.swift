@@ -1,0 +1,431 @@
+#if os(macOS)
+import Darwin
+import Dispatch
+import Foundation
+import HailProtocol
+import Synchronization
+
+struct SelfVoiceEnrollment: Sendable {
+    enum Failure: Error, Equatable { case relativePath, file, size, schema, version, executable, voice, ids }
+
+    let file: URL, executable: URL
+    let voices: [SelfVoiceConfiguration]
+
+    static func load(_ path: String) throws -> Self {
+        guard path.hasPrefix("/") else { throw Failure.relativePath }
+        let data: Data
+        do {
+            let parent = try SelfVoicePrivateFile.openParent(path)
+            defer { close(parent.descriptor) }
+            guard !path.hasSuffix("/"),
+                  let contents = try SelfVoicePrivateFile.read(parent.leaf, in: parent.descriptor,
+                                                               limit: SelfVoiceManifest.limit)
+            else { throw Failure.file }
+            data = contents.0
+        } catch SelfVoiceError.manifest { throw Failure.size } catch { throw Failure.file }
+        // Use the bounded JSON reader so duplicate object keys cannot disappear during decoding.
+        guard case let .object(object)? = try? CodexJSONL.decode(data),
+              Set(object.keys) == ["version", "vbsay", "voices"],
+              case let .string(wrapper) = object["vbsay"], case let .array(entries) = object["voices"]
+        else { throw Failure.schema }
+        guard object["version"] == .integer(1) else { throw Failure.version }
+        let file = URL(fileURLWithPath: path, isDirectory: false)
+        let executable = try validatedExecutable(wrapper, config: file)
+        let voices = try entries.map(voice)
+        do { try SelfVoiceManifest.checkIDs(voices.map(\.id)) } catch { throw Failure.ids }
+        return Self(file: file, executable: executable, voices: voices)
+    }
+
+    static func validatedExecutable(_ path: String, config: URL) throws -> URL {
+        guard path.hasPrefix("/"), !path.contains("\0") else { throw Failure.executable }
+        let url = URL(fileURLWithPath: path, isDirectory: false)
+        guard let real = try? RightyoChildProcess.validate(executable: url, config: config),
+              real.utf8.elementsEqual(path.utf8) else { throw Failure.executable }
+        return url
+    }
+
+    private static func voice(_ value: JSONValue) throws -> SelfVoiceConfiguration {
+        guard case let .object(fields) = value,
+              Set(fields.keys) == ["id", "profile", "source", "revision", "endpoint"],
+              case let .string(id) = fields["id"], case let .string(profile) = fields["profile"],
+              case let .string(sourceName) = fields["source"], case let .string(revision) = fields["revision"],
+              case let .string(endpoint) = fields["endpoint"] else { throw Failure.schema }
+        guard let source = SelfVoiceConfiguration.Source(rawValue: sourceName) else { throw Failure.voice }
+        let config = SelfVoiceConfiguration(id: id, profile: profile, source: source,
+                                            revision: revision, endpoint: endpoint)
+        guard (try? config.origin())?.host == "127.0.0.1" else { throw Failure.voice }
+        return config
+    }
+}
+
+protocol SelfVoiceEnrollmentRendering: Sendable {
+    func profileID(named name: String, at origin: URL) async throws -> String
+    func pcm(for voice: SelfVoiceConfiguration, verifying profileID: String) async throws -> Data
+}
+
+private struct VerifiedEnrollment: Sendable {
+    let enrollment: SelfVoiceEnrollment
+    let manifest: SelfVoiceManifest
+    let profileIDs: [String]
+
+    func entry(for voice: SelfVoiceConfiguration, executable: URL, profileID: String) -> SelfVoiceManifest.Voice? {
+        guard enrollment.executable.path.utf8.elementsEqual(executable.path.utf8),
+              let index = enrollment.voices.firstIndex(of: voice), profileIDs[index].utf8.elementsEqual(profileID.utf8)
+        else { return nil }
+        return manifest.voices[index]
+    }
+}
+
+private enum EnrollmentWave: Sendable {
+    case verified(SelfVoiceManifest.Voice)
+    case rendered(SelfVoiceConfiguration, Data)
+}
+
+private extension SelfVoicePublisher {
+    /// Rendering holds no directory lock. A timed-out renderer cannot hold up the next spawn's fresh attempt.
+    func prepare(enrollmentPath: String, previous: VerifiedEnrollment?,
+                 renderer: SelfVoiceLaunchPreparation.Renderer, check: @Sendable () throws -> Void) async throws
+        -> VerifiedEnrollment {
+        try check()
+        let enrollment = try SelfVoiceEnrollment.load(enrollmentPath)
+        try check()
+        let waves = try await render(enrollment, previous: previous, renderer: renderer(enrollment), check: check)
+        try check()
+        return try await withLockedDirectory(observe: observeLaunch) { publisher, directory in
+            let old = try directory.previous()
+            var timestamp = old.timestamp
+            var voices: [SelfVoiceManifest.Voice] = []
+            for wave in waves {
+                try check()
+                switch wave.audio {
+                case .verified(let entry):
+                    guard old.manifest?.voices.contains(entry) == true else { throw SelfVoiceError.manifest }
+                    voices.append(entry)
+                case let .rendered(config, wav):
+                    guard timestamp < Int.max else { throw SelfVoiceError.manifest }
+                    timestamp = max(publisher.clock(), timestamp + 1)
+                    let name = "self-\(UUID().uuidString).wav"
+                    try directory.install(wav, as: name, check: check)
+                    voices.append(.init(id: config.id, file: name, source: config.source, renderedAt: timestamp,
+                                        sha256: SelfVoiceWave.digest(wav)))
+                }
+            }
+            let manifest = SelfVoiceManifest(version: 1, voices: voices)
+            try directory.finishLaunch(manifest, previous: previous?.manifest, old: old.manifest,
+                                       timestamp: timestamp, check: check)
+            return VerifiedEnrollment(enrollment: enrollment, manifest: manifest, profileIDs: waves.map(\.profileID))
+        }
+    }
+
+    private typealias ResolvedWave = (profileID: String, audio: EnrollmentWave)
+
+    private func render(_ enrollment: SelfVoiceEnrollment, previous: VerifiedEnrollment?,
+                        renderer: any SelfVoiceEnrollmentRendering, check: @Sendable () throws -> Void) async throws
+        -> [ResolvedWave] {
+        var waves: [ResolvedWave] = []
+        for voice in enrollment.voices {
+            try check()
+            do {
+                let profileID = try await renderer.profileID(named: voice.profile, at: voice.origin())
+                try check()
+                if let entry = previous?.entry(for: voice, executable: enrollment.executable, profileID: profileID) {
+                    waves.append((profileID, .verified(entry)))
+                } else {
+                    let pcm = try await renderer.pcm(for: voice, verifying: profileID)
+                    try check()
+                    waves.append((profileID, .rendered(voice, try SelfVoiceWave.encode(pcm))))
+                }
+            } catch let refusal as SelfVoiceEnrollment.Failure {
+                throw refusal
+            } catch { throw SelfVoiceLaunchPreparation.Failure.render }
+        }
+        return waves
+    }
+}
+
+private extension SelfVoiceDirectory {
+    func finishLaunch(_ manifest: SelfVoiceManifest, previous: SelfVoiceManifest?, old: SelfVoiceManifest?,
+                      timestamp: Int, check: () throws -> Void) throws {
+        if previous == manifest, old == manifest {
+            try verifyWaves(manifest)
+        } else {
+            try commit(manifest, timestamp: timestamp, check: check)
+            try check()
+            let retained = Set((manifest.voices + (old?.voices ?? [])).map(\.file))
+            try removeSuperseded(keeping: retained)
+        }
+        try verifyManifest(manifest)
+        try check()
+    }
+}
+
+private final class PreparationDeadline: Sendable {
+    let end: ContinuousClock.Instant
+    private let clock: TaskProgressClock
+    private let revoked = Mutex(false)
+
+    init(clock: TaskProgressClock, timeout: Duration) {
+        self.clock = clock
+        end = clock.now() + timeout
+    }
+
+    func revoke() { revoked.withLock { $0 = true } }
+
+    func check() throws {
+        try revoked.withLock { revoked in
+            guard clock.now() < end else { throw SelfVoiceLaunchPreparation.Failure.timeout }
+            guard !revoked else { throw SelfVoiceLaunchPreparation.Failure.cancelled }
+            try Task.checkCancellation()
+        }
+    }
+}
+
+/// One instance per opted-in daemon. Call before each child spawn, never on an audio callback.
+/// A disabled daemon omits this object entirely.
+actor SelfVoiceLaunchPreparation {
+    enum Failure: String, Error { case read, validation, render, publication, timeout, cancelled }
+    typealias Renderer = @Sendable (SelfVoiceEnrollment) -> any SelfVoiceEnrollmentRendering
+
+    private let enrollmentPath: String, manifestURL: URL
+    private let publisher: SelfVoicePublisher
+    private let clock: TaskProgressClock, timeout: Duration, renderer: Renderer
+    private var verified: VerifiedEnrollment?
+    struct Worker {
+        let task: Task<Void, Never>
+        let cancellationQueue = DispatchQueue(label: "hailing.self-voice.cancel", qos: .utility)
+
+        // A synchronous child cancellation handler must run even if the publisher or constrained workers are busy.
+        func cancel() { cancellationQueue.async { task.cancel() } }
+    }
+    private struct Attempt {
+        let id: UUID, deadline: PreparationDeadline
+        let worker: Worker, timer: Task<Void, Never>
+        let waiter: CheckedContinuation<URL?, Never>
+    }
+    private var active: Attempt?
+    /// Retirement observation for synthetic tests. A launch never joins this handle.
+    var inFlightWorker: Worker? { active?.worker }
+    private(set) var lastFailure: Failure?
+
+    init(enrollmentPath: String, directory: String) {
+        self.init(enrollmentPath: enrollmentPath, publisher: SelfVoicePublisher(directory: directory),
+                  clock: .continuous, timeout: .seconds(20), renderer: { EnrolledReplyRenderer(enrollment: $0) })
+    }
+
+    init(enrollmentPath: String, publisher: SelfVoicePublisher, clock: TaskProgressClock,
+         timeout: Duration, renderer: @escaping Renderer) {
+        self.enrollmentPath = enrollmentPath
+        self.publisher = publisher
+        let directory = URL(fileURLWithPath: publisher.path, isDirectory: true)
+        manifestURL = directory.appendingPathComponent(SelfVoiceManifest.name)
+        (self.clock, self.timeout, self.renderer) = (clock, timeout, renderer)
+    }
+
+    func prepare() async -> URL? {
+        let id = UUID(), deadline = PreparationDeadline(clock: clock, timeout: timeout)
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { waiter in
+                if let active { finish(active.id, .failure(.cancelled)) }
+                let previous = verified
+                verified = nil
+                let worker = Task.detached {
+                    let result = await self.run(previous: previous, deadline: deadline)
+                    await self.finish(id, result)
+                }
+                let timer = Task {
+                    do { try await clock.sleepUntil(deadline.end) } catch { return }
+                    finish(id, .failure(.timeout))
+                }
+                active = Attempt(id: id, deadline: deadline, worker: Worker(task: worker), timer: timer, waiter: waiter)
+                if Task.isCancelled { finish(id, .failure(.cancelled)) }
+            }
+        } onCancel: { Task { await self.finish(id, .failure(.cancelled)) } }
+    }
+
+    private nonisolated func run(previous: VerifiedEnrollment?, deadline: PreparationDeadline) async
+        -> Result<VerifiedEnrollment, Failure> {
+        do {
+            return .success(try await publisher.prepare(enrollmentPath: enrollmentPath, previous: previous,
+                                                        renderer: renderer,
+                                                        check: deadline.check))
+        } catch SelfVoiceEnrollment.Failure.file {
+            return .failure(.read)
+        } catch is SelfVoiceEnrollment.Failure {
+            return .failure(.validation)
+        } catch let failure as Failure {
+            return .failure(failure)
+        } catch {
+            return .failure(.publication)
+        }
+    }
+
+    private func finish(_ id: UUID, _ result: Result<VerifiedEnrollment, Failure>) {
+        guard let attempt = active, attempt.id == id else { return }
+        active = nil
+        attempt.timer.cancel()
+        switch clock.now() >= attempt.deadline.end ? .failure(.timeout) : result {
+        case .success(let generation):
+            verified = generation
+            lastFailure = nil
+            attempt.waiter.resume(returning: manifestURL)
+        case .failure(let failure):
+            attempt.deadline.revoke()
+            lastFailure = failure
+            attempt.waiter.resume(returning: nil)
+            attempt.worker.cancel()
+        }
+    }
+}
+
+// The ordinary reply launcher searches PATH. Enrollment pins the operator's exact wrapper even if it is renamed
+// or disappears between validation and spawn. Catalog checks and audio conversion use the slice 1 implementation.
+actor EnrolledReplyRenderer: SelfVoiceEnrollmentRendering {
+    private let queue = DispatchSerialQueue(label: "hailing.self-voice.render", qos: .utility)
+    nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+
+    let enrollment: SelfVoiceEnrollment
+    let outputRoot: URL
+    let catalog: any SelfVoiceRendering
+
+    init(enrollment: SelfVoiceEnrollment, outputRoot: URL = FileManager.default.temporaryDirectory,
+         catalog: (any SelfVoiceRendering)? = nil) {
+        self.enrollment = enrollment
+        self.outputRoot = outputRoot
+        self.catalog = catalog ?? SelfVoiceRenderer(executable: enrollment.executable, outputRoot: outputRoot)
+    }
+
+    func profileID(named name: String, at origin: URL) async throws -> String {
+        try await catalog.profileID(named: name, at: origin)
+    }
+
+    func pcm(for voice: SelfVoiceConfiguration, verifying profile: String) async throws -> Data {
+        let origin = try voice.origin()
+        let executable = try SelfVoiceEnrollment.validatedExecutable(enrollment.executable.path,
+                                                                   config: enrollment.file)
+        let folder = try OwnedReplyJobDirectory(root: outputRoot)
+        guard folder.usable else { throw SelfVoiceError.directory }
+        let directory = executable.deletingLastPathComponent().path
+        // Keep the wrapper's helpers available only when its directory is a single PATH component.
+        let search = directory.contains(":") ? "/usr/bin:/bin" : directory + ":/usr/bin:/bin"
+        let environment = ["PATH": search, "VBSAY_ENGINE": "voicebox", "VBSTREAM": "0",
+                           "VOICEBOX_URL": origin.absoluteString, "VBSAY_PROFILE": voice.profile,
+                           "VBSAY_NOFALLBACK": "1", "no_proxy": String(voice.endpoint.dropFirst("http://".count)),
+                           "http_proxy": "http://127.0.0.1:0", "https_proxy": "http://127.0.0.1:0",
+                           "PYTHONNOUSERSITE": "1", "VBSAY_NOPLAY": "1", "VBSAY_OUT": folder.url.path,
+                           "VBSAY_STDOUT": "1", "VBSAY_CHUNK": "160"]
+        let child: RightyoChildProcess.SpawnedChild
+        do {
+            try Task.checkCancellation()
+            child = try RightyoChildProcess.spawn(executable.path, arguments: [SelfVoiceRenderer.passage],
+                environment: environment.map { "\($0.key)=\($0.value)" }, directory: folder.url.path)
+        } catch {
+            _ = folder.remove()
+            throw error
+        }
+        let bytes: Data
+        do {
+            bytes = try await EnrollmentChild(child).collect()
+        } catch {
+            // A failed wrapper may leave descendants. Retire only its empty scratch directory in the trusted root.
+            _ = rmdir(folder.url.path)
+            throw error
+        }
+        guard folder.remove() else { throw SelfVoiceError.directory }
+        guard try await profileID(named: voice.profile, at: origin).utf8.elementsEqual(profile.utf8) else {
+            throw SelfVoiceError.configuration
+        }
+        return bytes
+    }
+}
+
+/// The exit observer alone reaps. waitid(WNOWAIT) leaves the PID reserved until reap and cancellation meet under the lock.
+/// Join both reader closes and the owned child's reap before releasing the worker's scratch directory.
+private final class EnrollmentChild: Sendable {
+    private let pid: pid_t
+    private let identity: Mutex<ReplyRendererChildIdentity>
+    private let audio = Mutex<Data?>(Data())
+    private let retired = DispatchGroup()
+    private let queue = DispatchQueue(label: "hailing.self-voice.pipes")
+    private let output: any DispatchSourceRead, errors: any DispatchSourceRead
+
+    init(_ child: RightyoChildProcess.SpawnedChild) {
+        pid = child.pid
+        identity = Mutex(ReplyRendererChildIdentity(pid: child.pid))
+        close(child.input)
+        output = DispatchSource.makeReadSource(fileDescriptor: child.output, queue: queue)
+        errors = DispatchSource.makeReadSource(fileDescriptor: child.errors, queue: queue)
+        observe(output, descriptor: child.output, capturesAudio: true)
+        observe(errors, descriptor: child.errors, capturesAudio: false)
+        if fcntl(child.output, F_SETFL, O_NONBLOCK) < 0 || fcntl(child.errors, F_SETFL, O_NONBLOCK) < 0 { cancel() }
+        output.activate()
+        errors.activate()
+        retired.enter()
+        DispatchQueue(label: "hailing.self-voice.exit").async {
+            self.reap()
+            // Stderr is discarded. An inherited writer cannot delay an otherwise complete successful render.
+            self.errors.cancel()
+            self.retired.leave()
+        }
+    }
+
+    private func observe(_ source: any DispatchSourceRead, descriptor: Int32, capturesAudio: Bool) {
+        retired.enter()
+        source.setCancelHandler { [retired] in
+            close(descriptor)
+            retired.leave()
+        }
+        source.setEventHandler { [weak self] in
+            guard let self else { return }
+            var buffer = [UInt8](repeating: 0, count: 32_768)
+            let count = buffer.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, $0.count) }
+            if count == 0 {
+                (capturesAudio ? self.output : self.errors).cancel()
+            } else if count < 0 {
+                if errno != EINTR && errno != EAGAIN { self.cancel() }
+            } else if capturesAudio, !self.append(buffer.prefix(count)) {
+                self.cancel()
+            }
+        }
+    }
+
+    private func append(_ chunk: ArraySlice<UInt8>) -> Bool {
+        audio.withLock { bytes in
+            guard let size = bytes?.count, chunk.count <= SelfVoiceWave.maxInput - size else { return false }
+            bytes?.append(contentsOf: chunk)
+            return true
+        }
+    }
+
+    func collect(isolation: isolated (any Actor)? = #isolation) async throws -> Data {
+        try await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { done in retired.notify(queue: queue) { done.resume() } }
+            guard identity.withLock({ $0.status == 0 }), let bytes = audio.withLock({ $0 }) else {
+                throw SelfVoiceError.audio
+            }
+            return bytes
+        }, onCancel: { self.cancel() }, isolation: isolation)
+    }
+
+    private func cancel() {
+        audio.withLock { $0 = nil }
+        output.cancel()
+        errors.cancel()
+        identity.withLock { $0.signalIfOwned { _ = kill($0, SIGKILL) } }
+    }
+
+    private func reap() {
+        var info = siginfo_t()
+        var result: Int32
+        repeat { result = waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) } while result == -1 && errno == EINTR
+        identity.withLock { child in
+            guard result == 0, info.si_pid == pid else { child.pid = nil; return }
+            var status: Int32 = 0
+            var observed: pid_t
+            repeat { observed = waitpid(pid, &status, 0) } while observed == -1 && errno == EINTR
+            _ = child.observe(result: observed, status: status, error: errno)
+        }
+    }
+}
+// Enrollment and its exact-path child lifetime share the two-Provider-file slice boundary.
+// swiftlint:disable:next file_length
+#endif
