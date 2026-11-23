@@ -18,6 +18,7 @@ import Testing
         try await rig.socket.push(.error(code: .unauthorized,
             message: "retained selection requires owner authorization"))
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(.policyDenied))
         let notice = try #require(rig.notices.first)
         #expect(rig.notices.count == 1 && notice.reason == .reauthorizationNeeded)
         #expect(notice.reason?.diagnosticToken == "reauthorization_needed")

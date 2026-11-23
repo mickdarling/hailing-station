@@ -41,7 +41,7 @@ import Testing
         #expect(controller.status(for: failedPresentation) == ReplyPlaybackController.audioCouldNotBeDecoded)
     }
 
-    @Test func aNewReplyStillSupersedesThePauseAfterFailure() {
+    @Test func aNewReplyQueuesBehindThePausedReplyAfterFailure() {
         let player = FormatTestPlayer()
         let controller = ReplyPlaybackController(player: player)
         let failed = formatReply(), queued = formatReply(), newest = formatReply()
@@ -51,8 +51,12 @@ import Testing
         controller.ingest(formatAudioEvent(failed, codec: .pcm16, byteCount: 1, sequence: 1))
         #expect(controller.status == "Paused")
         controller.ingest(formatAudioEvent(newest, codec: .pcm16, byteCount: 2))
-        #expect(!controller.isPaused)
-        #expect(player.scheduled.compactMap { $0.reply?.id } == [failed.id, newest.id])
+        #expect(controller.isPaused)
+        #expect(player.scheduled.compactMap { $0.reply?.id } == [failed.id])
+        controller.togglePause()
+        #expect(player.scheduled.compactMap { $0.reply?.id } == [failed.id, queued.id])
+        player.completeNextReply()
+        #expect(player.scheduled.compactMap { $0.reply?.id } == [failed.id, queued.id, newest.id])
         player.completeNextReply()
         #expect(controller.statusForControls == "Played")
     }

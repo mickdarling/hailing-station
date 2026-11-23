@@ -68,6 +68,7 @@ final class AmbientRefusalOrderRun {
     func settleStopIfRequested() async throws {
         if !rig.controller.isListening {
             try await waitUntil { await MainActor.run { !self.rig.controller.isOn && self.rig.released == 1 } }
+            #expect(rig.controller.listeningState == .stopped(.policyDenied))
         }
     }
 

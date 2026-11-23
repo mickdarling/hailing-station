@@ -78,7 +78,8 @@ public struct PersonalTerminalAuthorizer: HostSessionAuthorizing {
                                            DuckMode.privacySwitchCapability])
             + (diagnostics == nil ? [] : [DiagnosticLimits.capability, DiagnosticLimits.streamAbandonedCapability,
                                           DiagnosticLimits.playbackStreamCapability,
-                                          DiagnosticLimits.replyMaskingCapability])
+                                          DiagnosticLimits.replyMaskingCapability,
+                                          DiagnosticLimits.routeSnapshotCapability])
             + (health == nil ? [] : [HostHealth.capability])
     }
 

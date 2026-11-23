@@ -21,7 +21,9 @@ final class CodexRecoveryChannel: Sendable {
     private struct State {
         var pending = Data()
         var latest: CodexRecoveryReport?
-        var revoked = false, eof = false
+        var revoked = false
+        var eofAt: ContinuousClock.Instant?
+        var reader: Task<Void, Never>?
     }
     private let state = Mutex(State())
     private let child: OwnedStdioChild
@@ -29,19 +31,23 @@ final class CodexRecoveryChannel: Sendable {
     init(command: OwnedStdioCommand, request: UUID, generation: UUID) throws {
         self.request = request; self.generation = generation
         child = try OwnedStdioChild(command: command)
-        Task { await read() }
+        state.withLock { $0.reader = Task { await self.read() } }
     }
     var report: CodexRecoveryReport? {
         state.withLock { state in
             guard !state.revoked, let latest = state.latest,
-                  !latest.state.terminal || state.eof else { return nil }
+                  !latest.state.terminal || state.eofAt != nil else { return nil }
             return latest
         }
     }
-    var stopped: Bool { state.withLock { $0.revoked || $0.eof } }
+    var stopped: Bool { state.withLock { $0.revoked || $0.eofAt != nil } }
     var reaped: Bool { child.isReaped }
     func stop() { state.withLock { $0.revoked = true }; child.cancel() }
-    func join() async { await child.join() }
+    func join() async {
+        let reader = state.withLock { $0.reader }
+        await reader?.value
+        await child.join()
+    }
     func send(_ operation: String) async throws {
         guard ["prepare", "commit", "authorize", "retire"].contains(operation), !stopped else {
             throw CodexRecoveryFault.stopped
@@ -61,17 +67,22 @@ final class CodexRecoveryChannel: Sendable {
     func wait(for phases: Set<CodexRecoveryPhase>, until deadline: ContinuousClock.Instant) async throws
         -> CodexRecoveryReport {
         try await withTaskCancellationHandler {
-            while ContinuousClock().now < deadline {
-                let snapshot = state.withLock { ($0.revoked, $0.eof, $0.latest) }
-                guard !snapshot.0 else { throw CodexRecoveryFault.stopped }
-                if let latest = snapshot.2 {
-                    if phases.contains(latest.state), latest.state.terminal ? snapshot.1 : !snapshot.1 { return latest }
-                    if latest.state.terminal, snapshot.1 { throw CodexRecoveryFault.unavailable }
+            while true {
+                let (revoked, eofAt, latest, now) = state.withLock {
+                    ($0.revoked, $0.eofAt, $0.latest, ContinuousClock.now)
                 }
-                guard !snapshot.1 else { throw CodexRecoveryFault.unavailable }
+                guard !revoked else { throw CodexRecoveryFault.stopped }
+                // A delayed waiter can consume terminal proof validated before its deadline.
+                if let eofAt, eofAt <= deadline {
+                    guard let latest, latest.state.terminal, phases.contains(latest.state) else {
+                        throw CodexRecoveryFault.unavailable
+                    }
+                    return latest
+                }
+                guard now < deadline else { stop(); throw CodexRecoveryFault.timeout }
+                if let latest, !latest.state.terminal, phases.contains(latest.state) { return latest }
                 try await Task.sleep(for: .milliseconds(20))
             }
-            stop(); throw CodexRecoveryFault.timeout
         } onCancel: { stop() }
     }
     private func read() async {
@@ -80,9 +91,9 @@ final class CodexRecoveryChannel: Sendable {
                 try accept(chunk)
             }
             let incomplete = state.withLock { state in
-                state.eof = true
                 let invalid = !state.pending.isEmpty || state.latest?.state.terminal != true
                 if invalid { state.revoked = true }
+                state.eofAt = .now
                 return invalid
             }
             if incomplete { stop() }

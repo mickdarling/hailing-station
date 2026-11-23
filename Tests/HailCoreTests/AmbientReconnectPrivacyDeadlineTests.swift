@@ -34,6 +34,7 @@ import Testing
         clock.advance(by: .seconds(5))
         try await host.answer()
         try await rig.expectStopped(.privacy, outcome: .failed)
+        #expect(rig.controller.listeningState == .stopped(.legacy(.privacyUnconfirmed)))
         try await rig.expectNoRestoredPCM()
         await rig.close()
     }
