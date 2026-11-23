@@ -84,7 +84,7 @@ private final class PrivacyPositionPipes {
         #expect(!duck.report(false, write: pipes.control.duck))
         pipes.worker.resume()
         #expect(duck.active && duck.mayHearAudio && host.withLock { $0 } == [true])
-        #expect(pipes.input.write(publicPCM))
+        #expect(duck.withAudioAdmission { allowed, wanted in allowed && !wanted && pipes.input.write(publicPCM) })
         pipes.worker.sync {}
         var expected = Data(repeating: 0, count: prefix)
         expected.append(pcm); expected.append(privatePCM)
@@ -134,6 +134,29 @@ private final class PrivacyPositionPipes {
         let expected = newOn ? Data() : Data("{\"duck\":false,\"after_sample\":1}\n".utf8)
         #expect(try pipes.read(pipes.lines) == expected)
         #expect(duck.active == newOn)
+    }
+
+    @Test(arguments: [false, true]) func failedOnDoesNotHoldHostForOffRetry(previouslyPrivate: Bool) throws {
+        let pipes = try PrivacyPositionPipes(), scheduled = Mutex<(@Sendable () -> Void)?>(nil)
+        let clock = PrivacyRetryClock(now: { DispatchTime(uptimeNanoseconds: 1) },
+                                      schedule: { _, work in scheduled.withLock { $0 = work } })
+        let host = Mutex<[Bool]>([])
+        let duck = AmbientDuckControl(clock: clock, setPrivate: { value in host.withLock { $0.append(value) } })
+        let output = AmbientDuckControl.PositionedOutput(input: pipes.input, control: pipes.control)
+        #expect(duck.observe(started: started(positioned: true), output: output, write: pipes.control.duck) == .kept)
+        if previouslyPrivate {
+            try #require(duck.report(true, write: pipes.control.duck))
+            try #require(duck.report(false, write: pipes.control.duck))
+        }
+        try pipes.fillControl()
+        #expect(!duck.report(true, write: pipes.control.duck))
+        #expect(duck.active)
+        #expect(!duck.report(false, write: pipes.control.duck))
+        #expect(!duck.active && host.withLock { $0.last } == false)
+        let retry = try #require(scheduled.withLock { $0 })
+        _ = try pipes.read(pipes.lines)
+        retry()
+        #expect(try pipes.read(pipes.lines) == Data("{\"duck\":false,\"after_sample\":0}\n".utf8))
     }
 
     @Test func failedOffKeepsHostPrivateAndStdinPublic() throws {

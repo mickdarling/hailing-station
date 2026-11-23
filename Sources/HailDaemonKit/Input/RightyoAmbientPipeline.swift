@@ -993,7 +993,8 @@ final class AmbientOwnerVoiceRelay: Sendable {
 /// on-line"); a v1 child still transcribes while ducked, and a v2 one never acks, so neither counts as advertising it.
 /// Until `started`, the latest wish is kept and written then; a child that did not advertise it is never written a duck
 /// line, and a wish it cannot take is dropped and reported, so the host ends duck mode rather than claim it. Under one
-/// lock, so a wish and the `started` that answers it cannot cross. The host keeps output private until off is written.
+/// lock, so a wish and the `started` that answers it cannot cross. If the child may be private, the host keeps output
+/// private until off is written.
 /// Started private (#735 S-2b), the wish is on from the first line and `started` must confirm `"private": true`.
 /// That event supplies the proof. Otherwise (S-8) the child keeps privacy only once it has acked every `{"duck":true}` written to it: acks are matched to on-writes by count, never banked ahead.
 final class AmbientDuckControl: Sendable {
@@ -1010,8 +1011,8 @@ final class AmbientDuckControl: Sendable {
         let control: RightyoControlWriter
     }
     private struct State {
-        /// The host holds output until the off is written. Input admission follows wanted immediately.
-        var hostPrivate = false
+        /// A private launch or a successful on-write since the last delivered off.
+        var childMayBePrivate = false
         var positioned: PositionedOutput?
         var pendingOffSample: Int?, retry: UUID?
         var invalidatedWrites = 0
@@ -1086,10 +1087,10 @@ final class AmbientDuckControl: Sendable {
          setPrivate: @escaping @Sendable (Bool) -> Void = { _ in }) {
         self.clock = clock
         self.setPrivate = setPrivate
-        state = Mutex(State(hostPrivate: startPrivate, wanted: startPrivate, mustConfirm: startPrivate))
+        state = Mutex(State(childMayBePrivate: startPrivate, wanted: startPrivate, mustConfirm: startPrivate))
     }
 
-    var active: Bool { state.withLock { $0.hostPrivate } }
+    var active: Bool { state.withLock { $0.wanted || $0.childMayBePrivate } }
     /// Audio may reach the child: privacy is not wished for, or the child has shown it keeps it (#735 S-2b round 3).
     var mayHearAudio: Bool { withAudioAdmission { allowed, _ in allowed } }
 
@@ -1099,7 +1100,17 @@ final class AmbientDuckControl: Sendable {
     }
 
     /// The connection withdrew its wish during an unsupported start. Resume ordinary audio admission.
-    func release() { update { ($0.wanted, $0.deciding) = (false, false) } }
+    func release() {
+        update { state in
+            setWish(false, in: &state)
+            state.deciding = false
+        }
+    }
+
+    private func setWish(_ on: Bool, in state: inout State) {
+        state.wanted = on
+        if on || !state.childMayBePrivate { setPrivate(on) }
+    }
     /// The start deadline passed before `started` (#735 S-2b).
     var expired: Bool { state.withLock { $0.expired } }
     /// The child's first `started` was read, not the start deadline passed (tests).
@@ -1119,12 +1130,8 @@ final class AmbientDuckControl: Sendable {
                 restart: () -> Void = {}) -> Bool {
         update { state in
             let kept = state.wanted && state.keeps
-            if on {
-                (state.pendingOffSample, state.retry) = (nil, nil)
-                state.hostPrivate = true
-                setPrivate(true)
-            }
-            state.wanted = on
+            if on { (state.pendingOffSample, state.retry) = (nil, nil) }
+            setWish(on, in: &state)
             guard state.started else {
                 if on, state.startLapsed {
                     state.startLapsed = false
@@ -1168,10 +1175,7 @@ final class AmbientDuckControl: Sendable {
                 if !state.wanted { _ = writeOff(&state, atStartup: true, plain: write) }
                 return .kept
             }
-            guard state.wanted else {
-                if state.hostPrivate, advertised { _ = writeOff(&state, atStartup: true, plain: write) }
-                return .kept
-            }
+            guard state.wanted else { return .kept }
             guard advertised else {
                 state.deciding = true
                 return .refused
@@ -1224,9 +1228,10 @@ extension AmbientDuckControl {
 
     private func deliveredOff(_ state: inout State) {
         (state.pendingOffSample, state.retry) = (nil, nil)
-        (state.keeps, state.hostPrivate) = (false, false)
+        state.keeps = false
         state.invalidatedWrites = state.onWrites
-        setPrivate(false)
+        if state.childMayBePrivate { setPrivate(false) }
+        state.childMayBePrivate = false
     }
 
     /// Counts the child's `privacy` `on` ack (#735 S-8) against the on-writes still waiting for one. Only the ack that
@@ -1243,6 +1248,7 @@ extension AmbientDuckControl {
     }
 
     private static func count(_ state: inout State, written: (Int) -> Void) {
+        state.childMayBePrivate = true
         state.onWrites += 1
         written(state.onWrites)
     }
