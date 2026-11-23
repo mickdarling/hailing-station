@@ -54,6 +54,30 @@ import Testing
         #expect(events.first?.fields[.count] == .integer(1))
     }
 
+    @Test func failedSendRestoresLossCountAndAllSurvivors() throws {
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let log = log()
+        log.setEnabled(true)
+        _ = log.nextBatch()
+        for index in 0..<517 {
+            clock.advance(by: .seconds(1))
+            log.record(.appForeground, timestamp: Int64(index))
+        }
+        #expect(log.bufferedCount == 500)
+        let unsent = try #require(log.nextBatch())
+        let marker = try DiagnosticEvent(.eventsDropped, timestamp: 1_000, fields: [
+            .count: .integer(17), .code: .token("app_buffer")
+        ])
+        #expect(unsent.events.first == marker)
+        log.requeue(unsent)
+        #expect(log.bufferedCount == 500)
+        let retried = try #require(log.nextBatch())
+        #expect(retried.events == unsent.events)
+        let delivered = retried.events + drain(log)
+        let survivors = try (17..<517).map { try DiagnosticEvent(.appForeground, timestamp: Int64($0)) }
+        #expect(delivered == [marker] + survivors)
+    }
+
     @Test func aDropAloneWakesTheSender() {
         defer { defaults.removePersistentDomain(forName: suite) }
         let log = log()

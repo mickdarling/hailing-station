@@ -49,6 +49,7 @@ import Testing
         try await run.publishFailure()
         #expect(run.rig.notices == notices)
         #expect(!run.rig.controller.isOn && !run.rig.controller.isListening)
+        #expect(run.rig.controller.listeningState == .stopped(.ownerOff))
         try await run.expectNoPCMOrPrivacyOff()
         await run.rig.close()
     }

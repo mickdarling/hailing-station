@@ -61,6 +61,7 @@ import Testing
         try await rig.expectNoRestoredPCM()
         await timeout.fire() // Injected 5 s confirmation timeout; no real 5 s wait.
         try await rig.expectStopped(.privacy, outcome: .failed)
+        #expect(rig.controller.listeningState == .stopped(.legacy(.privacyUnconfirmed)))
         #expect(rig.notices.count == 1) // onNotice is the app's stopped notice/haptic hook.
         try await rig.expectNoRestoredPCM()
         await #expect(host.audioBeforeConfirmation() == 0)
@@ -80,6 +81,12 @@ import Testing
         try await host.answer()
         try await rig.expectStopped(response == .refuse ? .nonTransport : .privacy,
                                     outcome: response == .refuse ? .blocked : .failed)
+        let path: AmbientListeningState.LegacyStopPath = switch response {
+        case .sendFailure: .privacySendFailed
+        case .refuse: .replacementFailed
+        default: .privacyUnconfirmed
+        }
+        #expect(rig.controller.listeningState == .stopped(.legacy(path)))
         #expect(rig.notices.count == 1) // Same stopped notice/haptic hook for each failure.
         try await rig.expectNoRestoredPCM()
         await #expect(host.audioBeforeConfirmation() == 0)
@@ -96,6 +103,7 @@ import Testing
         let host = try await rig.privateReconnect()
         try await rig.store.setPrivacy(on: on, host: rig.endpoint.id)
         try await rig.expectStopped(.privacy)
+        #expect(rig.controller.listeningState == .stopped(.privacyStop))
         try await host.answer()
         rig.controller.reconnect.restore(store: rig.store)
         try await rig.expectNoRestoredPCM()

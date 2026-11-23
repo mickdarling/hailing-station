@@ -21,6 +21,7 @@ import Testing
             ])
         }
         #expect(!rig.controller.isOn && !rig.controller.isListening && rig.controller.pausedReason == nil)
+        #expect(rig.controller.listeningState == .stopped(.ownerOff))
         #expect(!rig.controller.reconnect.isPending)
         #expect(rig.notices.map(\.reason) == [.ownerStop])
         #expect(rig.notices.map(\.outcome) == [.blocked])
@@ -86,6 +87,7 @@ import Testing
         }
         await rig.controller.update(binding: fresh, scene: .active)
         #expect(!rig.controller.isOn && rig.controller.pausedReason == nil)
+        #expect(rig.controller.listeningState == .stopped(.legacy(.socketBindingLost)))
         rig.interruption(false)
         await rig.controller.update(binding: fresh, scene: .active)
         #expect(rig.fakes.count == 1)
@@ -111,6 +113,7 @@ import Testing
         await rig.controller.update(binding: try rig.currentBinding(), scene: .active)
         await rig.microphoneRetry.release()
         #expect(!rig.controller.isOn && rig.capture.startCount == 1)
+        #expect(rig.controller.listeningState == .stopped(stop ? .ownerOff : .privacyStop))
         await rig.close()
         await timeout.release()
     }
@@ -131,6 +134,7 @@ import Testing
             await deadline.release()
         } else { try await rig.socket.push(.duckMode(on: false)) }
         try await callEventually { await MainActor.run { !rig.controller.isOn } }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.privacyUnconfirmed)))
         #expect(!rig.controller.isListening && rig.capture.startCount == 1)
         #expect(try await rig.socket.sentFrames().allSatisfy {
             if case .audio = $0.payload { return false }; return true

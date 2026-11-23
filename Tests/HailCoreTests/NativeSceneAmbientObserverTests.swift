@@ -31,6 +31,7 @@ import Testing
         await host.render()
         #expect(root.ambientDestinationBinding == nil)
         #expect(!rig.controller.isOn && !rig.controller.isListening)
+        #expect(rig.controller.listeningState == .stopped(.legacy(.socketBindingLost)))
         let stops = (log.nextBatch()?.events ?? []).filter { $0.name == .ambientStop }
         #expect(stops.count == 1 && stops.first?.fields[.reason] == .token("binding_changed"))
         probe.toolShown = false

@@ -28,6 +28,7 @@ import Testing
         harness.refusal = Self.changed
         await harness.controller.turnOn(for: try binding())
         try await harness.feed { !harness.controller.isOn && harness.released > 0 }
+        #expect(harness.controller.listeningState == .stopped(.legacy(.retriesExhausted)))
         #expect(harness.delays == [.seconds(1), .seconds(3), .seconds(10)])
         #expect(harness.streams.count == 4)
         #expect(Set(harness.streams).count == 4)

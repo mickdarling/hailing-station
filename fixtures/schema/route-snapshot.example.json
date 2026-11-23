@@ -1,0 +1,102 @@
+{
+  "id": "00000000-0000-4000-8000-000000001260",
+  "payload": {
+    "command": "diagnostic",
+    "events": [
+      {
+        "ts": 5,
+        "name": "route_change",
+        "fields": {
+          "input": "built_in_mic",
+          "output": "built_in_speaker",
+          "input_count": 1,
+          "output_count": 1,
+          "category": "play_and_record",
+          "default_to_speaker": true,
+          "allow_a2dp": true,
+          "allow_hfp": false,
+          "mix_with_others": false,
+          "hfp_preference": true,
+          "phase": "change",
+          "reason": "category_change",
+          "route": "built_in_mic",
+          "previous_input": "none",
+          "previous_output": "none",
+          "previous_input_count": 0,
+          "previous_output_count": 0,
+          "route_sequence": 2
+        }
+      },
+      {
+        "ts": 5,
+        "name": "route_change",
+        "fields": {
+          "input": "built_in_mic",
+          "output": "built_in_speaker",
+          "input_count": 1,
+          "output_count": 1,
+          "category": "play_and_record",
+          "default_to_speaker": true,
+          "allow_a2dp": true,
+          "allow_hfp": false,
+          "mix_with_others": false,
+          "hfp_preference": true,
+          "phase": "change",
+          "reason": "category_change",
+          "route": "built_in_mic",
+          "previous_input": "none",
+          "previous_output": "none",
+          "previous_input_count": 0,
+          "previous_output_count": 0,
+          "decision": "no_hardware_episode",
+          "user_chose_built_in": false,
+          "app_attributed": true,
+          "route_sequence": 3
+        }
+      },
+      {
+        "ts": 5,
+        "name": "route_change",
+        "fields": {
+          "phase": "configure",
+          "pre_input": "none",
+          "pre_output": "none",
+          "pre_input_count": 0,
+          "pre_output_count": 0,
+          "write_succeeded": true,
+          "category": "play_and_record",
+          "default_to_speaker": true,
+          "allow_a2dp": true,
+          "allow_hfp": false,
+          "mix_with_others": false,
+          "hfp_preference": true,
+          "route_sequence": 1,
+          "policy_apply": false
+        }
+      },
+      {
+        "ts": 5,
+        "name": "reply_playback_start",
+        "fields": {
+          "route": "built_in_speaker",
+          "input": "built_in_mic",
+          "output": "built_in_speaker",
+          "input_count": 1,
+          "output_count": 1,
+          "category": "play_and_record",
+          "default_to_speaker": true,
+          "allow_a2dp": true,
+          "allow_hfp": false,
+          "mix_with_others": false,
+          "hfp_preference": true,
+          "capture_owns_engine": true,
+          "route_sequence": 4
+        }
+      }
+    ]
+  },
+  "source": "terminal",
+  "ts": 5,
+  "type": "control",
+  "v": 1
+}
