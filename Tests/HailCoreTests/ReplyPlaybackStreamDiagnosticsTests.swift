@@ -144,18 +144,6 @@ import Testing
         #expect(fields[.lastFrameMs] == .integer(21_300))
     }
 
-    @Test func supersedingAPausedStreamKeepsOnlyTheNewReceipt() {
-        let rig = IdleRig()
-        rig.controller.ingest(idleAudio(idleReply(), sequence: 0, final: false, byte: 7))
-        rig.controller.togglePause()
-        let replacement = idleReply()
-        rig.controller.ingest(idleAudio(replacement, sequence: 0, final: true, byte: 8))
-        #expect(rig.controller.streamReceipts.count == 1)
-        #expect(rig.controller.streamReceipts.keys.first?.replyID == replacement.id)
-        rig.player.completeReply()
-        #expect(rig.controller.streamReceipts.isEmpty)
-    }
-
     @Test func queuedStreamsKeepTheirOwnArrivalAgeAndStopRetiresReceipts() throws {
         defer { defaults.removePersistentDomain(forName: suite) }
         let rig = IdleRig(), ahead = idleReply(), queued = idleReply()
@@ -168,6 +156,23 @@ import Testing
         #expect(try abandonment(log).fields[.lastFrameMs] == .integer(51_300))
         rig.controller.ingest(idleAudio(idleReply(), sequence: 0, final: false, byte: 9))
         rig.controller.stopPlayback(from: nil)
+        #expect(rig.controller.streamReceipts.isEmpty)
+    }
+}
+
+extension ReplyPlaybackStreamDiagnosticsTests {
+    @Test func arrivalDuringPauseKeepsBothReceiptsUntilPlaybackFinishes() {
+        let rig = IdleRig()
+        rig.controller.ingest(idleAudio(idleReply(), sequence: 0, final: true, byte: 7))
+        rig.controller.togglePause()
+        let replacement = idleReply()
+        rig.controller.ingest(idleAudio(replacement, sequence: 0, final: true, byte: 8))
+        #expect(rig.controller.streamReceipts.count == 2)
+        rig.controller.togglePause()
+        rig.player.completeReply()
+        #expect(rig.controller.streamReceipts.count == 1)
+        #expect(rig.controller.streamReceipts.keys.first?.replyID == replacement.id)
+        rig.player.completeReply()
         #expect(rig.controller.streamReceipts.isEmpty)
     }
 }

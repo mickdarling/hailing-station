@@ -33,6 +33,7 @@ import Testing
         #expect(rig.unexpected.isEmpty)
         #expect(!rig.controller.isListening, "Reassert send error was ignored after confirmation canceled its waiter")
         #expect(try await audioFrames(base).isEmpty, "PCM sent despite failed privacy reassertion")
+        #expect(await ambientStateAfterStop(rig.controller) == .stopped(.legacy(.privacySendFailed)))
         await rig.close()
     }
 
@@ -44,6 +45,7 @@ import Testing
         let id = rig.controller.reconnect.notice?.id
         try await rig.socket.push(.error(code: .notAllowed, message: "ambient busy"))
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.hostRefused)))
         #expect(rig.controller.reconnect.notice?.id == id)
         #expect(rig.notices.last?.outcome == .failed)
         #expect(rig.notices.map(\.id) == [id, id]) // Replaces the same notice; the app deduplicates its haptic.

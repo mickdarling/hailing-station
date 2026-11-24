@@ -20,6 +20,7 @@ import Testing
         await closing.gate.fire()
         try await waitUntil { await rig.retry.isWaiting() }
         try await rig.expectStopped(.privacy)
+        #expect(rig.controller.listeningState == .stopped(.privacyStop))
         try await rig.reconnect()
         #expect(rig.notices.count == 1)
         await rig.close()
@@ -70,6 +71,7 @@ import Testing
         rig.wrapReconnect = { AmbientMovedSocket(base: $0) }
         try await rig.reconnect()
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(.movedAway))
         #expect(rig.controller.handoff == .movedAway(to: "pad"))
         #expect(rig.unexpected.isEmpty && rig.released == 1)
         #expect(rig.notices.count == 1 && rig.notices.last?.reason == .movedAway)
@@ -84,6 +86,7 @@ import Testing
         rig.wrapReconnect = { AmbientMovedSocket(base: $0, message: message) }
         try await rig.reconnect()
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.hostRefused)))
         #expect(rig.notices.count == 1 && rig.notices.last?.outcome == .failed)
         #expect(rig.unexpected.isEmpty && rig.released == 1 && rig.capture.startCount == 1)
         await rig.close()

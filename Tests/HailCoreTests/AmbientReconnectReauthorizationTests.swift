@@ -20,6 +20,7 @@ import Testing
             capabilities: ["ping", "stream_audio", "set_privacy"], deviceName: "Synthetic")))
         try await rig.socket.push(.targets([rig.target]))
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(.capabilityRemoved))
         let notice = try #require(rig.notices.first)
         #expect(rig.notices.count == 1 && notice.outcome == .blocked && notice.reason == .reauthorizationNeeded)
         #expect(notice.reason?.diagnosticToken == "reauthorization_needed")

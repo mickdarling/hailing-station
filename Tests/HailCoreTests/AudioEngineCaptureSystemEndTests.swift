@@ -118,6 +118,7 @@ private typealias Names = AudioCaptureEndingSignal.Names
 
         center.post(name: Names.routeChange, object: nil, userInfo: [Names.routeChangeReasonKey: UInt(2)])
         try await waitUntil { await MainActor.run { !controller.isOn } }
+        #expect(controller.listeningState == .stopped(.legacy(.systemCaptureEnded)))
         #expect(!controller.isListening)
         #expect(controller.stopReason?.contains("interrupted") == true)
         #expect(await sent.isHolding())

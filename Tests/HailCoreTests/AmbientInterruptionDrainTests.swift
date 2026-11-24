@@ -21,6 +21,7 @@ import Testing
 
         await controller.turnOff()
         #expect(!controller.isOn)
+        #expect(controller.listeningState == .stopped(.ownerOff))
         #expect(harness.releases == 0, "still draining: the session is released once the drain ends")
         await harness.sent.release()
         try await waitUntil { await MainActor.run { harness.releases == 1 } }

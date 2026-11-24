@@ -28,6 +28,7 @@ import Testing
                 "Resumed PCM reached the replacement host after the failed owner tap")
         if rig.controller.isOn { await rig.controller.turnOff() } // Let a mutant reach the owner-start tail too.
         try await waitUntil { await MainActor.run { !rig.controller.isOn } }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.privacySendFailed)))
         await rig.controller.turnOn(for: try rig.currentBinding()) // An owner start alone clears the veto.
         try await rig.drop()
         try await rig.reconnect()
