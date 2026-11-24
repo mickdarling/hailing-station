@@ -82,11 +82,22 @@ final class RightyoControlWriter: Sendable {
         guard let line = outcome.line else { return false }
         return write(line)
     }
-    private func write(_ text: String) -> Bool {
+    enum Delivery { case delivered, retry, failed }
+
+    /// Stream ordering is available only with duck_after_sample. Legacy children receive immediate plain off.
+    func duckOff(afterSample sample: Int) -> Delivery {
+        send("{\"duck\":false,\"after_sample\":\(sample)}\n")
+    }
+
+    private func write(_ text: String) -> Bool { send(text) == .delivered }
+
+    private func send(_ text: String) -> Delivery {
         let line = Array(text.utf8)
         return descriptor.withLock { fd in
-            guard let fd else { return false }
-            return line.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) } == line.count
+            guard let fd else { return .failed }
+            let count = line.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+            if count == line.count { return .delivered }
+            return count < 0 && (errno == EAGAIN || errno == EINTR) ? .retry : .failed
         }
     }
     func close() { descriptor.withLock { fd in if let open = fd { Darwin.close(open) }; fd = nil } }
