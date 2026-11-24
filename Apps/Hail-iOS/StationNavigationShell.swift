@@ -81,7 +81,7 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
                                    preferredCompactColumn: compactColumn) {
             List(selection: sectionSelection) {
                 ForEach(StationSection.allCases) { section in
-                    let selected = state.section == section
+                    let selected = state.sidebarSelection(collapsed: isCollapsed) == section
                     Label(section.title, systemImage: section.systemImage)
                         .foregroundStyle(palette[selected ? .onSidebarSelection : .textSecondary])
                         .listRowBackground(palette[selected ? .sidebarSelection : .sidebar])

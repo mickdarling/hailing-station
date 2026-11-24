@@ -100,7 +100,7 @@ targets:
     platform: macOS
     sources:
       - path: Tests/Hail-iOSUITests
-        includes: [ShellWindow*.swift]
+        includes: [ShellWindow*.swift, StationThemeScreenshotUITests.swift]
     dependencies:
       - target: Hail-macOS
     settings:

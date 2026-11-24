@@ -3,8 +3,10 @@ import XCTest
 import AppKit
 #endif
 
+protocol ShellWindowUITestSupport where Self: XCTestCase {}
+
 @MainActor
-extension ShellWindowUITests {
+extension ShellWindowUITestSupport {
     var device: String {
         #if os(macOS)
         "mac"
@@ -22,11 +24,12 @@ extension ShellWindowUITests {
         #endif
     }
 
-    func launchShell() -> XCUIApplication {
+    func launchStation(shellEnabled: Bool) -> XCUIApplication {
         #if os(macOS)
         let app = XCUIApplication(bundleIdentifier: "com.mickdarling.Hail-macOS-shell-tests")
         #else
         let app = XCUIApplication()
+        let orientation = XCUIDevice.shared.orientation
         if device == "ipad" { XCUIDevice.shared.orientation = .landscapeLeft }
         #endif
         let reset = baseArguments + ["-reset-station-state"]
@@ -36,12 +39,12 @@ extension ShellWindowUITests {
             app.launch()
             app.terminate()
             #if os(iOS)
-            XCUIDevice.shared.orientation = .portrait
+            XCUIDevice.shared.orientation = orientation
             #endif
         }
-        app.launchArguments = reset + ["-seed-navigation-shell"]
+        app.launchArguments = shellEnabled ? reset + ["-seed-navigation-shell"] : reset
         launchStation(app)
-        XCTAssertTrue(section("station", in: app).waitForExistence(timeout: 10))
+        if shellEnabled { XCTAssertTrue(section("station", in: app).waitForExistence(timeout: 10)) }
         #if os(macOS)
         XCTAssertEqual(app.windows.matching(identifier: "station").count, 1, "There must be one Station window")
         #endif
@@ -129,6 +132,27 @@ extension ShellWindowUITests {
 
     func waitUntilHittable(_ item: XCUIElement) {
         XCTAssertTrue(item.wait(for: \.isHittable, toEqual: true, timeout: 5), item.debugDescription)
+    }
+
+    func stationDestinationPicker(in app: XCUIApplication) -> XCUIElement {
+        let picker = app.buttons["station.destination"].firstMatch
+        waitUntilHittable(picker)
+        #if os(macOS)
+        let viewport = app.scrollViews.containing(.button, identifier: "station.destination").firstMatch
+        XCTAssertTrue(viewport.exists, "The destination picker belongs to the Station detail")
+        let center = CGPoint(x: picker.frame.midX, y: picker.frame.midY)
+        XCTAssertTrue(viewport.frame.contains(center), "The picker must be visible inside the Station scroll view")
+        #endif
+        return picker
+    }
+
+    func shellToggle(in app: XCUIApplication) -> XCUIElement {
+        #if os(macOS)
+        let checkbox = app.checkBoxes["station.redesign.shell"]
+        return checkbox.exists ? checkbox : app.switches["station.redesign.shell"]
+        #else
+        return app.switches["station.redesign.shell"]
+        #endif
     }
 
     func activateButton(_ identifier: String, in query: XCUIElementQuery) {
