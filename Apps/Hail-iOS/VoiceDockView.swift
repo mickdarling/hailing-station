@@ -117,7 +117,9 @@ struct VoiceDockView: View {
     private var moreMenu: some View {
         Menu {
             Button("Audio routes", systemImage: "speaker.wave.2") { onIntent(.audioRoutes) }
+                .accessibilityIdentifier("station.voice-dock.routes")
             Button("Listening controls", systemImage: "ear") { onIntent(.listeningControls) }
+                .accessibilityIdentifier("station.voice-dock.listening")
             if !wide, state.escape != .hidden {
                 Divider()
                 Button("Interrupt", systemImage: "xmark.octagon", role: .destructive) { onIntent(.escape) }
@@ -146,7 +148,7 @@ struct VoiceDockView: View {
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(title)
-                .frame(minWidth: target, minHeight: target)
+            .frame(minWidth: target, minHeight: target)
         }
     }
 }

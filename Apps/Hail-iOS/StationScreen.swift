@@ -108,7 +108,7 @@ struct StationScreen: View {
         HStack(spacing: 0) {
             StationScreenHeader(destination: root.screenDestination, availability: root.stationAvailability,
                                 showingDestinations: root.$showingDestinations, browser: { root.destinationBrowser })
-            if root.chatThread != nil {
+            if root.chatThread != nil || root.navigation.fullConversation {
                 StationExpandToggle(expanded: Binding(get: { root.navigation.fullConversation }, set: { expanded in
                     if expanded != root.navigation.fullConversation { root.navigation.apply(.toggleFullConversation) }
                 }))
@@ -118,22 +118,9 @@ struct StationScreen: View {
     }
 
     private var pane: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if showRecovery {
-                Button("Review recovery options", systemImage: "exclamationmark.triangle") { sheet = .recovery }
-                    .buttonStyle(.bordered)
-                    .accessibilityIdentifier("station.review-recovery")
-            }
-            root.chatSurface
-                .frame(minHeight: root.chatThread != nil ? 140 : nil)
-            if root.destination == nil { root.conversationSurface }
-            if listeningDetails || root.destination == nil {
-                root.stationTools
-                StationBuildFooter().stationRemovedWhileHidden()
-            }
+        StationConversationPane(root: root, showsTools: listeningDetails, showsRecovery: showRecovery) {
+            sheet = .recovery
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 8)
     }
 
     private var showRecovery: Bool {

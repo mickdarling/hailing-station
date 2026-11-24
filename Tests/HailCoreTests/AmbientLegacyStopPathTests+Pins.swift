@@ -13,6 +13,7 @@ extension AmbientLegacyStopPathTests {
     ]
 
     // The keys pin the entire controller file set, including files with no stop names.
+    // The Station dock’s Interrupt calls the talk owner’s existing startInterrupt, never an ambient stop.
     static let controllerCounts: [String: [String: Int]] = [
         "Apps/Hail-iOS/AudioDiagnosticsView.swift": ["cancelForDiagnosticsDismissal": 1],
         // Listening settings page: reads the ambient controller only, no stop (#1115).

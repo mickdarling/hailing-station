@@ -24,6 +24,11 @@ final class ShellWindowStationScreenTests: XCTestCase, ShellWindowUITestSupport 
         activate(rail)
         XCTAssertTrue(element("station.rail.detail", in: app).waitForNonExistence(timeout: 5))
 
+        // The fixture advertises no privacy capability; this button opens the owner's details.
+        activate(element("station.voice-dock.privacy", in: app))
+        XCTAssertTrue(element("station.rail.detail", in: app).waitForExistence(timeout: 5))
+        activate(rail)
+
         activate(element("station.voice-dock.paste", in: app))
         XCTAssertTrue(element("station.paste", in: app).waitForExistence(timeout: 5))
         activateButton("Done", in: app.buttons)
@@ -31,9 +36,12 @@ final class ShellWindowStationScreenTests: XCTestCase, ShellWindowUITestSupport 
         activate(element("station.chat-expand", in: app))
         activate(element("station.chat-expand", in: app))
         activate(element("station.voice-dock.more", in: app))
-        activate(app.descendants(matching: .any).matching(identifier: "Audio routes").firstMatch)
+        activate(element("station.voice-dock.routes", in: app))
         XCTAssertTrue(element("settings.audio.overview", in: app).waitForExistence(timeout: 5))
         activateButton("Done", in: app.buttons)
+        activate(element("station.voice-dock.more", in: app))
+        activate(element("station.voice-dock.listening", in: app))
+        XCTAssertTrue(element("station.rail.detail", in: app).waitForExistence(timeout: 5))
     }
 
     @MainActor
@@ -62,7 +70,7 @@ final class ShellWindowStationScreenTests: XCTestCase, ShellWindowUITestSupport 
         let app = seeded("held")
         confirmFixtureDestination(in: app)
         XCTAssertTrue(app.buttons["Resume"].firstMatch.waitForExistence(timeout: 8))
-        captureBoth("held", marker: "station.chat", in: app)
+        captureBoth("held", marker: "station.playback-held", in: app)
     }
 
     @MainActor
