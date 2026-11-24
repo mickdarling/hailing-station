@@ -109,10 +109,10 @@ struct HeldSocketSend: Sendable {
 }
 
 /// A selection round trip completes through the ordinary receive loop.
-private actor AnsweringSocket: WebSocketTransport {
+actor AnsweringSocket: WebSocketTransport {
     let base: ScriptedSocket
     private var audioError: (any Error)?
-    let gate: HeldSocketSend?
+    private var gate: HeldSocketSend?
 
     init(base: ScriptedSocket, audioError: (any Error)?, gate: HeldSocketSend?) {
         self.base = base
@@ -122,13 +122,15 @@ private actor AnsweringSocket: WebSocketTransport {
 
     func send(_ data: Data) async throws {
         let payload = try FrameCoding.decode(data).payload
-        if case .audio = payload, let audioError {
-            self.audioError = nil
+        if case .audio = payload {
+            let failure = audioError
+            audioError = nil
             if let gate {
+                self.gate = nil
                 await gate.started.release()
                 await gate.completion.wait()
             }
-            throw audioError
+            if let failure { throw failure }
         }
         await base.send(data)
         if case .control(.ping(let nonce)) = payload {

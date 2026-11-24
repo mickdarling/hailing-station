@@ -59,9 +59,3 @@ struct AmbientMovedAwayView: View {
     let listenHere: () -> Void
     var body: some View { EmptyView() }
 }
-
-struct StationMenuListeningPublisher: ViewModifier {
-    let controller: AmbientListeningController
-    let binding: AmbientAudioBinding
-    func body(content: Content) -> some View { content }
-}

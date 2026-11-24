@@ -13,12 +13,6 @@ enum StationPlatform {
     static func keepaliveRenderer() -> any BackgroundKeepaliveRendering { FakeKeepaliveRenderer() }
 }
 
-struct StationMenuStatusPublisher: ViewModifier {
-    let connections: HostConnectionStore
-    let destination: String?
-    func body(content: Content) -> some View { content }
-}
-
 struct ReplySegmentNotices: ViewModifier {
     let connections: HostConnectionStore
     @Binding var banners: AnnouncementBanners

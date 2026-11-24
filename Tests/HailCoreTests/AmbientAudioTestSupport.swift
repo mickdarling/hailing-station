@@ -12,6 +12,8 @@ final class FakeAudioCapture: AudioCapturing {
     private(set) var startCount = 0
     private(set) var stopCount = 0
 
+    var isRunning: Bool { continuation != nil }
+
     func start() throws -> AsyncStream<AudioCaptureBuffer> {
         guard continuation == nil else { throw AudioCaptureError.alreadyRunning }
         admission = AudioCaptureAdmission.current
