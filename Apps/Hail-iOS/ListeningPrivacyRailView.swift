@@ -74,7 +74,10 @@ struct ListeningPrivacyRailView: View {
     }
 
     private var tone: (ink: Color, fill: Color) {
-        switch state.tone {
+        if state.kind == .recording, listeningDevice != nil {
+            return (palette[.textPrimary], palette[.surface])
+        }
+        return switch state.tone {
         case .alert: (palette[.stateLive], palette[.alertSurface])
         case .private: (palette[.statePrivate], palette[.privateSurface])
         case .neutral: (palette[.textSecondary], palette[.surface])

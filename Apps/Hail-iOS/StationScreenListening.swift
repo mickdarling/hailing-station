@@ -37,6 +37,11 @@ extension RootView {
                 if details.wrappedValue {
                     Text(state.detail).font(.callout).accessibilityIdentifier("station.rail.detail")
                 }
+                if case .status(let privacy) = host.privacy, privacy.pending {
+                    Label("Privacy is not confirmed yet. Waiting for the Mac.", systemImage: "clock")
+                        .font(.callout)
+                        .accessibilityIdentifier("station.rail.privacy-pending")
+                }
                 if let failure = privacySettingsRequest.failure { Text(failure).font(.callout) }
                 if listeningAtDestination, let id = destination?.hostID, let media = connections.mediaMode[id] {
                     MediaModeStatusView(status: media)
@@ -69,7 +74,7 @@ extension RootView {
 
     var hasListeningRecovery: Bool {
         let reconnect = connections.ambientController?.reconnect
-        return reconnect?.isPending == true || reconnect?.notice != nil
+        return reconnect?.isPending == true || reconnect?.notice.map { $0.outcome != .applied } == true
     }
 
     func recoveryState(at date: Date, turn: TurnOutcome?) -> RecoverySheetState {
