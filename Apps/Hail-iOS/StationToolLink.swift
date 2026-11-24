@@ -1,6 +1,10 @@
 import HailCore
 import SwiftUI
 
+enum ShellTool: Hashable, Sendable {
+    case setup, listening, audio, privacy, voices, notifications, targets, advanced, labs, turnTaking
+}
+
 /// A link from the station to one of its tools (#1115).
 ///
 /// Today it pushes the tool onto the station's stack, as before. In the redesign's navigation shell the station stays
@@ -34,6 +38,11 @@ final class StationSectionOpener {
 }
 
 extension EnvironmentValues {
+    #if os(macOS)
+    /// The Mac detail stack's path. Tool rows append to it on a single click.
+    @Entry var shellDetailPath: Binding<[ShellTool]> = .constant([])
+    #endif
+
     /// Set only by the navigation shell, for the station page. Nil everywhere else, so links push as they always have.
     var stationSectionOpener: StationSectionOpener? {
         get { self[StationSectionOpenerKey.self] }

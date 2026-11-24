@@ -97,15 +97,11 @@ extension StationRootView {
     }
 }
 
-private enum ShellTool: Hashable {
-    case setup, listening, audio, privacy, voices, notifications, targets, advanced, labs, turnTaking
-}
-
 private struct ShellToolList<Destination: View>: View {
     let section: StationSection
     @ViewBuilder let destination: (ShellTool) -> Destination
     #if os(macOS)
-    @State private var selected: ShellTool?
+    @Environment(\.shellDetailPath) private var path
     #endif
 
     var body: some View {
@@ -127,7 +123,7 @@ private struct ShellToolList<Destination: View>: View {
         }
         .navigationTitle(section.title)
         #if os(macOS)
-        .navigationDestination(item: $selected, destination: destination)
+        .navigationDestination(for: ShellTool.self, destination: destination)
         #endif
     }
 
@@ -136,7 +132,7 @@ private struct ShellToolList<Destination: View>: View {
         -> some View {
         let label = Label(title, systemImage: symbol)
         #if os(macOS)
-        Button { selected = tool } label: {
+        Button { path.wrappedValue.append(tool) } label: {
             label.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
         }
         .buttonStyle(.plain)

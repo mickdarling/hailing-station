@@ -6,8 +6,7 @@ import UIKit
 import AppKit
 #endif
 
-/// Keeps capture mounted while navigating (#1115). The Mac station lives in the persistent detail column.
-/// On iOS the detail itself can disappear (compact iPad Back), so the station tracks a slot from outside it.
+/// Keeps capture mounted in the Mac detail column or over the iOS detail slot, which can disappear on compact iPad.
 struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     let state: StationNavigationState
     let idiom: StationNavigationIdiom
@@ -19,6 +18,7 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     private var isCollapsed: Bool { sizeClass == .compact }
     #else
+    @State private var detailPath: [ShellTool] = []
     private var isCollapsed: Bool { false }
     #endif
 
@@ -113,16 +113,18 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
                         .stationAccessibilityScope()
                         .environment(\.stationAccessibilityHidden, hidden)
                         .stationCollapsed(hidden)
-                        .onChange(of: hidden) {
-                            NSAccessibility.post(element: NSApp as Any, notification: .layoutChanged)
-                        }
                     if hidden {
-                        NavigationStack { detail(state.section) }.id(state.section)
+                        NavigationStack(path: $detailPath) { detail(state.section).id(state.section) }
+                            .environment(\.shellDetailPath, $detailPath)
                     }
                 }
                 .frame(width: viewport.size.width, height: viewport.size.height)
             }
             dock(state.section).fixedSize(horizontal: false, vertical: true)
+        }
+        .onChange(of: state.section) {
+            detailPath.removeAll() // A pushed tool belongs to the section that opened it.
+            NSAccessibility.post(element: NSApp as Any, notification: .layoutChanged)
         }
     }
     #else
@@ -180,10 +182,8 @@ private extension StationNavigationShell {
     }
 }
 
-/// Where the station page is drawn: the station slot's bounds, or nothing while no slot is shown.
 private struct StationSlotKey: PreferenceKey {
     static let defaultValue: Anchor<CGRect>? = nil
-
     static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
         value = value ?? nextValue()
     }
