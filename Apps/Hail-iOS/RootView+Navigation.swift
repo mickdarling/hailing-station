@@ -43,7 +43,7 @@ extension StationRootView {
                 dock: { _ in EmptyView() }
             )
         } else {
-            NavigationStack { content }
+            NavigationStack { content.modifier(ClassicTranscriptSizing()) }
         }
     }
 
@@ -122,6 +122,29 @@ extension StationRootView {
             }
         }
         .navigationTitle(StationSection.settings.title)
+    }
+}
+
+struct ClassicTranscriptSize {
+    let preference: ConversationTextSize
+    let bodyScale: CGFloat
+    func font(_ design: Font.Design = .default) -> Font {
+        .system(size: preference.pointSize(bodyScale: bodyScale), design: design)
+    }
+}
+
+extension Text {
+    func classicTranscriptFont(_ size: ClassicTranscriptSize?) -> Text { size.map { font($0.font()) } ?? self }
+}
+
+/// Read system body scaling outside the station's local density adjustment.
+struct ClassicTranscriptSizing: ViewModifier {
+    @Environment(ConversationAppearancePreferences.self) private var appearance: ConversationAppearancePreferences?
+    @ScaledMetric(relativeTo: .body) private var bodyScale: CGFloat = 1
+
+    func body(content: Content) -> some View {
+        let size = appearance.map { ClassicTranscriptSize(preference: $0.state, bodyScale: bodyScale) }
+        content.environment(\.classicTranscriptSize, size)
     }
 }
 

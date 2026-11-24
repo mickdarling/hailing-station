@@ -5,6 +5,12 @@ import SwiftUI
 struct AppearanceSettingsView: View {
     @Environment(ConversationAppearancePreferences.self) private var appearance
     @ScaledMetric(relativeTo: .body) private var bodyScale: CGFloat = 1
+    private var previewOnly: Bool {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-appearance-preview") { return true }
+        #endif
+        return StationRedesignLaunch.flags.isOn(.shell)
+    }
 
     var body: some View {
         ScrollView {
@@ -60,10 +66,12 @@ struct AppearanceSettingsView: View {
                     }
                 }
                 ConversationTextSizeActions(state: appearance.state, onIntent: appearance.apply)
-                Text("Preview preference. Live conversation text sizing is not available yet.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if previewOnly {
+                    Text("Preview preference. Live conversation text sizing is not available yet.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -139,6 +147,7 @@ private struct AppearancePresentationKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
+    @Entry var classicTranscriptSize: ClassicTranscriptSize?
     var appearanceSettingsPresented: Binding<Bool> {
         get { self[AppearancePresentationKey.self] }
         set { self[AppearancePresentationKey.self] = newValue }
