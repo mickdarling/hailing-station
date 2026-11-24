@@ -150,10 +150,13 @@ struct StationScreen: View {
 
     @ViewBuilder private var dock: some View {
         if let destination = root.destination {
+            let shownHost = root.connections.snapshots[destination.hostID]
             root.stationTranscription(for: destination).renderingDock { owner in
                 AnyView(StationTalkDock(owner: owner, destination: root.screenDestination,
                     onPrivacy: {
-                        if let intent = root.stationPrivacyIntent() {
+                        if let intent = root.stationPrivacyIntent(),
+                           case .privacy(_, let host, let generation) = intent,
+                           host == shownHost?.id, generation == shownHost?.connectionGeneration {
                             root.performPrivacySettings(intent)
                         } else { listeningDetails = true }
                     }, onListening: { listeningDetails = true }, onRoutes: { sheet = .routes }))

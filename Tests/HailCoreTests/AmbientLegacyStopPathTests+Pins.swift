@@ -33,6 +33,7 @@ extension AmbientLegacyStopPathTests {
             "socketBindingLost": 3, "systemCaptureEnded": 1, "targetLoss": 1, "veto": 2
         ],
         "Sources/HailCore/AmbientRestorePresentation.swift": [:],
+        "Sources/HailCore/RailHost+Station.swift": [:],
         stateFile: [
             "bindingLoss": 1, "captureStartFailed": 1,
             "diagnosticsDismissed": 1, "encodingFailed": 2, "hostRefused": 2, "leftForeground": 1, "legacy": 9,

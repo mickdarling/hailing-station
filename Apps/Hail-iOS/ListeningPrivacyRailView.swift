@@ -55,6 +55,7 @@ struct ListeningPrivacyRailView: View {
     }
 
     private var summary: String {
+        if state.kind == .off { return "Microphone off" }
         if state.kind == .recording, let listeningDevice { return "Listening on this \(listeningDevice)" }
         return state.summary
     }

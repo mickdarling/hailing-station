@@ -6,24 +6,15 @@ extension RootView {
         connections.ambientController.map(StationMenuListeningPublisher.phase) ?? .off
     }
 
+    // A newly selected host cannot describe or change another stream still draining.
+    private var listeningAtDestination: Bool {
+        guard let active = connections.ambientController?.binding else { return false }
+        return active == ambientDestinationBinding && listeningPhase == .listening
+    }
+
     private func railHost(at date: Date) -> RailHost {
-        let controller = connections.ambientController
-        let reconnect = controller?.reconnect
-        var connection: RailConnection?
-        if reconnect?.isPending == true {
-            connection = .reconnecting
-        } else if let notice = reconnect?.notice, notice.outcome != .applied {
-            connection = .stopped(reason: notice.text)
-        } else if let reason = controller?.stopReason {
-            connection = .stopped(reason: reason)
-        }
-        let privacy: RailPrivacy? = destination.map {
-            connections.canSetPrivacy($0.hostID)
-                ? .status(connections.privacySwitch($0.hostID, listening: listeningPhase == .listening, now: date))
-                : .unsupported
-        }
-        return RailHost(privacy: privacy, handoff: controller?.handoff, availability: stationAvailability,
-                        connection: connection)
+        RailHost(store: connections, confirmedHost: destination?.hostID, binding: ambientDestinationBinding,
+                 availability: stationAvailability, now: date)
     }
 
     func stationRail(talk: TalkCapturePhase?, details: Binding<Bool>) -> some View {
@@ -47,7 +38,7 @@ extension RootView {
                     Text(state.detail).font(.callout).accessibilityIdentifier("station.rail.detail")
                 }
                 if let failure = privacySettingsRequest.failure { Text(failure).font(.callout) }
-                if listeningPhase == .listening, let id = destination?.hostID, let media = connections.mediaMode[id] {
+                if listeningAtDestination, let id = destination?.hostID, let media = connections.mediaMode[id] {
                     MediaModeStatusView(status: media)
                 }
             }
@@ -71,6 +62,7 @@ extension RootView {
     func stationPrivacyIntent(at date: Date = .now) -> PrivacySettingsIntent? {
         let state = privacySettingsState(now: date)
         guard let host = state.host, host.id == destination?.hostID,
+              !state.isListeningToHost || listeningAtDestination,
               state.canRequestPrivacy, !state.privacy.pending else { return nil }
         return .privacy(!state.privacy.isPrivate, host: host.id, generation: host.connectionGeneration)
     }
