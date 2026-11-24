@@ -51,6 +51,9 @@ public final class HostConnectionStore {
             installedAmbientController = newValue
             newValue?.reconnect.controller = newValue
             newValue?.reconnect.store = self
+            onAmbientMovedHere = newValue.map { controller in
+                { [weak controller] host, from in controller?.movedHere(from: from, host: host) }
+            }
         }
     }
 
