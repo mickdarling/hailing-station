@@ -5,6 +5,12 @@ import SwiftUI
 struct AppearanceSettingsView: View {
     @Environment(ConversationAppearancePreferences.self) private var appearance
     @ScaledMetric(relativeTo: .body) private var bodyScale: CGFloat = 1
+    private var previewOnly: Bool {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-appearance-preview") { return true }
+        #endif
+        return StationRedesignLaunch.flags.isOn(.shell)
+    }
 
     var body: some View {
         ScrollView {
@@ -60,10 +66,12 @@ struct AppearanceSettingsView: View {
                     }
                 }
                 ConversationTextSizeActions(state: appearance.state, onIntent: appearance.apply)
-                Text("Preview preference. Live conversation text sizing is not available yet.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if previewOnly {
+                    Text("Preview preference. Live conversation text sizing is not available yet.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -134,14 +142,15 @@ struct AppearanceSettingsEntry<Tools: View>: View {
     }
 }
 
-private struct AppearancePresentationKey: EnvironmentKey {
-    static var defaultValue: Binding<Bool> { .constant(false) }
+extension EnvironmentValues {
+    @Entry var appearanceSettingsPresented: Binding<Bool> = .constant(false)
+    @Entry var classicTranscriptScale: CGFloat = 1
 }
 
-extension EnvironmentValues {
-    var appearanceSettingsPresented: Binding<Bool> {
-        get { self[AppearancePresentationKey.self] }
-        set { self[AppearancePresentationKey.self] = newValue }
+struct ClassicTranscriptSizing: ViewModifier {
+    @Environment(ConversationAppearancePreferences.self) private var appearance: ConversationAppearancePreferences?
+    func body(content: Content) -> some View {
+        content.environment(\.classicTranscriptScale, appearance?.state.scale ?? 1)
     }
 }
 
