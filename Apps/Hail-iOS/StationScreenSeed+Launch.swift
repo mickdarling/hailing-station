@@ -17,7 +17,8 @@ enum StationScreenSeed: String {
     }
 
     init?(arguments: [String], flags: StationRedesignFlags) {
-        guard flags.isOn(.shell), arguments.contains("-seed-navigation-shell"), arguments.contains("-reset-station-state"),
+        guard flags.isOn(.shell), arguments.contains("-seed-navigation-shell"),
+              arguments.contains("-reset-station-state"),
               let index = arguments.firstIndex(of: "-seed-station-screen"),
               arguments.indices.contains(index + 1) else { return nil }
         self.init(rawValue: arguments[index + 1])

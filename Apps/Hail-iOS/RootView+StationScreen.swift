@@ -2,30 +2,12 @@ import HailCore
 import SwiftUI
 
 extension RootView {
-    var content: some View {
-        resetStationStateForUITestingIfRequested()
-        return Group {
-            if StationRedesignLaunch.flags.isOn(.shell) {
-                redesignedStation
-            } else {
-                classicStation
-            }
-        }
-        .onAppear {
-            // Weak, and never cleared on disappear: a pushed tool screen hides this view while its heals still count,
-            // and a scene that goes without `onDisappear` leaves nothing alive here (#763 review).
-            CapturePlaybackSuppression.reportHeals(for: playback) { [weak diagnostics] in
-                Self.logHeal($0, to: diagnostics)
-            }
-            CapturePlaybackSuppression.releaseCompleted(using: playback)
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { CapturePlaybackSuppression.releaseCompleted(using: playback) }
-        }
-        // A reply arriving also drops any capture hold left with no live capture, so it never queues silently (#760).
-        .onChange(of: playback.latest?.id) { _, _ in
-            guard scenePhase == .active || connections.ambientStreaming else { return }
-            CapturePlaybackSuppression.reconcile(using: playback)
+    @ViewBuilder
+    var stationPresentation: some View {
+        if StationRedesignLaunch.flags.isOn(.shell) {
+            redesignedStation
+        } else {
+            classicStation
         }
     }
 

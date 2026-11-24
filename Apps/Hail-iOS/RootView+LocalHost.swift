@@ -27,7 +27,7 @@ extension RootView {
         persist(hosts)
         return hosts
         #else
-        saved
+        return saved
         #endif
     }
 }
