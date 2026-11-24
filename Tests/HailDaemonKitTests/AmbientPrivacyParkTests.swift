@@ -129,6 +129,9 @@ struct AmbientPrivacyParkTests {
         let rig = try await Self.privacyDropped(holdSpawn: 3)
         defer { rig.close() }
         let (again, restored) = try await rig.start()
+        #expect(await eventually {
+            rig.details("ambient_duck_device") == ["on=true device=unsupported", "on=true device=unsupported"]
+        }, "original and restored device notices settled before the second drop")
         await rig.drop(again, restored)
         #expect(rig.router.state.withLock { $0.parks.count == 2 && $0.parks[restored] != nil })
         #expect(await eventually {
