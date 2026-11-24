@@ -14,7 +14,7 @@ extension ShellWindowUITestSupport {
         #endif
     }
 
-    func launchStation(shellEnabled: Bool, arguments: [String] = []) -> XCUIApplication {
+    func launchStation(shellEnabled: Bool) -> XCUIApplication {
         #if os(macOS)
         let app = XCUIApplication(bundleIdentifier: "com.mickdarling.Hail-macOS-shell-tests")
         #else
@@ -32,7 +32,7 @@ extension ShellWindowUITestSupport {
             XCUIDevice.shared.orientation = orientation
             #endif
         }
-        app.launchArguments = (shellEnabled ? reset + ["-seed-navigation-shell"] : reset) + arguments
+        app.launchArguments = shellEnabled ? reset + ["-seed-navigation-shell"] : reset
         launchStation(app)
         if shellEnabled { XCTAssertTrue(section("station", in: app).waitForExistence(timeout: 10)) }
         #if os(macOS)
