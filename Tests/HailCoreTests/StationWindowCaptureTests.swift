@@ -73,6 +73,34 @@ struct StationWindowCaptureTests {
         }
     }
 
+    @Test func closingSameStoreReplacementStopsCaptureDuringAHeldSend() async throws {
+        try await withWindow { fixture in
+            try await fixture.holdAudioSend()
+            let firstRoot = try #require(fixture.window?.probe.root)
+            let store = firstRoot.connections
+            let controller = try #require(fixture.controller)
+            try #require(store.ambientController === controller)
+            let binding = try #require(controller.binding)
+            let probe = NativeSceneAmbientProbe(binding: binding)
+            let replacement = NativeSceneAmbientHost(resources: firstRoot.station.value, probe: probe,
+                                                      menuStatus: fixture.menu)
+            await replacement.render()
+            #expect(probe.root?.connections === store && probe.root?.ambientDestinationBinding == binding)
+            #expect(store.ambientController === controller)
+
+            fixture.closeWindow()
+            #expect(probe.stationVisibility == .visible && probe.root?.connections.ambientController === controller)
+            #expect(fixture.menu.canToggleListening && fixture.menu.listening == .listening)
+            #expect(controller.isListening && fixture.capture.isRunning && fixture.capture.startCount == 1)
+
+            replacement.finish()
+            #expect(!fixture.capture.isRunning && controller.listeningState == .stopped(.sceneDisposed))
+            #expect(store.ambientController == nil && !fixture.menu.windowOpen && fixture.menu.listening == .off)
+            await replacement.dismantle()
+            try await fixture.drain()
+        }
+    }
+
     @Test func cardAppearingAfterDisposalCannotInstallItsControllerOrCallback() async throws {
         try await withWindow { fixture in
             let store = try #require(fixture.connections)
