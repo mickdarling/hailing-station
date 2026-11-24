@@ -24,7 +24,9 @@ struct PasteRefusalHandling {
 extension TranscriptionLabView {
     var attachedPaste: PastedDraft? { pastes.attached }
 
-    var pasteControl: some View {
+    var pasteControl: some View { observingPaste(pastePanel) }
+
+    var pastePanel: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let attachedPaste {
                 attachedPasteCard(attachedPaste)
@@ -45,6 +47,10 @@ extension TranscriptionLabView {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    func observingPaste<Content: View>(_ content: Content) -> some View {
+        content
         .onChange(of: destinationID) { _, _ in
             pastes.attach(nil)
             pasteProblem = nil

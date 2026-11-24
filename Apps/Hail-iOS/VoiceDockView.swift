@@ -14,6 +14,15 @@ struct VoiceDockView: View {
     /// The owner's live caption. It shows only while `state.showsCaption`.
     let caption: String?
     let onIntent: (VoiceDockIntent) -> Void
+    var talkIdentifier = "station.voice-dock.talk"
+    @Environment(\.horizontalSizeClass) private var widthClass
+    private var wide: Bool {
+        #if os(macOS)
+        true
+        #else
+        widthClass == .regular
+        #endif
+    }
     @Environment(\.dynamicTypeSize) private var typeSize
     @ScaledMetric(relativeTo: .body) private var target: CGFloat = 44
 
@@ -66,7 +75,7 @@ struct VoiceDockView: View {
         .disabled(!state.isEnabled)
         .accessibilityValue(state.value)
         .accessibilityHint(state.hint)
-        .accessibilityIdentifier("station.voice-dock.talk")
+        .accessibilityIdentifier(talkIdentifier)
     }
 
     /// Side by side as icons, or, at accessibility sizes, stacked full width with their titles (Codex review of
@@ -76,12 +85,16 @@ struct VoiceDockView: View {
         let layout = stacked ? AnyLayout(VStackLayout(spacing: 6)) : AnyLayout(HStackLayout(spacing: 6))
         return layout {
             if state.paste != .hidden {
-                iconButton("Paste text", symbol: "doc.on.clipboard", intent: .paste, item: state.paste,
+                iconButton("Paste", symbol: "plus", intent: .paste, item: state.paste,
                            hint: "Opens pasted text for the next request.")
+            }
+            if wide, state.escape != .hidden {
+                iconButton("Interrupt", symbol: "xmark.octagon", intent: .escape, item: state.escape,
+                           hint: "Discards any recording and sends Escape to the selected target.")
             }
             if state.privacy != .hidden {
                 iconButton("Privacy", symbol: "lock", intent: .privacy, item: state.privacy,
-                           hint: "Shows the privacy switch and what it covers.")
+                           hint: "Requests a privacy change when available, or shows listening details.")
             }
             moreMenu
         }
@@ -105,9 +118,9 @@ struct VoiceDockView: View {
         Menu {
             Button("Audio routes", systemImage: "speaker.wave.2") { onIntent(.audioRoutes) }
             Button("Listening controls", systemImage: "ear") { onIntent(.listeningControls) }
-            if state.escape != .hidden {
+            if !wide, state.escape != .hidden {
                 Divider()
-                Button("Escape", systemImage: "xmark.octagon", role: .destructive) { onIntent(.escape) }
+                Button("Interrupt", systemImage: "xmark.octagon", role: .destructive) { onIntent(.escape) }
                     .disabled(state.escape != .enabled)
                     .accessibilityHint("Discards any active recording and sends Escape immediately to the target.")
             }
@@ -123,9 +136,16 @@ struct VoiceDockView: View {
         if typeSize.isAccessibilitySize {
             Label(title, systemImage: symbol)
                 .frame(maxWidth: .infinity, minHeight: target, alignment: .leading)
-        } else {
+        } else if wide {
             Label(title, systemImage: symbol)
-                .labelStyle(.iconOnly)
+                .frame(minHeight: target)
+        } else {
+            VStack(spacing: 2) {
+                Image(systemName: symbol)
+                Text(title == "More controls" ? "More" : title).font(.caption2)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(title)
                 .frame(minWidth: target, minHeight: target)
         }
     }
