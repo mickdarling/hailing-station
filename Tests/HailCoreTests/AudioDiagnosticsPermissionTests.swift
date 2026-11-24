@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import HailCore
 
@@ -18,6 +19,8 @@ import Testing
             try await model.activate()
             return AmbientAudioStreamer(capture: capture, send: send)
         }, releaseSession: { await model.deactivate() }, send: { _, _ in })
+        let (log, cleanup) = try enableDiagnostics(on: controller)
+        defer { cleanup() }
         let store = HostConnectionStore()
         store.ambientController = controller
         let host = NativeStationToolHost(
@@ -33,13 +36,26 @@ import Testing
         let disappearance = try #require(session.disappearance)
         await disappearance.value
         #expect(!controller.isOn && !controller.isListening && !model.diagnostics.isActive)
+        #expect(controller.listeningState == .stopped(.legacy(.diagnosticsDismissed)))
         await permission.resolve(granted)
         await start.value
         #expect(!controller.isOn && !controller.isListening && !model.diagnostics.isActive)
+        let stops = log.nextBatch()?.events.filter { $0.name == .ambientStop }
+        #expect(stops?.map { $0.fields[.reason] } == [.token("user")])
         #expect(capture.startCount == 0)
         #expect(await backend.activationHistory == [true, false])
         await controller.turnOff()
         await model.deactivate()
+    }
+
+    private func enableDiagnostics(on controller: AmbientListeningController) throws
+        -> (DeviceDiagnostics, () -> Void) {
+        let suite = "hail-diagnostics-permission-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let log = DeviceDiagnostics(defaults: defaults, appInfo: [:])
+        log.setEnabled(true)
+        controller.diagnostics = log
+        return (log, { defaults.removePersistentDomain(forName: suite) })
     }
 
     @Test func backTransfersToolActivationToLiveCaptureUntilCaptureStops() async throws {

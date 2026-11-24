@@ -19,6 +19,10 @@ class CheckSchemaTests(unittest.TestCase):
     def test_checked_in_fixture_validates(self):
         self.assertEqual(check_schema.validate(self.good, self.schema, self.schema), [])
 
+    def test_route_snapshot_fixture_validates(self):
+        fixture = ROOT / "fixtures" / "schema" / "route-snapshot.example.json"
+        self.assertEqual(check_schema.validate(json.loads(fixture.read_text()), self.schema, self.schema), [])
+
     def test_wrong_payload_shape_for_type_is_reported(self):
         bad = dict(self.good, payload={"final": True})
         self.assertTrue(any("missing required text" in e for e in check_schema.validate(bad, self.schema, self.schema)))

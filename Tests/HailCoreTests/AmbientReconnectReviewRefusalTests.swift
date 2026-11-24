@@ -19,6 +19,7 @@ import Testing
         #expect(rig.notices.last?.outcome != .applied,
                 "Socket send success announced resumed listening before the asynchronous host moved-away refusal")
         #expect(rig.notices.last?.reason == .movedAway)
+        #expect(rig.controller.listeningState == .stopped(.movedAway))
         await rig.close()
     }
 
@@ -35,6 +36,7 @@ import Testing
         clock.advance(by: .seconds(5)) // Scheduler stalls do not change an unaccepted stream's identity.
         try await rig.socket.push(.error(code: .notAllowed, message: "ambient moved to pad"))
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(.movedAway))
         #expect(rig.controller.handoff == .movedAway(to: "pad"))
         #expect(rig.controller.reconnect.notice?.id == noticeID)
         #expect(rig.notices.map(\.id) == [noticeID, noticeID]) // One notice ID means one app haptic per drop.

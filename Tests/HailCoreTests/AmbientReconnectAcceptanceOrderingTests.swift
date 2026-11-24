@@ -21,6 +21,7 @@ import Testing
             .error(code: .notAllowed, message: moved ? "ambient moved to pad" : "ambient busy elsewhere")
         ])
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(moved ? .movedAway : .legacy(.hostRefused)))
         #expect(await wire.isHeld())
         #expect(rig.controller.reconnect.acceptance == nil)
         #expect(rig.notices.map(\.id) == [id])
@@ -62,6 +63,7 @@ import Testing
         #expect(rig.controller.reconnect.acceptance === proof) // Still no pong for the restore's own ping.
         try await wire.deliver([.error(code: .notAllowed, message: "ambient busy elsewhere")])
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.hostRefused)))
         #expect(rig.notices.map(\.id) == [id])
         #expect(rig.notices.last?.outcome == .applied && !rig.controller.reconnect.replacedAppliedNotice)
         #expect(rig.unexpected.count == 1 && rig.unexpected[0].contains("ambient busy elsewhere"))
@@ -87,6 +89,7 @@ import Testing
             .pong(nonce: otherNonce), .error(code: .notAllowed, message: "ambient busy elsewhere")
         ])
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.hostRefused)))
         #expect(rig.notices.map(\.id) == [id, id])
         #expect(rig.notices.last?.outcome == .failed && rig.controller.reconnect.replacedAppliedNotice)
         #expect(rig.unexpected.isEmpty)
@@ -119,6 +122,7 @@ import Testing
             .pong(nonce: retired.nonce), .error(code: .notAllowed, message: "ambient busy elsewhere")
         ])
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.hostRefused)))
         #expect(rig.notices.map(\.outcome) == [.applied, .applied, .failed])
         #expect(rig.notices.last?.id == id && rig.controller.reconnect.replacedAppliedNotice)
         #expect(rig.unexpected.isEmpty)
@@ -137,6 +141,7 @@ import Testing
         await wire.refuseAudio()
         try await rig.feed()
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.hostRefused)))
         #expect(rig.notices.map(\.id) == [id, id])
         #expect(rig.notices.last?.outcome == .failed && rig.controller.reconnect.replacedAppliedNotice)
         #expect(rig.unexpected.isEmpty)

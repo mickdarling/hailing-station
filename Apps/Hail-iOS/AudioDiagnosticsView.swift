@@ -190,7 +190,7 @@ final class AudioDiagnosticsSession {
             // tool's activation, so either a later grant or denial cannot leave idle audio behind.
             if let controller = ambientController(), controller.isOn,
                !controller.isListening, controller.pausedReason == nil {
-                await controller.turnOff()
+                await controller.cancelForDiagnosticsDismissal()
             }
             ownsActivation = false
             guard ambientController()?.isOn != true else { return }

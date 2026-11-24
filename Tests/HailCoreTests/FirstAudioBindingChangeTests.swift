@@ -23,6 +23,7 @@ import Testing
 
         try await stopAmbient(harness, ready: ready, reply: reply, cardDisappears: cardDisappears)
         #expect(!harness.ambient.isOn && !harness.store.ambientStreaming)
+        #expect(harness.ambient.listeningState == .stopped(.legacy(.socketBindingLost)))
         #expect(harness.capture.stopCount > 0)
         #expect(harness.released == 1)
         #expect(harness.stops.count == 1 && harness.stops.first == harness.ambient.stopReason)
