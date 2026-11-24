@@ -23,6 +23,13 @@ typealias ConversationDestinationID = StationConversationDestinationID
 typealias TranscriptionLabView = StationTranscriptionView
 #endif
 
+struct StationDockControls {
+    let destination: DestinationControlState
+    let privacy: () -> Void
+    let listening: () -> Void
+    let routes: () -> Void
+}
+
 struct StationTranscriptionView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
     let destinationLabel: String?
@@ -126,11 +133,12 @@ struct StationTranscriptionView: View {
     }
 
     /// Presentation only. The same installed owner supplies capture, paste and lifecycle callbacks in either layout.
-    var dock: ((StationTranscriptionView) -> AnyView)?
+    var dock: StationDockControls?
+    @State var showingDockPaste = false
 
     var body: some View {
         Group {
-            if let dock { dock(self) } else { card }
+            if let dock { stationDock(dock) } else { card }
         }
         .navigationTitle("Conversation")
         .onAppear { restorePlaybackAfterForcedTeardown() }

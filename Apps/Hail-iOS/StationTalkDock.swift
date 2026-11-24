@@ -15,75 +15,69 @@ struct StationTalkReportKey: PreferenceKey {
 }
 
 extension TranscriptionLabView {
-    func renderingDock(_ render: @escaping (TranscriptionLabView) -> AnyView) -> Self {
+    func renderingDock(_ controls: StationDockControls) -> Self {
         var view = self
-        view.dock = render
+        view.dock = controls
         return view
     }
-}
 
-/// Holds only the paste sheet's presentation. All work, including a refusal while the sheet is closed,
-/// belongs to the same transcription view that supplied the original station card.
-struct StationTalkDock: View {
-    let owner: TranscriptionLabView
-    let destination: DestinationControlState
-    let onPrivacy: () -> Void
-    let onListening: () -> Void
-    let onRoutes: () -> Void
-    @State private var showingPaste = false
-
-    private var phase: TalkCapturePhase {
-        .init(starting: owner.isStarting, recording: owner.isRecording,
-              finishing: owner.isFinalizing || owner.finishTask != nil)
-    }
-
-    private var state: VoiceDockState {
-        .resolve(talk: TalkActivity(phase: phase, sendPending: owner.pendingSendID != nil,
-                                    interrupting: owner.isInterrupting || owner.interruptTask != nil),
-                 destination: destination, accessories: DockAccessories(
-                    escape: owner.onEscape != nil, privacy: true,
-                    paste: owner.attachedPaste != nil || (owner.pasteOffer.accepts && owner.onFinalized != nil)))
-    }
-
-    var body: some View {
-        owner.observingPaste(
-            VStack(alignment: .leading, spacing: 0) {
-                if let problem = owner.pasteProblem {
-                    Text(problem).font(.callout).padding(.horizontal)
-                } else if owner.attachedPaste != nil {
-                    Button("Pasted text attached") { showingPaste = true }.padding(.horizontal)
+    func stationDock(_ controls: StationDockControls) -> some View {
+        let phase = TalkCapturePhase(starting: isStarting, recording: isRecording,
+                                     finishing: isFinalizing || finishTask != nil)
+        let state = VoiceDockState.resolve(
+            talk: TalkActivity(phase: phase, sendPending: pendingSendID != nil,
+                               interrupting: isInterrupting || interruptTask != nil),
+            destination: controls.destination, accessories: DockAccessories(
+                escape: onEscape != nil, privacy: true,
+                paste: attachedPaste != nil || (pasteOffer.accepts && onFinalized != nil)))
+        return observingPaste(StationTalkDock(
+            state: state, caption: transcript, pasteProblem: pasteProblem, hasPaste: attachedPaste != nil,
+            status: { if status != "Ready" { statusRow } }, openAttachedPaste: { showingDockPaste = true },
+            onIntent: { intent in
+                switch intent {
+                case .talk, .finish:
+                    if state.primaryIntent == intent { toggleTalk() }
+                case .escape:
+                    if state.escape == .enabled, let onEscape { startInterrupt(using: onEscape) }
+                case .paste: if state.paste == .enabled { showingDockPaste = true }
+                case .privacy: controls.privacy()
+                case .listeningControls: controls.listening()
+                case .audioRoutes: controls.routes()
                 }
-                if owner.status != "Ready" { owner.statusRow }
-                VoiceDockView(state: state, caption: owner.transcript, onIntent: perform,
-                              talkIdentifier: "station.talk")
-            }
-        )
+            }))
         .preference(key: StationTalkReportKey.self, value: StationTalkReport(
-            phase: phase, turn: TurnOutcome.observed(status: owner.status,
-                                                     failure: owner.pasteRefusalHandling.deliveryFailure)))
-        .sheet(isPresented: $showingPaste) {
+            phase: phase, turn: TurnOutcome.observed(status: status, failure: pasteRefusalHandling.deliveryFailure)))
+        .sheet(isPresented: $showingDockPaste) {
             NavigationStack {
-                ScrollView { owner.pastePanel.padding() }
+                ScrollView { pastePanel.padding() }
                     .navigationTitle("Paste")
-                    .toolbar { Button("Done") { showingPaste = false } }
+                    .toolbar { Button("Done") { showingDockPaste = false } }
             }
             .frame(minWidth: 260, minHeight: 180)
             .presentationDetents([.medium, .large])
         }
-        .onChange(of: owner.destinationID) { showingPaste = false }
+        .onChange(of: destinationID) { showingDockPaste = false }
     }
+}
 
-    private func perform(_ intent: VoiceDockIntent) {
-        switch intent {
-        case .talk, .finish:
-            if state.primaryIntent == intent { owner.toggleTalk() }
-        case .escape:
-            if state.escape == .enabled, let action = owner.onEscape { owner.startInterrupt(using: action) }
-        case .paste:
-            if state.paste == .enabled { showingPaste = true }
-        case .privacy: onPrivacy()
-        case .listeningControls: onListening()
-        case .audioRoutes: onRoutes()
+struct StationTalkDock<Status: View>: View {
+    let state: VoiceDockState
+    let caption: String
+    let pasteProblem: String?
+    let hasPaste: Bool
+    @ViewBuilder let status: () -> Status
+    let openAttachedPaste: () -> Void
+    let onIntent: (VoiceDockIntent) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let pasteProblem {
+                Text(pasteProblem).font(.callout).padding(.horizontal)
+            } else if hasPaste {
+                Button("Pasted text attached", action: openAttachedPaste).padding(.horizontal)
+            }
+            status()
+            VoiceDockView(state: state, caption: caption, onIntent: onIntent, talkIdentifier: "station.talk")
         }
     }
 }
