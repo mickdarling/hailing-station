@@ -397,7 +397,7 @@ extension RightyoAmbientPipeline {
         admit(pcm, byteCount: pcm.count, sequence: sequence)
     }
 
-    /// Accounts for a withheld segment and its would-be silence prefix without enqueueing either.
+    /// Accounts for a withheld segment, enqueueing only the silence for a preceding gap.
     /// As with send, suppression succeeds without advancing and writer refusal returns false.
     func withhold(sequence: Int, byteCount: Int) -> Bool {
         admit(nil, byteCount: byteCount, sequence: sequence).accepted
@@ -426,16 +426,15 @@ extension RightyoAmbientPipeline {
             let accepted = if let pcm {
                 child.input.write(pcm, leadingSilenceBytes: prefix)
             } else {
-                child.input.acceptsWithheld(byteCount: byteCount, leadingSilenceBytes: prefix)
+                child.input.withhold(byteCount: byteCount, leadingSilenceBytes: prefix)
             }
             guard accepted else { return ((false, nil), nil) }
             progress.first = progress.first ?? now
             let chargedBytes = Int128(byteCount) + Int128(prefix)
             progress.writtenDuration += .nanoseconds(chargedBytes * 31_250)
             progress.last = max(progress.last ?? sequence, sequence)
-            let enqueuedGap = pcm == nil ? nil : gap
-            let detail = gapLog.record(enqueuedGap, at: now)
-            return ((true, enqueuedGap.flatMap { $0.bytes > 0 ? $0 : nil }), detail)
+            let detail = gapLog.record(gap, at: now)
+            return ((true, gap.flatMap { $0.bytes > 0 ? $0 : nil }), detail)
         }
     }
 

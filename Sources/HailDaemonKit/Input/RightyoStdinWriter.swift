@@ -34,22 +34,20 @@ final class RightyoStdinWriter: Sendable {
             return (state.streamBytesWritten + pending) / 2
         }
     }
-    private func validSize(byteCount: Int, leadingSilenceBytes: Int) -> Bool {
-        byteCount > 0 && byteCount.isMultiple(of: 2) && byteCount <= timing.backlogBytes
-            && (0...AmbientGapFill.maxBytes).contains(leadingSilenceBytes)
-            && leadingSilenceBytes.isMultiple(of: AmbientGapFill.chunkBytes)
-    }
-    func acceptsWithheld(byteCount: Int, leadingSilenceBytes: Int) -> Bool {
-        validSize(byteCount: byteCount, leadingSilenceBytes: leadingSilenceBytes) && state.withLock { $0.acceptsInput }
+    func withhold(byteCount: Int, leadingSilenceBytes: Int) -> Bool {
+        enqueue(Data(), byteCount: byteCount, leadingSilenceBytes: leadingSilenceBytes)
     }
     func write(_ pcm: Data, leadingSilenceBytes: Int = 0) -> Bool {
-        guard validSize(byteCount: pcm.count, leadingSilenceBytes: leadingSilenceBytes) else { return false }
-        // One queue item: silence cannot be reordered or evicted separately from its following PCM.
-        var chunk = pcm
-        if leadingSilenceBytes > 0 {
-            chunk = Data(repeating: 0, count: leadingSilenceBytes)
-            chunk.append(pcm)
-        }
+        enqueue(pcm, byteCount: pcm.count, leadingSilenceBytes: leadingSilenceBytes)
+    }
+
+    private func enqueue(_ pcm: Data, byteCount: Int, leadingSilenceBytes: Int) -> Bool {
+        guard byteCount > 0, byteCount.isMultiple(of: 2), byteCount <= timing.backlogBytes,
+              (0...AmbientGapFill.maxBytes).contains(leadingSilenceBytes),
+              leadingSilenceBytes.isMultiple(of: AmbientGapFill.chunkBytes) else { return false }
+        // One queue item keeps the silence and any following PCM together through eviction and drain.
+        let chunk = leadingSilenceBytes == 0 ? pcm : Data(repeating: 0, count: leadingSilenceBytes) + pcm
+        guard !chunk.isEmpty else { return state.withLock { $0.acceptsInput } }
         let (accepted, start) = state.withLock { state -> (Bool, Bool) in
             guard state.acceptsInput else { return (false, false) }
             state.queue.append(.init(data: chunk, at: DispatchTime.now().uptimeNanoseconds,

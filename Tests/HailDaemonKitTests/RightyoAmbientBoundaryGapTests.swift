@@ -46,6 +46,26 @@ import Testing
         #expect(heard == AmbientGapFillRig.joined(first, AmbientGapFillRig.silence(1), next))
     }
 
+    @Test func withheldFragmentPreservesPrecedingHoleSilence() async throws {
+        let first = AmbientGapFillRig.chunk(0), next = AmbientGapFillRig.chunk(3)
+        func captureHole(withhold: Bool) async throws -> Data {
+            try await capture { pipeline, clock in
+                #expect(pipeline.send(audio: first, sequence: 0).accepted)
+                clock.advance(.milliseconds(300))
+                #expect(Self.submitFragment(to: pipeline, sequence: 2, withhold: withhold))
+                let result = pipeline.send(audio: next, sequence: 3)
+                #expect(result.accepted && result.gap == nil)
+            }
+        }
+        let forwarded = try await captureHole(withhold: false)
+        let prefixBytes = forwarded.count - first.count - Self.fragment.count - next.count
+        try #require(prefixBytes > 0)
+        let silence = Data(repeating: 0, count: prefixBytes)
+        #expect(forwarded == AmbientGapFillRig.joined(first, silence, Self.fragment, next))
+        let withheld = try await captureHole(withhold: true)
+        #expect(withheld == AmbientGapFillRig.joined(first, silence, next))
+    }
+
     /// Charging the fragment and its prefix leaves 199.9375 ms for the last probe, enough for one whole slice.
     @Test(arguments: [false, true])
     func suppressionAndRemainingBudgetMatchForwarding(_ withhold: Bool) async throws {
@@ -68,8 +88,8 @@ import Testing
             let probe = pipeline.send(audio: last, sequence: 7)
             #expect(probe.accepted && probe.gap?.missing == 2 && probe.gap?.bytes == 3_200)
         }
-        var expected = AmbientGapFillRig.joined(first, silence, resumed)
-        if !withhold { expected.append(silence + Self.fragment) }
+        var expected = AmbientGapFillRig.joined(first, silence, resumed, silence)
+        if !withhold { expected.append(Self.fragment) }
         expected.append(silence + last)
         #expect(heard == expected)
     }
