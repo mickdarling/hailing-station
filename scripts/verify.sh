@@ -262,8 +262,18 @@ sim() {
 mac() {
   echo "== macOS build (Hail-macOS, #266)"
   xcodegen generate --quiet
-  xcodebuild build -project HailingStation.xcodeproj -scheme Hail-macOS \
-    -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO 2>&1 | pretty
+  local args=(-project HailingStation.xcodeproj -scheme Hail-macOS
+              -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO)
+  xcodebuild build "${args[@]}" 2>&1 | pretty
+
+  local plist
+  plist=$(xcodebuild "${args[@]}" -showBuildSettings -json |
+    jq -er '.[] | select(.target == "Hail-macOS") | .buildSettings | .TARGET_BUILD_DIR + "/" + .INFOPLIST_PATH')
+  if ! plutil -convert json -o - "$plist" |
+    jq -e '.CFBundleName == "Hailing Station" and .CFBundleDisplayName == .CFBundleName' >/dev/null; then
+    echo "$plist: CFBundleName and CFBundleDisplayName must both be 'Hailing Station'" >&2
+    return 1
+  fi
 }
 
 pretty() {
