@@ -89,6 +89,7 @@ struct ReplyMetadataView: View {
     let source: String
     private let blocks: [MarkdownBlock]
     @State private var showsRaw = false
+    @Environment(\.classicTranscriptSize) private var classicSize
 
     /// `blocks` is the entry's cached parse of `source` (`ConversationEntry.metadataBlocks`).
     init(source: String, blocks: [MarkdownBlock]) {
@@ -100,7 +101,7 @@ struct ReplyMetadataView: View {
         VStack(alignment: .leading, spacing: 6) {
             if showsRaw || blocks.isEmpty {
                 Text(verbatim: source)
-                    .font(.footnote.monospaced())
+                    .font(classicSize?.font(.monospaced) ?? .footnote.monospaced())
                     .textSelection(.enabled)
             } else {
                 ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
@@ -113,7 +114,7 @@ struct ReplyMetadataView: View {
                     .buttonStyle(.borderless)
             }
         }
-        .font(.callout)
+        .font(classicSize?.font() ?? .callout)
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
@@ -124,10 +125,7 @@ struct ReplyMetadataView: View {
     private func view(_ block: MarkdownBlock) -> some View {
         switch block {
         case .heading(let level, let text):
-            Text(Self.styled(text))
-                .font(Self.headingFont(level))
-                .foregroundStyle(.primary)
-                .accessibilityAddTraits(.isHeader)
+            TranscriptHeading(level: level, text: Self.styled(text))
         case .paragraph(let text):
             Text(Self.styled(text))
         case .listItem(let depth, let marker, let text):
@@ -149,15 +147,6 @@ struct ReplyMetadataView: View {
             MarkdownTableView(table: table)
         case .rule:
             Divider()
-        }
-    }
-
-    /// Text styles, so headings scale with Dynamic Type; a level 1 heading stays below the chat's own headline size.
-    private static func headingFont(_ level: Int) -> Font {
-        switch level {
-        case 1: .headline
-        case 2: .subheadline.weight(.semibold)
-        default: .footnote.weight(.semibold)
         }
     }
 
