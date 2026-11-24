@@ -14,14 +14,15 @@ extension RootView {
 
     func stationPrivacy(at date: Date = .now) -> StationScreenPrivacy {
         StationScreenPrivacy(displayedHost: destination?.hostID, binding: ambientDestinationBinding,
-                             liveBinding: connections.ambientController?.binding, settings: privacySettingsState(now: date))
+                             liveBinding: connections.ambientController?.binding,
+                             settings: privacySettingsState(now: date))
     }
 
     func activateStationPrivacy(_ shown: StationScreenPrivacy) {
-        guard case .privacy(let on, let host, let generation) = shown.intent else { return }
-        Task { @MainActor in
-            guard stationPrivacy() == shown else { return }
-            await requestPrivacy(on, host: host, generation: generation)
+        guard let intent = shown.intent, case .privacy(_, let host, let generation) = intent else { return }
+        performPrivacySettings(intent) {
+            destination?.hostID == host && connections.snapshots[host]?.connectionGeneration == generation
+                && stationPrivacy() == shown
         }
     }
 
@@ -74,7 +75,8 @@ extension RootView {
     }
 
     func recoveryState(at date: Date, turn: TurnOutcome?) -> RecoverySheetState {
-        .resolve(availability: stationAvailability, destination: screenDestination, privacy: stationPrivacy(at: date).privacy,
-                        listening: (listeningPhase, hasListeningRecovery || listeningPhase.isOn), turn: turn)
+        .resolve(availability: stationAvailability, destination: screenDestination,
+                 privacy: stationPrivacy(at: date).privacy,
+                 listening: (listeningPhase, hasListeningRecovery || listeningPhase.isOn), turn: turn)
     }
 }

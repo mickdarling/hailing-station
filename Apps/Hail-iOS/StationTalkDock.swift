@@ -24,7 +24,8 @@ extension TranscriptionLabView {
     func stationDock(_ controls: StationDockControls) -> some View {
         let talk = dockTalk
         let accessories = DockAccessories(escape: onEscape != nil, privacy: true,
-            paste: attachedPaste != nil || (pasteOffer.accepts && onFinalized != nil), privacyEnabled: controls.privacy != nil)
+            paste: attachedPaste != nil || (pasteOffer.accepts && onFinalized != nil),
+            privacyEnabled: controls.privacy != nil)
         let state = VoiceDockState.resolve(talk: talk, destination: controls.destination(), accessories: accessories)
         return observingPaste(StationTalkDock(
             state: state, caption: transcript, pasteProblem: pasteProblem, hasPaste: attachedPaste != nil,
@@ -42,7 +43,8 @@ extension TranscriptionLabView {
                 }
             }))
         .preference(key: StationTalkReportKey.self, value: StationTalkReport(
-            phase: talk.phase, turn: TurnOutcome.observed(status: status, failure: pasteRefusalHandling.deliveryFailure)))
+            phase: talk.phase,
+            turn: TurnOutcome.observed(status: status, failure: pasteRefusalHandling.deliveryFailure)))
         .sheet(isPresented: $showingDockPaste) {
             NavigationStack {
                 ScrollView { pastePanel.padding() }

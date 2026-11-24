@@ -81,14 +81,19 @@ extension RootView {
         if let destination {
             let generation = connections.snapshots[destination.hostID]?.connectionGeneration
             let privacy = stationPrivacy()
+            let stillDisplayed = {
+                self.destination == destination && connections.snapshots[destination.hostID]?.connectionGeneration
+                    == generation
+            }
             stationTranscription(for: destination).renderingDock(StationDockControls(
-                destination: {
-                    guard self.destination?.hostID == destination.hostID, self.destination?.target.id == destination.target.id,
-                          connections.snapshots[destination.hostID]?.connectionGeneration == generation else { return .none }
-                    return screenDestination
-                }, privacy: privacy.dockEnabled ? {
-                    if privacy.intent != nil { activateStationPrivacy(privacy) }
-                    else if stationPrivacy() == privacy { showListening() }
+                destination: { stillDisplayed() ? screenDestination : .none },
+                privacy: privacy.dockEnabled ? {
+                    guard stillDisplayed() else { return }
+                    if privacy.intent != nil {
+                        activateStationPrivacy(privacy)
+                    } else if stationPrivacy() == privacy {
+                        showListening()
+                    }
                 } : nil, listening: showListening, routes: showRoutes))
         } else {
             VoiceDockView(state: .resolve(talk: TalkActivity(phase: .idle, sendPending: false, interrupting: false),
