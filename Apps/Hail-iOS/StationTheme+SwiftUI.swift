@@ -1,9 +1,16 @@
 import HailCore
 import SwiftUI
 
+private enum StationThemeKey: EnvironmentKey {
+    static let defaultValue: StationTheme? = nil
+}
+
 extension EnvironmentValues {
     /// Set only on the flag-on shell. Views shared with the original station keep their native styling outside it.
-    @Entry var stationTheme: StationTheme?
+    var stationTheme: StationTheme? {
+        get { self[StationThemeKey.self] }
+        set { self[StationThemeKey.self] = newValue }
+    }
 
     /// Redesign-only components can also render in an isolated SwiftUI preview.
     var stationPalette: StationPalette {
@@ -44,10 +51,11 @@ struct StationRowSurface: View {
 
 /// Shared station surfaces retain their original colours when the shell has supplied no theme.
 struct StationCanvasBackground: ViewModifier {
+    let original: Color
     @Environment(\.activeStationPalette) private var palette
 
     func body(content: Content) -> some View {
-        content.background(palette?[.surface] ?? StationPlatform.background)
+        content.background(palette?[.surface] ?? original)
     }
 }
 

@@ -6,6 +6,7 @@ import UIKit
 /// The system tab bar on its own, so the pages above it stay mounted (see `StationNavigationShell`). It shows the
 /// selection it is given and reports taps; it changes nothing itself.
 struct StationTabBar: UIViewRepresentable {
+    @Environment(\.stationPalette) private var palette
     let selection: StationSection
     let select: (StationSection) -> Void
 
@@ -23,6 +24,14 @@ struct StationTabBar: UIViewRepresentable {
     }
 
     func updateUIView(_ bar: UITabBar, context: Context) {
+        let appearance = UITabBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor = UIColor(palette[.elevatedSurface])
+        appearance.shadowColor = UIColor(palette[.separator])
+        bar.standardAppearance = appearance
+        bar.scrollEdgeAppearance = appearance
+        bar.tintColor = UIColor(palette[.brand])
+        bar.unselectedItemTintColor = UIColor(palette[.textSecondary])
         context.coordinator.select = select
         let index = StationSection.allCases.firstIndex(of: selection)
         bar.selectedItem = index.flatMap { bar.items?[$0] }

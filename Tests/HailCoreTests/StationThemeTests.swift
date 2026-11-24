@@ -1,5 +1,6 @@
 import Foundation
 import HailCore
+import SwiftUI
 import Testing
 
 @Suite("Astra station theme")
@@ -9,6 +10,17 @@ struct StationThemeTests {
         let pair = StationTheme.astra[role]
         #expect(pair.light <= 0xFFFFFF)
         #expect(pair.dark <= 0xFFFFFF)
+    }
+
+    @Test @MainActor func sharedViewsOptInAndFollowTheSuppliedTheme() throws {
+        var environment = EnvironmentValues()
+        #expect(environment.activeStationPalette == nil)
+        environment.stationTheme = StationTheme { _ in (0xFF0000, 0x0000FF) }
+        environment.colorScheme = .light
+        let light = try #require(environment.activeStationPalette)
+        #expect(light[.brand] == Color(.sRGB, red: 1, green: 0, blue: 0))
+        environment.colorScheme = .dark
+        #expect(environment.stationPalette[.brand] == Color(.sRGB, red: 0, green: 0, blue: 1))
     }
 
     @Test(arguments: [false, true])

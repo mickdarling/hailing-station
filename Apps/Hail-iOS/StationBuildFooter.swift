@@ -40,7 +40,7 @@ struct StationBuildFooter: View {
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
-            .modifier(StationCanvasBackground())
+            .modifier(StationCanvasBackground(original: StationPlatform.background))
             .accessibilityIdentifier("station.build-info")
     }
 }
