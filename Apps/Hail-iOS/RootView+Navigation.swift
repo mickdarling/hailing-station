@@ -91,6 +91,10 @@ extension RootView {
                 Label("Privacy", systemImage: "hand.raised")
             }
             .accessibilityIdentifier("station.settings.privacy")
+            NavigationLink { advancedSettingsOverview } label: {
+                Label("Advanced and diagnostics", systemImage: "gearshape")
+            }
+            .accessibilityIdentifier("settings.advanced.entry")
             NavigationLink { CaptureSafeLabsView(audioSession: audioRoutes, playback: playback) } label: {
                 Label("Labs", systemImage: "wrench.and.screwdriver")
             }
