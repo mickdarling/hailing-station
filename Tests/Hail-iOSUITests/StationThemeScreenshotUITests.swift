@@ -20,7 +20,7 @@ final class StationThemeScreenshotUITests: XCTestCase, ShellWindowUITestSupport 
         app.launchArguments = baseArguments
         try captureShellAppearances(in: app)
         app.launch()
-        _ = stationDestinationPicker(in: app)
+        _ = destinationPicker(in: app)
         XCTAssertFalse(section("devices", in: app).exists)
         #endif
     }

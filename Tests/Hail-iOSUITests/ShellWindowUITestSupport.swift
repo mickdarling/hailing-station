@@ -94,8 +94,10 @@ extension ShellWindowUITestSupport {
 
     func destinationPicker(in app: XCUIApplication) -> XCUIElement {
         let content = stationContent(in: app)
-        let picker = content.buttons["station.destination"].firstMatch
+        let buttons = content.buttons.matching(identifier: "station.destination")
+        let picker = buttons.element
         waitUntilHittable(picker)
+        XCTAssertEqual(buttons.count, 1)
         #if os(macOS)
         XCTAssertTrue(content.exists, "The destination picker belongs to the Station detail")
         let center = CGPoint(x: picker.frame.midX, y: picker.frame.midY)
@@ -132,18 +134,6 @@ extension ShellWindowUITestSupport {
 
     func waitUntilHittable(_ item: XCUIElement) {
         XCTAssertTrue(item.wait(for: \.isHittable, toEqual: true, timeout: 5), item.debugDescription)
-    }
-
-    func stationDestinationPicker(in app: XCUIApplication) -> XCUIElement {
-        let picker = app.buttons["station.destination"].firstMatch
-        waitUntilHittable(picker)
-        #if os(macOS)
-        let viewport = app.scrollViews.containing(.button, identifier: "station.destination").firstMatch
-        XCTAssertTrue(viewport.exists, "The destination picker belongs to the Station detail")
-        let center = CGPoint(x: picker.frame.midX, y: picker.frame.midY)
-        XCTAssertTrue(viewport.frame.contains(center), "The picker must be visible inside the Station scroll view")
-        #endif
-        return picker
     }
 
     func shellToggle(in app: XCUIApplication) -> XCUIElement {

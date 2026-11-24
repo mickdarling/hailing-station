@@ -56,7 +56,7 @@ final class ShellWindowStationScreenTests: XCTestCase, ShellWindowUITestSupport 
         captureBoth("recovery", marker: "recovery.chooseDestination", in: app)
         activate(element("recovery.chooseDestination", in: app))
         activateButton("Done", in: app.buttons)
-        waitUntilHittable(stationDestinationPicker(in: app))
+        waitUntilHittable(destinationPicker(in: app))
     }
 
     @MainActor
@@ -101,7 +101,7 @@ private extension ShellWindowStationScreenTests {
 
     func confirmFixtureDestination(in app: XCUIApplication) {
         choose("station", in: app)
-        activate(stationDestinationPicker(in: app))
+        activate(destinationPicker(in: app))
         activate(element("Studio Mac · Workbench", in: app))
         XCTAssertTrue(app.buttons["station.talk"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.buttons["station.talk"].isEnabled)

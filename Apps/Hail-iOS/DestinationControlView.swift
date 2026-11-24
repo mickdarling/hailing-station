@@ -30,9 +30,10 @@ struct DestinationControlView<Browser: View>: View {
             isBrowserPresented = true
         } label: {
             label
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Destination")
         .accessibilityValue(state.accessibilityValue)
         .accessibilityHint("Opens the Mac and target browser.")
@@ -58,7 +59,6 @@ struct DestinationControlView<Browser: View>: View {
                 }
                 Image(systemName: "chevron.down").font(.caption)
             }
-            .contentShape(Rectangle())
         case .toolbar:
             Label { Text(state.singleLineText).lineLimit(1) } icon: { glyph }
                 .foregroundStyle(state.talkReady ? palette[.textPrimary] : unavailableInk)

@@ -23,7 +23,6 @@ struct StationScreenHeader<Browser: View>: View {
         layout {
             DestinationControlView(state: destination, style: .toolbar, identifier: "station.destination",
                                    isBrowserPresented: $showingDestinations, browser: browser)
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             Label(availability.connectionLabel, systemImage: availability.badge.systemImage)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(palette[availability == .ready ? .brand : .textSecondary])
