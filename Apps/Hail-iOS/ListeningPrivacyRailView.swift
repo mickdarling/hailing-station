@@ -8,6 +8,7 @@ import SwiftUI
 /// The glyph is the microphone indicator itself, so a private tone never hides a live microphone's red. At ordinary
 /// text sizes the rail is at least 44 pt tall; at accessibility sizes it wraps and grows, with no truncation.
 struct ListeningPrivacyRailView: View {
+    @Environment(\.stationPalette) private var palette
     let state: ListeningPrivacyRailState
     @Binding var isDetailPresented: Bool
     @ScaledMetric(relativeTo: .body) private var minimumHeight: CGFloat = 44
@@ -20,21 +21,21 @@ struct ListeningPrivacyRailView: View {
             HStack(spacing: 10) {
                 MicLiveIndicatorView(state: state.mic)
                 Image(systemName: symbol)
-                    .foregroundStyle(tint)
+                    .foregroundStyle(tone.ink)
                     .imageScale(.medium)
                 Text(state.summary)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(state.tone == .neutral ? Color.primary : tint)
+                    .foregroundStyle(state.tone == .neutral ? palette[.textPrimary] : tone.ink)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(tone.ink)
             }
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, minHeight: minimumHeight, alignment: .leading)
-            .background(tint.opacity(state.tone == .neutral ? 0.06 : 0.12), in: .rect(cornerRadius: 12))
+            .background(tone.fill, in: .rect(cornerRadius: 12))
             .contentShape(.rect(cornerRadius: 12))
         }
         .buttonStyle(.plain)
@@ -65,11 +66,11 @@ struct ListeningPrivacyRailView: View {
         }
     }
 
-    private var tint: Color {
+    private var tone: (ink: Color, fill: Color) {
         switch state.tone {
-        case .alert: .red
-        case .private: .indigo
-        case .neutral: .secondary
+        case .alert: (palette[.stateLive], palette[.alertSurface])
+        case .private: (palette[.statePrivate], palette[.privateSurface])
+        case .neutral: (palette[.textSecondary], palette[.surface])
         }
     }
 }

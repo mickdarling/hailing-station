@@ -7,6 +7,7 @@ public struct StationTheme: Sendable {
         case sidebarSelection, onSidebarSelection
         case textPrimary, textSecondary
         case statePrivate, stateLive, stateWarning, stateOffline
+        case privateSurface, alertSurface
     }
 
     public typealias Swatch = (light: UInt32, dark: UInt32)
@@ -34,6 +35,8 @@ public struct StationTheme: Sendable {
         case .onSidebarSelection: (0x244E3C, 0xE4F5DF)
         case .textPrimary: (0x202D2C, 0xE2EBE0)
         case .textSecondary: (0x65716C, 0xA0B19F)
+        case .privateSurface: (0xF0EAFA, 0x3A3049)
+        case .alertSurface: (0xFBECE7, 0x492E2A)
         case .statePrivate: (0x70509B, 0xCFB5EF)
         case .stateLive: (0xA44336, 0xF0AA99)
         case .stateWarning, .stateOffline: (0x8F570E, 0xF0C57C)

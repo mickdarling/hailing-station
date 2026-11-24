@@ -22,6 +22,9 @@ struct StationThemeTests {
                 expectContrast(foreground, on: background, dark: dark)
             }
         }
+        expectContrast(.statePrivate, on: .privateSurface, dark: dark)
+        expectContrast(.stateLive, on: .privateSurface, dark: dark) // A live mic stays red on a private rail.
+        expectContrast(.stateLive, on: .alertSurface, dark: dark)
         expectContrast(.onSidebarSelection, on: .sidebarSelection, dark: dark)
         expectContrast(.brandOnBrand, on: .brand, dark: dark)
         expectContrast(.brandOnBrand, on: .accentTalk, dark: dark)

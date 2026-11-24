@@ -15,6 +15,7 @@ struct MicLiveIndicatorView: View {
         case row
     }
 
+    @Environment(\.stationPalette) private var palette
     let state: MicLiveState
     var style: Style = .glyph
     @ScaledMetric(relativeTo: .body) private var diameter: CGFloat = 22
@@ -27,7 +28,7 @@ struct MicLiveIndicatorView: View {
             case .row:
                 Label {
                     Text(state.label)
-                        .foregroundStyle(state.showsRed ? Color.red : Color.secondary)
+                        .foregroundStyle(palette[state.showsRed ? .stateLive : .textSecondary])
                 } icon: {
                     glyph
                 }
@@ -42,15 +43,15 @@ struct MicLiveIndicatorView: View {
         ZStack {
             switch state {
             case .live:
-                Circle().fill(Color.red)
+                Circle().fill(palette[.stateLive])
                 Image(systemName: "mic.fill")
                     .font(.system(size: diameter * 0.55, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(palette[.brandOnBrand])
             case .uncertain:
-                Circle().strokeBorder(Color.red, style: StrokeStyle(lineWidth: 2, dash: [3, 2]))
+                Circle().strokeBorder(palette[.stateLive], style: StrokeStyle(lineWidth: 2, dash: [3, 2]))
                 Image(systemName: "mic")
                     .font(.system(size: diameter * 0.55, weight: .semibold))
-                    .foregroundStyle(Color.red)
+                    .foregroundStyle(palette[.stateLive])
             case .off:
                 Color.clear
             }

@@ -16,6 +16,7 @@ struct DestinationControlView<Browser: View>: View {
         case compact
     }
 
+    @Environment(\.stationPalette) private var palette
     let state: DestinationControlState
     var style: Style = .compact
     /// Owned by the station; the control only asks for the browser to be shown.
@@ -46,31 +47,36 @@ struct DestinationControlView<Browser: View>: View {
         switch style {
         case .toolbar:
             Label { Text(state.singleLineText).lineLimit(1) } icon: { glyph }
-                .foregroundStyle(state.talkReady ? Color.primary : Color.secondary)
+                .foregroundStyle(state.talkReady ? palette[.textPrimary] : unavailableInk)
         case .compact:
             HStack(spacing: 12) {
                 glyph.font(.title3)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(state.primaryText)
                         .font(.headline)
-                        .foregroundStyle(state.talkReady ? Color.primary : Color.secondary)
+                        .foregroundStyle(state.talkReady ? palette[.textPrimary] : unavailableInk)
                     if let secondary = state.secondaryText {
                         Text(secondary)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(palette[.textSecondary])
                     }
                 }
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(palette[.textSecondary])
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(palette[.elevatedSurface], in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
+    }
+
+    private var unavailableInk: Color {
+        if case .unavailable(.offline, _) = state { return palette[.stateOffline] }
+        return palette[.textSecondary]
     }
 
     /// The scope glyph belongs to a confirmed destination only.
@@ -82,7 +88,7 @@ struct DestinationControlView<Browser: View>: View {
         case .none: "plus.circle"
         }
         return Image(systemName: symbol)
-            .foregroundStyle(state.talkReady ? Color.accentColor : Color.secondary)
+            .foregroundStyle(state.talkReady ? palette[.brand] : unavailableInk)
     }
 }
 
