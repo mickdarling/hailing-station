@@ -371,6 +371,7 @@ struct AmbientListeningCardContent: View {
         .onAppear {
             connections.ambientController = controller
             Task { await controller.update(binding: currentBinding, scene: scene) }
+            connections.onAmbientMovedHere = { [controller] host, from in controller.movedHere(from: from, host: host) }
         }
         .onAppear { echoGuard.masksDuringReplies = masksDuringReplies }
         .onChange(of: masksDuringReplies) { _, masks in echoGuard.masksDuringReplies = masks }
