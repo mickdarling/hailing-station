@@ -95,5 +95,9 @@ private extension View {
         frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
+            #if os(macOS)
+            // The plain button's label includes a Spacer. Its visible center must also accept a click.
+            .contentShape(StationRedesignLaunch.flags.isOn(.shell) ? .interaction : [], Rectangle())
+            #endif
     }
 }

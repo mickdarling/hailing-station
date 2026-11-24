@@ -13,15 +13,12 @@ final class ShellWindowUITests: XCTestCase {
     @MainActor
     func testStationControlsOpenDestinationPickerAndDevices() {
         let app = launchShell()
-        let picker = app.buttons["station.destination"].firstMatch
-        waitUntilHittable(picker)
+        let picker = destinationPicker(in: app)
         #if os(macOS)
-        let viewport = app.scrollViews.containing(.button, identifier: "station.destination").firstMatch
-        XCTAssertTrue(viewport.exists, "The destination picker belongs to the Station detail")
-        let center = CGPoint(x: picker.frame.midX, y: picker.frame.midY)
-        XCTAssertTrue(viewport.frame.contains(center), "The picker must be visible inside the Station scroll view")
-        #endif
+        picker.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        #else
         activate(picker)
+        #endif
         let prompt = "Choose a Mac, then the target"
         let instructions = app.staticTexts.matching(
             NSPredicate(format: "label BEGINSWITH %@ OR value BEGINSWITH %@", prompt, prompt)
@@ -145,7 +142,14 @@ final class ShellWindowUITests: XCTestCase {
     @MainActor
     private func toggleSidebar(in app: XCUIApplication, visibleAfter: Bool) {
         #if os(macOS)
-        activateButton("shell.sidebar.toggle", in: app.windows["station"].toolbars.buttons)
+        // AppKit exposes the toolbar item and a nested button for the same physical control.
+        let buttons = stationWindow(in: app).toolbars.buttons
+        let identifier = "shell.sidebar.toggle"
+        let toggles = buttons.matching(identifier: identifier)
+        XCTAssertTrue(toggles.firstMatch.waitForExistence(timeout: 5))
+        let controls = toggles.allElementsBoundByIndex.filter { !$0.buttons[identifier].firstMatch.exists }
+        XCTAssertEqual(controls.count, 1, "The Station toolbar must have exactly one sidebar control")
+        activateButton(identifier, in: buttons)
         #else
         activate(app.buttons["shell.sidebar.toggle"])
         #endif

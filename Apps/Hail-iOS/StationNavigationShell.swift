@@ -6,8 +6,7 @@ import UIKit
 import AppKit
 #endif
 
-/// Renders navigation state and sends intents to the station root (#1115).
-/// The capture surface stays mounted when a tool opens. On Mac it lives in the persistent detail column.
+/// Keeps capture mounted while navigating (#1115). The Mac station lives in the persistent detail column.
 /// On iOS the detail itself can disappear (compact iPad Back), so the station tracks a slot from outside it.
 struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     let state: StationNavigationState
@@ -43,8 +42,7 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
             #endif
     }
 
-    @ViewBuilder
-    private var arrangement: some View {
+    @ViewBuilder private var arrangement: some View {
         switch state.layout(for: idiom) {
         case .split(let sidebarVisible):
             split(sidebarVisible: sidebarVisible)
@@ -65,7 +63,18 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     }
 
     private func split(sidebarVisible: Bool) -> some View {
-        NavigationSplitView(columnVisibility: columnVisibility(sidebarVisible), preferredCompactColumn: compactColumn) {
+        let toggle = ToolbarItem(placement: .navigation) {
+            Button(sidebarVisible ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left") {
+                send(.setSidebarHidden(sidebarVisible))
+            }
+            .accessibilityIdentifier("shell.sidebar.toggle")
+        }
+        let column = pages
+            #if os(iOS)
+            .toolbar { if !isCollapsed { toggle } }
+            #endif
+        return NavigationSplitView(columnVisibility: columnVisibility(sidebarVisible),
+                                   preferredCompactColumn: compactColumn) {
             List(selection: sectionSelection) {
                 ForEach(StationSection.allCases) { section in
                     Label(section.title, systemImage: section.systemImage)
@@ -77,29 +86,20 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
             .navigationTitle("Hailing Station")
             .navigationSplitViewColumnWidth(min: 180, ideal: 215, max: 260)
         } detail: {
-            splitDetail(sidebarVisible: sidebarVisible)
-        }
-        .navigationSplitViewStyle(.balanced)
-    }
-
-    @ViewBuilder private func splitDetail(sidebarVisible: Bool) -> some View {
-        let column = pages.toolbar {
-            if !isCollapsed {
-                ToolbarItem(placement: .navigation) {
-                    Button(sidebarVisible ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left") {
-                        send(.setSidebarHidden(sidebarVisible))
-                    }
-                    .accessibilityIdentifier("shell.sidebar.toggle")
+            if idiom == .mac, Inspector.self == EmptyView.self {
+                column
+            } else {
+                column.inspector(isPresented: inspectorPresented) {
+                    inspector().inspectorColumnWidth(min: 240, ideal: 275, max: 340)
                 }
             }
         }
-        if idiom == .mac, Inspector.self == EmptyView.self {
-            column
-        } else {
-            column.inspector(isPresented: inspectorPresented) {
-                inspector().inspectorColumnWidth(min: 240, ideal: 275, max: 340)
-            }
-        }
+        .navigationSplitViewStyle(.balanced)
+        #if os(macOS)
+        // The window owns this item even when a pushed tool replaces the detail's navigation items.
+        .toolbar { toggle }
+        .toolbarVisibility(.visible, for: .windowToolbar)
+        #endif
     }
 
     #if os(macOS)

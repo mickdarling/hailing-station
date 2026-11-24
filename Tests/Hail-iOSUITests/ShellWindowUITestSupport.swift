@@ -39,19 +39,50 @@ extension ShellWindowUITests {
         app.launchArguments = reset + ["-seed-navigation-shell"]
         app.launch()
         XCTAssertTrue(section("station", in: app).waitForExistence(timeout: 10))
+        #if os(macOS)
+        XCTAssertEqual(app.windows.matching(identifier: "station").count, 1, "There must be one Station window")
+        #endif
         return app
     }
 
-    func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
+    func stationWindow(in app: XCUIApplication) -> XCUIElement {
+        #if os(macOS)
+        app.windows.matching(identifier: "station").firstMatch
+        #else
+        app.windows.firstMatch
+        #endif
+    }
+
+    func stationContent(in app: XCUIApplication) -> XCUIElement {
+        #if os(macOS)
+        stationWindow(in: app).scrollViews.containing(.button, identifier: "station.destination").element
+        #else
+        app
+        #endif
+    }
+
+    func destinationPicker(in app: XCUIApplication) -> XCUIElement {
+        let content = stationContent(in: app)
+        let picker = content.buttons["station.destination"].firstMatch
+        waitUntilHittable(picker)
+        #if os(macOS)
+        XCTAssertTrue(content.exists, "The destination picker belongs to the Station detail")
+        let center = CGPoint(x: picker.frame.midX, y: picker.frame.midY)
+        XCTAssertTrue(content.frame.contains(center), "The picker must be visible inside the Station scroll view")
+        #endif
+        return picker
+    }
+
+    func element(_ identifier: String, in root: XCUIElement) -> XCUIElement {
         // Some SwiftUI labels identify both the text and the decorative image.
         let predicate = NSPredicate(format: "identifier == %@ AND elementType != %@",
                                     identifier, NSNumber(value: XCUIElement.ElementType.image.rawValue))
-        return app.descendants(matching: .any).matching(predicate).firstMatch
+        return root.descendants(matching: .any).matching(predicate).firstMatch
     }
 
     func section(_ name: String, in app: XCUIApplication) -> XCUIElement {
         let prefix = device == "iphone" ? "station.tab." : "station.section."
-        return element(prefix + name, in: app)
+        return element(prefix + name, in: stationWindow(in: app))
     }
 
     func choose(_ name: String, in app: XCUIApplication) {
@@ -86,7 +117,7 @@ extension ShellWindowUITests {
     }
 
     func reveal(_ row: XCUIElement, in app: XCUIApplication) {
-        let window = app.windows.firstMatch
+        let window = stationWindow(in: app)
         for _ in 0..<6 where !row.exists || !row.isHittable {
             let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.7))
             #if os(macOS)
@@ -99,13 +130,24 @@ extension ShellWindowUITests {
     }
 
     func screen(_ identifier: String, named name: String, in app: XCUIApplication) {
+        let window = stationWindow(in: app)
+        #if os(macOS)
+        let marker = identifier == "station.connection"
+            ? stationContent(in: app).staticTexts[identifier]
+            : element(identifier, in: app)
+        #else
         let marker = element(identifier, in: app)
+        #endif
         XCTAssertTrue(marker.waitForExistence(timeout: 10), identifier)
-        let window = app.windows.firstMatch
         switch identifier {
         case "station.connection":
             waitUntilHittable(marker)
-            waitUntilHittable(app.buttons["station.destination"].firstMatch)
+            _ = destinationPicker(in: app)
+            #if os(macOS)
+            let footer = window.staticTexts["station.build-info"]
+            XCTAssertTrue(footer.exists)
+            XCTAssertFalse(footer.frame.intersects(marker.frame), "The footer must leave the connection badge exposed")
+            #endif
         case "shell.sessions.placeholder", "station.devices.mac-setup",
              "station.settings.appearance", "station.redesign.shell":
             waitUntilHittable(marker)
@@ -119,7 +161,7 @@ extension ShellWindowUITests {
     }
 
     func attachScreen(_ name: String, in app: XCUIApplication) {
-        let attachment = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
+        let attachment = XCTAttachment(screenshot: stationWindow(in: app).screenshot())
         attachment.name = "\(device)-\(name)"
         attachment.lifetime = .keepAlways
         add(attachment)
