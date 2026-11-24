@@ -507,10 +507,8 @@ extension RightyoAmbientPipeline {
         guard duck.observe(started: line, output: .init(input: child.input, control: child.control),
                            write: { [child] on in child.reportDuck(on) },
                            written: armAckDeadline) == .refused else { return }
-        guard startsPrivate || onDuckUnsupported?() ?? true else {
-            duck.release()
-            return
-        }
+        if !startsPrivate, let generation = duck.decidingGeneration, onDuckUnsupported?() == false,
+           duck.release(generation: generation) { return }
         duck.refuseStart(as: startsPrivate ? .unconfirmedStart : .unsupportedChild)
         await child.stop(eofGrace: 0, termGrace: 0)
         onVoiceDuck?(.unavailable)
@@ -1016,6 +1014,7 @@ final class AmbientDuckControl: Sendable {
         var positioned: PositionedOutput?
         var pendingOffSample: Int?, retry: UUID?
         var invalidatedWrites = 0
+        var wishGeneration = 0
         var started = false, advertised = false, wanted = false, mustConfirm = false, expired = false
         /// This child has shown it keeps privacy: a confirmed start-private `started`, or (S-8) an ack for every
         /// `{"duck":true}` written to it. Until then, while privacy is wished for, it hears no audio.
@@ -1026,8 +1025,8 @@ final class AmbientDuckControl: Sendable {
         var unacknowledged = false, ended = false
         /// The start deadline passed while privacy was not wished for (S-8 HS-C round 2): a later wish arms a fresh one.
         var startLapsed = false
-        /// A `started` that cannot keep privacy, until the pipeline refuses the child or releases it: no answer yet.
-        var deciding = false
+        /// The on wish seen by an unsupported start, until the pipeline refuses the child or releases that wish.
+        var decidingGeneration: Int?
         /// Refused and killed (any deadline, a `started` that cannot keep it, an excess ack, its bound): handled once
         /// (`announced`), by the open entry it is attributed to (`refusedAt`), or by the router's state rule (round 4).
         var refused = false, announced = false
@@ -1041,7 +1040,7 @@ final class AmbientDuckControl: Sendable {
 
         /// What `kept()` answers now: kept, never (from here on), or still to come.
         var proof: Proof {
-            if deciding { return .pending }
+            if decidingGeneration != nil { return .pending }
             if wanted, keeps, !ended, !unacknowledged, !refused { return .kept }
             if !wanted || ended || expired || unacknowledged || refused { return .never }
             // Started with no on-write waiting for an ack (refused, or the write failed): nothing will prove it.
@@ -1063,7 +1062,7 @@ final class AmbientDuckControl: Sendable {
         /// Records the refusal, attributed to the latest entry still open, if any: once that entry is closed, a refusal
         /// is a new event, said by the child itself (round 3).
         mutating func refuse(as kind: RightyoPrivacyRefusal?) {
-            (refused, refusedAs, refusedAt, deciding) = (true, kind, openEntries.max(), false)
+            (refused, refusedAs, refusedAt, decidingGeneration) = (true, kind, openEntries.max(), nil)
         }
 
         /// Refuses a child whose proof is still to come, as its own deadline would (not started: `unconfirmedStart`;
@@ -1099,11 +1098,20 @@ final class AmbientDuckControl: Sendable {
         state.withLock { admit(!$0.wanted || $0.keeps, $0.wanted) }
     }
 
-    /// The connection withdrew its wish during an unsupported start. Resume ordinary audio admission.
+    fileprivate var decidingGeneration: Int? { state.withLock { $0.decidingGeneration } }
+
+    /// Resolve the pending start synchronously in the privacy simulation.
     func release() {
+        if let decidingGeneration { _ = release(generation: decidingGeneration) }
+    }
+
+    /// Resume ordinary audio admission only for the wish the router decided against.
+    func release(generation: Int) -> Bool {
         update { state in
+            guard state.decidingGeneration == generation, state.wishGeneration == generation else { return false }
             setWish(false, in: &state)
-            state.deciding = false
+            state.decidingGeneration = nil
+            return true
         }
     }
 
@@ -1130,7 +1138,10 @@ final class AmbientDuckControl: Sendable {
                 restart: () -> Void = {}) -> Bool {
         update { state in
             let kept = state.wanted && state.keeps
-            if on { (state.pendingOffSample, state.retry) = (nil, nil) }
+            if on {
+                state.wishGeneration += 1
+                (state.pendingOffSample, state.retry) = (nil, nil)
+            }
             setWish(on, in: &state)
             guard state.started else {
                 if on, state.startLapsed {
@@ -1162,7 +1173,7 @@ final class AmbientDuckControl: Sendable {
             guard !state.started else { return .kept }
             state.started = true
             if state.mustConfirm, !confirmed {
-                (state.wanted, state.deciding) = (true, true)
+                (state.wanted, state.decidingGeneration) = (true, state.wishGeneration)
                 return .refused
             }
             state.advertised = advertised
@@ -1177,7 +1188,7 @@ final class AmbientDuckControl: Sendable {
             }
             guard state.wanted else { return .kept }
             guard advertised else {
-                state.deciding = true
+                state.decidingGeneration = state.wishGeneration
                 return .refused
             }
             if write(true) { Self.count(&state, written: written) }
@@ -1472,7 +1483,8 @@ extension AmbientDuckControl {
     func close(entry: Int, refusePending: Bool) -> AmbientPrivacyClosing {
         update { state in
             var refusedNow = false
-            if refusePending, state.proof == .pending, !state.deciding, state.openEntries.max() == entry {
+            if refusePending, state.proof == .pending, state.decidingGeneration == nil,
+               state.openEntries.max() == entry {
                 state.refuseUnproven()
                 refusedNow = true
             }
