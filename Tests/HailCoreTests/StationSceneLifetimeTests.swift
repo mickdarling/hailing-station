@@ -7,6 +7,13 @@ import Testing
 @Suite("Native station scene lifetime", .serialized)
 @MainActor
 struct StationSceneLifetimeTests {
+    init() { NativeShellLaunchContext.install() }
+
+    @Test func nativeRootUsesTheGenuineDefaultOffLaunchSnapshot() {
+        #expect(!NativeShellLaunchContext.optedIn, "Default-off fixtures run without the dedicated opt-in")
+        #expect(!StationRedesignLaunch.flags.isOn(.shell), "The actual default snapshot must stay off")
+    }
+
     @Test func discardedNativeRootInitializersDoNotConstructResources() {
         var count = 0
         for _ in 0..<17 {
