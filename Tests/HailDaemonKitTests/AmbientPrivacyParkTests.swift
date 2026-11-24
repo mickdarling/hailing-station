@@ -16,7 +16,8 @@ struct AmbientPrivacyParkTests {
         try #require(await eventually { rig.router.duckMode(connection: dropped) }, "first connection holds privacy")
         #expect(await eventually { !rig.details("ambient_duck_confirmed").isEmpty }, "privacy entry settled")
         await rig.drop(first, dropped)
-        #expect(rig.router.state.withLock { Array($0.parks.keys) } == [dropped])
+        #expect(await eventually { rig.router.state.withLock { Array($0.parks.keys) } == [dropped] },
+                "teardown parked the dropped privacy")
         return rig
     }
 
@@ -128,6 +129,9 @@ struct AmbientPrivacyParkTests {
         let rig = try await Self.privacyDropped(holdSpawn: 3)
         defer { rig.close() }
         let (again, restored) = try await rig.start()
+        #expect(await eventually {
+            rig.details("ambient_duck_device") == ["on=true device=unsupported", "on=true device=unsupported"]
+        }, "original and restored device notices settled before the second drop")
         await rig.drop(again, restored)
         #expect(rig.router.state.withLock { $0.parks.count == 2 && $0.parks[restored] != nil })
         #expect(await eventually {

@@ -130,15 +130,6 @@ final class RestoreRig: Sendable {
         return (socket, connection)
     }
 
-    /// Drops a device's connection, as a lost network does, and waits for its teardown.
-    func drop(_ socket: URLSessionWebSocketTask, _ connection: UUID) async {
-        socket.cancel(with: .goingAway, reason: nil)
-        let (listener, router) = (env.listener, router)
-        #expect(await eventually { await !Self.connections(of: listener).contains(connection) }, "restore drop marker")
-        #expect(await eventually { router.state.withLock { $0.latest[connection] == nil } },
-                "restore teardown marker")
-    }
-
     /// The connection ids of the listener's current peers, each read on its own session's actor.
     static func connections(of listener: WebSocketListener) async -> Set<UUID> {
         var ids = Set<UUID>()
