@@ -14,7 +14,8 @@ final class ShellWindowStationScreenTests: XCTestCase, ShellWindowUITestSupport 
     func testReadyStationAndItsControls() {
         let app = seeded("ready")
         confirmFixtureDestination(in: app)
-        let turn = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Turn 4.'")).firstMatch
+        let turn = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@ OR value BEGINSWITH %@",
+                                                        "Turn 4.", "Turn 4.")).firstMatch
         XCTAssertTrue(turn.waitForExistence(timeout: 8))
         captureBoth("ready", marker: "station.talk", in: app)
 
@@ -47,8 +48,11 @@ final class ShellWindowStationScreenTests: XCTestCase, ShellWindowUITestSupport 
     @MainActor
     func testOfflineAndRecovery() {
         let app = seeded("offline")
-        captureBoth("offline", marker: "station.review-recovery", in: app)
-        activate(element("station.review-recovery", in: app))
+        let recovery = element("station.review-recovery", in: app)
+        XCTAssertTrue(recovery.waitForExistence(timeout: 8))
+        captureBoth("offline", marker: "station.connection", in: app)
+        reveal(recovery, in: app)
+        activate(recovery)
         captureBoth("recovery", marker: "recovery.chooseDestination", in: app)
         activate(element("recovery.chooseDestination", in: app))
         activateButton("Done", in: app.buttons)

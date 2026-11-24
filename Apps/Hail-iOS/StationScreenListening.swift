@@ -29,9 +29,11 @@ extension RootView {
                                              listeningDevice: listeningPhase == .listening && talk == .idle
                                                 ? localDeviceTitle : nil)
                     if let intent = stationPrivacyIntent(at: context.date) {
-                        Button(privacyActionTitle(host.privacy)) { performPrivacySettings(intent) }
-                            .buttonStyle(.borderless)
-                            .accessibilityIdentifier("station.rail.privacy")
+                        Button(privacyActionTitle(host.privacy)) {
+                            if stationPrivacyIntent() == intent { performPrivacySettings(intent) }
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityIdentifier("station.rail.privacy")
                     }
                 }
                 if details.wrappedValue {
