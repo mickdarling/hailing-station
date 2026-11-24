@@ -1,4 +1,7 @@
 {
+  "Apps/Hail-iOS/RootView+Settings.swift": {
+    "case .stopListening:": 1
+  },
   "Sources/HailCore/Transport/AmbientListeningState.swift": {
     "case leftForeground, captureStartFailed, sendCancelled, encodingFailed, sendFailed": 1,
     "default: return .legacy(.sendFailed)": 1
