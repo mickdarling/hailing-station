@@ -142,15 +142,15 @@ struct AppearanceSettingsEntry<Tools: View>: View {
     }
 }
 
-private struct AppearancePresentationKey: EnvironmentKey {
-    static var defaultValue: Binding<Bool> { .constant(false) }
+extension EnvironmentValues {
+    @Entry var appearanceSettingsPresented: Binding<Bool> = .constant(false)
+    @Entry var classicTranscriptScale: CGFloat = 1
 }
 
-extension EnvironmentValues {
-    @Entry var classicTranscriptSize: ClassicTranscriptSize?
-    var appearanceSettingsPresented: Binding<Bool> {
-        get { self[AppearancePresentationKey.self] }
-        set { self[AppearancePresentationKey.self] = newValue }
+struct ClassicTranscriptSizing: ViewModifier {
+    @Environment(ConversationAppearancePreferences.self) private var appearance: ConversationAppearancePreferences?
+    func body(content: Content) -> some View {
+        content.environment(\.classicTranscriptScale, appearance?.state.scale ?? 1)
     }
 }
 

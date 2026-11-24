@@ -1,7 +1,11 @@
 import HailCore
 import SwiftUI
-#if os(iOS)
+#if os(macOS)
+import AppKit
+typealias TranscriptPlatformFont = NSFont
+#else
 import UIKit
+typealias TranscriptPlatformFont = UIFont
 #endif
 
 /// The redesign's launch flags (#1115), read once per process. A `static let`, not a read in `RootView`'s init or
@@ -125,27 +129,27 @@ extension StationRootView {
     }
 }
 
-struct ClassicTranscriptSize {
-    let preference: ConversationTextSize
-    let bodyScale: CGFloat
-    func font(_ design: Font.Design = .default) -> Font {
-        .system(size: preference.pointSize(bodyScale: bodyScale), design: design)
+extension EnvironmentValues {
+    func transcriptFont(_ base: Font, style: TranscriptPlatformFont.TextStyle,
+                        formatted: (Font) -> Font = { $0 }) -> Font {
+        guard classicTranscriptScale != 1 else { return formatted(base) }
+        if #available(iOS 26, macOS 26, *) { return formatted(base).scaled(by: classicTranscriptScale) }
+        #if os(macOS)
+        let native = NSFont.preferredFont(forTextStyle: style, options: [:])
+        #else
+        let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(dynamicTypeSize))
+        let native = UIFont.preferredFont(forTextStyle: style, compatibleWith: traits)
+        #endif
+        let points = native.pointSize * classicTranscriptScale
+        return formatted(Font(CTFontCreateCopyWithAttributes(native as CTFont, points, nil, nil)))
     }
+    var classicNoticeFont: Font { transcriptFont(.footnote, style: .footnote) }
+    var classicPasteFont: Font { transcriptFont(.callout, style: .callout) { $0.monospaced() } }
+    var classicMessageFont: Font? { classicTranscriptScale == 1 ? nil : transcriptFont(.body, style: .body) }
 }
 
 extension Text {
-    func classicTranscriptFont(_ size: ClassicTranscriptSize?) -> Text { size.map { font($0.font()) } ?? self }
-}
-
-/// Read system body scaling outside the station's local density adjustment.
-struct ClassicTranscriptSizing: ViewModifier {
-    @Environment(ConversationAppearancePreferences.self) private var appearance: ConversationAppearancePreferences?
-    @ScaledMetric(relativeTo: .body) private var bodyScale: CGFloat = 1
-
-    func body(content: Content) -> some View {
-        let size = appearance.map { ClassicTranscriptSize(preference: $0.state, bodyScale: bodyScale) }
-        content.environment(\.classicTranscriptSize, size)
-    }
+    func classicTranscriptFont(_ override: Font?) -> Text { override.map { font($0) } ?? self }
 }
 
 /// Reuses the window-owned presenter added by #1281, outside the hidden station's navigation stack.
@@ -153,12 +157,8 @@ private struct ShellAppearanceEntry: View {
     @Environment(\.appearanceSettingsPresented) private var isPresented
 
     var body: some View {
-        Button {
-            isPresented.wrappedValue = true
-        } label: {
-            Label("Appearance", systemImage: "textformat.size")
-        }
-        .accessibilityIdentifier("station.settings.appearance")
+        Button("Appearance", systemImage: "textformat.size") { isPresented.wrappedValue = true }
+            .accessibilityIdentifier("station.settings.appearance")
     }
 }
 

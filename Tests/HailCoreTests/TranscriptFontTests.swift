@@ -18,7 +18,7 @@ struct TranscriptFontTests {
         let scene = Group {
             if classic { paragraph.modifier(ClassicTranscriptSizing()) } else { paragraph }
         }
-        let host = NSHostingView(rootView: scene.font(.largeTitle).modifier(AppearanceSettingsPresentation())
+        let host = NSHostingView(rootView: scene.font(.caption2).modifier(AppearanceSettingsPresentation())
             .environment(appearance))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 160),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -29,14 +29,16 @@ struct TranscriptFontTests {
         await layout(host)
         let original = host.fittingSize.width
         #expect(original > 0)
-        if !classic {
-            let inherited = NSHostingView(rootView: text.fixedSize().font(.largeTitle)).fittingSize.width
-            #expect(abs(original - inherited) < 1)
-        }
+        let inherited = NSHostingView(rootView: text.fixedSize().font(.caption2)).fittingSize.width
+        #expect(abs(original - inherited) < 1)
         appearance.apply(.larger)
         await layout(host)
         let resized = host.fittingSize.width
         if classic {
+            var environment = EnvironmentValues()
+            environment.classicTranscriptScale = appearance.state.scale
+            let expected = NSHostingView(rootView: text.font(environment.classicMessageFont).fixedSize())
+            #expect(abs(resized - expected.fittingSize.width) < 1)
             #expect(resized > original)
         } else {
             #expect(abs(resized - original) < 1)
@@ -58,8 +60,8 @@ struct TranscriptFontTests {
 
 private struct TranscriptTestParagraph: View {
     let text: Text
-    @Environment(\.classicTranscriptSize) private var size
+    @Environment(\.classicMessageFont) private var messageFont
 
-    var body: some View { text.classicTranscriptFont(size) }
+    var body: some View { text.classicTranscriptFont(messageFont) }
 }
 #endif

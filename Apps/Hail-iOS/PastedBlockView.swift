@@ -7,7 +7,7 @@ extension ConversationChatView {
     @ViewBuilder
     func messageContent(_ entry: ConversationEntry, segments: [MessageSegment], isYou: Bool) -> some View {
         if !entry.text.isEmpty {
-            Text(Self.linked(segments)).classicTranscriptFont(classicSize)
+            Text(Self.linked(segments)).classicTranscriptFont(messageFont)
                 .foregroundStyle(
                     (entry.overheard || entry.notSent) ? Color.secondary : isYou ? Color.white : Color.primary
                 )
@@ -48,7 +48,7 @@ struct PastedBlockView: View {
     /// request-refusal line (Part 11) shows and announces the Mac's reason once, and the paste goes back on its card.
     var state: ConversationEntry.PasteState?
     @State private var expanded = false
-    @Environment(\.classicTranscriptSize) private var classicSize
+    @Environment(\.classicPasteFont) private var pasteFont
 
     private var stateLine: String? { state == .pending ? "Waiting for the Mac" : nil }
 
@@ -63,7 +63,7 @@ struct PastedBlockView: View {
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.secondary)
             Text(verbatim: expanded || !isLong ? text : PastedDraft.preview(text))
-                .font(classicSize?.font(.monospaced) ?? .callout.monospaced())
+                .font(pasteFont)
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 // VoiceOver reads the whole paste as the value, collapsed or not.
