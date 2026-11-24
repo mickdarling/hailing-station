@@ -103,18 +103,29 @@ extension TranscriptionLabView {
     }
 
     @MainActor
-    func observeResults() async {
-        let coordinator = audioSession as? any AudioSceneCleanupCoordinating
-        coordinator?.installSceneCleanup { await finish(force: true) }
-        defer { coordinator?.removeSceneCleanup() }
-        for await result in transcriber.results {
-            guard result.utteranceID == activeUtteranceID else { continue }
-            if result.isFinal {
-                appendFinal(result.text)
-                volatileText = ""
-            } else {
-                volatileText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
+    func noteDestinationChange(
+        previous: ConversationDestinationID?, current: ConversationDestinationID?
+    ) {
+        guard current != previous else { return }
+        destinationGeneration = UUID()
+        let invalidatedSend = pendingSendID != nil
+        if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
+        clearPendingSend()
+        if invalidatedSend {
+            status = "Ready"
+            return
+        }
+        guard !isStarting, !isRecording, !isFinalizing, !isInterrupting else { return }
+        status = "Ready"
+    }
+
+    func receiveResult(_ result: TranscriptionResult) {
+        guard result.utteranceID == activeUtteranceID else { return }
+        if result.isFinal {
+            appendFinal(result.text)
+            volatileText = ""
+        } else {
+            volatileText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 

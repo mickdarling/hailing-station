@@ -56,7 +56,6 @@ extension StationTranscriptionView {
     var escapeControl: some View { EmptyView() }
     var liveTranscript: some View { EmptyView() }
     var pasteControl: some View { EmptyView() }
-    func observeResults() async {}
     func restorePlaybackAfterForcedTeardown() {}
     func announceDeferredStatusIfNeeded() {}
     func noteReplyArrival(previous: Set<String>, current: Set<String>) {}

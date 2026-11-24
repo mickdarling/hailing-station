@@ -1,14 +1,17 @@
 import HailCore
 import SwiftUI
+
 // Only the Talk presentation can read this window dependency. Route tools receive AudioRouteModel.
 private extension EnvironmentValues {
     @Entry var windowTalkSession: StationTalkSession?
 }
+
 extension View {
     func sharingTalkSession(_ session: StationTalkSession) -> some View {
         environment(\.windowTalkSession, session)
     }
 }
+
 struct StationConversationDestinationID: Hashable {
     let endpointID: HostEndpoint.Identifier
     let targetID: String
@@ -43,9 +46,13 @@ struct StationTranscriptionView: View {
     /// Whether the destination takes pasted text, and the latest paste its Mac refused (#608).
     let pasteOffer: PasteOffer
     let onEscape: (@MainActor () async throws -> Void)?
-    @StateObject var audio: StationSceneState<TranscriptionResources>
-    var capture: any AudioCapturing { audio.value.capture }
-    var transcriber: any Transcriber { audio.value.transcriber }
+    @Environment(\.windowTalkSession) private var windowTalk
+    var talkSession: StationTalkSession {
+        guard let windowTalk else { preconditionFailure("Talk requires its window’s session") }
+        return windowTalk
+    }
+    var capture: any AudioCapturing { talkSession.resources.capture }
+    var transcriber: any Transcriber { talkSession.resources.transcriber }
     @State var isRecording = false
     @State var finalText = ""
     @State var volatileText = ""
@@ -87,8 +94,6 @@ struct StationTranscriptionView: View {
 
     init(
         audioSession: any AudioSessionDiagnosticsProviding,
-        capture: @autoclosure @escaping () -> any AudioCapturing = AVAudioEngineCapture(),
-        transcriber: (any Transcriber)? = nil,
         destinationLabel: String? = nil,
         destinationID: StationConversationDestinationID? = nil,
         replyIDs: Set<String> = [],
@@ -118,11 +123,7 @@ struct StationTranscriptionView: View {
         self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
         (self.onFinalized, self.onEscape) = (onFinalized, onEscape)
         self.pasteOffer = pasteOffer
-        _audio = StateObject(wrappedValue: StationSceneState {
-            TranscriptionResources(capture: capture(), transcriber: transcriber ?? StationTalkSession.makeSpeech())
-        })
     }
-
     var body: some View {
         VStack(spacing: compactTalk ? 10 : 18) {
             // The conversation thread shows each request as You (#318), so no separate last-request panel (#429).
@@ -138,7 +139,7 @@ struct StationTranscriptionView: View {
             // so expanding never rebuilds it.
             let row = compactTalk ? AnyLayout(HStackLayout(spacing: 10)) : AnyLayout(VStackLayout(spacing: 18))
             row {
-                talkButton
+                talkButton.disabled(talkSession.owner.map { $0 != captureOwnerID } ?? false)
                 if compactTalk { statusRow; escapeControl }
             }
 
@@ -155,7 +156,6 @@ struct StationTranscriptionView: View {
         .padding(compactTalk ? 12 : 18)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .navigationTitle("Conversation")
-        .task { await observeResults() }
         .onAppear { restorePlaybackAfterForcedTeardown() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { restorePlaybackAfterForcedTeardown(); announceDeferredStatusIfNeeded() }

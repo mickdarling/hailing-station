@@ -6,6 +6,9 @@ extension TranscriptionLabView {
     func begin() async {
         guard !isRecording, !isStarting, !isFinalizing, !isInterrupting,
               finishTask == nil, interruptTask == nil, pendingSendID == nil else { return }
+        guard !Task.isCancelled, scenePhase == .active,
+              talkSession.admit(captureOwnerID, receive: receiveResult, cleanup: { await self.finish(force: true) })
+        else { startTask = nil; return }
         takeCaptureExclusivity()
         isStarting = true
         hasReceivedAudio = false
@@ -14,6 +17,7 @@ extension TranscriptionLabView {
         defer {
             isStarting = false
             startTask = nil
+            retireTalkIfIdle()
             restorePlaybackIfRequestedAndReady()
         }
         guard await prepareCaptureAuthorization() else { return }
@@ -25,6 +29,7 @@ extension TranscriptionLabView {
             let utteranceID = try await transcriber.start()
             activeUtteranceID = utteranceID
             try Task.checkCancellation()
+            guard scenePhase == .active else { throw CancellationError() }
             let buffers = try capture.start()
             isRecording = true
             status = "Listening"
@@ -58,6 +63,8 @@ extension TranscriptionLabView {
     }
     @MainActor
     func finish(force: Bool = false) async {
+        guard talkSession.owner == captureOwnerID else { return }
+        defer { retireTalkIfIdle() }
         // Never takes suppression (#760): with a finish pending and no hold, the capture is already stopped.
         if force { isForcedTeardown = true }
         if let pendingFinish = finishTask {
@@ -132,15 +139,15 @@ extension TranscriptionLabView {
         isInterrupting = true
         defer {
             isInterrupting = false
+            retireTalkIfIdle()
             restorePlaybackIfRequestedAndReady()
         }
         let discardedUtterance = isStarting || isRecording || bufferTask != nil || activeUtteranceID != nil
         let pendingStart = startTask
         pendingStart?.cancel()
-        capture.stop()
+        if talkSession.owner == captureOwnerID { capture.stop() }
         let consumer = bufferTask
         consumer?.cancel()
-        bufferTask = nil
         isRecording = false
         activeUtteranceID = nil
         if discardedUtterance {
@@ -156,6 +163,7 @@ extension TranscriptionLabView {
         if discardedUtterance { await transcriber.cancel() }
         await pendingStart?.value
         await consumer?.value
+        bufferTask = nil
         releaseCaptureExclusivityAfterWork()
     }
     @MainActor
@@ -180,20 +188,8 @@ extension TranscriptionLabView {
         return finalized
     }
 
-    @MainActor
-    func noteDestinationChange(
-        previous: ConversationDestinationID?, current: ConversationDestinationID?
-    ) {
-        guard current != previous else { return }
-        destinationGeneration = UUID()
-        let invalidatedSend = pendingSendID != nil
-        if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
-        clearPendingSend()
-        if invalidatedSend {
-            status = "Ready"
-            return
-        }
-        guard !isStarting, !isRecording, !isFinalizing, !isInterrupting else { return }
-        status = "Ready"
+    private func retireTalkIfIdle() {
+        guard !isStarting, !isRecording, !isFinalizing, !isInterrupting, finishTask == nil else { return }
+        talkSession.retire(captureOwnerID)
     }
 }

@@ -44,8 +44,7 @@ struct StationSceneLifetimeTests {
         let session = ManagedAudioSession(backend: FakeAudioSessionBackend(inputs: []))
         let makeCapture = { count += 1; return FakeAudioCapture() }
         let makeView = {
-            StationTranscriptionView(audioSession: session, capture: makeCapture(),
-                                     transcriber: TapLifecycleTranscriber())
+            NativeTalkWindow(audioSession: session, makeCapture: makeCapture)
         }
         for _ in 0..<17 {
             let view = makeView()
@@ -63,6 +62,29 @@ struct StationSceneLifetimeTests {
         render(second)
         #expect(count == 2)
         withExtendedLifetime((first, second)) {}
+    }
+}
+
+@MainActor
+private struct NativeTalkWindow: View {
+    let station: StationTranscriptionView
+    let labs: StationTranscriptionView
+    @State var talkSession: StationTalkSession
+
+    init(audioSession: ManagedAudioSession, makeCapture: @escaping @MainActor () -> FakeAudioCapture) {
+        station = StationTranscriptionView(audioSession: audioSession, onFinalized: { _, _ in })
+        labs = StationTranscriptionView(audioSession: audioSession)
+        _talkSession = State(initialValue: StationTalkSession {
+            TranscriptionResources(capture: makeCapture(), transcriber: TapLifecycleTranscriber())
+        })
+    }
+
+    var body: some View {
+        VStack {
+            station
+            labs
+        }
+        .sharingTalkSession(talkSession)
     }
 }
 
