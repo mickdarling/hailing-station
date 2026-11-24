@@ -76,24 +76,32 @@ extension RootView {
             }
             .navigationTitle(section.title)
         case .settings:
-            List {
-                ShellAppearanceEntry()
-                NavigationLink { audioSettingsOverview } label: {
-                    Label("Audio", systemImage: "waveform")
-                }
-                .accessibilityIdentifier("station.settings.audio")
-                NavigationLink { CaptureSafeLabsView(audioSession: audioRoutes, playback: playback) } label: {
-                    Label("Labs", systemImage: "wrench.and.screwdriver")
-                }
-                .accessibilityIdentifier("station.settings.labs")
-                NavigationLink {
-                    ReplySegmentToolsView(playback: playback, gate: echoGuard.segmentOnsetGate)
-                } label: {
-                    Label("Turn-taking", systemImage: "pause.circle")
-                }
-            }
-            .navigationTitle(section.title)
+            shellSettingsSection
         }
+    }
+
+    private var shellSettingsSection: some View {
+        List {
+            ShellAppearanceEntry()
+            NavigationLink { audioSettingsOverview } label: {
+                Label("Audio", systemImage: "waveform")
+            }
+            .accessibilityIdentifier("station.settings.audio")
+            NavigationLink { privacySettingsOverview } label: {
+                Label("Privacy", systemImage: "hand.raised")
+            }
+            .accessibilityIdentifier("station.settings.privacy")
+            NavigationLink { CaptureSafeLabsView(audioSession: audioRoutes, playback: playback) } label: {
+                Label("Labs", systemImage: "wrench.and.screwdriver")
+            }
+            .accessibilityIdentifier("station.settings.labs")
+            NavigationLink {
+                ReplySegmentToolsView(playback: playback, gate: echoGuard.segmentOnsetGate)
+            } label: {
+                Label("Turn-taking", systemImage: "pause.circle")
+            }
+        }
+        .navigationTitle(StationSection.settings.title)
     }
 }
 

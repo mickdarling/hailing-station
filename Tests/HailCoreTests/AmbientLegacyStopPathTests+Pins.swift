@@ -16,6 +16,8 @@ extension AmbientLegacyStopPathTests {
     static let controllerCounts: [String: [String: Int]] = [
         "Apps/Hail-iOS/AudioDiagnosticsView.swift": ["cancelForDiagnosticsDismissal": 1],
         "Apps/Hail-iOS/RootView+DestinationSelection.swift": ["forgetSelection": 4],
+        // The Settings Privacy page's explicit owner stop (#1115).
+        "Apps/Hail-iOS/RootView+Settings.swift": ["stopListening": 1, "turnOff": 1],
         "Apps/Hail-iOS/RootView.swift": ["destinationLost": 1, "forgetSelection": 1, "ownerChangedDestination": 1],
         "Apps/Hail-iOS/StationCard.swift": ["end": 1, "turnOff": 1],
         "Apps/Hail-iOS/StationMenuPublishers.swift": ["turnOff": 1],
