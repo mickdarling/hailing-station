@@ -5,45 +5,7 @@ extension RootView {
     @ViewBuilder
     var conversationSurface: some View {
         if let destination {
-            let boundID = destination.talkID
-            TranscriptionLabView(
-                audioSession: audioRoutes,
-                destinationLabel: destination.label,
-                destinationID: boundID,
-                selectedDestination: {
-                    guard let current = self.destination, let host = connections.snapshots[current.hostID]
-                    else { return nil }
-                    return (current.talkID, host.connectionGeneration)
-                },
-                replyIDs: threadReplyIDs(for: destination),
-                replyPlaybackStatus: replyStatus(for: destination),
-                selectedReplyID: replyPresentation(for: destination)?.id,
-                globalReplyAudioSpeaking: playback.isReplyAudioOutputBusy,
-                controlledReplyPlaybackStatus: playback.statusForControls,
-                replyFailureStatuses: playback.terminalReplyFailureStatuses,
-                onCaptureWillBegin: { tapToTalk(started: true); CapturePlaybackSuppression.begin($0, using: playback) },
-                onCaptureDidEnd: {
-                    tapToTalk(started: false)
-                    CapturePlaybackSuppression.end($0, using: playback, resuming: $1)
-                },
-                onCaptureTeardownCompleted: {
-                    CapturePlaybackSuppression.markCleanupComplete($0, using: playback)
-                },
-                onFinalized: { text, pasted in
-                    try await connections.sendFinalText(
-                        text, pasted: pasted, host: boundID.endpointID, targetID: boundID.targetID
-                    )
-                },
-                pasteOffer: PasteOffer(
-                    accepts: connections.acceptsPaste(host: destination.hostID, targetID: destination.target.id),
-                    refusal: connections.lastPasteRefusal.flatMap { $0.endpointID == destination.hostID ? $0 : nil }
-                ),
-                onEscape: {
-                    try await connections.sendEscape(
-                        host: destination.hostID, targetID: destination.target.id
-                    )
-                }
-            )
+            stationTranscription(for: destination)
         } else {
             let availability = stationAvailability
             VStack(spacing: 16) {
@@ -90,6 +52,48 @@ extension RootView {
             .accessibilityIdentifier("station.availability")
         }
     }
+    func stationTranscription(for destination: Destination) -> TranscriptionLabView {
+        let boundID = destination.talkID
+        return TranscriptionLabView(
+            audioSession: audioRoutes,
+            destinationLabel: destination.label,
+            destinationID: boundID,
+            selectedDestination: {
+                guard let current = self.destination, let host = connections.snapshots[current.hostID]
+                else { return nil }
+                return (current.talkID, host.connectionGeneration)
+            },
+            replyIDs: threadReplyIDs(for: destination),
+            replyPlaybackStatus: replyStatus(for: destination),
+            selectedReplyID: replyPresentation(for: destination)?.id,
+            globalReplyAudioSpeaking: playback.isReplyAudioOutputBusy,
+            controlledReplyPlaybackStatus: playback.statusForControls,
+            replyFailureStatuses: playback.terminalReplyFailureStatuses,
+            onCaptureWillBegin: { tapToTalk(started: true); CapturePlaybackSuppression.begin($0, using: playback) },
+            onCaptureDidEnd: {
+                tapToTalk(started: false)
+                CapturePlaybackSuppression.end($0, using: playback, resuming: $1)
+            },
+            onCaptureTeardownCompleted: {
+                CapturePlaybackSuppression.markCleanupComplete($0, using: playback)
+            },
+            onFinalized: { text, pasted in
+                try await connections.sendFinalText(
+                    text, pasted: pasted, host: boundID.endpointID, targetID: boundID.targetID
+                )
+            },
+            pasteOffer: PasteOffer(
+                accepts: connections.acceptsPaste(host: destination.hostID, targetID: destination.target.id),
+                refusal: connections.lastPasteRefusal.flatMap { $0.endpointID == destination.hostID ? $0 : nil }
+            ),
+            onEscape: {
+                try await connections.sendEscape(
+                    host: destination.hostID, targetID: destination.target.id
+                )
+            }
+        )
+    }
+
     var stationTools: some View {
         GroupBox {
             AppearanceSettingsEntry {
