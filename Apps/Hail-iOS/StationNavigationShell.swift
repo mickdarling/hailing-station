@@ -11,6 +11,7 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     @Environment(\.stationPalette) private var palette
     let state: StationNavigationState
     let idiom: StationNavigationIdiom
+    var session: DestinationLabel?
     let send: (StationNavigationIntent) -> Void
     @ViewBuilder let detail: (StationSection) -> Detail
     @ViewBuilder let inspector: () -> Inspector
@@ -80,6 +81,7 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
         return NavigationSplitView(columnVisibility: columnVisibility(sidebarVisible),
                                    preferredCompactColumn: compactColumn) {
             List(selection: sectionSelection) {
+                StationSidebarBrand().listRowBackground(palette[.sidebar]).selectionDisabled()
                 ForEach(StationSection.allCases) { section in
                     let selected = state.sidebarSelection(collapsed: isCollapsed) == section
                     Label(section.title, systemImage: section.systemImage)
@@ -88,11 +90,12 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
                         .tag(section)
                         .accessibilityIdentifier("station.section.\(section.rawValue)")
                 }
+                StationSidebarSessions(session: session)
             }
             .toolbar(removing: isCollapsed ? nil : .sidebarToggle)
             .scrollContentBackground(.hidden)
             .background(palette[.sidebar])
-            .navigationTitle("Hailing Station")
+            .navigationTitle(isCollapsed ? "Hailing Station" : "")
             .navigationSplitViewColumnWidth(min: 180, ideal: 215, max: 260)
         } detail: {
             if idiom == .mac, Inspector.self == EmptyView.self {

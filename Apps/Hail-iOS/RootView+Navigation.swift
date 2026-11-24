@@ -41,7 +41,7 @@ extension StationRootView {
     var stationRoot: some View {
         if StationRedesignLaunch.flags.isOn(.shell) {
             StationNavigationShell(
-                state: navigation, idiom: StationRedesignLaunch.idiom,
+                state: navigation, idiom: StationRedesignLaunch.idiom, session: destination?.stationLabel,
                 send: { navigation.apply($0) },
                 detail: { stationSection($0) },
                 inspector: { EmptyView() },
@@ -53,7 +53,7 @@ extension StationRootView {
         }
     }
 
-    /// The station is today's, unchanged. Other sections keep their own back navigation. Settings' Audio overview
+    /// Other sections keep their own back navigation. Settings' Audio overview
     /// reads the same scene-owned model as its existing tool; none of these destinations owns an audio session.
     @ViewBuilder
     func stationSection(_ section: StationSection) -> some View {

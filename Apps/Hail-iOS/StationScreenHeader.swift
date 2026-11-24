@@ -3,13 +3,9 @@ import SwiftUI
 
 extension RootView {
     var screenDestination: DestinationControlState {
-        let confirmed = destination.map {
-            DestinationLabel(hostName: $0.endpoint.name, targetName: $0.target.name,
-                             targetKind: $0.target.kind, targetID: $0.target.id)
-        }
         let saved = rememberedSelection.flatMap { TargetsSettingsState.label($0, hosts: connections.hosts,
                                                                              generation: nil) }
-        return .resolve(availability: stationAvailability, confirmed: confirmed, remembered: saved)
+        return .resolve(availability: stationAvailability, confirmed: destination?.stationLabel, remembered: saved)
     }
 }
 
