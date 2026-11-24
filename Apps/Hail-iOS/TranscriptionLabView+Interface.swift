@@ -53,9 +53,7 @@ extension TranscriptionLabView {
                 Image(systemName: isRecording ? "stop.fill" : "mic.fill")
                     .font(.system(size: compactTalk ? 22 : 32, weight: .semibold))
                     .frame(width: circle, height: circle)
-                    .foregroundStyle(.white)
-                    .background(isRecording ? Color.red : Color.accentColor, in: Circle())
-                    .shadow(color: (isRecording ? Color.red : Color.accentColor).opacity(0.25), radius: 12, y: 6)
+                    .modifier(StationTalkDisc(recording: isRecording))
                 Text(actionLabel)
                     .font(.headline)
             }

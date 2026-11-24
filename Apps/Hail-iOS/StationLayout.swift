@@ -54,7 +54,7 @@ extension RootView {
         } }
         // The station header names the app; a "Conversation" bar above it only costs height (#288).
         .stationHiddenNavigationBar()
-        .background(StationPlatform.background)
+        .modifier(StationCanvasBackground())
         .stationBuildFooter()
         .onAppear {
             // Weak, and never cleared on disappear: a pushed tool screen hides this view while its heals still count,

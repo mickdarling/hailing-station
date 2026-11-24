@@ -41,3 +41,30 @@ struct StationRowSurface: View {
 
     var body: some View { palette[.elevatedSurface] }
 }
+
+/// Shared station surfaces retain their original colours when the shell has supplied no theme.
+struct StationCanvasBackground: ViewModifier {
+    @Environment(\.activeStationPalette) private var palette
+
+    func body(content: Content) -> some View {
+        content.background(palette?[.surface] ?? StationPlatform.background)
+    }
+}
+
+extension EnvironmentValues {
+    var activeStationPalette: StationPalette? {
+        stationTheme.map { StationPalette(theme: $0, scheme: colorScheme) }
+    }
+}
+
+struct StationTalkDisc: ViewModifier {
+    let recording: Bool
+    @Environment(\.activeStationPalette) private var palette
+
+    func body(content: Content) -> some View {
+        let fill = palette?[recording ? .stateLive : .accentTalk] ?? (recording ? Color.red : Color.accentColor)
+        content.foregroundStyle(palette?[.brandOnBrand] ?? .white)
+            .background(fill, in: Circle())
+            .shadow(color: fill.opacity(0.25), radius: 12, y: 6)
+    }
+}
