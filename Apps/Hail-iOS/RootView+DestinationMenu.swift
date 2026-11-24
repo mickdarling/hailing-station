@@ -19,14 +19,18 @@ extension RootView {
         .accessibilityValue(destinationAccessibilityValue)
         .accessibilityHint("Opens the Mac and target browser.")
         .popover(isPresented: $showingDestinations) {
-            DestinationBrowser(
-                hosts: connections.hosts,
-                selected: destination,
-                usesPopoverLayout: horizontalSizeClass == .regular,
-                onSelect: { option in Task { await select(option) } }
-            )
+            destinationBrowser
             .presentationCompactAdaptation(.sheet)
         }
+    }
+
+    var destinationBrowser: some View {
+        DestinationBrowser(
+            hosts: connections.hosts,
+            selected: destination,
+            usesPopoverLayout: horizontalSizeClass == .regular,
+            onSelect: { option in Task { await select(option) } }
+        )
     }
 
     var destinationAccessibilityValue: String {

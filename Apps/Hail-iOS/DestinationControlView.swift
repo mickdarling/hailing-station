@@ -19,6 +19,7 @@ struct DestinationControlView<Browser: View>: View {
     @Environment(\.stationPalette) private var palette
     let state: DestinationControlState
     var style: Style = .compact
+    var identifier = "station.destination-control"
     /// Owned by the station; the control only asks for the browser to be shown.
     @Binding var isBrowserPresented: Bool
     @ViewBuilder let browser: () -> Browser
@@ -35,7 +36,7 @@ struct DestinationControlView<Browser: View>: View {
         .accessibilityLabel("Destination")
         .accessibilityValue(state.accessibilityValue)
         .accessibilityHint("Opens the Mac and target browser.")
-        .accessibilityIdentifier("station.destination-control")
+        .accessibilityIdentifier(identifier)
         .popover(isPresented: $isBrowserPresented) {
             browser()
                 .presentationCompactAdaptation(.sheet)
@@ -45,6 +46,19 @@ struct DestinationControlView<Browser: View>: View {
     @ViewBuilder
     private var label: some View {
         switch style {
+        case .toolbar where state.talkReady:
+            HStack(spacing: 10) {
+                glyph.padding(8).background(palette[.surface], in: .rect(cornerRadius: 8))
+                if case .confirmed(let label) = state {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(label.targetName).font(.headline)
+                        Text("\(label.hostName) · \(label.role)")
+                            .font(.caption).foregroundStyle(palette[.textSecondary])
+                    }
+                }
+                Image(systemName: "chevron.down").font(.caption)
+            }
+            .contentShape(Rectangle())
         case .toolbar:
             Label { Text(state.singleLineText).lineLimit(1) } icon: { glyph }
                 .foregroundStyle(state.talkReady ? palette[.textPrimary] : unavailableInk)
