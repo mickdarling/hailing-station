@@ -9,6 +9,7 @@ import SwiftUI
 /// while a capture is active, and at accessibility text sizes the controls stack. It has no keyboard shortcuts, so
 /// it never takes Space from text selection or an editor.
 struct VoiceDockView: View {
+    @Environment(\.stationPalette) private var palette
     let state: VoiceDockState
     /// The owner's live caption. It shows only while `state.showsCaption`.
     let caption: String?
@@ -30,17 +31,18 @@ struct VoiceDockView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(.bar)
-        .overlay(alignment: .top) { Divider() }
+        .background(palette[.elevatedSurface])
+        .overlay(alignment: .top) { Divider().overlay(palette[.separator]) }
     }
 
     private var liveCaption: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text("Live caption · not sent yet")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(palette[.textSecondary])
             Text(caption.flatMap { $0.isEmpty ? nil : $0 } ?? "Listening…")
                 .font(.body)
+                .foregroundStyle(palette[.textPrimary])
                 .lineLimit(typeSize.isAccessibilitySize ? nil : 3)
                 .truncationMode(.head)
         }
@@ -55,10 +57,11 @@ struct VoiceDockView: View {
         } label: {
             Label(state.label, systemImage: state.symbol)
                 .font(.headline)
+                .foregroundStyle(palette[.brandOnBrand])
                 .frame(maxWidth: .infinity, minHeight: target)
         }
         .buttonStyle(.borderedProminent)
-        .tint(state.primary == .finish ? .red : .accentColor)
+        .tint(palette[state.primary == .finish ? .stateLive : .accentTalk])
         .controlSize(.regular)
         .disabled(!state.isEnabled)
         .accessibilityValue(state.value)

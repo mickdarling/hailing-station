@@ -79,6 +79,7 @@ struct ConversationTextSizeControl: View {
 /// uncapped preview, and the panel scrolls, so at accessibility sizes no action is ever pushed out of reach (Codex
 /// review of #1166).
 private struct ConversationTextSizePanel: View {
+    @Environment(\.stationPalette) private var palette
     let state: ConversationTextSize
     let onIntent: (ConversationTextSize.Intent) -> Void
     @ScaledMetric(relativeTo: .body) private var bodyScale: CGFloat = 1
@@ -90,11 +91,11 @@ private struct ConversationTextSizePanel: View {
                     HStack {
                         Text("Conversation text").font(.headline)
                         Spacer()
-                        Text(state.label).foregroundStyle(.secondary)
+                        Text(state.label).foregroundStyle(palette[.textSecondary])
                     }
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Conversation text").font(.headline)
-                        Text(state.label).foregroundStyle(.secondary)
+                        Text(state.label).foregroundStyle(palette[.textSecondary])
                     }
                 }
                 .accessibilityElement(children: .combine)
@@ -106,12 +107,15 @@ private struct ConversationTextSizePanel: View {
             }
             .padding()
         }
+        .background(palette[.elevatedSurface])
+        .foregroundStyle(palette[.textPrimary], palette[.textSecondary])
         .frame(minWidth: 280)
     }
 }
 
 /// Shared native actions for the Aa popover and Settings > Appearance.
 struct ConversationTextSizeActions: View {
+    @Environment(\.activeStationPalette) private var palette
     let state: ConversationTextSize
     let onIntent: (ConversationTextSize.Intent) -> Void
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -130,7 +134,10 @@ struct ConversationTextSizeActions: View {
             }
             .buttonStyle(.bordered)
             if let note = state.boundNote {
-                Text(note).font(.caption).foregroundStyle(.secondary)
+                let label = Text(note).font(.caption)
+                if let palette { label.foregroundStyle(palette[.textSecondary]) } else {
+                    label.foregroundStyle(.secondary)
+                }
             }
             Button("Reset to app default") { onIntent(.reset) }
                 .disabled(state.isDefault)

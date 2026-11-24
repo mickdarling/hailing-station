@@ -5,12 +5,13 @@ import SwiftUI
 /// microphone preference and the system output picker. It renders an `AudioRoutesSheetState` and emits
 /// `AudioRoutesIntent`s; the audio owner applies them. Opening or reading it never activates or deactivates audio.
 struct AudioRoutesSheetView: View {
+    @Environment(\.stationPalette) private var palette
     let state: AudioRoutesSheetState
     let onIntent: (AudioRoutesIntent) -> Void
 
     var body: some View {
         List {
-            microphone
+            microphone.listRowBackground(palette[.elevatedSurface])
             Section("Output") {
                 HStack {
                     LabeledContent("Playing to", value: state.output)
@@ -18,10 +19,14 @@ struct AudioRoutesSheetView: View {
                         .frame(width: 44, height: 44)
                 }
             }
+            .listRowBackground(palette[.elevatedSurface])
             if let hfp = state.hfp {
-                bluetoothHeadset(hfp)
+                bluetoothHeadset(hfp).listRowBackground(palette[.elevatedSurface])
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(palette[.surface])
+        .foregroundStyle(palette[.textPrimary], palette[.textSecondary])
         .navigationTitle("Audio routes")
     }
 
@@ -30,9 +35,9 @@ struct AudioRoutesSheetView: View {
             VStack(alignment: .leading, spacing: 4) {
                 LabeledContent("Active", value: state.activeInput)
                 if let preferred = state.preferred {
-                    Text("Preferred: \(preferred)").font(.caption).foregroundStyle(.secondary)
+                    Text("Preferred: \(preferred)").font(.caption).foregroundStyle(palette[.textSecondary])
                 }
-                Text(state.status).font(.caption).foregroundStyle(.secondary)
+                Text(state.status).font(.caption).foregroundStyle(palette[.textSecondary])
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(state.microphoneAccessibilityLabel)
@@ -40,7 +45,7 @@ struct AudioRoutesSheetView: View {
             if let failure = state.failure {
                 Text(failure)
                     .font(.callout)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(palette[.stateWarning])
                     .accessibilityIdentifier("audio-routes.failure")
             }
             if state.showsRetry {
@@ -72,7 +77,7 @@ struct AudioRoutesSheetView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Use AirPods / Bluetooth headset microphone")
                     if let caption = state.hfpCaption {
-                        Text(caption).font(.caption).foregroundStyle(.secondary)
+                        Text(caption).font(.caption).foregroundStyle(palette[.textSecondary])
                     }
                 }
             }
