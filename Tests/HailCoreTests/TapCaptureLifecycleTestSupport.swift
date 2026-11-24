@@ -3,7 +3,7 @@ import HailCore
 
 // The symlinked lifecycle/progress sources run the app's real capture and suppression code in SwiftPM. Only
 // SwiftUI storage, permissions, session IO and unrelated UI helpers are replaced; no microphone is opened.
-struct ConversationDestinationID: Hashable { let id: UUID }
+typealias ConversationDestinationID = StationConversationDestinationID
 
 @MainActor
 final class TapCaptureTestSession {
@@ -34,6 +34,12 @@ final class TranscriptionLabView {
     var finalText = "", volatileText = "", status = "Ready"
     var pendingSendID: UUID?, activeUtteranceID: UUID?, finishGeneration: UUID?
     var destinationGeneration = UUID()
+    private static let fixtureDestination = ConversationDestinationID(endpointID: "fixture-mac", targetID: "target")
+    var destinationID: ConversationDestinationID? = TranscriptionLabView.fixtureDestination
+    var selectedDestinationID: ConversationDestinationID? = TranscriptionLabView.fixtureDestination
+    var connectionGeneration = UUID()
+    var recordingDestination: (id: ConversationDestinationID, generation: UUID)?
+    var recordingGeneration: UUID?
     var pendingDestinationID: ConversationDestinationID?
     var startTask: Task<Void, Never>?, finishTask: Task<Void, Never>?
     var interruptTask: Task<Void, Never>?, bufferTask: Task<Void, Never>?, replyTimeoutTask: Task<Void, Never>?
@@ -70,6 +76,9 @@ final class TranscriptionLabView {
         beginCaptureExclusivity()
     }
     func prepareCaptureAuthorization() async -> Bool { true }
+    func selectedDestination() -> (id: ConversationDestinationID, generation: UUID)? {
+        selectedDestinationID.map { ($0, connectionGeneration) }
+    }
     func quietReplyAudio() async throws {}
     func receiveResult(_ result: TranscriptionResult) {
         received.append(result)
@@ -101,7 +110,10 @@ final class TranscriptionLabView {
         pendingSendID = nil
         pendingDestinationID = nil
     }
-    func send(_ text: String, failurePrefix: String) async { sent.append(text) }
+    func send(_ text: String, failurePrefix: String) async {
+        sent.append(text)
+        await onFinalized?(text)
+    }
     func discardCapture() async {
         capture.stop()
         bufferTask?.cancel()

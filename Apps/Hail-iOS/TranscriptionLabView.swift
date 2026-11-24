@@ -12,11 +12,6 @@ extension View {
     }
 }
 
-struct StationConversationDestinationID: Hashable {
-    let endpointID: HostEndpoint.Identifier
-    let targetID: String
-}
-
 struct SelectedReplyPlaybackObservation: Equatable {
     let id: String?
     let status: String?
@@ -32,6 +27,7 @@ struct StationTranscriptionView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
     let destinationLabel: String?
     let destinationID: StationConversationDestinationID?
+    let selectedDestination: @MainActor () -> StationConversationDestinationID.Connection?
     let replyIDs: Set<String>
     let replyPlaybackStatus: String?
     let selectedReplyID: String?
@@ -71,6 +67,8 @@ struct StationTranscriptionView: View {
     /// so if that send then fails, its failure still shows rather than the arrival's "Reply received".
     @State var answeredSendID: UUID?
     @State var destinationGeneration = UUID()
+    @State var recordingDestination: StationConversationDestinationID.Connection?
+    @State var recordingGeneration: UUID?
     @State var replyTimeoutTask: Task<Void, Never>?
     @State var ownsCaptureSuppression = false
     /// Only what must stay reachable while the conversation is full screen (#819); the station sets it, Labs never.
@@ -96,6 +94,7 @@ struct StationTranscriptionView: View {
         audioSession: any AudioSessionDiagnosticsProviding,
         destinationLabel: String? = nil,
         destinationID: StationConversationDestinationID? = nil,
+        selectedDestination: @escaping @MainActor () -> StationConversationDestinationID.Connection? = { nil },
         replyIDs: Set<String> = [],
         replyPlaybackStatus: String? = nil,
         selectedReplyID: String? = nil,
@@ -112,6 +111,7 @@ struct StationTranscriptionView: View {
         self.audioSession = audioSession
         self.destinationLabel = destinationLabel
         self.destinationID = destinationID
+        self.selectedDestination = selectedDestination
         self.replyIDs = replyIDs
         self.replyPlaybackStatus = replyPlaybackStatus
         self.selectedReplyID = selectedReplyID
@@ -144,7 +144,7 @@ struct StationTranscriptionView: View {
             }
 
             // Below the button, so its appearing never moves Tap to talk under a finishing tap.
-            liveTranscript
+            recoverableTranscript
 
             // Always mounted (#819 review), so a destination change still clears a paste and a refused one comes
             // back. Full screen it hides only the bare Paste button: an attached paste or a problem still shows.
