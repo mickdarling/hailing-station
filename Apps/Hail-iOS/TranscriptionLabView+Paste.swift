@@ -80,7 +80,10 @@ extension TranscriptionLabView {
             // "Waiting for reply". The new status is not spoken: the shared request refusal (#692) already adds
             // the one line and the one announcement.
             clearPendingSend()
-            if status != "Ready" { (pasteRefusalHandling.quietStatus, status) = ("Ready", "Ready") }
+            if talkStatus != .ready {
+                pasteRefusalHandling.quietStatus = StationTalkStatus.ready.text
+                talkStatus = .ready
+            }
         }
     }
 

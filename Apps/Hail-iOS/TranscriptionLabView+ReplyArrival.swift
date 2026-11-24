@@ -6,14 +6,16 @@ extension TranscriptionLabView {
         guard !current.subtracting(previous).isEmpty, let destinationID else { return }
         if Self.uncorrelatedDestinations.contains(destinationID) {
             if pendingSendID == nil, !showsActivity, !isInterrupting,
-               interruptTask == nil, finishTask == nil { status = "Reply received — turn unverified" }
+               interruptTask == nil, finishTask == nil {
+                talkStatus = .turn(.sentUnverified, text: "Reply received — turn unverified")
+            }
             return
         }
-        guard pendingDestinationID == destinationID,
-              status == "Sending…" || status == "Waiting for reply…" else { return }
-        answeredSendID = status == "Sending…" ? pendingSendID : nil
+        let outcome = talkStatus.outcome()
+        guard pendingDestinationID == destinationID, outcome == .sending || outcome == .waitingForReply else { return }
+        answeredSendID = outcome == .sending ? pendingSendID : nil
         clearPendingSend()
-        status = "Reply received"
+        talkStatus = .turn(.replyReceived, text: "Reply received")
     }
 
     @MainActor

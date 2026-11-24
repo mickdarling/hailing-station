@@ -105,8 +105,8 @@ extension TranscriptionLabView {
     }
 
     var showsActivity: Bool {
-        isStarting || isRecording || isFinalizing || status == "Sending…"
-            || status == "Waiting for reply…"
+        isStarting || isRecording || isFinalizing || talkStatus.outcome() == .sending
+            || talkStatus.outcome() == .waitingForReply
     }
 
     var showsProgress: Bool {
@@ -133,7 +133,7 @@ extension TranscriptionLabView {
         recordDockFailure(nil)
         pendingSendID = sendID
         pendingDestinationID = destinationAtSend
-        status = "Sending…"
+        talkStatus = .turn(.sending, text: "Sending…")
         // Not a paste an earlier send still carries: a reply placed during that write (#636) lets this one start.
         let paste = pastes.take(for: sendID)
         do {
@@ -151,10 +151,10 @@ extension TranscriptionLabView {
             }
             if let destinationAtSend, Self.uncorrelatedDestinations.contains(destinationAtSend) {
                 clearPendingSend()
-                status = "Sent — reply turn unverified"
+                talkStatus = .turn(.sentUnverified, text: "Sent — reply turn unverified")
                 return
             }
-            status = "Waiting for reply…"
+            talkStatus = .turn(.waitingForReply, text: "Waiting for reply…")
             scheduleReplyTimeout(sendID: sendID, destinationID: destinationAtSend)
         } catch {
             pastes.finish(sendID, delivered: false)
@@ -168,14 +168,15 @@ extension TranscriptionLabView {
             clearPendingSend()
             // A refused paste stays attached, with the reason, so it can be fixed or removed (#608).
             if let problem { noteUnsentPaste(problem) }
-            status = "\(failurePrefix): \(problem ?? error.localizedDescription)"
+            talkStatus = .sendFailed("\(failurePrefix): \(problem ?? error.localizedDescription)")
         }
     }
     /// A reply that arrived while `sendID` was still going ended its wait (#636), and nothing has happened since on
     /// that destination: no new send, capture or Escape has changed the status from "Reply received".
     @MainActor
     func answeredEarly(_ sendID: UUID, at destination: ConversationDestinationID?) -> Bool {
-        answeredSendID == sendID && pendingSendID == nil && destinationID == destination && status == "Reply received"
+        answeredSendID == sendID && pendingSendID == nil && destinationID == destination
+            && talkStatus.outcome() == .replyReceived
     }
 
     @MainActor
@@ -190,7 +191,7 @@ extension TranscriptionLabView {
 
     @MainActor
     func quietReplyAudio() async throws {
-        status = "Quieting reply audio…"
+        talkStatus = .message("Quieting reply audio…")
         try await Task.sleep(for: .milliseconds(200))
     }
 }
