@@ -869,8 +869,12 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
         /// The newest stream the gate started: the only one a queued start may make room or spawn for.
         var newestStart: UUID?
         var newestConnection: UUID?
+        /// Gate events are ordered. Each start gets a fresh router identity even when a device reuses its stream ID.
+        fileprivate var newestStartID: UInt64 = 0
+        fileprivate var restoredStartID: UInt64 = 0
         fileprivate var privatePeriods: [UUID: UUID] = [:]
-        fileprivate var queuedPrivacy: [Int: PrivateAdmission] = [:]
+        /// One admission per event in `queue`, in the same order.
+        fileprivate var queuedAdmissions: [AudioAdmission] = []
         var peakQueue = 0
         var worker: Task<Void, Never>?
         /// Each live connection's last input route kind (rightyo#164), for its next child's `RIGHTYO_INPUT_ROUTE`;
@@ -1021,6 +1025,7 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             case .started(let stream, let connection, _):
                 state.latest[connection] = stream
                 (state.newestStart, state.newestConnection) = (stream, connection)
+                state.newestStartID += 1
             // These ends already report a refusal, supersede the stream or tear down its peer. Revoke before
             // queueing: a held notice must not outlive an ending even while the worker is making room.
             case .ended(let stream, let reason) where reason != .final && reason != .idle:
@@ -1033,7 +1038,8 @@ public final class AmbientRightyoRouter: AmbientAudioSink, AmbientListenerWiring
             }
             // A source judged stale that sends audio or starts was alive (#941): it counts as a source again.
             reapplyOnLife(event, in: &state)
-            let admitted = AdmittedAudio(event: event, privacy: state.privateAdmission(event))
+            let admission = AudioAdmission(startID: state.newestStartID, privacy: state.privateAdmission(event))
+            let admitted = (event: event, admission: admission)
             // Shutting down: nothing more is queued (starts are refused inline as stopping).
             if state.shuttingDown { return admitted }
             // While a reload builds its child (#405), events queue too: the worker waits for the reload, so a start
@@ -1285,18 +1291,20 @@ extension AmbientRightyoRouter {
         let byteCount: Int
     }
 
-    fileprivate struct AdmittedAudio: Sendable {
-        let event: AmbientAudioEvent
+    fileprivate struct AudioAdmission: Sendable {
+        let startID: UInt64
         let privacy: PrivateAdmission?
     }
+
+    fileprivate typealias AdmittedAudio = (event: AmbientAudioEvent, admission: AudioAdmission)
 }
 
 extension AmbientRightyoRouter.State {
     fileprivate mutating func privateAdmission(_ event: AmbientAudioEvent) -> AmbientRightyoRouter.PrivateAdmission? {
         guard case .segment(let stream, _, let bytes) = event, stream == newestStart,
               let connection = newestConnection else { return nil }
-        // Before registration a fresh start can still inherit a wish from another connection or a park.
-        guard duck[connection] != nil || (active?.stream != stream &&
+        // Only until this start restores privacy can another connection or park supply its wish.
+        guard duck[connection] != nil || (newestStartID != restoredStartID &&
             AmbientRightyoRouter.privacySource(except: connection, in: self) != nil) else { return nil }
         let period = privatePeriods[connection] ?? UUID()
         privatePeriods[connection] = period
@@ -1305,28 +1313,23 @@ extension AmbientRightyoRouter.State {
 
     fileprivate mutating func endPrivatePeriod(_ connection: UUID) {
         privatePeriods[connection] = nil
-        let slots = queuedPrivacy.compactMap { $0.value.connection == connection ? $0.key : nil }
-        for index in slots.sorted(by: >) {
-            guard case .segment(let stream, let sequence, _) = queue[index] else { continue }
-            if active?.stream == stream {
+        for index in queuedAdmissions.indices.reversed() {
+            guard queuedAdmissions[index].privacy?.connection == connection,
+                  case .segment(let stream, let sequence, _) = queue[index] else { continue }
+            if active?.startID == queuedAdmissions[index].startID {
                 // Keep only the accounting slot. Its ordered handoff selects the same child as ordinary send,
                 // including after a reload, and cannot pass earlier public or already-dequeued input.
                 // Ordinary queue eviction still excludes slots that would never have reached send.
                 queue[index] = .segment(stream: stream, sequence: sequence, bytes: Data())
             } else {
-                // No pipeline for this stream. Its first forwarded sequence sets the new child's baseline.
+                // Leading drops set no baseline. An interior drop uses the child's bounded gap fill (#1341).
                 removeQueued(at: index)
             }
         }
     }
 
     @discardableResult fileprivate mutating func removeQueued(at index: Int) -> AmbientRightyoRouter.AdmittedAudio {
-        let event = queue.remove(at: index)
-        let privacy = queuedPrivacy.removeValue(forKey: index)
-        if !queuedPrivacy.isEmpty {
-            for slot in index..<queue.count { queuedPrivacy[slot] = queuedPrivacy.removeValue(forKey: slot + 1) }
-        }
-        return .init(event: event, privacy: privacy)
+        (queue.remove(at: index), queuedAdmissions.remove(at: index))
     }
 }
 
@@ -1366,6 +1369,7 @@ extension AmbientRightyoRouter {
     /// The stream feeding audio now, retaining its destination and opening selection generation (#636).
     struct Active {
         let stream: UUID
+        let startID: UInt64
         let run: UUID
         let pipeline: RightyoAmbientPipeline
         let since: Date
@@ -1411,9 +1415,10 @@ extension AmbientRightyoRouter {
                 return refuse(stream, connection: connection, target: scope.target,
                               reason: "target_binding_unavailable")
             }
-            start(stream, connection: connection, destination: destination, selection: scope.selection)
+            start(stream, startID: admitted.admission.startID, connection: connection,
+                  destination: destination, selection: scope.selection)
         case .segment(let stream, let sequence, let bytes):
-            forward(stream: stream, sequence: sequence, bytes: bytes, privacy: admitted.privacy)
+            forward(stream: stream, sequence: sequence, bytes: bytes, admission: admitted.admission)
         case .ended(let stream, let reason):
             let run = state.withLock { state -> UUID? in
                 for (id, run) in state.runs where run.stream == stream { state.runs[id]?.gateEnd = reason }
@@ -1426,10 +1431,13 @@ extension AmbientRightyoRouter {
     }
 
     /// The sequence stays beside its PCM until the same ordered child enqueue accepts both.
-    private func forward(stream: UUID, sequence: Int, bytes: Data, privacy: PrivateAdmission?) {
-        if let privacy { return sendPrivate(bytes, stream: stream, sequence: sequence, admission: privacy) }
+    private func forward(stream: UUID, sequence: Int, bytes: Data, admission: AudioAdmission) {
+        if let privacy = admission.privacy {
+            return sendPrivate(bytes, stream: stream, sequence: sequence, startID: admission.startID,
+                               admission: privacy)
+        }
         let pipeline = state.withLock { state -> RightyoAmbientPipeline? in
-            guard let active = state.active, active.stream == stream,
+            guard let active = state.active, active.startID == admission.startID, active.stream == stream,
                   state.runs[active.run]?.ending == false else { return nil }
             return active.pipeline
         }
@@ -1439,12 +1447,12 @@ extension AmbientRightyoRouter {
         if !result.accepted { inputClosed(stream, pipeline: pipeline) }
     }
 
-    private func sendPrivate(_ bytes: Data, stream: UUID, sequence: Int, admission: PrivateAdmission) {
+    private func sendPrivate(_ bytes: Data, stream: UUID, sequence: Int, startID: UInt64, admission: PrivateAdmission) {
         Self.beforePrivateHandoff?()
         let gap = Mutex<String?>(nil)
         let failed = Self.$gapDetail.withValue({ detail in gap.withLock { $0 = detail } }, operation: {
             state.withLock { state -> RightyoAmbientPipeline? in
-                guard let active = state.active, active.stream == stream, let run = state.runs[active.run],
+                guard let active = state.active, active.startID == startID, let run = state.runs[active.run],
                       run.connection == admission.connection, !run.ending else { return nil }
                 let accepted: Bool
                 if state.privatePeriods[run.connection] == admission.period, state.duck[run.connection] != nil {
@@ -1486,19 +1494,20 @@ extension AmbientRightyoRouter {
     /// final segment, is skipped: it neither forces a child out nor spawns. The newest makes room first, then
     /// every event is handled as it would be inline.
     private func work(_ admitted: AdmittedAudio) async {
-        if case .started(let stream, _, let scope) = admitted.event {
-            guard isLive(stream) else { return }
+        if case .started(_, _, let scope) = admitted.event {
+            guard isLive(admitted) else { return }
             // A binding refusal keeps queue order and dead-start pruning, but never evicts a child just to refuse.
-            if destination(for: scope) != nil { await makeRoom(for: stream) }
-            guard isLive(stream) else { return }
+            if destination(for: scope) != nil { await makeRoom(for: admitted.admission.startID) }
+            guard isLive(admitted) else { return }
         }
         handle(admitted)
     }
 
     /// The newest start, not shutting down, and not ended by the gate except on its final segment.
-    private func isLive(_ stream: UUID) -> Bool {
+    private func isLive(_ start: AdmittedAudio) -> Bool {
         state.withLock { state in
-            guard !state.shuttingDown, state.newestStart == stream else { return false }
+            guard !state.shuttingDown, state.newestStartID == start.admission.startID else { return false }
+            let stream = start.event.stream
             return !state.queue.contains {
                 if case .ended(stream, let reason) = $0 { reason != .final } else { false }
             }
@@ -1512,9 +1521,10 @@ extension AmbientRightyoRouter {
     fileprivate static func enqueue(_ admitted: AdmittedAudio, into state: inout State) {
         switch admitted.event {
         case .started:
-            let dead = Set(state.queue.compactMap { if case .started(let stream, _, _) = $0 { stream } else { nil } })
-            for index in state.queue.indices.reversed() where dead.contains(state.queue[index].stream) {
-                state.removeQueued(at: index)
+            // The gate ends one start before issuing the next. Everything after a queued start belongs to it.
+            if let old = state.queue.firstIndex(where: { if case .started = $0 { true } else { false } }) {
+                state.queue.removeSubrange(old...)
+                state.queuedAdmissions.removeSubrange(old...)
             }
         case .segment(let stream, _, _):
             guard stream == state.newestStart else { return }
@@ -1528,7 +1538,7 @@ extension AmbientRightyoRouter {
                 return
             }
         }
-        state.queuedPrivacy[state.queue.count] = admitted.privacy
+        state.queuedAdmissions.append(admitted.admission)
         state.queue.append(admitted.event)
         state.peakQueue = max(state.peakQueue, state.queue.count)
     }
@@ -1563,10 +1573,10 @@ extension AmbientRightyoRouter {
     /// had not made is lost (the device moved, #366). Only the newest live start forces anything out.
     /// A superseded child goes first: forcing out one whose stream ended normally (final, idle) could cut off that
     /// device's last utterance.
-    private func makeRoom(for start: UUID) async {
+    private func makeRoom(for startID: UInt64) async {
         while true {
             let victim = state.withLock { state -> (UUID, RightyoAmbientPipeline)? in
-                guard !state.shuttingDown, state.newestStart == start, Self.full(state),
+                guard !state.shuttingDown, state.newestStartID == startID, Self.full(state),
                       let (id, run) = state.runs
                         .filter({ $0.value.retiredAt != nil && !$0.value.reaped && !$0.value.forced })
                         .min(by: { Self.forcingOrder($0.value) < Self.forcingOrder($1.value) }) else { return nil }
@@ -1624,12 +1634,14 @@ extension AmbientRightyoRouter {
         return state.withLock { $0.runs.isEmpty }
     }
 
-    fileprivate func start(_ stream: UUID, connection: UUID, destination: Destination, selection: UUID?) {
+    fileprivate func start(_ stream: UUID, startID: UInt64, connection: UUID,
+                           destination: Destination, selection: UUID?) {
         let (listener, refusal) = state.withLock { state -> (WebSocketListener?, String?) in
             if state.shuttingDown { return (nil, "stopping") }
             if Self.full(state) { return (nil, "busy") }
             // Before the child is made (#941), so it is launched start-private while privacy is parked.
             restorePrivacy(to: connection, in: &state)
+            state.restoredStartID = startID
             return (state.listener?.value, state.listener?.value == nil ? "stopping" : nil)
         }
         guard let listener, refusal == nil else {
@@ -1649,7 +1661,7 @@ extension AmbientRightyoRouter {
             if !Self.admitsPrivacy(connection, in: state) { return "private" }
             let id = register(pipeline, stream: stream, connection: connection, target: destination.target,
                               selection: selection, in: &state)
-            state.active = Active(stream: stream, run: id, pipeline: pipeline, since: Date(),
+            state.active = Active(stream: stream, startID: startID, run: id, pipeline: pipeline, since: Date(),
                                   selection: selection, target: destination.target, binding: destination.binding,
                                   policyGeneration: destination.policyGeneration)
             // Under register's own lock (MM-E): a parked or stale-held mode reaches this child as its first mode write.
@@ -2167,8 +2179,8 @@ extension AmbientRightyoRouter {
             state.runs[old.run]?.retiredAt = state.retirements
             let id = register(pipeline, stream: old.stream, connection: connection, target: old.target,
                               reload: true, selection: old.selection, in: &state)
-            state.active = Active(stream: old.stream, run: id, pipeline: pipeline, since: old.since,
-                                  selection: old.selection, target: old.target, binding: old.binding,
+            state.active = Active(stream: old.stream, startID: old.startID, run: id, pipeline: pipeline,
+                                  since: old.since, selection: old.selection, target: old.target, binding: old.binding,
                                   policyGeneration: old.policyGeneration)
             return .reloaded
         }
