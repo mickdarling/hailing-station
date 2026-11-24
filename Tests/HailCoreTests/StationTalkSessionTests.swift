@@ -30,9 +30,9 @@ struct StationTalkSessionTests {
         let rig = TalkWindowFixture()
         await rig.labs.begin()
         await rig.station.finish(force: true)
-        var escapes = 0
-        await rig.station.interruptTarget { escapes += 1 }
-        #expect(escapes == 1 && rig.capture.stopCount == 0)
+        let escapes = TalkCallCounter()
+        await rig.station.interruptTarget { escapes.value += 1 }
+        #expect(escapes.value == 1 && rig.capture.stopCount == 0)
         #expect(!rig.station.audioSession.deactivating && rig.labs.isRecording)
 
         rig.speech.holdNextStop = true
@@ -109,6 +109,11 @@ struct StationTalkSessionTests {
         #expect(root.contains("stationRoot.sharingTalkSession(talkSession)"))
         #expect(root.contains("talkSession.cleanUpScene { await audioRoutes.sceneBecameInactive() }"))
     }
+}
+
+@MainActor
+final class TalkCallCounter {
+    var value = 0
 }
 
 @MainActor

@@ -40,27 +40,30 @@ struct StationSceneLifetimeTests {
     }
 
     @Test func nativeTranscriptionInitializersAndReevaluationDeferCaptureFactory() {
-        var count = 0
+        let captureCalls = TalkCallCounter()
         let session = ManagedAudioSession(backend: FakeAudioSessionBackend(inputs: []))
-        let makeCapture = { count += 1; return FakeAudioCapture() }
-        let makeView = {
+        let makeCapture: @MainActor @Sendable () -> FakeAudioCapture = {
+            captureCalls.value += 1
+            return FakeAudioCapture()
+        }
+        let makeView: @MainActor () -> NativeTalkWindow = {
             NativeTalkWindow(audioSession: session, makeCapture: makeCapture)
         }
         for _ in 0..<17 {
             let view = makeView()
-            withExtendedLifetime(view) { #expect(count == 0) }
+            withExtendedLifetime(view) { #expect(captureCalls.value == 0) }
         }
         let first = NSHostingView(rootView: makeView())
         render(first)
-        #expect(count == 1)
+        #expect(captureCalls.value == 1)
         for _ in 0..<17 {
             first.rootView = makeView()
             render(first)
-            #expect(count == 1)
+            #expect(captureCalls.value == 1)
         }
         let second = NSHostingView(rootView: makeView())
         render(second)
-        #expect(count == 2)
+        #expect(captureCalls.value == 2)
         withExtendedLifetime((first, second)) {}
     }
 }
