@@ -15,7 +15,7 @@ struct StationConversationDestinationID: Hashable {
 }
 
 extension StationTranscriptionView {
-    static let destinationChangedStatus = "Not sent — destination changed"
+    static let destinationChangedStatus = "Not sent: destination changed"
 
     @ViewBuilder var recoverableTranscript: some View {
         if status == Self.destinationChangedStatus {

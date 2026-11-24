@@ -14,7 +14,7 @@ struct TalkRecordingDestinationTests {
         await finish.value
 
         #expect(rig.deliveries.isEmpty)
-        #expect(rig.card.status == "Not sent — destination changed")
+        #expect(rig.card.status == "Not sent: destination changed")
         #expect(rig.card.finalText == rig.text)
         #expect(!rig.card.isRecording && rig.capture.stopCount == 1 && rig.card.talkSession.owner == nil)
     }
@@ -32,7 +32,7 @@ struct TalkRecordingDestinationTests {
         rig.select(rig.macB)
         rig.show(rig.macB) // Finish is tapped on the updated card this time.
         await rig.card.finish()
-        #expect(rig.card.status == "Not sent — destination changed")
+        #expect(rig.card.status == "Not sent: destination changed")
         await rig.record(on: rig.macB, text: "second fixture")
         await rig.card.finish()
         #expect(rig.deliveries == [rig.macB: ["second fixture"]])
@@ -43,7 +43,7 @@ struct TalkRecordingDestinationTests {
         await rig.record(on: rig.macA)
         rig.card.selectedDestinationID = rig.macB // No view update or generation change yet.
         await rig.card.finish()
-        #expect(rig.deliveries.isEmpty && rig.card.status == "Not sent — destination changed")
+        #expect(rig.deliveries.isEmpty && rig.card.status == "Not sent: destination changed")
     }
 
     @Test func callbackBoundToAnotherTargetCannotDeliverForTheSelectedMac() async {
@@ -51,7 +51,7 @@ struct TalkRecordingDestinationTests {
         await rig.record(on: rig.macA)
         rig.show(.init(endpointID: rig.macA.endpointID, targetID: "other-target"))
         await rig.card.finish()
-        #expect(rig.deliveries.isEmpty && rig.card.status == "Not sent — destination changed")
+        #expect(rig.deliveries.isEmpty && rig.card.status == "Not sent: destination changed")
     }
 
     @Test func returningToABeforeFinishDoesNotReviveItsRecording() async {
@@ -60,7 +60,7 @@ struct TalkRecordingDestinationTests {
         rig.select(rig.macB)
         rig.select(rig.macA)
         await rig.card.finish()
-        #expect(rig.deliveries.isEmpty && rig.card.status == "Not sent — destination changed")
+        #expect(rig.deliveries.isEmpty && rig.card.status == "Not sent: destination changed")
     }
 
     @Test func reconnectingTheSameMacAndTargetDoesNotReviveItsRecording() async {
@@ -68,7 +68,7 @@ struct TalkRecordingDestinationTests {
         await rig.record(on: rig.macA)
         rig.card.connectionGeneration = UUID()
         await rig.card.finish()
-        #expect(rig.deliveries.isEmpty && rig.card.status == "Not sent — destination changed")
+        #expect(rig.deliveries.isEmpty && rig.card.status == "Not sent: destination changed")
     }
 }
 
