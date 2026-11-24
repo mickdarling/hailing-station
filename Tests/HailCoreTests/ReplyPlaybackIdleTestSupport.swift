@@ -73,7 +73,9 @@ final class IdlePlayer: ReplyAudioPlaying, ReplySegmentDiscardReporting, ReplySe
     func pause() {}
     func resume() {}
     func setMuted(_ muted: Bool) {}
-    func replaceQueue(with payloads: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?) {}
+    func replaceQueue(with payloads: [AudioPayload], onPlayed: (@MainActor @Sendable () -> Void)?) {
+        completions = onPlayed.map { [$0] } ?? []
+    }
     func completeReply() { completions.removeFirst()() }
     func endSegmentPause(at deadline: ContinuousClock.Instant, waitingForAudio: Bool, held: Bool) {
         endedSegmentPauses.append(EndedSegmentPause(deadline: deadline, waiting: waitingForAudio, held: held))

@@ -47,6 +47,7 @@ import Testing
                                               connectionGeneration: UUID(), selection: first.selection)
         await controller.update(binding: reconnected, scene: scene)
         #expect(!controller.isOn && !controller.isListening)
+        #expect(controller.listeningState == .stopped(.legacy(.socketBindingLost)))
         #expect(controller.stopReason?.contains("connection changed") == true)
         for later in [AmbientScene.active, .background, .active] {
             await controller.update(binding: reconnected, scene: later)
@@ -67,6 +68,7 @@ import Testing
         await harness.controller.turnOn(for: try binding())
         await harness.controller.update(binding: nil, scene: .active)
         #expect(!harness.controller.isOn && !harness.controller.isListening)
+        #expect(harness.controller.listeningState == .stopped(.legacy(.socketBindingLost)))
         #expect(names(log).last?.fields[.reason] == .token("binding_changed"))
     }
 

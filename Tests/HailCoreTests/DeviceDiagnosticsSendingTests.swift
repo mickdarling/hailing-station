@@ -145,7 +145,9 @@ import Testing
         #expect(try await Self.diagnostics(socket).isEmpty)
         await store.disconnect(host.id)
     }
+}
 
+extension DeviceDiagnosticsSendingTests {
     @Test func ambientStartStopCausesAndHostRefusalsAreRecorded() async throws {
         defer { defaults.removePersistentDomain(forName: suite) }
         let harness = AmbientListeningControllerTests.Harness()
@@ -155,12 +157,14 @@ import Testing
         controller.diagnostics = log
         await controller.turnOn(for: try binding())
         await controller.turnOff()
+        #expect(controller.listeningState == .stopped(.ownerOff))
         harness.sendError = HostConnectionFailure.remote("rate_limited: ambient segments too fast")
         await controller.turnOn(for: try binding())
         try capture.yield(sineBuffer())
         try capture.yield(sineBuffer(offset: 4_800))
         try capture.yield(sineBuffer(offset: 9_600))
         try await waitUntil { await MainActor.run { !controller.isOn } }
+        #expect(controller.listeningState == .stopped(.legacy(.hostRefused)))
         let events = try #require(log.nextBatch()).events
         #expect(events.map(\.name) == [.ambientStart, .ambientStop, .ambientStart, .hostRefusal, .ambientStop])
         #expect(events[1].fields == [.reason: .token("user")])

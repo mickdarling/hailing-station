@@ -96,6 +96,7 @@ import Testing
         #expect(!harness.controller.isListening)
         #expect(harness.controller.handoff == .movedAway(to: "pad"))
         #expect(harness.controller.stopReason == "Listening moved to iPad")
+        #expect(harness.controller.listeningState == .stopped(.movedAway))
         // Not an error: no "stopped listening" alert, and no "host ended listening" text.
         #expect(harness.unexpectedStops.isEmpty)
         #expect(harness.controller.stopReason?.contains("host ended") == false)
@@ -115,6 +116,7 @@ import Testing
         harness.refusal = HostConnectionFailure.remote("not_allowed: ambient busy")
         await harness.controller.turnOn(for: try binding())
         try await harness.feed { !harness.controller.isOn }
+        #expect(harness.controller.listeningState == .stopped(.legacy(.hostRefused)))
         #expect(harness.controller.handoff == nil)
         #expect(harness.unexpectedStops.count == 1)
     }

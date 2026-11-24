@@ -27,6 +27,7 @@ import Testing
         try harness.speak()
         try await waitUntil { await MainActor.run { !controller.isOn } }
         #expect(controller.handoff == .movedAway(to: "pad"))
+        #expect(controller.listeningState == .stopped(.movedAway))
         #expect(controller.pausedReason == nil)
         #expect(harness.unexpected.isEmpty)
     }

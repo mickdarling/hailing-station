@@ -88,6 +88,7 @@ import Testing
 
         await controller.turnOff()
         #expect(!controller.isOn)
+        #expect(controller.listeningState == .stopped(.ownerOff))
         #expect(controller.pausedReason == nil)
         harness.interruption(began: false)
         await harness.steps.release()
@@ -125,6 +126,7 @@ import Testing
 
         await controller.update(binding: try binding(target: "tmux:other"), scene: .active)
         #expect(!controller.isOn)
+        #expect(controller.listeningState == .stopped(.legacy(.socketBindingLost)))
         #expect(controller.pausedReason == nil)
     }
 }

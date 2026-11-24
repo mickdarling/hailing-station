@@ -72,8 +72,8 @@ import Testing
         #expect(rig.player.scheduled.isEmpty)
     }
 
-    @Test(arguments: ["host", "headset", "supersede"])
-    func explicitRetirementStillRejectsExpiredAudio(action: String) {
+    @Test(arguments: ["host", "headset", "pause"])
+    func onlyExplicitStopRejectsExpiredAudio(action: String) {
         let rig = IdleRig(), reply = idleReply()
         rig.controller.ingest(firstAudioText(reply))
         rig.advance(by: .seconds(20))
@@ -84,8 +84,17 @@ import Testing
         } else {
             rig.controller.togglePause()
             rig.controller.ingest(idleAudio(idleReply(), sequence: 0, final: true, byte: 2))
+            #expect(rig.status(of: reply) == ReplyPlaybackController.abandonedStatus)
+            rig.controller.ingest(idleAudio(reply, sequence: 0, final: true, byte: 7))
+            #expect(rig.player.scheduled.isEmpty)
+            rig.controller.togglePause()
+            rig.player.completeReply()
+            #expect(rig.player.scheduled.last?.reply?.id == reply.id)
+            rig.player.completeReply()
+            #expect(rig.status(of: reply) == "Played")
+            return
         }
-        #expect(rig.status(of: reply) == (action == "supersede" ? "Skipped" : "Stopped"))
+        #expect(rig.status(of: reply) == "Stopped")
         #expect(rig.controller.completed.contains(ReplyStreamKey(endpointID: "main", replyID: reply.id)))
         rig.controller.ingest(idleAudio(reply, sequence: 0, final: true, byte: 7))
         rig.advance(by: .seconds(60))
