@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Report the installed owner's activity back to the rail. Preferences disappear with their owning destination.
 struct StationTalkReport: Equatable, Sendable {
-    var phase: TalkCapturePhase
+    var phase: TalkCapturePhase?
     var turn: TurnOutcome?
 }
 
@@ -22,21 +22,17 @@ extension TranscriptionLabView {
     }
 
     func stationDock(_ controls: StationDockControls) -> some View {
-        let phase = TalkCapturePhase(starting: isStarting, recording: isRecording,
-                                     finishing: isFinalizing || finishTask != nil)
-        let state = VoiceDockState.resolve(
-            talk: TalkActivity(phase: phase, sendPending: pendingSendID != nil,
-                               interrupting: isInterrupting || interruptTask != nil),
-            destination: controls.destination, accessories: DockAccessories(
-                escape: onEscape != nil, privacy: true,
-                paste: attachedPaste != nil || (pasteOffer.accepts && onFinalized != nil)))
+        let talk = dockTalk
+        let accessories = DockAccessories(escape: onEscape != nil, privacy: true,
+            paste: attachedPaste != nil || (pasteOffer.accepts && onFinalized != nil))
+        let state = VoiceDockState.resolve(talk: talk, destination: controls.destination(), accessories: accessories)
         return observingPaste(StationTalkDock(
             state: state, caption: transcript, pasteProblem: pasteProblem, hasPaste: attachedPaste != nil,
             status: { if status != "Ready" { statusRow } }, openAttachedPaste: { showingDockPaste = true },
             onIntent: { intent in
                 switch intent {
                 case .talk, .finish:
-                    if state.primaryIntent == intent { toggleTalk() }
+                    dispatchDockPrimary(intent, destination: controls.destination(), accessories: accessories)
                 case .escape:
                     if state.escape == .enabled, let onEscape { startInterrupt(using: onEscape) }
                 case .paste: if state.paste == .enabled { showingDockPaste = true }
@@ -46,7 +42,7 @@ extension TranscriptionLabView {
                 }
             }))
         .preference(key: StationTalkReportKey.self, value: StationTalkReport(
-            phase: phase, turn: TurnOutcome.observed(status: status, failure: pasteRefusalHandling.deliveryFailure)))
+            phase: talk.phase, turn: TurnOutcome.observed(status: status, failure: pasteRefusalHandling.deliveryFailure)))
         .sheet(isPresented: $showingDockPaste) {
             NavigationStack {
                 ScrollView { pastePanel.padding() }

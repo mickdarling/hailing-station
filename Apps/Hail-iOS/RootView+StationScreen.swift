@@ -81,7 +81,12 @@ extension RootView {
         if let destination {
             let shownHost = connections.snapshots[destination.hostID]
             stationTranscription(for: destination).renderingDock(StationDockControls(
-                destination: screenDestination, privacy: {
+                destination: {
+                    guard self.destination?.id == destination.id,
+                          connections.snapshots[destination.hostID]?.connectionGeneration
+                            == shownHost?.connectionGeneration else { return .none }
+                    return screenDestination
+                }, privacy: {
                     if let intent = stationPrivacyIntent(),
                        case .privacy(_, let host, let generation) = intent,
                        host == shownHost?.id, generation == shownHost?.connectionGeneration {

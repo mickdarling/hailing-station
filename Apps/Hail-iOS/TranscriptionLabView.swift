@@ -24,7 +24,7 @@ typealias TranscriptionLabView = StationTranscriptionView
 #endif
 
 struct StationDockControls {
-    let destination: DestinationControlState
+    let destination: () -> DestinationControlState
     let privacy: () -> Void
     let listening: () -> Void
     let routes: () -> Void
