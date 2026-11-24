@@ -5,12 +5,16 @@ extension RootView {
     @ViewBuilder
     var conversationSurface: some View {
         if let destination {
+            let boundID = destination.talkID
             TranscriptionLabView(
                 audioSession: audioRoutes,
                 destinationLabel: destination.label,
-                destinationID: ConversationDestinationID(
-                    endpointID: destination.hostID, targetID: destination.target.id
-                ),
+                destinationID: boundID,
+                selectedDestination: {
+                    guard let current = self.destination, let host = connections.snapshots[current.hostID]
+                    else { return nil }
+                    return (current.talkID, host.connectionGeneration)
+                },
                 replyIDs: threadReplyIDs(for: destination),
                 replyPlaybackStatus: replyStatus(for: destination),
                 selectedReplyID: replyPresentation(for: destination)?.id,
@@ -27,7 +31,7 @@ extension RootView {
                 },
                 onFinalized: { text, pasted in
                     try await connections.sendFinalText(
-                        text, pasted: pasted, host: destination.hostID, targetID: destination.target.id
+                        text, pasted: pasted, host: boundID.endpointID, targetID: boundID.targetID
                     )
                 },
                 pasteOffer: PasteOffer(
@@ -179,4 +183,8 @@ extension RootView {
         UserDefaults.standard.removeObject(forKey: "hailing-station.destination-selection.v1")
         diagnostics.setEnabled(false)
     }
+}
+
+private extension Destination {
+    var talkID: ConversationDestinationID { .init(endpointID: hostID, targetID: target.id) }
 }

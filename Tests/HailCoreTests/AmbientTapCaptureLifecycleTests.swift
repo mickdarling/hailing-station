@@ -111,10 +111,15 @@ import Testing
         let oldConsumer = try #require(rig.view.bufferTask)
         try source.yield(sineBuffer())
         try await waitUntil { await transcriber.consuming }
-        await rig.view.interruptTarget(using: {})
+        let escape = AsyncStream<Void>.makeStream()
+        let interrupt = Task { await rig.view.interruptTarget { escape.continuation.finish() } }
+        for await _ in escape.stream {}
+        await rig.view.begin()
+        #expect(!rig.view.isRecording)
+        await transcriber.releaseConsume()
+        await interrupt.value
         await rig.view.begin()
         let replacement = try #require(rig.view.bufferTask)
-        await transcriber.releaseConsume()
         await oldConsumer.value
         #expect(rig.view.isRecording)
         #expect(rig.view.status == "Listening")

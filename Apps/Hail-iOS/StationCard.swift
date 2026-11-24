@@ -8,6 +8,26 @@ import UserNotifications
 import UIKit
 #endif
 
+struct StationConversationDestinationID: Hashable {
+    let endpointID: HostEndpoint.Identifier
+    let targetID: String
+    typealias Connection = (id: StationConversationDestinationID, generation: UUID)
+}
+
+extension StationTranscriptionView {
+    static let destinationChangedStatus = "Not sent: destination changed"
+
+    @ViewBuilder var recoverableTranscript: some View {
+        if status == Self.destinationChangedStatus {
+            Text(finalText)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            liveTranscript
+        }
+    }
+}
+
 // SwiftPM's native lifecycle adapter compiles the real card, with peripheral panels supplied by its fixture.
 #if !SWIFT_PACKAGE
 extension View {
@@ -103,18 +123,30 @@ extension TranscriptionLabView {
     }
 
     @MainActor
-    func observeResults() async {
-        let coordinator = audioSession as? any AudioSceneCleanupCoordinating
-        coordinator?.installSceneCleanup { await finish(force: true) }
-        defer { coordinator?.removeSceneCleanup() }
-        for await result in transcriber.results {
-            guard result.utteranceID == activeUtteranceID else { continue }
-            if result.isFinal {
-                appendFinal(result.text)
-                volatileText = ""
-            } else {
-                volatileText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
+    func noteDestinationChange(
+        previous: ConversationDestinationID?, current: ConversationDestinationID?
+    ) {
+        guard current != previous else { return }
+        destinationGeneration = UUID()
+        let invalidatedSend = pendingSendID != nil
+        if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
+        clearPendingSend()
+        if invalidatedSend {
+            status = "Ready"
+            return
+        }
+        guard !isStarting, !isRecording, !isFinalizing, !isInterrupting, status != Self.destinationChangedStatus
+        else { return }
+        status = "Ready"
+    }
+
+    func receiveResult(_ result: TranscriptionResult) {
+        guard result.utteranceID == activeUtteranceID else { return }
+        if result.isFinal {
+            appendFinal(result.text)
+            volatileText = ""
+        } else {
+            volatileText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 

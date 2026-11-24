@@ -1,18 +1,11 @@
 import HailCore
 import Observation
 
-@MainActor
-protocol AudioSceneCleanupCoordinating: AnyObject {
-    func installSceneCleanup(_ cleanup: @escaping @MainActor () async -> Void)
-    func removeSceneCleanup()
-}
-
 /// One UI-facing audio-route subscription shared by the station and diagnostics screens.
 @MainActor
 @Observable
-final class AudioRouteModel: AudioInputSelectionProviding, AudioSceneCleanupCoordinating {
+final class AudioRouteModel: AudioInputSelectionProviding {
     let controller: any AudioInputSelectionProviding
-    private var sceneCleanup: (@MainActor () async -> Void)?
     /// Told after every deactivation, so the background keepalive can recover a session released under it (#352).
     @ObservationIgnored var onDeactivate: (@MainActor () -> Void)?
 
@@ -61,10 +54,7 @@ final class AudioRouteModel: AudioInputSelectionProviding, AudioSceneCleanupCoor
         onDeactivate?()
     }
 
-    func installSceneCleanup(_ cleanup: @escaping @MainActor () async -> Void) { sceneCleanup = cleanup }
-    func removeSceneCleanup() { sceneCleanup = nil }
     func sceneBecameInactive() async {
-        await sceneCleanup?()
         if diagnostics.isActive { await deactivate() }
     }
 

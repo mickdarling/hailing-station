@@ -1,11 +1,15 @@
-import AVFAudio
 import HailCore
-import Speech
 import SwiftUI
 
-struct StationConversationDestinationID: Hashable {
-    let endpointID: HostEndpoint.Identifier
-    let targetID: String
+// Only the Talk presentation can read this window dependency. Route tools receive AudioRouteModel.
+private extension EnvironmentValues {
+    @Entry var windowTalkSession: StationTalkSession?
+}
+
+extension View {
+    func sharingTalkSession(_ session: StationTalkSession) -> some View {
+        environment(\.windowTalkSession, session)
+    }
 }
 
 struct SelectedReplyPlaybackObservation: Equatable {
@@ -23,6 +27,7 @@ struct StationTranscriptionView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
     let destinationLabel: String?
     let destinationID: StationConversationDestinationID?
+    let selectedDestination: @MainActor () -> StationConversationDestinationID.Connection?
     let replyIDs: Set<String>
     let replyPlaybackStatus: String?
     let selectedReplyID: String?
@@ -37,10 +42,13 @@ struct StationTranscriptionView: View {
     /// Whether the destination takes pasted text, and the latest paste its Mac refused (#608).
     let pasteOffer: PasteOffer
     let onEscape: (@MainActor () async throws -> Void)?
-
-    @StateObject var audio: StationSceneState<TranscriptionResources>
-    var capture: any AudioCapturing { audio.value.capture }
-    var transcriber: any Transcriber { audio.value.transcriber }
+    @Environment(\.windowTalkSession) private var windowTalk
+    var talkSession: StationTalkSession {
+        guard let windowTalk else { preconditionFailure("Talk requires its window’s session") }
+        return windowTalk
+    }
+    var capture: any AudioCapturing { talkSession.resources.capture }
+    var transcriber: any Transcriber { talkSession.resources.transcriber }
     @State var isRecording = false
     @State var finalText = ""
     @State var volatileText = ""
@@ -59,6 +67,8 @@ struct StationTranscriptionView: View {
     /// so if that send then fails, its failure still shows rather than the arrival's "Reply received".
     @State var answeredSendID: UUID?
     @State var destinationGeneration = UUID()
+    @State var recordingDestination: StationConversationDestinationID.Connection?
+    @State var recordingGeneration: UUID?
     @State var replyTimeoutTask: Task<Void, Never>?
     @State var ownsCaptureSuppression = false
     /// Only what must stay reachable while the conversation is full screen (#819); the station sets it, Labs never.
@@ -82,10 +92,9 @@ struct StationTranscriptionView: View {
 
     init(
         audioSession: any AudioSessionDiagnosticsProviding,
-        capture: @autoclosure @escaping () -> any AudioCapturing = AVAudioEngineCapture(),
-        transcriber: (any Transcriber)? = nil,
         destinationLabel: String? = nil,
         destinationID: StationConversationDestinationID? = nil,
+        selectedDestination: @escaping @MainActor () -> StationConversationDestinationID.Connection? = { nil },
         replyIDs: Set<String> = [],
         replyPlaybackStatus: String? = nil,
         selectedReplyID: String? = nil,
@@ -102,6 +111,7 @@ struct StationTranscriptionView: View {
         self.audioSession = audioSession
         self.destinationLabel = destinationLabel
         self.destinationID = destinationID
+        self.selectedDestination = selectedDestination
         self.replyIDs = replyIDs
         self.replyPlaybackStatus = replyPlaybackStatus
         self.selectedReplyID = selectedReplyID
@@ -113,11 +123,7 @@ struct StationTranscriptionView: View {
         self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
         (self.onFinalized, self.onEscape) = (onFinalized, onEscape)
         self.pasteOffer = pasteOffer
-        _audio = StateObject(wrappedValue: StationSceneState {
-            TranscriptionResources(capture: capture(), transcriber: transcriber ?? Self.defaultTranscriber())
-        })
     }
-
     var body: some View {
         VStack(spacing: compactTalk ? 10 : 18) {
             // The conversation thread shows each request as You (#318), so no separate last-request panel (#429).
@@ -133,12 +139,12 @@ struct StationTranscriptionView: View {
             // so expanding never rebuilds it.
             let row = compactTalk ? AnyLayout(HStackLayout(spacing: 10)) : AnyLayout(VStackLayout(spacing: 18))
             row {
-                talkButton
+                talkButton.disabled(talkSession.owner.map { $0 != captureOwnerID } ?? false)
                 if compactTalk { statusRow; escapeControl }
             }
 
             // Below the button, so its appearing never moves Tap to talk under a finishing tap.
-            liveTranscript
+            recoverableTranscript
 
             // Always mounted (#819 review), so a destination change still clears a paste and a refused one comes
             // back. Full screen it hides only the bare Paste button: an attached paste or a problem still shows.
@@ -150,7 +156,6 @@ struct StationTranscriptionView: View {
         .padding(compactTalk ? 12 : 18)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .navigationTitle("Conversation")
-        .task { await observeResults() }
         .onAppear { restorePlaybackAfterForcedTeardown() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { restorePlaybackAfterForcedTeardown(); announceDeferredStatusIfNeeded() }
@@ -191,10 +196,5 @@ struct StationTranscriptionView: View {
 extension StationTranscriptionView {
     var selectedReplyPlaybackObservation: SelectedReplyPlaybackObservation {
         SelectedReplyPlaybackObservation(id: selectedReplyID, status: replyPlaybackStatus)
-    }
-
-    private static func defaultTranscriber() -> any Transcriber {
-        if #available(iOS 26.0, macOS 26.0, *) { return SpeechAnalyzerTranscriber() }
-        return SFSpeechRecognizerTranscriber()
     }
 }
