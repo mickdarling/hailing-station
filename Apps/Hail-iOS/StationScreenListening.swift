@@ -43,7 +43,9 @@ extension RootView {
                             .accessibilityIdentifier("station.rail.privacy")
                     }
                 }
-                if details.wrappedValue { Text(state.detail).font(.callout) }
+                if details.wrappedValue {
+                    Text(state.detail).font(.callout).accessibilityIdentifier("station.rail.detail")
+                }
                 if let failure = privacySettingsRequest.failure { Text(failure).font(.callout) }
                 if listeningPhase == .listening, let id = destination?.hostID, let media = connections.mediaMode[id] {
                     MediaModeStatusView(status: media)

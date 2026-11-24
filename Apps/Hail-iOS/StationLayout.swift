@@ -159,7 +159,7 @@ extension RootView {
                 threadTargetID: thread.targetID,
                 playback: playback
             )
-            .task { await StationUITestSeed.runIfRequested(into: connections) } // DEBUG UI tests only (#717).
+            .task { await StationUITestSeed.runIfRequested(into: connections, playback: playback) }
         } else if let reply = playback.latest {
             ReplyPlaybackView(reply: reply, playback: playback)
         }
