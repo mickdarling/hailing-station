@@ -3,20 +3,24 @@ import Foundation
 /// Counts legacy spellings throughout production code and stop names in controller files.
 struct StopReferenceSource {
     private static let entryPoints: Set<String> = [
-        "attributeSelectionLoss", "bindingLoss", "block", "cancelForDiagnosticsDismissal", "cancelTransportRestore",
-        "destinationLossReason", "destinationLost", "end", "endBySystem", "forgetSelection", "legacy",
+        "attachStationRoot", "attributeSelectionLoss", "beginEnding", "bindingLoss", "block",
+        "cancelForDiagnosticsDismissal", "cancelTransportRestore", "destinationLossReason", "destinationLost",
+        "disposeStationScene", "end", "endBySystem", "forgetSelection", "legacy",
         "observeSystemEnd", "ownerChangedDestination", "receiveAmbientRefusal", "recordSendFailure", "retire",
-        "retirePendingOwnerStart", "sendError", "sendFailed", "stopForPolicy", "stopListening", "targetLoss",
-        "turnOff", "updateDestination", "veto"
+        "retirePendingOwnerStart", "sendError", "sendFailed", "stationWindowDisposed", "stopCaptureForDrain",
+        "stopForPolicy", "stopForSceneDisposal", "stopListening", "targetLoss", "turnOff", "updateDestination", "veto"
     ]
     private static let names = entryPoints.union(["bindingLossReason"])
         .union(AmbientLegacyStopPathTests.paths.map { String(describing: $0) })
 
-    private static let controllerNames: Set<Substring> = ["AmbientListeningController", "ambientController"]
+    private static let controllerNames: Set<Substring> = [
+        "AmbientListeningController", "ambientController", "attachStationRoot", "disposeStationScene",
+        "stationWindowDisposed", "stopCaptureForDrain"
+    ]
     // A caller can inherit its receiver from another file (e.g. a StationCard extension).
     private static let qualifiedStops: [Substring: Set<Substring>] = [
         "controller": ["turnOff", "destinationLost", "ownerChangedDestination", "cancelForDiagnosticsDismissal",
-                       "receiveAmbientRefusal", "cancelTransportRestore"],
+                       "receiveAmbientRefusal", "cancelTransportRestore", "stopForSceneDisposal"],
         "reconnect": ["block", "veto", "sendFailed"]
     ]
 

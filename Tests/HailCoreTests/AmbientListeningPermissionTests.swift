@@ -50,6 +50,37 @@ import Testing
         #expect(controller.listeningState == .stopped(.legacy(.leftForeground)))
     }
 
+    @Test func sceneDisposalRetiresTheStartAwaitingPermission() async throws {
+        let gate = OpenGate()
+        let capture = FakeAudioCapture()
+        let controller = AmbientListeningController(requestPermission: { await gate.wait(); return true },
+            makeStreamer: { AmbientAudioStreamer(capture: capture, send: $0) },
+            releaseSession: {}, send: { _, _ in })
+        let store = HostConnectionStore()
+        store.ambientController = controller
+        let current = try binding()
+        let start = Task { await controller.turnOn(for: current) }
+        do {
+            try await waitForAudioTestState { await controller.isOn }
+        } catch {
+            await gate.release()
+            await start.value
+            await controller.turnOff()
+            throw error
+        }
+        store.disposeStationScene()
+        #expect(controller.listeningState == .stopped(.sceneDisposed))
+        await gate.release()
+        await start.value
+        #expect(capture.startCount == 0 && store.ambientController == nil)
+
+        let late = AmbientListeningControllerTests.Harness()
+        store.ambientController = late.controller
+        await late.controller.turnOn(for: current)
+        #expect(store.ambientController == nil && late.capture.startCount == 0)
+        await late.controller.turnOff()
+    }
+
     struct Held {
         let controller: AmbientListeningController
         let permission: HeldPermission

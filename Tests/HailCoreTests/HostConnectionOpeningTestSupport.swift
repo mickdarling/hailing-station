@@ -2,7 +2,7 @@ import Foundation
 import HailCore
 
 actor OpenGate {
-    private var released = false
+    private(set) var released = false
     private var waiters: [UnsafeContinuation<Void, Never>] = []
 
     func wait() async {

@@ -29,7 +29,7 @@ enum AmbientListeningState: Equatable, Sendable {
     }
 
     enum StopReason: Equatable, Sendable {
-        case ownerOff, ownerReselect, ownerRemove, ownerDisconnect, privacyStop
+        case ownerOff, ownerReselect, ownerRemove, ownerDisconnect, privacyStop, sceneDisposed
         case policyDenied, microphonePermissionDenied, targetRemoved, capabilityRemoved, unsafeEndpointChange, movedAway
         case legacy(LegacyStopPath)
     }

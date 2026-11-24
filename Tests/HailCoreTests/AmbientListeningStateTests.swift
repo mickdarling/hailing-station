@@ -13,7 +13,7 @@ import Testing
         .preferenceChanged(masksDuringReplies: true), .preferenceChanged(masksDuringReplies: false)
     ]
     static let stops: [State.StopReason] = [
-        .ownerOff, .ownerReselect, .ownerRemove, .ownerDisconnect, .privacyStop, .policyDenied,
+        .ownerOff, .ownerReselect, .ownerRemove, .ownerDisconnect, .privacyStop, .sceneDisposed, .policyDenied,
         .microphonePermissionDenied, .targetRemoved, .capabilityRemoved, .unsafeEndpointChange, .movedAway
     ] + State.LegacyStopPath.allCases.map(State.StopReason.legacy)
 
