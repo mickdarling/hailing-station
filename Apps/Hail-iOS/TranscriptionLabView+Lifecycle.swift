@@ -1,6 +1,5 @@
-import AVFAudio
+import Foundation
 import HailCore
-import Speech
 extension TranscriptionLabView {
     @MainActor
     func begin() async {
@@ -9,6 +8,8 @@ extension TranscriptionLabView {
         guard !Task.isCancelled, scenePhase == .active,
               talkSession.admit(captureOwnerID, receive: receiveResult, cleanup: { await self.finish(force: true) })
         else { startTask = nil; return }
+        recordingDestination = boundDestination
+        recordingGeneration = destinationGeneration
         takeCaptureExclusivity()
         isStarting = true
         hasReceivedAudio = false
@@ -102,7 +103,6 @@ extension TranscriptionLabView {
         isFinalizing = true
         defer { isFinalizing = false }
         status = "Finalizing…"
-        let destinationGenerationAtStart = destinationGeneration
         let finalized = await cleanUp()
         guard !force else {
             status = "Ready"
@@ -121,15 +121,20 @@ extension TranscriptionLabView {
         }
         finalText = text
         volatileText = ""
-        if onFinalized != nil {
-            guard destinationGeneration == destinationGenerationAtStart else {
-                status = "Destination changed — request not sent"
-                return
-            }
-            await send(text, failurePrefix: "Send failed")
-        } else {
+        guard onFinalized != nil else {
             status = "Ready"
+            return
         }
+        guard recordingGeneration == destinationGeneration, let recordingDestination,
+              let current = boundDestination, current == recordingDestination else {
+            status = StationTranscriptionView.destinationChangedStatus
+            return
+        }
+        await send(text, failurePrefix: "Send failed")
+    }
+    private var boundDestination: ConversationDestinationID.Connection? {
+        guard let selected = selectedDestination(), selected.id == destinationID else { return nil }
+        return selected
     }
     @MainActor
     func interruptTarget(using action: @MainActor () async throws -> Void) async {
