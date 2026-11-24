@@ -731,6 +731,10 @@ extension HostConnectionStore {
         // back if the send fails.
         let address = conversation.address(text, endpointID: id, targetID: targetID,
                                            targets: snapshots[id]?.targets ?? [], scope: addressScope(id))
+        let host = snapshots[id]
+        let destination = ConversationEntry.TransportDestination(
+            hostName: host?.endpoint.name ?? id, targetName: host?.targets.first { $0.id == targetID }?.name ?? targetID
+        )
         let sent = conversation.noteSent(text, pasted: pasted?.text, endpointID: id, targetID: targetID)
         do {
             if let pasted {
@@ -743,6 +747,7 @@ extension HostConnectionStore {
             conversation.retractSent(sent)
             throw error
         }
+        conversation.recordTransportCompletion(sent, to: destination)
     }
 
     /// Whether the destination takes pasted text (#608): the Mac advertises `pasted_text` and the target is of a kind
