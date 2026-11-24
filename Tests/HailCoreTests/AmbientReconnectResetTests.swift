@@ -58,6 +58,7 @@ import Testing
         let notice = rig.controller.reconnect.notice?.id
         try await rig.socket.push(.error(code: .notAllowed, message: "ambient busy"))
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.hostRefused)))
         #expect(rig.notices.map(\.id) == [notice, notice])
         #expect(rig.notices.last?.outcome == .failed && rig.unexpected.isEmpty)
         await rig.close()

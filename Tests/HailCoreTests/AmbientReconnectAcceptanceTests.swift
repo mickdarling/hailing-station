@@ -18,6 +18,7 @@ import Testing
         let message = movedAway ? "ambient moved to pad" : "ambient busy elsewhere"
         try await rig.socket.push(.error(code: .notAllowed, message: message))
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(movedAway ? .movedAway : .legacy(.hostRefused)))
         #expect(rig.notices.map(\.id) == [id])
         #expect(rig.notices.last?.outcome == .applied)
         #expect(!rig.controller.reconnect.replacedAppliedNotice)

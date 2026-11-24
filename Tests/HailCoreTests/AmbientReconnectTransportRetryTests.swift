@@ -16,6 +16,7 @@ import Testing
             await rig.controller.turnOff()
         }
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(privacy ? .privacyStop : .ownerOff))
         try await waitUntil { await steps.started == 2 }
         #expect(await steps.durations.last == .seconds(1))
         let notices = rig.notices

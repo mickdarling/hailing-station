@@ -90,17 +90,20 @@ import Testing
         }
     }
 
-    @Test func aNewAudioReplySupersedesPausedPendingAudio() {
+    @Test func aNewAudioReplyPreservesPausedPendingAudio() {
         let rig = IdleRig(), old = idleReply(), new = idleReply()
         rig.controller.ingest(firstAudioText(old))
         #expect(rig.liveDeadlineCount == 1)
         rig.controller.togglePause()
         rig.controller.ingest(idleAudio(new, sequence: 0, final: true, byte: 2))
         rig.advance(by: .seconds(60))
-        #expect(rig.status(of: old) == "Skipped")
-        #expect(rig.abandoned == 0)
+        #expect(rig.status(of: old) == ReplyPlaybackController.abandonedStatus)
+        #expect(rig.abandoned == 1)
         rig.controller.ingest(idleAudio(old, sequence: 0, final: true, byte: 1))
-        #expect(rig.player.scheduled.map(\.bytes.first) == [2])
+        #expect(rig.player.scheduled.isEmpty)
+        rig.controller.togglePause()
+        rig.player.completeReply()
+        #expect(rig.player.scheduled.map(\.bytes.first) == [2, 1])
     }
 
     @Test func repliesHaveIndependentDeadlinesAndDuplicateTextDoesNotExtendThem() {
