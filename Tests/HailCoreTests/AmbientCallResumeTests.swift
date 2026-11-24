@@ -54,6 +54,7 @@ func callEventually(file: StaticString = #fileID, line: UInt = #line,
         #expect(await rig.routeWait.durations == [.milliseconds(200)])
         await rig.routeWait.release()
         try await callEventually { await MainActor.run { !rig.controller.isOn } }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.systemCaptureEnded)))
         #expect(rig.controller.pausedReason == nil)
         await rig.close()
     }
@@ -101,6 +102,7 @@ func callEventually(file: StaticString = #fileID, line: UInt = #line,
         // A synchronous foreground trigger is a barrier through the same resume entry point.
         await rig.controller.update(binding: try binding(), scene: .active)
         #expect(!rig.controller.isOn && rig.fakes.count == 2)
+        #expect(rig.controller.listeningState == .stopped(.ownerOff))
         await rig.close()
     }
 
@@ -131,6 +133,7 @@ extension AmbientCallResumeTests {
         rig.interruptionEnded()
         await rig.controller.update(binding: try rig.currentBinding(), scene: .active)
         #expect(!rig.controller.isOn && rig.capture.startCount == 1)
+        #expect(rig.controller.listeningState == .stopped(.privacyStop))
         await rig.close()
     }
 

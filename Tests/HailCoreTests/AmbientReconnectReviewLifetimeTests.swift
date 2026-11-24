@@ -20,6 +20,7 @@ import Testing
         let before = try await rig.socket.sentFrames().count
         try await rig.feed()
         #expect(!rig.controller.isListening, "A success notice must not keep capture alive after target removal")
+        #expect(rig.controller.listeningState == .stopped(.targetRemoved))
         let later = try await rig.socket.sentFrames().dropFirst(before)
         #expect(later.allSatisfy { if case .audio = $0.payload { return false }; return true },
                 "PCM is still sent to the removed destination")

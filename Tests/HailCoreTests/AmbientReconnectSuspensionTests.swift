@@ -15,6 +15,7 @@ import Testing
         for index in 0..<6 { try rig.capture.yield(sineBuffer(offset: index * 4_800)) }
         let off = Task { await rig.controller.turnOff() }
         try await waitUntil { await MainActor.run { !rig.controller.isOn } }
+        #expect(rig.controller.listeningState == .stopped(.ownerOff))
         try await rig.socket.push(.pong(nonce: nonce))
         await off.value
         try await waitUntil { await MainActor.run {
@@ -38,6 +39,7 @@ import Testing
         // The binding observer ends the old controller while its sender is still draining.
         let draining = Task { await rig.controller.update(binding: nil, scene: .active) }
         try await waitUntil { await MainActor.run { !rig.controller.isOn } }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.socketBindingLost)))
         let (older, olderPing) = try await AmbientSuspensionFixtures.select("tmux:b", rig: rig)
         let (newer, newerPing) = try await AmbientSuspensionFixtures.select("tmux:c", rig: rig)
         try await rig.socket.push(.pong(nonce: newerPing))

@@ -26,6 +26,7 @@ import Testing
         await transport.refuseAudio()
         try await rig.feed()
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(.legacy(.hostRefused)))
         #expect(rig.notices.map(\.id) == [id])
         #expect(!rig.controller.reconnect.replacedAppliedNotice)
         #expect(rig.unexpected.count == 1 && rig.unexpected.first?.contains("ambient busy elsewhere") == true)

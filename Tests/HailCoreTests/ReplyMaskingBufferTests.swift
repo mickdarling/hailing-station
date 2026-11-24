@@ -12,7 +12,7 @@ import Testing
              clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now }) -> DeviceDiagnostics {
         let log = DeviceDiagnostics(defaults: storage ?? defaults, appInfo: [:], clock: clock)
         log.setEnabled(true)
-        _ = log.nextBatch()
+        _ = log.nextReplyMaskingBatch()
         return log
     }
 
@@ -22,14 +22,14 @@ import Testing
         let guarder = AmbientReplyEchoGuard(now: { clock.now })
         guarder.diagnostics = log
         guarder.beginMaskingReport(token, mode: .plain)
-        _ = log.nextBatch()
+        _ = log.nextReplyMaskingBatch()
         guarder.setReplyAudible(true)
         #expect(guarder.silenceIfMasking(try sineBuffer(), capture: token))
         clock.advance(by: .seconds(1))
         guarder.setTapCaptureActive(true)
         #expect(guarder.silenceIfMasking(try sineBuffer(), capture: token))
         guarder.setTapCaptureActive(false)
-        let events = try #require(log.nextBatch()).events
+        let events = try #require(log.nextReplyMaskingBatch()).events
         try #require(events.count == 5)
         #expect(events.map { $0.fields[.masking] } == [.boolean(true), nil, .boolean(false), .boolean(true), nil])
         #expect(events[1].fields[.state] == .token("tap_to_talk_start"))
@@ -51,15 +51,15 @@ import Testing
         guarder.beginMaskingReport(current, mode: .voiceProcessing)
         guarder.setRoutedThroughCapture(true)
         #expect(!guarder.silenceIfMasking(try sineBuffer(), capture: current))
-        _ = log.nextBatch()
+        _ = log.nextReplyMaskingBatch()
         guarder.masksDuringReplies = true
         // Samples still follow the original predicate; only reporting is fenced by the capture token.
         #expect(guarder.silenceIfMasking(try sineBuffer(), capture: old))
         guarder.flushMaskingDiagnostics()
-        #expect(log.nextBatch() == nil)
+        #expect(log.nextReplyMaskingBatch() == nil)
         #expect(guarder.silenceIfMasking(try sineBuffer(), capture: current))
         guarder.endMaskingReport(current)
-        let edges = try #require(log.nextBatch()).events
+        let edges = try #require(log.nextReplyMaskingBatch()).events
         #expect(edges.map { $0.fields[.masking] } == [.boolean(true), .boolean(false)])
     }
 
@@ -75,20 +75,20 @@ import Testing
         let guarder = AmbientReplyEchoGuard(now: { clock.now })
         guarder.diagnostics = first
         guarder.beginMaskingReport(token, mode: .plain)
-        _ = first.nextBatch()
+        _ = first.nextReplyMaskingBatch()
         guarder.setReplyAudible(true)
         #expect(guarder.silenceIfMasking(try sineBuffer(), capture: token))
         clock.advance(by: .seconds(1))
         guarder.diagnostics = second
         guarder.flushMaskingDiagnostics()
-        #expect(second.nextBatch() == nil)
+        #expect(second.nextReplyMaskingBatch() == nil)
         #expect(guarder.silenceIfMasking(try sineBuffer(), capture: token))
         clock.advance(by: .milliseconds(400))
         guarder.endMaskingReport(token)
-        let events = try #require(second.nextBatch()).events
+        let events = try #require(second.nextReplyMaskingBatch()).events
         #expect(events.map(\.name) == [.captureState, .echoGuard, .echoGuard])
         #expect(events.last?.fields[.ms] == .integer(400))
-        #expect(first.nextBatch() == nil)
+        #expect(first.nextReplyMaskingBatch() == nil)
     }
 
     @Test func overflowKeepsTheNewestScalarsAndReportsItsDroppedCount() throws {
@@ -98,7 +98,7 @@ import Testing
         let guarder = AmbientReplyEchoGuard(tail: .zero, now: { captureClock.now })
         guarder.diagnostics = log
         guarder.beginMaskingReport(token, mode: .plain)
-        _ = log.nextBatch()
+        _ = log.nextReplyMaskingBatch()
         // Reuse one buffer; the test drives synchronous transitions without letting the wake task flush.
         let buffer = try sineBuffer()
         for index in 0..<(DeviceDiagnostics.capacity + 17) {
@@ -111,7 +111,7 @@ import Testing
         log.onPending = {
             // Isolate ring overflow from the diagnostics log's separate rate/capacity/send limits.
             recordingClock.advance(by: .seconds(60))
-            while let batch = log.nextBatch() { recorded += batch.events }
+            while let batch = log.nextReplyMaskingBatch() { recorded += batch.events }
         }
         defer { log.onPending = nil }
         guarder.endMaskingReport(token) // Adds one off: 518 transitions, with the newest 500 retained.

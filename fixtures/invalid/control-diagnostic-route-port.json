@@ -1,0 +1,1 @@
+{"id":"00000000-0000-4000-8000-000000001260","payload":{"command":"diagnostic","events":[{"name":"route_change","ts":5,"fields":{"previous_output":"synthetic_device_name"}}]},"source":"terminal","ts":5,"type":"control","v":1}
