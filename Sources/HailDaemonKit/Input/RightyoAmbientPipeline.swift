@@ -394,16 +394,26 @@ extension RightyoAmbientPipeline {
     /// Sequence-aware ambient input only. Suppressed input advances nothing; a later gap remains bounded.
     /// Confirmed-private input keeps its existing in-memory exit recognition, without synthesizing silence.
     func send(audio pcm: Data, sequence: Int) -> (accepted: Bool, gap: AmbientGapFill?) {
+        admit(pcm, byteCount: pcm.count, sequence: sequence)
+    }
+
+    /// Accounts for a withheld segment and its would-be silence prefix without enqueueing either.
+    /// As with send, suppression succeeds without advancing and writer refusal returns false.
+    func withhold(sequence: Int, byteCount: Int) -> Bool {
+        admit(nil, byteCount: byteCount, sequence: sequence).accepted
+    }
+
+    private func admit(_ pcm: Data?, byteCount: Int, sequence: Int) -> (accepted: Bool, gap: AmbientGapFill?) {
         let (result, detail) = duck.withAudioAdmission { allowed, wanted ->
             ((accepted: Bool, gap: AmbientGapFill?), String?) in
             guard allowed else { return ((true, nil), nil) }
-            return enqueue(pcm, sequence: sequence, privateAudio: wanted)
+            return account(pcm, byteCount: byteCount, sequence: sequence, privateAudio: wanted)
         }
         if let detail { gapLog.emit?(detail) }
         return result
     }
 
-    private func enqueue(_ pcm: Data, sequence: Int, privateAudio: Bool)
+    private func account(_ pcm: Data?, byteCount: Int, sequence: Int, privateAudio: Bool)
         -> ((accepted: Bool, gap: AmbientGapFill?), String?) {
         lastForwardedSequence.withLock { progress in
             let now = gapClock()
@@ -412,12 +422,20 @@ extension RightyoAmbientPipeline {
             progress.writtenDuration = max(progress.writtenDuration, elapsed - .seconds(3))
             let gap = privateAudio ? nil : AmbientGapFill(after: progress.last, sequence: sequence,
                                                          budget: elapsed - progress.writtenDuration)
-            guard child.input.write(pcm, leadingSilenceBytes: gap?.bytes ?? 0) else { return ((false, nil), nil) }
+            let prefix = gap?.bytes ?? 0
+            let accepted = if let pcm {
+                child.input.write(pcm, leadingSilenceBytes: prefix)
+            } else {
+                child.input.acceptsWithheld(byteCount: byteCount, leadingSilenceBytes: prefix)
+            }
+            guard accepted else { return ((false, nil), nil) }
             progress.first = progress.first ?? now
-            progress.writtenDuration += .nanoseconds(Int64(pcm.count + (gap?.bytes ?? 0)) * 31_250)
+            let chargedBytes = Int128(byteCount) + Int128(prefix)
+            progress.writtenDuration += .nanoseconds(chargedBytes * 31_250)
             progress.last = max(progress.last ?? sequence, sequence)
-            let detail = gapLog.record(gap, at: now)
-            return ((true, gap.flatMap { $0.bytes > 0 ? $0 : nil }), detail)
+            let enqueuedGap = pcm == nil ? nil : gap
+            let detail = gapLog.record(enqueuedGap, at: now)
+            return ((true, enqueuedGap.flatMap { $0.bytes > 0 ? $0 : nil }), detail)
         }
     }
 

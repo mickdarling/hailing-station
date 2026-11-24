@@ -9,6 +9,7 @@ final class RightyoStdinWriter: Sendable {
         var queue = RightyoPrefixedQueue(), queued = 0, counters = RightyoChildProcess.Counters()
         var streamBytesWritten = 0, inFlightRemaining = 0
         var writing = false, closing = false, closed = false, abandoned = false, failed = false
+        var acceptsInput: Bool { !closing && !failed }
     }
     private let input: Int32
     private let state = Mutex(State())
@@ -33,10 +34,16 @@ final class RightyoStdinWriter: Sendable {
             return (state.streamBytesWritten + pending) / 2
         }
     }
+    private func validSize(byteCount: Int, leadingSilenceBytes: Int) -> Bool {
+        byteCount > 0 && byteCount.isMultiple(of: 2) && byteCount <= timing.backlogBytes
+            && (0...AmbientGapFill.maxBytes).contains(leadingSilenceBytes)
+            && leadingSilenceBytes.isMultiple(of: AmbientGapFill.chunkBytes)
+    }
+    func acceptsWithheld(byteCount: Int, leadingSilenceBytes: Int) -> Bool {
+        validSize(byteCount: byteCount, leadingSilenceBytes: leadingSilenceBytes) && state.withLock { $0.acceptsInput }
+    }
     func write(_ pcm: Data, leadingSilenceBytes: Int = 0) -> Bool {
-        guard !pcm.isEmpty, pcm.count.isMultiple(of: 2), pcm.count <= timing.backlogBytes else { return false }
-        guard (0...AmbientGapFill.maxBytes).contains(leadingSilenceBytes),
-              leadingSilenceBytes.isMultiple(of: AmbientGapFill.chunkBytes) else { return false }
+        guard validSize(byteCount: pcm.count, leadingSilenceBytes: leadingSilenceBytes) else { return false }
         // One queue item: silence cannot be reordered or evicted separately from its following PCM.
         var chunk = pcm
         if leadingSilenceBytes > 0 {
@@ -44,7 +51,7 @@ final class RightyoStdinWriter: Sendable {
             chunk.append(pcm)
         }
         let (accepted, start) = state.withLock { state -> (Bool, Bool) in
-            guard !state.closing, !state.failed else { return (false, false) }
+            guard state.acceptsInput else { return (false, false) }
             state.queue.append(.init(data: chunk, at: DispatchTime.now().uptimeNanoseconds,
                                      silence: leadingSilenceBytes))
             state.queued += chunk.count
