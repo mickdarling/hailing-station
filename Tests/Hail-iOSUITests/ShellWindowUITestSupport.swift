@@ -68,9 +68,21 @@ extension ShellWindowUITests {
         #endif
     }
 
-    private func waitUntilHittable(_ item: XCUIElement) {
-        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: item)
-        XCTAssertEqual(XCTWaiter().wait(for: [ready], timeout: 5), .completed)
+    func waitUntilHittable(_ item: XCUIElement) {
+        XCTAssertTrue(item.wait(for: \.isHittable, toEqual: true, timeout: 5), item.debugDescription)
+    }
+
+    func activateButton(_ identifier: String, in query: XCUIElementQuery) {
+        // AppKit can expose both a toolbar item and its inner button with the same identifier.
+        let matches = query.matching(identifier: identifier)
+        XCTAssertTrue(matches.firstMatch.waitForExistence(timeout: 5), identifier)
+        guard let button = matches.allElementsBoundByIndex.first(where: {
+            $0.wait(for: \.isHittable, toEqual: true, timeout: 5)
+        }) else {
+            XCTFail("No hittable button for \(identifier)")
+            return
+        }
+        activate(button)
     }
 
     func reveal(_ row: XCUIElement, in app: XCUIApplication) {
@@ -90,11 +102,24 @@ extension ShellWindowUITests {
         let marker = element(identifier, in: app)
         XCTAssertTrue(marker.waitForExistence(timeout: 10), identifier)
         let window = app.windows.firstMatch
-        if identifier == "station.connection" { waitUntilHittable(marker) }
+        switch identifier {
+        case "station.connection":
+            waitUntilHittable(marker)
+            waitUntilHittable(app.buttons["station.destination"].firstMatch)
+        case "shell.sessions.placeholder", "station.devices.mac-setup",
+             "station.settings.appearance", "station.redesign.shell":
+            waitUntilHittable(marker)
+        default:
+            break
+        }
         let visible = marker.frame.intersection(window.frame)
         XCTAssertGreaterThan(visible.width, 0, identifier)
         XCTAssertGreaterThan(visible.height, 0, identifier)
-        let attachment = XCTAttachment(screenshot: window.screenshot())
+        attachScreen(name, in: app)
+    }
+
+    func attachScreen(_ name: String, in app: XCUIApplication) {
+        let attachment = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
         attachment.name = "\(device)-\(name)"
         attachment.lifetime = .keepAlways
         add(attachment)

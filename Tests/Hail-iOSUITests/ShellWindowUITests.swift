@@ -11,6 +11,34 @@ final class ShellWindowUITests: XCTestCase {
     }
 
     @MainActor
+    func testStationControlsOpenDestinationPickerAndDevices() {
+        let app = launchShell()
+        let picker = app.buttons["station.destination"].firstMatch
+        waitUntilHittable(picker)
+        #if os(macOS)
+        let viewport = app.scrollViews.containing(.button, identifier: "station.destination").firstMatch
+        XCTAssertTrue(viewport.exists, "The destination picker belongs to the Station detail")
+        let center = CGPoint(x: picker.frame.midX, y: picker.frame.midY)
+        XCTAssertTrue(viewport.frame.contains(center), "The picker must be visible inside the Station scroll view")
+        #endif
+        activate(picker)
+        let prompt = "Choose a Mac, then the target"
+        let instructions = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@ OR value BEGINSWITH %@", prompt, prompt)
+        ).firstMatch
+        XCTAssertTrue(instructions.waitForExistence(timeout: 5), "The destination browser must open")
+        attachScreen("station-destinations", in: app)
+        activateButton("Done", in: app.buttons)
+        XCTAssertTrue(instructions.waitForNonExistence(timeout: 5))
+        screen("station.connection", named: "station-picker-dismissed", in: app)
+
+        let setup = element("station.mac-setup-tool", in: app)
+        reveal(setup, in: app)
+        activate(setup)
+        screen("station.devices.mac-setup", named: "devices-from-station-tools", in: app)
+    }
+
+    @MainActor
     func testSectionDetailsAndSettingsRows() {
         let app = launchShell()
         screen("station.connection", named: "station", in: app)
@@ -22,12 +50,12 @@ final class ShellWindowUITests: XCTestCase {
         screen("station.devices.mac-setup", named: "devices", in: app)
         activate(element("station.devices.mac-setup", in: app))
         screen("station.devices.setup-page", named: "devices-mac-setup", in: app)
-        XCTAssertTrue(app.textFields.firstMatch.exists)
+        waitUntilHittable(app.textFields.firstMatch)
 
         choose("settings", in: app)
         screen("station.settings.appearance", named: "settings", in: app)
         openSetting("station.settings.appearance", shows: "appearance.settings", named: "appearance", in: app)
-        activate(app.buttons["Done"])
+        activateButton("Done", in: app.buttons)
         for (name, entry, page) in Self.settingsPages {
             openSetting(entry, shows: page, named: name, in: app)
             // Change section while a tool is pushed. Returning must open Settings at its root.
@@ -87,7 +115,7 @@ final class ShellWindowUITests: XCTestCase {
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
         XCTAssertEqual(String(describing: toggle.value ?? ""), "1")
         #if os(macOS)
-        toggle.click()
+        activate(toggle)
         #else
         toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
         #endif
@@ -116,7 +144,11 @@ final class ShellWindowUITests: XCTestCase {
 
     @MainActor
     private func toggleSidebar(in app: XCUIApplication, visibleAfter: Bool) {
+        #if os(macOS)
+        activateButton("shell.sidebar.toggle", in: app.windows["station"].toolbars.buttons)
+        #else
         activate(app.buttons["shell.sidebar.toggle"])
+        #endif
         assertSidebar(in: app, visible: visibleAfter)
     }
 
