@@ -7,6 +7,12 @@ extension RootView {
     /// restore exactly what was saved.
     @MainActor
     func withLocalHost(_ saved: [HostEndpoint]?) async -> [HostEndpoint]? {
+        #if DEBUG
+        if let seed = StationScreenSeed.requested {
+            await seed.prepare(connections)
+            return nil
+        }
+        #endif
         #if os(macOS)
         let defaults = UserDefaults.standard
         let offered = defaults.bool(forKey: LocalHostBootstrap.offeredKey)
