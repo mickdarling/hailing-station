@@ -49,10 +49,10 @@ actor AudioSettingsOwnerSpy: AudioInputSelectionProviding {
 @MainActor
 final class NativeAudioSettingsHost {
     private let hosting: NSHostingView<AnyView>
-    private let window: NSWindow
+    private let window: TestHostWindow
 
     init(model: AudioRouteModel, typeSize: DynamicTypeSize = .large) {
-        _ = NSApplication.shared
+        window = TestHostWindow(size: NSSize(width: 480, height: 900))
         let root = NavigationStack {
             AudioSettingsOverview(model: model).environment(HostConnectionStore())
         }
@@ -60,11 +60,7 @@ final class NativeAudioSettingsHost {
         .environment(\.accessibilityEnabled, true)
         .transaction { $0.disablesAnimations = true; $0.animation = nil }
         hosting = NSHostingView(rootView: AnyView(root))
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 900),
-                          styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = hosting
-        window.orderBack(nil)
+        window.mount(hosting)
     }
 
     func render() async {

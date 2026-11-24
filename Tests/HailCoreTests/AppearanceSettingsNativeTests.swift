@@ -13,13 +13,9 @@ struct AppearanceSettingsNativeTests {
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let preferences = ConversationAppearancePreferences(defaults: defaults, platform: .mac)
-        _ = NSApplication.shared
+        let window = TestHostWindow(size: NSSize(width: 900, height: 760))
         let host = NSHostingView(rootView: scene(preferences, scheme: .light))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 760),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = host
-        window.orderBack(nil)
+        window.mount(host)
         defer { window.close() }
 
         // This in-process host publishes selectable preview cells, not the static SwiftUI value label. Assert
@@ -33,7 +29,7 @@ struct AppearanceSettingsNativeTests {
         await render(host)
         #expect(preferences.state.size == 16)
         let larger = try renderedPreviewFrame(host)
-        #expect(larger.height > initial.height)
+        #expect(previewGrew(from: initial, to: larger))
         try export(host, named: "appearance-mac-light-larger")
 
         preferences.apply(.reset)
@@ -44,6 +40,16 @@ struct AppearanceSettingsNativeTests {
         #expect(abs(reset.height - initial.height) < 0.5)
         print("Appearance preview heights: default=\(initial.height), larger=\(larger.height), reset=\(reset.height)")
         try export(host, named: "appearance-mac-dark-default")
+
+        // Give the growth check the wrong font size and measure the same rendered preview.
+        preferences.apply(.smaller)
+        await render(host)
+        let smaller = try renderedPreviewFrame(host)
+        #expect(!previewGrew(from: reset, to: smaller))
+    }
+
+    private func previewGrew(from baseline: NSRect, to updated: NSRect) -> Bool {
+        updated.height > baseline.height
     }
 
     private func scene(_ preferences: ConversationAppearancePreferences, scheme: ColorScheme) -> AnyView {
