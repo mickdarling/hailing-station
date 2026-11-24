@@ -1,6 +1,27 @@
 import HailCore
 import SwiftUI
 
+struct StationSidebar: View {
+    @Binding var selection: StationSection?
+    let session: DestinationLabel?
+    @Environment(\.stationPalette) private var palette
+
+    var body: some View {
+        List(selection: $selection) {
+            StationSidebarBrand().listRowBackground(palette[.sidebar]).selectionDisabled()
+            ForEach(StationSection.allCases) { section in
+                let selected = selection == section
+                Label(section.title, systemImage: section.systemImage)
+                    .foregroundStyle(palette[selected ? .onSidebarSelection : .textSecondary])
+                    .listRowBackground(palette[selected ? .sidebarSelection : .sidebar])
+                    .tag(section)
+                    .accessibilityIdentifier("station.section.\(section.rawValue)")
+            }
+            StationSidebarSessions(session: session)
+        }
+    }
+}
+
 struct StationSidebarBrand: View {
     @Environment(\.stationPalette) private var palette
 
