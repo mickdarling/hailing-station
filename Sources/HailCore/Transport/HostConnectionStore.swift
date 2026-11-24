@@ -38,12 +38,29 @@ public final class HostConnectionStore {
     public var ambientStreaming = false {
         didSet { if oldValue && !ambientStreaming { revokeProactiveSpeech(nil) } }
     }
+    @ObservationIgnored public private(set) var stationSceneDisposed = false
+    private var installedAmbientController: AmbientListeningController?
     /// Retained through card disappearance; recovery is inert until the app attaches its controller (#904).
     public var ambientController: AmbientListeningController? {
-        didSet {
-            ambientController?.reconnect.controller = ambientController
-            ambientController?.reconnect.store = self
+        get { installedAmbientController }
+        set {
+            if stationSceneDisposed {
+                newValue?.stopForSceneDisposal()
+                return
+            }
+            installedAmbientController = newValue
+            newValue?.reconnect.controller = newValue
+            newValue?.reconnect.store = self
         }
+    }
+
+    /// A retired scene cannot install another card's controller, even if its appearance arrives late.
+    public func disposeStationScene() {
+        guard !stationSceneDisposed else { return }
+        stationSceneDisposed = true
+        installedAmbientController?.stopForSceneDisposal()
+        installedAmbientController = nil
+        onAmbientMovedHere = nil
     }
     /// Which overheard turns hosts should send (#398): `off`, `owner` or `everyone`; re-sent to each capable host as it
     /// reaches ready. Sends to one host run in order, so the last choice is the one it keeps.
@@ -911,6 +928,8 @@ public final class AmbientListeningController {
     @ObservationIgnored private let releaseSession: @MainActor () async -> Void
     @ObservationIgnored private var streamer: AmbientAudioStreamer?
     @ObservationIgnored private var session = UUID()
+    /// Also gates owner start tasks queued by a card just before its window was disposed.
+    @ObservationIgnored private var stationSceneDisposed = false
     @ObservationIgnored private var scene = AmbientScene.active
     @ObservationIgnored private var retiredSelection: (generation: UUID, reason: StopReason)?
     @ObservationIgnored private var awaitingPermission = false
@@ -972,7 +991,7 @@ public final class AmbientListeningController {
     }
 
     public func turnOn(for binding: AmbientAudioBinding) async {
-        guard !isOn, scene == .active else { return }
+        guard !stationSceneDisposed, !isOn, scene == .active else { return }
         reconnect.ownerStarted()
         let current = UUID()
         session = current
@@ -1054,9 +1073,18 @@ extension AmbientListeningController {
     }
 
     private func end(_ current: UUID, reason: String?, cause: String, code: String? = nil, stop: StopReason) async {
-        guard let streamer = retire(current, reason: reason, cause: cause, code: code, stop: stop) else { return }
-        await streamer.stop()
-        await release(current)
+        await beginEnding(current, reason: reason, cause: cause, code: code, stop: stop)?.value
+    }
+
+    private func beginEnding(_ current: UUID, reason: String?, cause: String, code: String? = nil,
+                             stop: StopReason) -> Task<Void, Never>? {
+        guard let streamer = retire(current, reason: reason, cause: cause, code: code, stop: stop) else { return nil }
+        let drain = streamer.stopCaptureForDrain()
+        return Task {
+            await drain?.value
+            withExtendedLifetime(streamer) {} // Final audio uses the retiring stream's binding.
+            await release(current)
+        }
     }
 
     private func retire(_ current: UUID, reason: String?, cause: String, code: String? = nil,
@@ -1579,16 +1607,22 @@ public struct DuckModeStatus: Equatable, Sendable {
 /// Transport restore reuses the live capture and the normal resume wire flag (#904).
 extension AmbientListeningController {
     public func turnOff() async {
-        await stopListening(reason: .ownerOff)
+        await stopListening(reason: .ownerOff)?.value
     }
 
     public func cancelForDiagnosticsDismissal() async {
-        await stopListening(reason: .legacy(.diagnosticsDismissed))
+        await stopListening(reason: .legacy(.diagnosticsDismissed))?.value
     }
 
-    private func stopListening(reason stop: StopReason) async {
+    fileprivate func stopForSceneDisposal() {
+        stationSceneDisposed = true
+        guard isOn else { return }
+        _ = stopListening(reason: .sceneDisposed)
+    }
+
+    private func stopListening(reason stop: StopReason) -> Task<Void, Never>? {
         reconnect.block(.ownerStop, stop: stop)
-        await end(session, reason: nil, cause: "user", stop: stop)
+        return beginEnding(session, reason: nil, cause: stop == .sceneDisposed ? "other" : "user", stop: stop)
     }
 
     func ownsAudio(_ streamID: UUID?, binding: AmbientAudioBinding) -> Bool {

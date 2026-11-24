@@ -24,7 +24,10 @@ extension AmbientLegacyStopPathTests {
         "Apps/Hail-iOS/RootView+Settings.swift": ["stopListening": 1, "turnOff": 1],
         "Apps/Hail-iOS/RootView.swift": ["destinationLost": 1, "forgetSelection": 1, "ownerChangedDestination": 1],
         "Apps/Hail-iOS/StationCard.swift": ["end": 1, "turnOff": 1],
-        "Apps/Hail-iOS/StationMenuPublishers.swift": ["turnOff": 1],
+        "Apps/Hail-iOS/StationMenuPublishers.swift": [
+            "attachStationRoot": 4, "disposeStationScene": 1, "stationWindowDisposed": 5, "turnOff": 1
+        ],
+        "Sources/HailCore/AmbientAudioStreamer.swift": ["sendFailed": 2, "stopCaptureForDrain": 2],
         reconnectFile: [
             "block": 16, "cancelTransportRestore": 3,
             "legacy": 11, "privacySendFailed": 2, "privacyUnconfirmed": 6, "replacementFailed": 2, "sendFailed": 2,
@@ -40,14 +43,16 @@ extension AmbientLegacyStopPathTests {
         ],
         "Sources/HailCore/Transport/HostConnectionStore+ProactivePlayback.swift": [:],
         storeFile: [
-            "attributeSelectionLoss": 2, "bindingLoss": 1, "bindingLossReason": 5,
+            "attributeSelectionLoss": 2, "beginEnding": 3, "bindingLoss": 1, "bindingLossReason": 5,
             "block": 5, "cancelForDiagnosticsDismissal": 1, "cancelTransportRestore": 2, "captureStartFailed": 1,
-            "destinationLossReason": 3, "destinationLost": 2, "diagnosticsDismissed": 1, "end": 13,
+            "destinationLossReason": 3, "destinationLost": 2, "diagnosticsDismissed": 1, "disposeStationScene": 1,
+            "end": 12,
             "forgetSelection": 5, "hostRefused": 1, "leftForeground": 3, "legacy": 13, "observeSystemEnd": 2,
             "ownerChangedDestination": 1, "privacySendFailed": 1, "privacyUnconfirmed": 1,
             "receiveAmbientRefusal": 2, "recordSendFailure": 3, "retire": 3, "retirePendingOwnerStart": 2,
             "retriesExhausted": 1, "sendError": 1, "sendFailed": 2, "socketBindingLost": 2, "stopForPolicy": 3,
-            "stopListening": 3, "systemCaptureEnded": 2, "turnOff": 1, "updateDestination": 3, "veto": 7
+            "stopCaptureForDrain": 1, "stopForSceneDisposal": 3, "stopListening": 4,
+            "systemCaptureEnded": 2, "turnOff": 1, "updateDestination": 3, "veto": 7
         ]
     ]
 }

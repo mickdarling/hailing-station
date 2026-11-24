@@ -66,6 +66,7 @@ struct NativeSceneStationContent: View {
 
 @MainActor
 final class NativeSceneAmbientHost {
+    let probe: NativeSceneAmbientProbe
     private let hosting: NSHostingView<AnyView>
     private let window: NSWindow
     private let resourceFactory: NativeSceneResourceFactory
@@ -74,6 +75,7 @@ final class NativeSceneAmbientHost {
 
     init(resources: StationResources, probe: NativeSceneAmbientProbe, width: CGFloat = 760,
          menuStatus: StationMenuStatus? = nil) {
+        self.probe = probe
         NativeShellLaunchContext.install()
         _ = NSApplication.shared
         let factory = NativeSceneResourceFactory(resources: resources)
@@ -104,8 +106,8 @@ final class NativeSceneAmbientHost {
     func visibleText() -> [String] { accessibilityText(hosting) }
     func finish() { window.close() }
 
-    func dispose() async {
-        window.close()
+    func dismantle() async {
+        probe.root = nil
         // NSWindow.close() can keep its content view. Dispose the station's SwiftUI identity as well.
         hosting.rootView = AnyView(EmptyView())
         await render()

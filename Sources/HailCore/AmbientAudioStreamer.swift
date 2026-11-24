@@ -401,9 +401,7 @@ public final class AmbientAudioStreamer {
 
     /// Stops capture, flushes the converter, sends the final segment, and waits for the backlog to drain.
     public func stop() async {
-        guard let pump else { return }
-        capture.stop()
-        await pump.value
+        await stopCaptureForDrain()?.value
     }
 
     private func stopCapture(ifRun current: UUID, finished: Bool = false) {
@@ -463,6 +461,13 @@ public final class AmbientAudioStreamer {
 
 /// Recovering from a send failure on a fresh stream (#287).
 extension AmbientAudioStreamer {
+    /// A window can be disposed synchronously while a socket still holds the final send.
+    func stopCaptureForDrain() -> Task<Void, Never>? {
+        guard let pump else { return nil }
+        capture.stop()
+        return pump
+    }
+
     /// The send error that ended the current or last stream, if any.
     public var failure: (any Error)? { get async { await queue?.failure } }
 
