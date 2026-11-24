@@ -15,7 +15,11 @@ extension AmbientLegacyStopPathTests {
     // The keys pin the entire controller file set, including files with no stop names.
     static let controllerCounts: [String: [String: Int]] = [
         "Apps/Hail-iOS/AudioDiagnosticsView.swift": ["cancelForDiagnosticsDismissal": 1],
+        // Listening settings page: reads the ambient controller only, no stop (#1115).
+        "Apps/Hail-iOS/ListeningSettingsView.swift": [:],
         "Apps/Hail-iOS/RootView+DestinationSelection.swift": ["forgetSelection": 4],
+        // Listening settings page: reads the ambient controller only, no stop (#1115).
+        "Apps/Hail-iOS/RootView+ListeningSettings.swift": [:],
         // The Settings Privacy page's explicit owner stop (#1115).
         "Apps/Hail-iOS/RootView+Settings.swift": ["stopListening": 1, "turnOff": 1],
         "Apps/Hail-iOS/RootView.swift": ["destinationLost": 1, "forgetSelection": 1, "ownerChangedDestination": 1],
