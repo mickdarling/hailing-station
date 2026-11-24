@@ -225,35 +225,19 @@ extension AmbientRightyoRouter {
              detail: (["cleared=\(cleared)", "kept=\(reasons.count - cleared)"] + reasons).joined(separator: " "))
     }
 
-    /// A sign of life from a source a stale verdict excluded (#941, Jarvis: the verdict is provisional): a start
-    /// (normal, `resume` or a take-over) or a segment of its stream, seen under the lock the gate's events are taken
-    /// under, before the event is handled or queued. It counts as a source again. Its own start is private anyway: it
-    /// was never made public.
-    func reapplyOnLife(_ event: AmbientAudioEvent, in state: inout State) {
-        guard !state.staleCleared.isEmpty else { return }
-        switch event {
-        case .started(_, let connection, _): restoreFalseStale(connection, in: &state)
-        case .segment(let stream, _, _):
-            if let connection = state.latest.first(where: { $0.value == stream })?.key {
-                restoreFalseStale(connection, in: &state)
-            }
-        case .ended: break
-        }
-    }
-
     /// A late pong to the probe that judged `source` stale (#941): it was alive, so it counts as a source again, only
     /// while the mark is still for the arming judged.
     func latePong(_ source: PrivacySource) {
         state.withLock { state in
             guard state.staleCleared[source.connection] == source.token else { return }
-            restoreFalseStale(source.connection, in: &state)
+            reapplyOnLife(source.connection, in: &state)
         }
     }
 
     /// Lets a source wrongly judged stale count again, under the caller's lock, while its mark is for the arming it
     /// still holds. Nothing else changes: it stayed private. Logged `ambient_privacy_source_restored reason=false_stale`.
-    func restoreFalseStale(_ connection: UUID, in state: inout State) {
-        guard let mark = state.staleCleared.removeValue(forKey: connection),
+    func reapplyOnLife(_ connection: UUID, in state: inout State) {
+        guard !state.staleCleared.isEmpty, let mark = state.staleCleared.removeValue(forKey: connection),
               mark == state.duck[connection]?.token else { return }
         logLater("ambient_privacy_source_restored", connection: connection, detail: "reason=false_stale")
     }
