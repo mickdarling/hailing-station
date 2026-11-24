@@ -73,21 +73,23 @@ import Testing
     }
 
     @Test(arguments: [false, true])
-    func supersessionRetiresMutedPendingReply(pendingVoiceMute: Bool) {
+    func arrivalDuringPausePreservesMutedPendingReply(pendingVoiceMute: Bool) {
         let (rig, reply) = mutedPendingReply(pendingVoiceMute)
         rig.controller.togglePause()
         let replacement = idleReply()
         rig.controller.ingest(idleAudio(replacement, sequence: 0, final: true, byte: 2))
-        #expect(rig.status(of: reply) == "Skipped")
+        #expect(rig.status(of: reply) == "Received")
+        #expect(rig.controller.isPaused)
         rig.controller.ingest(firstAudioControl(.setReplyMute(muted: false)))
-        if pendingVoiceMute { rig.player.completeReply() } // cancelled old callback cannot finish the replacement
-        rig.player.completeReply()
-        let scheduled = rig.player.scheduled.count
         rig.controller.ingest(firstAudioText(reply))
         rig.controller.ingest(idleAudio(reply, sequence: 0, final: true, byte: 7))
+        rig.controller.togglePause()
+        if pendingVoiceMute { rig.player.completeReply() }
+        rig.player.completeReply()
+        #expect(rig.player.scheduled.last?.reply?.id == reply.id)
+        rig.player.completeReply()
         rig.advance(by: .seconds(60))
-        #expect(rig.player.scheduled.count == scheduled)
-        #expect(rig.status(of: reply) == "Skipped")
+        #expect(rig.status(of: reply) == "Played")
         #expect(rig.abandoned == 0)
     }
 

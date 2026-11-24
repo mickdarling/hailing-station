@@ -20,6 +20,7 @@ func assertPolicyStopped(_ rig: CallReconnectRig, starts: Int, resumed: Bool = f
         !rig.controller.isOn || rig.capture.startCount > starts
     } }
     #expect(!rig.controller.isOn && !rig.controller.isListening && rig.controller.pausedReason == nil)
+    #expect(rig.controller.listeningState == .stopped(.policyDenied))
     #expect(!rig.controller.reconnect.isPending && rig.capture.startCount == starts)
     if resumed {
         let reason = rig.controller.stopReason ?? ""

@@ -24,6 +24,7 @@ import Testing
         await run.steps.release()
         try await waitUntil { await run.steps.pending == 0 }
         #expect(!run.controller.isOn && run.releases == 1 && run.activity == [true, false])
+        #expect(run.controller.listeningState == .stopped(.ownerOff))
     }
 }
 

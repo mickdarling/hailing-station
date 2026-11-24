@@ -31,6 +31,7 @@ import Testing
         await host.render()
         #expect(root.ambientDestinationBinding == nil)
         #expect(!rig.controller.isOn && !rig.controller.isListening && !rig.controller.reconnect.isPending)
+        #expect(rig.controller.listeningState == .stopped(.legacy(.socketBindingLost)))
         let reason = "Stopped: the connection or destination went away."
         #expect(rig.controller.stopReason == reason)
         let startsAfterOwnerChange = rig.capture.startCount
@@ -45,9 +46,7 @@ import Testing
         #expect(rig.capture.startCount == startsAfterOwnerChange)
         #expect(rig.controller.stopReason == reason)
         #expect(host.visibleText().joined(separator: " ").contains(reason))
-        let stops = (log.nextBatch()?.events ?? []).filter { $0.name == .ambientStop }
-        #expect(stops.map { $0.fields[.reason] } == [.token("binding_changed")])
-        #expect(!stops.contains { $0.fields[.reason] == .token("user") })
+        expectBindingChangedStop(in: log)
         await rig.close()
     }
 
@@ -81,6 +80,12 @@ import Testing
         await host.render()
         #expect(rig.controller.isListening && rig.capture.startCount == 1)
         await rig.close()
+    }
+
+    private func expectBindingChangedStop(in log: DeviceDiagnostics) {
+        let stops = (log.nextBatch()?.events ?? []).filter { $0.name == .ambientStop }
+        #expect(stops.map { $0.fields[.reason] } == [.token("binding_changed")])
+        #expect(!stops.contains { $0.fields[.reason] == .token("user") })
     }
 
     private func applyOwnerChange(_ change: OwnerChange, to root: StationRootView) {

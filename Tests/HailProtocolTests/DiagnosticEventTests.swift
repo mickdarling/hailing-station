@@ -96,11 +96,11 @@ import Testing
         }
     }
 
-    @Test func everyTokenFieldHasAClosedVocabularyEndingInOther() {
+    @Test func everyTokenFieldHasAClosedVocabulary() {
         for field in DiagnosticField.allCases {
             #expect(field.tokens.isEmpty == (field.kind != .token), "\(field)")
             if field.kind == .token {
-                #expect(field.tokens.last == "other")
+                #expect(field == .phase ? field.tokens == ["configure", "change"] : field.tokens.last == "other")
                 #expect(Set(field.tokens).count == field.tokens.count)
                 let snake = Set("abcdefghijklmnopqrstuvwxyz0123456789_")
                 #expect(field.tokens.allSatisfy { $0.allSatisfy(snake.contains) })
@@ -171,5 +171,22 @@ import Testing
             return
         }
         #expect(rules.contains(Schema.diagnosticPayloadRule))
+    }
+}
+
+extension DiagnosticEventTests {
+    @Test func routeSnapshotFixtureRoundTripsAndCoversEveryGatedField() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let bytes = try Data(contentsOf: root.appendingPathComponent("fixtures/schema/route-snapshot.example.json"))
+        let frame = try FrameCoding.decode(bytes)
+        guard case .control(.diagnostic(let events)) = frame.payload else {
+            Issue.record("expected diagnostic fixture")
+            return
+        }
+        let fields = Set(events.flatMap { $0.fields.keys }).subtracting([.route, .reason])
+        #expect(fields == DiagnosticLimits.routeSnapshotFields)
+        #expect(try FrameCoding.decode(FrameCoding.encode(frame)) == frame)
+        #expect(DiagnosticLimits.routeSnapshotCapability == "device_diagnostics_route_snapshot")
     }
 }

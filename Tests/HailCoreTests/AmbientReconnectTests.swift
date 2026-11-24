@@ -91,6 +91,7 @@ import Testing
         try await rig.reconnect()
         await rig.controller.destinationLost()
         #expect(!rig.controller.isOn && rig.unexpected.count == 1)
+        #expect(rig.controller.listeningState == .stopped(.legacy(.socketBindingLost)))
         await rig.close()
     }
 }

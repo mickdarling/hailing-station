@@ -127,6 +127,7 @@ import Testing
         // Off: the first stream's teardown is stuck draining behind the held send.
         let teardown = Task { await harness.controller.turnOff() }
         try await waitUntil { await MainActor.run { !harness.controller.isOn } }
+        #expect(harness.controller.listeningState == .stopped(.ownerOff))
         await harness.controller.turnOn(for: current)
         #expect(harness.controller.isListening)
         #expect(harness.activations == 2)
@@ -160,6 +161,7 @@ import Testing
         try #require(harness.captures.first).stop()
         // The session is released after listening turns off, not with it (#394): wait for both.
         try await waitUntil { await MainActor.run { !harness.controller.isOn && harness.releases > 0 } }
+        #expect(harness.controller.listeningState == .stopped(.legacy(.systemCaptureEnded)))
         #expect(!harness.controller.isListening)
         #expect(harness.controller.stopReason?.contains("interrupted") == true)
         #expect(harness.releases == 1)

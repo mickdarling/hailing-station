@@ -3,14 +3,14 @@ import Foundation
 import HailProtocol
 import Testing
 
-/// A shared-player failure must retire the replay ahead of the failed stream too (#825).
+/// Failures of a queued stream must respect Replay ownership of the shared player (#825, #1259).
 @MainActor
 @Suite struct ReplyPlaybackSharedCancelTests {
-    @Test func malformedTailDuringReplayReconcilesSharedCancellation() throws {
+    @Test func malformedQueuedTailLeavesReplayPlaying() throws {
         try checkSharedCancellation(malformed: true)
     }
 
-    @Test func scheduleThrowDuringReplayReconcilesSharedCancellation() throws {
+    @Test func schedulingFailureAfterReplayCancelsOnlyFailedReply() throws {
         try checkSharedCancellation(malformed: false)
     }
 
@@ -25,25 +25,23 @@ import Testing
         controller.replayLatest()
         controller.ingest(formatAudioEvent(failed, codec: .pcm16, byteCount: 2, isFinal: false))
         let failedPresentation = try #require(controller.latest)
-        #expect(controller.playbackOrder.count == 2)
+        #expect(controller.playbackOrder.map(\.replyID) == [replayed.id])
         #expect(controller.isReplyAudioOutputBusy)
 
         if !malformed { player.failingSequence = 1 }
         controller.ingest(formatAudioEvent(
             failed, codec: .pcm16, byteCount: malformed ? 1 : 2, sequence: malformed ? 2 : 1
         ))
-        #expect(player.cancelCount == 1)
-        #expect(controller.activeKey == nil)
+        #expect(player.cancelCount == 0 && controller.activeKey?.replyID == replayed.id)
+        #expect(controller.status(for: replayPresentation) == "Replaying")
+        #expect(player.scheduled.compactMap { $0.reply?.id } == [replayed.id])
+        player.completeNextReply()
+        #expect(player.cancelCount == (malformed ? 0 : 1))
+        #expect(controller.activeKey == nil && !controller.isReplyAudioOutputBusy)
         #expect(controller.playbackOrder.isEmpty && controller.queue.isEmpty && controller.streams.isEmpty)
-        #expect(!controller.isPaused && !controller.isReplyAudioOutputBusy)
-        #expect(controller.status != "Playing" && controller.statusForControls != "Playing")
-        #expect(controller.status(for: replayPresentation) == "Replay failed")
+        #expect(controller.status(for: replayPresentation) == "Played")
         let failureStatus = malformed ? "Audio couldn't be decoded" : "Playback failed"
         #expect(controller.status(for: failedPresentation) == failureStatus)
-        #expect(controller.idleWatch.aheadUntil <= controller.idleNow())
-        player.completeNextReply() // The cancelled replay still delivers its stale completion (#825).
-        #expect(controller.activeKey == nil && !controller.isReplyAudioOutputBusy)
-        #expect(controller.status(for: replayPresentation) == "Replay failed")
         checkFIFORecovery(controller, player: player)
         #expect(controller.status(for: failedPresentation) == failureStatus)
     }

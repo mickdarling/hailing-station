@@ -22,7 +22,7 @@ private final class MaskingDrainerTasks: Sendable {
     func log() -> DeviceDiagnostics {
         let log = DeviceDiagnostics(defaults: defaults, appInfo: [:])
         log.setEnabled(true)
-        _ = log.nextBatch()
+        _ = log.nextReplyMaskingBatch()
         return log
     }
 
@@ -34,7 +34,7 @@ private final class MaskingDrainerTasks: Sendable {
         guarder.beginMaskingReport(token, mode: .plain)
         defer { guarder.endMaskingReport(token) }
         #expect(tasks.count == 1)
-        _ = log.nextBatch()
+        _ = log.nextReplyMaskingBatch()
         let (drains, drained) = AsyncStream<Void>.makeStream(bufferingPolicy: .unbounded)
         var iterator = drains.makeAsyncIterator()
         log.onPending = { drained.yield() }
@@ -45,7 +45,7 @@ private final class MaskingDrainerTasks: Sendable {
             guarder.setReplyAudible(audible)
             #expect(guarder.silenceIfMasking(buffer, capture: token) == audible)
             _ = await iterator.next() // Each next transition starts with an already drained ring.
-            let events = try #require(log.nextBatch()).events
+            let events = try #require(log.nextReplyMaskingBatch()).events
             #expect(events.count == 1)
             #expect(events.first?.fields[.masking] == .boolean(audible))
             #expect(tasks.count == 1) // Counts allocations, not whether a task happened to run yet.
@@ -59,7 +59,7 @@ private final class MaskingDrainerTasks: Sendable {
         guarder.diagnostics = log
         guarder.beginMaskingReport(token, mode: .plain)
         let drainer = try #require(guarder.maskingReportDrainer)
-        _ = log.nextBatch()
+        _ = log.nextReplyMaskingBatch()
         guarder.setReplyAudible(true)
         #expect(guarder.silenceIfMasking(try sineBuffer(), capture: token))
         clock.advance(by: .milliseconds(400))
@@ -71,11 +71,11 @@ private final class MaskingDrainerTasks: Sendable {
             Issue.record("The ended capture's wake stream must be finished")
             return
         }
-        let events = try #require(log.nextBatch()).events
+        let events = try #require(log.nextReplyMaskingBatch()).events
         #expect(events.map { $0.fields[.masking] } == [.boolean(true), .boolean(false)])
         #expect(events.last?.fields[.ms] == .integer(400))
         await drainer.task.value
-        #expect(log.nextBatch() == nil)
+        #expect(log.nextReplyMaskingBatch() == nil)
     }
 
     @Test func aQueuedStaleDrainerCannotFlushAReplacementCapture() async throws {
@@ -91,17 +91,17 @@ private final class MaskingDrainerTasks: Sendable {
         defer { guarder.endMaskingReport(current) }
         #expect(tasks.count == 2)
         #expect(stale.task.isCancelled)
-        _ = log.nextBatch()
+        _ = log.nextReplyMaskingBatch()
         #expect(guarder.silenceIfMasking(try sineBuffer(), capture: current))
         // Invoke the actual callback retained by the old task, simulating a dequeued wake.
         // Stay on this actor so the current drainer cannot flush first and hide a missing fence.
         stale.drain()
         guarder.endMaskingReport(old)
-        #expect(log.nextBatch() == nil)
+        #expect(log.nextReplyMaskingBatch() == nil)
         guarder.endMaskingReport(current)
-        let events = try #require(log.nextBatch()).events
+        let events = try #require(log.nextReplyMaskingBatch()).events
         #expect(events.map { $0.fields[.masking] } == [.boolean(true), .boolean(false)])
         await stale.task.value
-        #expect(log.nextBatch() == nil)
+        #expect(log.nextReplyMaskingBatch() == nil)
     }
 }
