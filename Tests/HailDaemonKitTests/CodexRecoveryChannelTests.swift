@@ -53,17 +53,33 @@ import Testing
         await channel.join()
         #expect(channel.reaped)
     }
-    @Test func terminalProofSurvivesCleanEOFButReadyDoesNot() async throws {
-        let body = #"$_=<STDIN>; $v=decode_json($_); delete $v->{op}; $v->{state}='interrupted'; "#
-                + #"$v->{recovered}=JSON::PP::true; print encode_json($v)."\n";"#
+    @Test(.timeLimit(.minutes(1)), arguments: [CodexRecoveryPhase.interrupted, .ready])
+    func terminalProofSurvivesCleanEOFButReadyDoesNot(_ phase: CodexRecoveryPhase) async throws {
+        let recovered = phase == .interrupted ? "true" : "false"
+        let body = #"$_=<STDIN>; $v=decode_json($_); delete $v->{op}; "#
+                + "$v->{state}='\(phase.rawValue)'; $v->{recovered}=JSON::PP::\(recovered); "
+                + #"print encode_json($v)."\n";"#
         let channel = try CodexRecoveryChannel(command: command(body), request: UUID(), generation: UUID())
+        defer { channel.stop() }
+        let beforePrepare = ContinuousClock.now
         try await channel.send("prepare")
-        let deadline = ContinuousClock.now.advanced(by: .seconds(TestTiming.bound(3)))
-        let report = try await channel.wait(for: [.interrupted], until: deadline)
-        #expect(report.recovered)
-        await channel.join()
+        await withTaskCancellationHandler { await channel.join() } onCancel: { channel.stop() }
+        try Task.checkCancellation()
         #expect(channel.reaped)
-        channel.stop()
+        // EOF has been processed. The waiter only gets to inspect it after its deadline.
+        let deadline = ContinuousClock.now
+        if phase == .interrupted {
+            let report = try await channel.wait(for: [.interrupted], until: deadline)
+            #expect(report.state == .interrupted && report.recovered)
+            await #expect(throws: CodexRecoveryFault.timeout) {
+                try await channel.wait(for: [.interrupted], until: beforePrepare)
+            }
+        } else {
+            #expect(channel.report == nil)
+            await #expect(throws: CodexRecoveryFault.stopped) {
+                try await channel.wait(for: [.ready], until: deadline)
+            }
+        }
     }
     @Test(arguments: ["{bad}\n", "{"])
     func terminalWithInvalidTrailingOutputNeverGrantsRecovery(_ tail: String) async throws {

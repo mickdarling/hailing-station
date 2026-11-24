@@ -59,10 +59,9 @@ import Testing
         #expect(rig.abandoned == history.replies.count)
     }
 
-    @Test(arguments: ["host", "headset", "supersede"])
-    func explicitRetirementCoversEveryExpiredReplyAfterOverflow(action: String) {
+    @Test(arguments: ["host", "headset", "pause"])
+    func onlyExplicitStopRetiresExpiredRepliesAfterOverflow(action: String) {
         let history = ExpiredAudioHistory(), rig = history.rig
-        let replacement = idleReply()
         #expect(rig.status(of: history.oldest) == "Skipped", "overflow already retired this reply")
         if action == "host" {
             rig.controller.ingest(firstAudioControl(.stopPlayback))
@@ -70,20 +69,29 @@ import Testing
             rig.controller.stopPlayback(from: nil)
         } else {
             rig.controller.togglePause()
-            rig.controller.ingest(idleAudio(replacement, sequence: 0, final: true, byte: 2))
+            rig.controller.ingest(idleAudio(idleReply(), sequence: 0, final: true, byte: 2))
+            #expect(rig.controller.expiredFirstAudio.count == rig.controller.firstAudioClaimLimit)
+            for reply in history.replies {
+                rig.controller.ingest(idleAudio(reply, sequence: 0, final: true, byte: 7))
+            }
+            #expect(rig.player.scheduled.isEmpty)
+            rig.controller.togglePause()
+            for _ in history.replies { rig.player.completeReply() }
+            #expect(rig.player.scheduled.count == history.replies.count)
+            #expect(rig.player.scheduled.dropFirst().map { $0.reply?.id } == history.replies.dropFirst().map(\.id))
+            return
         }
         #expect(rig.controller.expiredFirstAudio.isEmpty)
         #expect(history.replies.allSatisfy {
             rig.controller.completed.contains(ReplyStreamKey(endpointID: "main", replyID: $0.id))
         })
         #expect(history.replies.dropFirst().allSatisfy {
-            rig.status(of: $0) == (action == "supersede" ? "Skipped" : "Stopped")
+            rig.status(of: $0) == "Stopped"
         })
         for reply in history.replies {
             rig.controller.ingest(idleAudio(reply, sequence: 0, final: true, byte: 7))
         }
-        #expect(rig.player.scheduled.allSatisfy { $0.reply?.id == replacement.id })
-        #expect(rig.player.scheduled.count == (action == "supersede" ? 1 : 0))
+        #expect(rig.player.scheduled.isEmpty)
         #expect(rig.abandoned == history.replies.count && rig.liveDeadlineCount == 0)
     }
 }

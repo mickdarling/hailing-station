@@ -42,6 +42,7 @@ import Testing
             for _ in 0..<6 { try rig.capture.yield(sineBuffer()) }
             #expect(rig.capture.startCount == 1 && !rig.controller.isListening)
             #expect(rig.controller.stopReason == AmbientRefusal.callPolicyStopReason)
+            #expect(rig.controller.listeningState == .stopped(.policyDenied))
             #expect(try await audioFrames(rig.socket).count == sent)
             #expect(!rig.controller.reconnect.isPending && !rig.controller.reconnect.canResumeCapture)
         }

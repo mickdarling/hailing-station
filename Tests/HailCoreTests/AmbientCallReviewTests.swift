@@ -24,6 +24,7 @@ import Testing
         } else {
             await rig.routeWait.release()
             try await callEventually { await MainActor.run { !rig.controller.isOn } }
+            #expect(rig.controller.listeningState == .stopped(.legacy(.systemCaptureEnded)))
         }
         await rig.streamers[0].stop() // Drain every supplied buffer and final tail before asserting.
         #expect(await rig.sent.payloads.isEmpty)
@@ -100,6 +101,7 @@ import Testing
         try await callEventually { await MainActor.run { !rig.controller.isOn } }
         let reason = "listening stopped: host address changed during call"
         #expect(rig.controller.stopReason == reason)
+        #expect(rig.controller.listeningState == .stopped(.unsafeEndpointChange))
         #expect(rig.notices.last?.text == reason || rig.unexpected.contains(reason))
         rig.interruptionEnded()
         await rig.microphoneRetry.release()

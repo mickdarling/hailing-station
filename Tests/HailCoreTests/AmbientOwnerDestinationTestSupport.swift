@@ -30,6 +30,7 @@ final class OwnerDestinationRun {
 
     func expectDestinationLoss() {
         #expect(!rig.controller.isOn && !rig.controller.isListening && rig.controller.binding == nil)
+        #expect(rig.controller.listeningState == .stopped(.legacy(.socketBindingLost)))
         #expect(rig.controller.stopReason == Self.reason)
         #expect(rig.unexpected == [Self.reason])
     }
