@@ -12,7 +12,7 @@ import Testing
     func log() -> DeviceDiagnostics {
         let log = DeviceDiagnostics(defaults: defaults, appInfo: [:])
         log.setEnabled(true)
-        _ = log.nextBatch()
+        _ = log.nextReplyMaskingBatch()
         return log
     }
 
@@ -38,7 +38,7 @@ import Testing
         clock.advance(by: .milliseconds(1))
         #expect(!guarder.silenceIfMasking(try sineBuffer(), capture: token))
         guarder.endMaskingReport(token)
-        let edges = (log.nextBatch()?.events ?? []).filter { $0.fields[.masking] != nil }
+        let edges = (log.nextReplyMaskingBatch()?.events ?? []).filter { $0.fields[.masking] != nil }
         #expect(edges.map { $0.fields[.masking] } == [.boolean(true), .boolean(false)])
         #expect(edges.map { $0.fields[.reason] } == [.token(reason), .token(reason)])
         #expect(edges.allSatisfy { $0.fields[.capture] == .token(reason == "plain_capture" ? "plain" : "vpio") })
@@ -56,7 +56,7 @@ import Testing
         guarder.setRoutedThroughCapture(true)
         #expect(!guarder.silenceIfMasking(try sineBuffer(), capture: token))
         guarder.endMaskingReport(token)
-        let events = try #require(log.nextBatch()).events
+        let events = try #require(log.nextReplyMaskingBatch()).events
         #expect(events.map(\.name) == [.captureState])
         #expect(events.first?.fields == [.capture: .token("vpio")])
     }
@@ -74,7 +74,7 @@ import Testing
         guarder.masksDuringReplies = true
         #expect(guarder.silenceIfMasking(try sineBuffer(), capture: current))
         guarder.endMaskingReport(current)
-        let edges = try #require(log.nextBatch()).events.filter { $0.fields[.masking] != nil }
+        let edges = try #require(log.nextReplyMaskingBatch()).events.filter { $0.fields[.masking] != nil }
         #expect(edges.map { $0.fields[.masking] } == Array(repeating: [.boolean(true), .boolean(false)], count: 3)
             .flatMap { $0 })
         #expect(edges.map { $0.fields[.reason] } == ["plain_capture", "plain_capture", "reply_not_routed",
@@ -93,7 +93,7 @@ import Testing
         var iterator = stream.makeAsyncIterator()
         _ = await iterator.next()
         capture.stop()
-        let edges = try #require(log.nextBatch()).events.filter { $0.fields[.masking] != nil }
+        let edges = try #require(log.nextReplyMaskingBatch()).events.filter { $0.fields[.masking] != nil }
         #expect(edges.map { $0.fields[.masking] } == [.boolean(true), .boolean(false)])
         #expect(edges.allSatisfy { $0.fields[.capture] == .token("other") })
     }
@@ -113,7 +113,7 @@ import Testing
         rig.clock.advance(by: .milliseconds(400))
         #expect(!rig.echoGuard.silenceIfMasking(try sineBuffer(), capture: token))
         rig.echoGuard.endMaskingReport(token)
-        let events = try #require(log.nextBatch()).events
+        let events = try #require(log.nextReplyMaskingBatch()).events
         #expect(events.map(\.name) == [.captureState, .echoGuard, .replyPlaybackStart, .echoGuard,
                                       .replyPlaybackEnd, .echoGuard, .echoGuard])
         #expect(events.map { $0.fields[.masking] } == [nil, .boolean(true), nil, nil, nil, nil, .boolean(false)])
@@ -127,17 +127,17 @@ extension ReplyMaskingDiagnosticsTests {
         let guarder = AmbientReplyEchoGuard(now: { clock.now })
         guarder.diagnostics = log
         guarder.beginMaskingReport(token, mode: .plain)
-        _ = log.nextBatch()
+        _ = log.nextReplyMaskingBatch()
         guarder.setReplyAudible(true)
         #expect(guarder.silenceIfMasking(try sineBuffer(), capture: token))
         log.setEnabled(false)
         log.setEnabled(true)
-        _ = log.nextBatch()
+        _ = log.nextReplyMaskingBatch()
         guarder.flushMaskingDiagnostics()
-        #expect(log.nextBatch() == nil) // The pending edge belongs to the old opt-in generation.
+        #expect(log.nextReplyMaskingBatch() == nil) // The pending edge belongs to the old opt-in generation.
         #expect(guarder.silenceIfMasking(try sineBuffer(), capture: token))
         guarder.flushMaskingDiagnostics()
-        let resumed = try #require(log.nextBatch()).events
+        let resumed = try #require(log.nextReplyMaskingBatch()).events
         #expect(resumed.map(\.name) == [.captureState, .echoGuard])
         #expect(resumed.last?.fields[.masking] == .boolean(true))
         log.setEnabled(false)
@@ -145,12 +145,12 @@ extension ReplyMaskingDiagnosticsTests {
         clock.advance(by: .milliseconds(400))
         #expect(!guarder.silenceIfMasking(try sineBuffer(), capture: token))
         log.setEnabled(true)
-        _ = log.nextBatch()
+        _ = log.nextReplyMaskingBatch()
         guarder.flushMaskingDiagnostics()
-        #expect(log.nextBatch() == nil) // No activity recorded while off is revived on enable.
+        #expect(log.nextReplyMaskingBatch() == nil) // No activity recorded while off is revived on enable.
         #expect(!guarder.silenceIfMasking(try sineBuffer(), capture: token))
         guarder.flushMaskingDiagnostics()
-        #expect(try #require(log.nextBatch()).events.map(\.name) == [.captureState])
+        #expect(try #require(log.nextReplyMaskingBatch()).events.map(\.name) == [.captureState])
         guarder.endMaskingReport(token)
     }
 
@@ -160,7 +160,7 @@ extension ReplyMaskingDiagnosticsTests {
         let guarder = AmbientReplyEchoGuard(now: { clock.now })
         guarder.diagnostics = log
         guarder.beginMaskingReport(token, mode: .plain)
-        _ = log.nextBatch()
+        _ = log.nextReplyMaskingBatch()
         guarder.setReplyAudible(true)
         #expect(guarder.silenceIfMasking(try sineBuffer(), capture: token))
         clock.advance(by: .seconds(1))
@@ -170,8 +170,14 @@ extension ReplyMaskingDiagnosticsTests {
         clock.advance(by: .milliseconds(400))
         #expect(!guarder.silenceIfMasking(try sineBuffer(), capture: token))
         guarder.endMaskingReport(token)
-        let events = try #require(log.nextBatch()).events
+        let events = try #require(log.nextReplyMaskingBatch()).events
         #expect(events.map(\.name) == [.echoGuard, .echoGuard])
         #expect(events.last?.fields[.ms] == .integer(1_400))
+    }
+}
+
+extension DeviceDiagnostics {
+    func nextReplyMaskingBatch() -> DiagnosticBatch? {
+        nextBatch(for: [DiagnosticLimits.capability, DiagnosticLimits.replyMaskingCapability])
     }
 }

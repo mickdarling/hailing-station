@@ -60,11 +60,25 @@ public final class ReplyPlaybackController {
     /// A reply starting or ending claims or frees the headset's pause (`+Headset`).
     var activeKey: ReplyStreamKey? {
         didSet {
-            if oldValue != activeKey { clearSegmentBoundary() }
+            // A Replay of a completed reply owns the player without a live stream. Reserve its
+            // FIFO turn so drain and the idle watch both wait for the player's completion.
+            if let activeKey, streams[activeKey] == nil, queue.first != activeKey {
+                queue.insert(activeKey, at: 0)
+                watchHeadIfChanged()
+            }
+            if oldValue != activeKey {
+                if activeKey != stopMuteWindow?.key { stopMuteWindow = nil }
+                clearSegmentBoundary()
+            }
             if (oldValue == nil) != (activeKey == nil) { replyActivityChanged() }
         }
     }
-    var playbackGeneration: UInt = 0 { didSet { clearSegmentBoundary() } }
+    var playbackGeneration: UInt = 0 {
+        didSet {
+            stopMuteWindow = nil
+            clearSegmentBoundary()
+        }
+    }
     public var segmentSettings = ReplySegmentSettings.saved()
     public internal(set) var segmentPause: ReplySegmentPause?
     public internal(set) var lastSegmentYield: ReplySegmentPause?
@@ -77,6 +91,7 @@ public final class ReplyPlaybackController {
     var presentationStatuses: [String: String] = [:]
     /// The head stream's idle watch, its injectable clock and scheduler, and its diagnostics hook (#469, `+Idle`).
     @ObservationIgnored let proactive = ProactiveReplyPlaybackState()
+    @ObservationIgnored var pausedAudioBudget = PausedReplyAudioBudget()
     @ObservationIgnored var idleWatch = ReplyIdleWatch()
     @ObservationIgnored var firstAudio: [ReplyStreamKey: ReplyIdleWatch] = [:] // arrival deadlines (#825)
     @ObservationIgnored var firstAudioByEndpoint: [HostEndpoint.Identifier: Set<ReplyStreamKey>] = [:]
@@ -94,6 +109,7 @@ public final class ReplyPlaybackController {
     @ObservationIgnored var pendingMuteAfter: ReplyStreamKey? { // a waiting voice mute (#404, `+Stop`)
         didSet { cancelMutedFirstAudio() }
     }
+    @ObservationIgnored var stopMuteWindow: (key: ReplyStreamKey, deadline: ContinuousClock.Instant)?
     public init(player: any ReplyAudioPlaying) {
         self.player = player
         observeAudioInterruptions(on: .default)
@@ -120,7 +136,7 @@ public final class ReplyPlaybackController {
         let key = ReplyStreamKey(endpointID: event.endpointID, replyID: descriptor.id)
         guard !completed.contains(key) else { return }
         cancelFirstAudio(for: [key])
-        guard !refuseUnplayableAudio(audio, event: event, descriptor: descriptor, key: key) else { return }
+        guard retainAudioWhilePaused(audio, event: event, descriptor: descriptor, key: key) else { return }
         var stream = streams[key] ?? ReplyStreamState()
         if let existing = stream.segments[audio.sequence], existing != audio {
             setPresentationStatus("Conflicting audio segment refused", for: key)
@@ -140,11 +156,13 @@ public final class ReplyPlaybackController {
                 ? "Waiting for audio" : "Queued"
         }
     }
+}
+extension ReplyPlaybackController {
     func playbackFinished(_ key: ReplyStreamKey, generation: UInt) {
         guard generation == playbackGeneration,
               let index = playbackOrder.firstIndex(of: key) else { return }
         if proactive.identities[key] != nil { proactive.cancelWatch?(); proactive.cancelWatch = nil }
-        setPresentationStatus("Played", for: key)
+        if streams[key]?.audioNotKeptWhilePaused != true { setPresentationStatus("Played", for: key) }
         playbackOrder.remove(at: index)
         if activeKey == key { activeKey = playbackOrder.first }
         if queue.first == key {
@@ -157,40 +175,56 @@ public final class ReplyPlaybackController {
             status = queue.isEmpty ? (isMuted ? "Muted" : "Played") : "Waiting for audio"
         }
     }
-    func drain() {
-        guard prepareDrain() else { return }
+    func drain(afterStop: Bool = false) {
+        let ready = prepareDrain()
+        if afterStop, let key = queue.first, !key.isAnnouncement, !isMuted {
+            // Promotion starts the window even when the head is waiting for frame zero.
+            stopMuteWindow = (key, idleNow() + .milliseconds(100))
+        }
+        guard ready else { return }
         guard !isCaptureSuppressed, !isPaused else {
             status = isCaptureSuppressed ? "Paused while listening" : "Paused"
             return
         }
         while let key = queue.first, var stream = streams[key],
-              let segment = stream.segments[stream.nextSequence] {
+              let segment = nextRetainedSegment(in: stream) {
             let beginsPlayback = stream.nextSequence == 0 && !playbackOrder.contains(key)
             guard beginPlaybackIfNeeded(key, begins: beginsPlayback) else { return }
-            let generation = playbackGeneration
-            let onPlayed = completion(for: segment, key: key, generation: generation)
             do {
-                try player.schedule(segment, onPlayed: onPlayed)
+                try schedule(segment, for: key)
             } catch {
                 lastPlaybackError = error as NSError
                 failPlayback(for: key)
                 setPresentationStatus(Self.playbackFailed, for: key)
-                drain()
+                drain(afterStop: afterStop)
                 return
             }
-            stream.nextSequence += 1
+            stream.nextSequence = segment.sequence + 1
             streams[key] = stream
             noteScheduled(segment)
-            setPresentationStatus(nil, for: key)
+            if !stream.audioNotKeptWhilePaused { setPresentationStatus(nil, for: key) }
             status = playingStatus
             if segment.isSegmentEnd { syncIdleHold(); return }
             guard segment.isFinal else { continue }
-            if !key.isAnnouncement { // Replay replays the last reply, never an announcement (#825).
-                lastAudio = (0..<stream.nextSequence).compactMap { stream.segments[$0] }
+            if !key.isAnnouncement, let audio = retainedReplayAudio(in: stream) {
+                // Replay replays the last complete reply, never an announcement or text-only reply.
+                lastAudio = audio
                 lastKey = key
             }
             completed.insert(key)
             return
+        }
+    }
+
+    private func schedule(_ segment: AudioPayload, for key: ReplyStreamKey) throws {
+        let generation = playbackGeneration
+        let onPlayed = completion(for: segment, key: key, generation: generation)
+        guard stopMuteWindow?.key == key, segment.sequence == 0, !segment.isFinal else {
+            return try player.schedule(segment, onPlayed: onPlayed)
+        }
+        try player.schedule(segment) { [weak self] in
+            if let self, playbackGeneration == generation, stopMuteWindow?.key == key { stopMuteWindow = nil }
+            onPlayed?()
         }
     }
 }

@@ -8,6 +8,7 @@ import Testing
         try await run.refusePrivateSelection()
         let rig = run.rig
         try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+        #expect(rig.controller.listeningState == .stopped(.policyDenied))
         let notice = try #require(rig.controller.reconnect.notice)
         #expect(notice.outcome == .blocked)
         #expect(notice.reason == .reauthorizationNeeded)

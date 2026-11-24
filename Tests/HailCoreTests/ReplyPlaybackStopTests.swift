@@ -1,5 +1,5 @@
 import Foundation
-import HailCore
+@testable import HailCore
 import HailProtocol
 import Testing
 
@@ -40,6 +40,31 @@ import Testing
         controller.ingest(audio(reply(), sequence: 0, final: true, byte: 40, endpoint: "other"))
         controller.ingest(stop())
         #expect(player.scheduled.map(\.bytes.first) == [10, 40])
+    }
+
+    @Test func mutePreservesReplayWhenStopLeavesWaitingHeadInPlace() async throws {
+        let rig = PausedReplyRig()
+        let start = ContinuousClock.now
+        rig.controller.idleNow = { start }
+        var other = idleReply()
+        other.hostID = "other-mac"
+        rig.controller.ingest(idleAudio(other, sequence: 1, final: true, byte: 21, endpoint: "other"))
+        let local = idleReply()
+        rig.ingest(local, byte: 10)
+        rig.controller.ingest(firstAudioControl(.stopPlayback))
+        #expect(rig.status(local) == "Stopped")
+
+        rig.controller.idleNow = { start + .milliseconds(10) }
+        rig.controller.ingest(firstAudioControl(.setReplyMute(muted: true)))
+        #expect(rig.controller.isMuted && rig.player.muted)
+        rig.controller.ingest(idleAudio(other, sequence: 0, final: false, byte: 20, endpoint: "other"))
+        #expect(rig.player.mutedWhenScheduled == [true, true])
+        try await rig.player.playNext()
+        try await rig.player.playNext()
+
+        rig.controller.ingest(firstAudioControl(.setReplyMute(muted: false)))
+        rig.controller.replayLatest()
+        #expect(rig.player.pending.map(\.payload.bytes.first) == [20, 21])
     }
 
     @Test func aStopWithNothingPlayingChangesNothing() {

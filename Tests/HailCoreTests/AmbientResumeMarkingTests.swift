@@ -33,6 +33,7 @@ import Testing
         await harness.controller.turnOn(for: try binding())
 
         try await harness.feed { !harness.controller.isOn }
+        #expect(harness.controller.listeningState == .stopped(.movedAway))
         #expect(harness.delays == [.seconds(1)])
         #expect(harness.controller.handoff == .movedAway(to: "pad"))
         #expect(harness.unexpectedStops.isEmpty)

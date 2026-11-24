@@ -63,7 +63,7 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         let wasPlaying = node.isPlaying && engine.isRunning
         try prepare()
         segmentScheduled = payload.isSegmentEnd
-        schedule(buffers, onPlayed: onPlayed, segmentEnd: payload.isSegmentEnd)
+        schedule(buffers, onPlayed: frameCompletion(for: payload, onPlayed: onPlayed), segmentEnd: payload.isSegmentEnd)
         let wasCatchingUp = playout.isCatchingUp
         guard playout.queued(buffers.map { Self.duration(of: [$0]) }, payload: payload) else {
             heldDuration += Self.duration(of: buffers) // Held: a stalled reply plays on once it catches up (#825).
@@ -136,8 +136,7 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
         node.play()
     }
 
-    /// Every buffer reports when it has played, so a queue that runs dry mid-reply is seen (#825); the last also
-    /// fires `onPlayed`, including when a stop flushes it.
+    /// Every buffer reports when it has played, so a queue that runs dry mid-reply is seen (#825).
     private func schedule(
         _ buffers: [AVAudioPCMBuffer], onPlayed: (@MainActor @Sendable () -> Void)?, segmentEnd: Bool = false
     ) {
@@ -215,6 +214,18 @@ public final class PCM16AudioPlayer: ReplyAudioPlaying {
 
 /// Smooth stall recovery (#825): the player holds a reply whose queue ran dry until it catches up.
 extension PCM16AudioPlayer {
+    /// Ordinary first-frame callbacks report rendered audio. Capture the generation after prepare() has chosen
+    /// the engine. Segment markers already check it before pausing, and finals advance the queue even on a flush.
+    func frameCompletion(
+        for payload: AudioPayload, onPlayed: (@MainActor @Sendable () -> Void)?
+    ) -> (@MainActor @Sendable () -> Void)? {
+        guard payload.sequence == 0, !payload.isFinal, !payload.isSegmentEnd, let onPlayed else { return onPlayed }
+        let generation = playoutGeneration
+        return { [weak self] in
+            if self?.playoutGeneration == generation { onPlayed() }
+        }
+    }
+
     func endSegmentPause(at deadline: ContinuousClock.Instant, waitingForAudio: Bool, held: Bool) {
         guard segmentPaused else { return }
         segmentPaused = false
@@ -243,7 +254,7 @@ extension PCM16AudioPlayer {
     }
 
     /// The queue is dropped: completions from before never count, and nothing is held.
-    fileprivate func dropPlayout() {
+    func dropPlayout() {
         let discardedSegment = segmentScheduled
         segmentScheduled = false
         let wasCatchingUp = playout.isCatchingUp

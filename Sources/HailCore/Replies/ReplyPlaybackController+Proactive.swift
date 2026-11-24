@@ -32,7 +32,7 @@ extension ReplyPlaybackController {
 
     func enqueueStreamIfNeeded(_ key: ReplyStreamKey, descriptor: ReplyDescriptor) {
         guard streams[key] == nil else { return }
-        if descriptor.sessionUpdateID == nil { supersedePausedReplies() }
+        // Pause preserves the current reply and FIFO; only an explicit stop discards them (#1259).
         queue.append(key)
     }
 
@@ -49,11 +49,17 @@ extension ReplyPlaybackController {
     }
 
     func prepareDrain() -> Bool {
-        guard admitProactiveHead() else { return false }
+        var previousHead: ReplyStreamKey?
+        repeat {
+            finishTextOnlyPausedHeads()
+            applyPendingMuteIfDue()
+            previousHead = queue.first
+            // Admission can retire a Replay or promote an ordinary reply. Check the new head on its own turn.
+            guard admitProactiveHead() else { return false }
+        } while previousHead != queue.first
         watchHeadIfChanged() // before any segment of a new head is scheduled (#469)
         guard segmentBoundary == nil else { return false }
         dropAbandonedHold()
-        applyPendingMuteIfDue()
         return true
     }
 
@@ -117,9 +123,13 @@ extension ReplyPlaybackController {
         return true
     }
 
-    /// Check before an existing proactive buffer can become audible, including synchronous UI restoration paths.
-    /// Pause/mute are intentionally omitted here because the caller is restoring precisely that owner control.
+    /// Return false when restoring a control requires a fresh drain. For an active buffer, validate its
+    /// admission against current capture and policy before the caller resumes or unmutes the player.
     func prepareProactiveAudibility() -> Bool {
+        // With no active buffer to restore, unmute must drain the waiting update after the player is unmuted.
+        if activeKey == nil, isMuted, !isPaused, let head = queue.first, proactive.identities[head] != nil {
+            return false
+        }
         guard let key = activeKey, let identity = proactive.identities[key] else { return true }
         guard let epoch = proactive.activity?.quietEpoch, identity.activityEpoch == epoch,
               proactivePolicyAllows(key), proactive.captureSafe?() == true,

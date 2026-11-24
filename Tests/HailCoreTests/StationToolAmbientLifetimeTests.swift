@@ -71,6 +71,13 @@ import SwiftUI
         }
         #expect(root.destination == nil)
         #expect(!rig.controller.isOn && !rig.controller.isListening && rig.released == 1)
+        let reason: AmbientListeningState.StopReason = switch loss {
+        case .hostRemoval: .ownerRemove
+        case .targetDeselection: .legacy(.socketBindingLost)
+        case .targetRemoval: .targetRemoved
+        case .hostDisconnect: .ownerDisconnect
+        }
+        #expect(rig.controller.listeningState == .stopped(reason))
         let stops = (log.nextBatch()?.events ?? []).filter { $0.name == .ambientStop }
         #expect(stops.count == 1 && stops.first?.fields[.reason] == .token("binding_changed"))
         await rig.close()

@@ -93,4 +93,5 @@ private func refuseRefreshedSelection(_ rig: AmbientReconnectRig) async throws {
         capabilities: ["ping", "stream_audio", "set_privacy"], deviceName: "Synthetic")))
     try await rig.socket.push(.targets([rig.target]))
     try await waitUntil { await MainActor.run { !rig.controller.isOn && rig.released == 1 } }
+    #expect(rig.controller.listeningState == .stopped(.capabilityRemoved))
 }
