@@ -19,10 +19,12 @@ public struct DockAccessories: Equatable, Sendable {
     public var escape: Bool
     /// The host has a privacy switch.
     public var privacy: Bool
+    public var privacyEnabled: Bool
     /// The talk owner takes pasted text with its next request.
     public var paste: Bool
 
-    public init(escape: Bool, privacy: Bool, paste: Bool) {
+    public init(escape: Bool, privacy: Bool, paste: Bool, privacyEnabled: Bool = true) {
+        self.privacyEnabled = privacyEnabled
         (self.escape, self.privacy, self.paste) = (escape, privacy, paste)
     }
 }
@@ -92,7 +94,7 @@ public struct VoiceDockState: Equatable, Sendable {
             button: primaryButton(talk: talk, destination: destination),
             showsCaption: phase.map { $0 != .idle } ?? false,
             escape: item(offered: accessories.escape, usable: !escapeBusy),
-            privacy: item(offered: accessories.privacy, usable: true),
+            privacy: item(offered: accessories.privacy, usable: accessories.privacyEnabled),
             paste: item(offered: accessories.paste, usable: !talk.sendPending))
     }
 

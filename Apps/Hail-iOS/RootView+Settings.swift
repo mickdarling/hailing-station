@@ -157,7 +157,7 @@ extension PrivacySettingsOwner {
         }
     }
 
-    private func requestPrivacy(_ on: Bool, host: HostEndpoint.Identifier, generation: UUID) async {
+    func requestPrivacy(_ on: Bool, host: HostEndpoint.Identifier, generation: UUID) async {
         let current = privacySettingsState()
         guard !current.privacy.pending else { return }
         let request = UUID()
