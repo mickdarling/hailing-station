@@ -68,7 +68,7 @@ struct NativeSceneStationContent: View {
 final class NativeSceneAmbientHost {
     let probe: NativeSceneAmbientProbe
     private let hosting: NSHostingView<AnyView>
-    private let window: NSWindow
+    private let window: TestHostWindow
     private let resourceFactory: NativeSceneResourceFactory
 
     var resourceFactoryCalls: Int { resourceFactory.calls }
@@ -77,7 +77,7 @@ final class NativeSceneAmbientHost {
          menuStatus: StationMenuStatus? = nil) {
         self.probe = probe
         NativeShellLaunchContext.install()
-        _ = NSApplication.shared
+        window = TestHostWindow(size: NSSize(width: width, height: 620))
         let factory = NativeSceneResourceFactory(resources: resources)
         resourceFactory = factory
         hosting = NSHostingView(rootView: AnyView(StationRootView(selectionStore: RootSelectionStore(),
@@ -85,11 +85,7 @@ final class NativeSceneAmbientHost {
             .environment(\.scenePhase, .active)
             .environment(\.accessibilityEnabled, true)
             .transaction { $0.disablesAnimations = true; $0.animation = nil }))
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 620),
-                          styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = hosting
-        window.orderBack(nil)
+        window.mount(hosting)
     }
 
     /// Flush actual view updates and queued MainActor observer tasks, without elapsed-time waits or sleeps.
