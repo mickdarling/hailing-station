@@ -1,5 +1,3 @@
-public import Foundation
-
 extension RailHost {
     /// Connection and handoff observations accompany the privacy observation used by the controls.
     @MainActor public init(

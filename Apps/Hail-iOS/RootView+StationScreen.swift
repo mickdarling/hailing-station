@@ -12,9 +12,15 @@ extension RootView {
     }
 
     private var redesignedStation: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { tick in
+            stationScreen(privacy: stationPrivacy(at: tick.date))
+        }
+    }
+
+    private func stationScreen(privacy: StationScreenPrivacy) -> some View {
         StationScreen(hasDestination: destination != nil, needsRecovery: needsStationRecovery,
             header: { screenHeader }, listening: { phase, details in
-                stationRail(talk: phase, details: details)
+                stationRail(talk: phase, details: details, privacy: privacy)
                 ambientListeningSurface.stationCollapsed(!details.wrappedValue)
             }, pane: { details, recovery, review in
                 StationConversationPane(hasThread: chatThread != nil, needsSetup: stationAvailability == .unconfigured,
@@ -22,7 +28,9 @@ extension RootView {
                     fallback: { if destination == nil { conversationSurface } }, tools: { stationTools },
                     openDevices: openDevices, showsTools: details || destination == nil,
                     showsRecovery: recovery, reviewRecovery: review)
-            }, dock: { listening, routes in screenDock(showListening: listening, showRoutes: routes) },
+            }, dock: { listening, routes in
+                screenDock(privacy: privacy, showListening: listening, showRoutes: routes)
+            },
             routes: { audioSettingsOverview }, recoveryState: recoveryState,
             inspectConnection: openDevices, chooseDestination: { showingDestinations = true })
             #if os(macOS)
@@ -59,10 +67,10 @@ extension RootView {
     }
 
     @ViewBuilder
-    private func screenDock(showListening: @escaping () -> Void, showRoutes: @escaping () -> Void) -> some View {
+    private func screenDock(privacy: StationScreenPrivacy, showListening: @escaping () -> Void,
+                            showRoutes: @escaping () -> Void) -> some View {
         if let destination {
             let generation = connections.snapshots[destination.hostID]?.connectionGeneration
-            let privacy = stationPrivacy()
             let stillDisplayed = {
                 self.destination == destination && connections.snapshots[destination.hostID]?.connectionGeneration
                     == generation

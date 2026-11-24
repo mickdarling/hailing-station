@@ -8,12 +8,14 @@ enum StationScreenSeed: String {
     case ready, offline, refused, held
 
     @MainActor static var requested: Self? {
+        #if os(macOS) || targetEnvironment(simulator)
         #if os(macOS)
         guard Bundle.main.bundleIdentifier == "com.mickdarling.Hail-macOS-shell-tests" else { return nil }
-        #elseif !targetEnvironment(simulator)
-        return nil
         #endif
         return Self(arguments: ProcessInfo.processInfo.arguments, flags: StationRedesignLaunch.flags)
+        #else
+        return nil
+        #endif
     }
 
     init?(arguments: [String], flags: StationRedesignFlags) {
