@@ -15,16 +15,18 @@ struct StationConversationDestinationID: Hashable {
 }
 
 extension StationTranscriptionView {
-    static let destinationChangedStatus = "Not sent: destination changed"
-
     @ViewBuilder var recoverableTranscript: some View {
-        if status == Self.destinationChangedStatus {
-            Text(finalText)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        if talkStatus == .destinationChanged {
+            unsentTranscript
         } else {
             liveTranscript
         }
+    }
+
+    var unsentTranscript: some View {
+        Text(finalText)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -82,9 +84,9 @@ extension TranscriptionLabView {
 
     @MainActor
     func prepareCaptureAuthorization() async -> Bool {
-        status = "Requesting microphone and speech access…"
+        talkStatus = .message("Requesting microphone and speech access…")
         guard await requestHailPermissions() else {
-            status = "Microphone and speech recognition permissions are required."
+            talkStatus = .message("Microphone and speech recognition permissions are required.")
             releaseCaptureExclusivityAfterWork()
             return false
         }
@@ -119,7 +121,7 @@ extension TranscriptionLabView {
     func markAudioReceived() {
         guard !hasReceivedAudio else { return }
         hasReceivedAudio = true
-        status = "Receiving audio"
+        talkStatus = .message("Receiving audio")
     }
 
     @MainActor
@@ -132,12 +134,12 @@ extension TranscriptionLabView {
         if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
         clearPendingSend()
         if invalidatedSend {
-            status = "Ready"
+            talkStatus = .ready
             return
         }
-        guard !isStarting, !isRecording, !isFinalizing, !isInterrupting, status != Self.destinationChangedStatus
+        guard !isStarting, !isRecording, !isFinalizing, !isInterrupting, talkStatus != .destinationChanged
         else { return }
-        status = "Ready"
+        talkStatus = .ready
     }
 
     func receiveResult(_ result: TranscriptionResult) {

@@ -25,7 +25,7 @@ extension TranscriptionLabView {
         do {
             try await quietReplyAudio()
             try Task.checkCancellation()
-            status = "Preparing on-device speech model…"
+            talkStatus = .message("Preparing on-device speech model…")
             try await audioSession.activate()
             let utteranceID = try await transcriber.start()
             activeUtteranceID = utteranceID
@@ -33,14 +33,14 @@ extension TranscriptionLabView {
             guard scenePhase == .active else { throw CancellationError() }
             let buffers = try capture.start()
             isRecording = true
-            status = "Listening"
+            talkStatus = .message("Listening")
             bufferTask = Task { await consumeCapture(buffers, utteranceID: utteranceID) }
         } catch is CancellationError {
             await handleStartCancellation()
         } catch {
             _ = await cleanUp()
             releaseCaptureExclusivityAfterWork()
-            status = "Could not start: \(error.localizedDescription)"
+            talkStatus = .message("Could not start: \(error.localizedDescription)")
         }
     }
     @MainActor
@@ -59,7 +59,7 @@ extension TranscriptionLabView {
             })
         } catch {
             guard activeUtteranceID == utteranceID else { return } // Escape may replace capture while consume awaits.
-            status = "Capture failed: \(error.localizedDescription)"
+            talkStatus = .message("Capture failed: \(error.localizedDescription)")
         }
     }
     @MainActor
@@ -102,32 +102,32 @@ extension TranscriptionLabView {
         guard !isInterrupting, !isFinalizing, force || isRecording || bufferTask != nil else { return }
         isFinalizing = true
         defer { isFinalizing = false }
-        status = "Finalizing…"
+        talkStatus = .message("Finalizing…")
         let finalized = await cleanUp()
         guard !force else {
-            status = "Ready"
+            talkStatus = .ready
             return
         }
         guard !isForcedTeardown else {
             await audioSession.deactivate()
-            status = "Ready"
+            talkStatus = .ready
             return
         }
         releaseCaptureExclusivityAfterWork()
         let text = finalized.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            status = "Nothing heard"
+            talkStatus = .message("Nothing heard")
             return
         }
         finalText = text
         volatileText = ""
         guard onFinalized != nil else {
-            status = "Ready"
+            talkStatus = .ready
             return
         }
         guard recordingGeneration == destinationGeneration, let recordingDestination,
               let current = boundDestination, current == recordingDestination else {
-            status = StationTranscriptionView.destinationChangedStatus
+            talkStatus = .destinationChanged
             return
         }
         await send(text, failurePrefix: "Send failed")
@@ -161,9 +161,9 @@ extension TranscriptionLabView {
         }
         do {
             try await action()
-            status = "Escape sent"
+            talkStatus = .message("Escape sent")
         } catch {
-            status = "Escape failed: \(error.localizedDescription)"
+            talkStatus = .message("Escape failed: \(error.localizedDescription)")
         }
         if discardedUtterance { await transcriber.cancel() }
         await pendingStart?.value
@@ -177,7 +177,7 @@ extension TranscriptionLabView {
             await discardCapture()
         } else {
             _ = await cleanUp()
-            status = "Ready"
+            talkStatus = .ready
         }
         releaseCaptureExclusivityAfterWork()
     }

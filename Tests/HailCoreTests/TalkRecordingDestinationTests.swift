@@ -4,6 +4,20 @@ import Testing
 
 @MainActor
 struct TalkRecordingDestinationTests {
+    @Test func staleDockFinishPublishesTheUnsentRecording() async throws {
+        let rig = RecordingFixture()
+        await rig.record(on: rig.macA)
+        rig.select(rig.macB)
+        let finish = try #require(rig.card.dispatchDockPrimary(.finish, destination: .none,
+            accessories: DockAccessories(escape: false, privacy: false, paste: false)))
+        await finish.value
+
+        #expect(rig.deliveries.isEmpty)
+        #expect(rig.card.talkStatus == .destinationChanged)
+        #expect(rig.card.status == "Not sent: destination changed")
+        #expect(rig.card.finalText == rig.text)
+    }
+
     @Test func finishQueuedOnAClosesCaptureWithoutDeliveringAfterSwitchToB() async {
         let rig = RecordingFixture()
         await rig.record(on: rig.macA)
