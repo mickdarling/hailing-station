@@ -6,15 +6,9 @@ import UIKit
 import AppKit
 #endif
 
-/// The station's native navigation (#1115): a sidebar split view on Mac and iPad, tabs on iPhone. It renders
-/// `StationNavigationState` and sends `StationNavigationIntent`s; it owns no controller, connection, audio,
-/// privacy, recipient or target. The production owners stay in the station root above it.
-///
-/// The station page is never unmounted by navigation. Its capture view finishes capture and clears a pending send
-/// when it disappears, so the page is not a child of any navigation container: a tab switch, another section or a
-/// collapsed iPad split view going back to its sidebar would each remove it. It is drawn once, above the whole
-/// arrangement, over a transparent slot in the detail. While no slot is shown it stays mounted, collapsed and out of
-/// the accessibility tree. iPhone uses a native tab bar rather than a `TabView` for the same reason.
+/// Renders navigation state and sends intents to the station root (#1115).
+/// The capture surface stays mounted when a tool opens. On Mac it lives in the persistent detail column.
+/// On iOS the detail itself can disappear (compact iPad Back), so the station tracks a slot from outside it.
 struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     let state: StationNavigationState
     let idiom: StationNavigationIdiom
@@ -28,6 +22,7 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     #endif
 
     var body: some View {
+        #if os(iOS)
         arrangement
             .overlayPreferenceValue(StationSlotKey.self) { slot in
                 GeometryReader { proxy in
@@ -40,17 +35,31 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
                         .stationCollapsed(frame == nil)
                         .onChange(of: frame == nil) { _, _ in announceLayoutChange() }
                 }
+                .allowsHitTesting(slot != nil)
             }
+        #else
+        arrangement
+        #endif
     }
 
-    /// The idiom never changes while the app runs, so this never swaps one arrangement for the other.
     @ViewBuilder
     private var arrangement: some View {
         switch state.layout(for: idiom) {
         case .split(let sidebarVisible):
             split(sidebarVisible: sidebarVisible)
+        #if os(iOS)
         case .tabs(let tabBarVisible):
-            tabs(tabBarVisible: tabBarVisible)
+            VStack(spacing: 0) {
+                pages
+                if tabBarVisible {
+                    StationTabBar(selection: state.section) { send(.select($0)) }
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .inspector(isPresented: inspectorPresented) { inspector() }
+        #else
+        case .tabs: pages
+        #endif
         }
     }
 
@@ -63,10 +72,21 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
                         .accessibilityIdentifier("station.section.\(section.rawValue)")
                 }
             }
+            .toolbar(removing: isCollapsed ? nil : .sidebarToggle)
             .navigationTitle("Hailing Station")
             .navigationSplitViewColumnWidth(min: 180, ideal: 215, max: 260)
         } detail: {
             pages
+                .toolbar {
+                    if !isCollapsed {
+                        ToolbarItem(placement: .navigation) {
+                            Button(sidebarVisible ? "Hide Sidebar" : "Show Sidebar", systemImage: "sidebar.left") {
+                                send(.setSidebarHidden(sidebarVisible))
+                            }
+                            .accessibilityIdentifier("shell.sidebar.toggle")
+                        }
+                    }
+                }
                 .inspector(isPresented: inspectorPresented) {
                     inspector()
                         .inspectorColumnWidth(min: 240, ideal: 275, max: 340)
@@ -75,38 +95,28 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
         .navigationSplitViewStyle(.balanced)
     }
 
-    @ViewBuilder
-    private func tabs(tabBarVisible: Bool) -> some View {
-        #if os(iOS)
-        VStack(spacing: 0) {
-            pages
-            // Full conversation hides the bar; the dock stays in the page's own safe area.
-            if tabBarVisible {
-                StationTabBar(selection: state.section) { send(.select($0)) }
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        // At compact width the system presents the inspector as a sheet.
-        .inspector(isPresented: inspectorPresented) { inspector() }
-        #else
-        // The Mac always resolves to a split view; this keeps the type total on every platform.
-        pages
-        #endif
-    }
-
-    /// The selected section's page, or, for the station, the slot the station page is drawn over.
+    /// Scope Mac navigation and hit testing to the detail. Only the visible tool section creates a tool stack.
     private var pages: some View {
         ZStack {
+            #if os(macOS)
+            let hidden = state.section != .station
+            detail(.station)
+                .stationAccessibilityScope()
+                .safeAreaInset(edge: .bottom, spacing: 0) { dock(.station).stationAccessibilityScope() }
+                .environment(\.stationAccessibilityHidden, hidden)
+                .stationCollapsed(hidden)
+                .onChange(of: hidden) { _, _ in announceLayoutChange() }
+            #else
             if state.section == .station {
-                // The slot keeps the split view's own bar, which holds its Back and sidebar controls (Codex review
-                // of #1148, round 3). Its bounds start below that bar, so the station page never covers them.
+                // The slot starts below the iPad split view's Back and sidebar controls (#1148).
                 Color.clear
                     .anchorPreference(key: StationSlotKey.self, value: .bounds) { $0 }
                     .navigationTitle(StationSection.station.title)
                     .accessibilityHidden(true)
-            } else {
-                page(state.section)
-                    .id(state.section)
+            }
+            #endif
+            if state.section != .station {
+                page(state.section).id(state.section)
             }
         }
     }
@@ -120,14 +130,11 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
                 detail(section)
             }
         }
-        // The dock is hosted apart from the root too, so it hides with the station. It's empty until the dock step,
-        // which must pass #1183's tree sweep; if this modifier doesn't reach the inset there, as it didn't reach the
-        // build footer, that step must find another way that keeps the dock mounted.
+        // SwiftUI hosts the inset separately from the root (#1183).
         .safeAreaInset(edge: .bottom, spacing: 0) { dock(section).stationAccessibilityScope() }
     }
 
-    /// Tells assistive technologies the tree changed, so a station shown again is read afresh. In #1183's iPad test,
-    /// without it, the station shown again stayed out of the tree.
+    /// Refresh the restored station in the accessibility tree (#1183).
     private func announceLayoutChange() {
         #if os(iOS)
         UIAccessibility.post(notification: .layoutChanged, argument: nil)
@@ -164,7 +171,7 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     }
 
     private func columnVisibility(_ sidebarVisible: Bool) -> Binding<NavigationSplitViewVisibility> {
-        Binding(get: { sidebarVisible ? .automatic : .detailOnly }, set: { visibility in
+        Binding(get: { sidebarVisible ? .all : .detailOnly }, set: { visibility in
             send(.setSidebarHidden(visibility == .detailOnly))
         })
     }
@@ -181,13 +188,8 @@ private struct StationSlotKey: PreferenceKey {
 
 #Preview("Navigation shell · synthetic") {
     @Previewable @State var state = StationNavigationState()
-    #if os(iOS)
-    let idiom: StationNavigationIdiom = UIDevice.current.userInterfaceIdiom == .pad ? .pad : .phone
-    #else
-    let idiom = StationNavigationIdiom.mac
-    #endif
     StationNavigationShell(
-        state: state, idiom: idiom,
+        state: state, idiom: StationRedesignLaunch.idiom,
         send: { state.apply($0) },
         detail: { section in
             Text(section.title).frame(maxWidth: .infinity, maxHeight: .infinity).navigationTitle(section.title)

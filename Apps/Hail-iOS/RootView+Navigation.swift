@@ -11,9 +11,16 @@ import UIKit
 enum StationRedesignLaunch {
     static let flags: StationRedesignFlags = {
         let defaults = UserDefaults.standard
-        // UI tests start every flag off, before the first frame reads them.
-        if ProcessInfo.processInfo.arguments.contains("-reset-station-state") {
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("-reset-station-state") {
             for step in StationRedesignStep.allCases { defaults.removeObject(forKey: step.key) }
+            #if DEBUG
+            // Seed the same Boolean Labs writes. An argument-domain string would fail the flag's type check
+            // and a permanent command-line override would mask the in-app opt-out on relaunch.
+            if arguments.contains("-seed-navigation-shell") {
+                defaults.set(true, forKey: StationRedesignStep.shell.key)
+            }
+            #endif
         }
         return StationRedesignFlags { defaults.object(forKey: $0) }
     }()
@@ -64,64 +71,80 @@ extension StationRootView {
             } description: {
                 Text("Choose a destination from the station. Sessions will be listed here in a later update.")
             }
+            .accessibilityIdentifier("shell.sessions.placeholder")
             .navigationTitle(section.title)
-        case .devices:
-            List {
-                NavigationLink {
-                    ConnectivityLabView(store: connections, endpointsChanged: persist)
-                } label: {
-                    Label("Mac Setup", systemImage: "network")
-                }
-                .accessibilityIdentifier("station.devices.mac-setup")
-            }
-            .navigationTitle(section.title)
-        case .settings:
-            shellSettingsSection
+        case .devices, .settings:
+            ShellToolList(section: section, destination: shellTool)
         }
     }
 
-    private var shellSettingsSection: some View {
+    @ViewBuilder
+    private func shellTool(_ tool: ShellTool) -> some View {
+        switch tool {
+        case .setup:
+            ConnectivityLabView(store: connections, endpointsChanged: persist)
+                .accessibilityIdentifier("station.devices.setup-page")
+        case .listening: listeningSettingsOverview
+        case .audio: audioSettingsOverview
+        case .privacy: privacySettingsOverview
+        case .voices: voicesSettingsOverview
+        case .notifications: notificationSettingsOverview
+        case .targets: targetsSettingsOverview
+        case .advanced: advancedSettingsOverview
+        case .labs: CaptureSafeLabsView(audioSession: audioRoutes, playback: playback)
+        case .turnTaking: ReplySegmentToolsView(playback: playback, gate: echoGuard.segmentOnsetGate)
+        }
+    }
+}
+
+private enum ShellTool: Hashable {
+    case setup, listening, audio, privacy, voices, notifications, targets, advanced, labs, turnTaking
+}
+
+private struct ShellToolList<Destination: View>: View {
+    let section: StationSection
+    @ViewBuilder let destination: (ShellTool) -> Destination
+    #if os(macOS)
+    @State private var selected: ShellTool?
+    #endif
+
+    var body: some View {
         List {
-            ShellAppearanceEntry()
-            NavigationLink { listeningSettingsOverview } label: {
-                Label("Listening and attention", systemImage: "ear")
-            }
-            .accessibilityIdentifier("settings.listening.entry")
-            NavigationLink { audioSettingsOverview } label: {
-                Label("Audio", systemImage: "waveform")
-            }
-            .accessibilityIdentifier("station.settings.audio")
-            NavigationLink { privacySettingsOverview } label: {
-                Label("Privacy", systemImage: "hand.raised")
-            }
-            .accessibilityIdentifier("station.settings.privacy")
-            NavigationLink { voicesSettingsOverview } label: {
-                Label("Voices and replies", systemImage: "quote.bubble")
-            }
-            .accessibilityIdentifier("settings.voices.entry")
-            NavigationLink { notificationSettingsOverview } label: {
-                Label("Notifications and updates", systemImage: "bell")
-            }
-            .accessibilityIdentifier("settings.notifications.entry")
-            NavigationLink { targetsSettingsOverview } label: {
-                Label("Targets", systemImage: "scope")
-            }
-            .accessibilityIdentifier("settings.targets.entry")
-            NavigationLink { advancedSettingsOverview } label: {
-                Label("Advanced and diagnostics", systemImage: "gearshape")
-            }
-            .accessibilityIdentifier("settings.advanced.entry")
-            NavigationLink { CaptureSafeLabsView(audioSession: audioRoutes, playback: playback) } label: {
-                Label("Labs", systemImage: "wrench.and.screwdriver")
-            }
-            .accessibilityIdentifier("station.settings.labs")
-            NavigationLink {
-                ReplySegmentToolsView(playback: playback, gate: echoGuard.segmentOnsetGate)
-            } label: {
-                Label("Turn-taking", systemImage: "pause.circle")
+            if section == .devices {
+                row(.setup, "Mac Setup", "network", "station.devices.mac-setup")
+            } else {
+                ShellAppearanceEntry()
+                row(.listening, "Listening and attention", "ear", "settings.listening.entry")
+                row(.audio, "Audio", "waveform", "station.settings.audio")
+                row(.privacy, "Privacy", "hand.raised", "station.settings.privacy")
+                row(.voices, "Voices and replies", "quote.bubble", "settings.voices.entry")
+                row(.notifications, "Notifications and updates", "bell", "settings.notifications.entry")
+                row(.targets, "Targets", "scope", "settings.targets.entry")
+                row(.advanced, "Advanced and diagnostics", "gearshape", "settings.advanced.entry")
+                row(.labs, "Labs", "wrench.and.screwdriver", "station.settings.labs")
+                row(.turnTaking, "Turn-taking", "pause.circle", "station.settings.turn-taking")
             }
         }
-        .navigationTitle(StationSection.settings.title)
+        .navigationTitle(section.title)
+        #if os(macOS)
+        .navigationDestination(item: $selected, destination: destination)
+        #endif
+    }
+
+    @ViewBuilder
+    private func row(_ tool: ShellTool, _ title: LocalizedStringKey, _ symbol: String, _ identifier: String)
+        -> some View {
+        let label = Label(title, systemImage: symbol)
+        #if os(macOS)
+        Button { selected = tool } label: {
+            label.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(identifier)
+        #else
+        NavigationLink { destination(tool) } label: { label }
+            .accessibilityIdentifier(identifier)
+        #endif
     }
 }
 

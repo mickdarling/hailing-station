@@ -1,0 +1,102 @@
+import XCTest
+
+@MainActor
+extension ShellWindowUITests {
+    var device: String {
+        #if os(macOS)
+        "mac"
+        #else
+        UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone"
+        #endif
+    }
+
+    var baseArguments: [String] {
+        #if os(macOS)
+        // The isolated window must never discover or connect to a configured local host.
+        ["-hailing-station.local-host-offered.v1", "YES"]
+        #else
+        []
+        #endif
+    }
+
+    func launchShell() -> XCUIApplication {
+        #if os(macOS)
+        let app = XCUIApplication(bundleIdentifier: "com.mickdarling.Hail-macOS-shell-tests")
+        #else
+        let app = XCUIApplication()
+        if device == "ipad" { XCUIDevice.shared.orientation = .landscapeLeft }
+        #endif
+        let reset = baseArguments + ["-reset-station-state"]
+        addTeardownBlock { @MainActor in
+            app.terminate()
+            app.launchArguments = reset
+            app.launch()
+            app.terminate()
+            #if os(iOS)
+            XCUIDevice.shared.orientation = .portrait
+            #endif
+        }
+        app.launchArguments = reset + ["-seed-navigation-shell"]
+        app.launch()
+        XCTAssertTrue(section("station", in: app).waitForExistence(timeout: 10))
+        return app
+    }
+
+    func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
+        // Some SwiftUI labels identify both the text and the decorative image.
+        let predicate = NSPredicate(format: "identifier == %@ AND elementType != %@",
+                                    identifier, NSNumber(value: XCUIElement.ElementType.image.rawValue))
+        return app.descendants(matching: .any).matching(predicate).firstMatch
+    }
+
+    func section(_ name: String, in app: XCUIApplication) -> XCUIElement {
+        let prefix = device == "iphone" ? "station.tab." : "station.section."
+        return element(prefix + name, in: app)
+    }
+
+    func choose(_ name: String, in app: XCUIApplication) {
+        activate(section(name, in: app))
+    }
+
+    func activate(_ item: XCUIElement) {
+        XCTAssertTrue(item.waitForExistence(timeout: 5))
+        waitUntilHittable(item)
+        #if os(macOS)
+        item.click()
+        #else
+        item.tap()
+        #endif
+    }
+
+    private func waitUntilHittable(_ item: XCUIElement) {
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: item)
+        XCTAssertEqual(XCTWaiter().wait(for: [ready], timeout: 5), .completed)
+    }
+
+    func reveal(_ row: XCUIElement, in app: XCUIApplication) {
+        let window = app.windows.firstMatch
+        for _ in 0..<6 where !row.exists || !row.isHittable {
+            let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.7))
+            #if os(macOS)
+            start.scroll(byDeltaX: 0, deltaY: -140)
+            #else
+            let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.35))
+            start.press(forDuration: 0.05, thenDragTo: end)
+            #endif
+        }
+    }
+
+    func screen(_ identifier: String, named name: String, in app: XCUIApplication) {
+        let marker = element(identifier, in: app)
+        XCTAssertTrue(marker.waitForExistence(timeout: 10), identifier)
+        let window = app.windows.firstMatch
+        if identifier == "station.connection" { waitUntilHittable(marker) }
+        let visible = marker.frame.intersection(window.frame)
+        XCTAssertGreaterThan(visible.width, 0, identifier)
+        XCTAssertGreaterThan(visible.height, 0, identifier)
+        let attachment = XCTAttachment(screenshot: window.screenshot())
+        attachment.name = "\(device)-\(name)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+}

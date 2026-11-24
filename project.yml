@@ -7,6 +7,10 @@ options:
     iOS: "18.0"
     macOS: "15.0"
   createIntermediateGroups: true
+configs:
+  Debug: debug
+  Release: release
+  Debug-ShellUITests: debug
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -60,6 +64,10 @@ targets:
         # The iOS Info.plist, and the routing spike (#22), which probes the iOS audio session.
         excludes: [Info.plist, RoutingProbe.swift, RoutingSpikeView.swift]
     settings:
+      configs:
+        Debug-ShellUITests:
+          # UI-test resets and the Labs opt-out write only the test application's preferences.
+          PRODUCT_BUNDLE_IDENTIFIER: com.mickdarling.Hail-macOS-shell-tests
       base:
         TARGETED_DEVICE_FAMILY: ""
         # The shared AppIcon set already carries the Mac artwork (icon-mac-1024.png, mac 512@2x).
@@ -87,6 +95,19 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.mickdarling.Hail-iOSUITests
         TEST_TARGET_NAME: Hail-iOS
+  Hail-macOSUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: Tests/Hail-iOSUITests
+        includes: [ShellWindow*.swift]
+    dependencies:
+      - target: Hail-macOS
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.mickdarling.Hail-macOSUITests
+        TEST_TARGET_NAME: Hail-macOS
 schemes:
   Hail-iOS:
     build:
@@ -104,3 +125,7 @@ schemes:
         Hail-macOS: all
     run:
       config: Debug
+    test:
+      config: Debug-ShellUITests
+      targets:
+        - Hail-macOSUITests
