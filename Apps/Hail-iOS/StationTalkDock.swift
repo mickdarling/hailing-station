@@ -29,7 +29,10 @@ extension TranscriptionLabView {
         let state = VoiceDockState.resolve(talk: talk, destination: controls.destination(), accessories: accessories)
         return observingPaste(StationTalkDock(
             state: state, caption: transcript, pasteProblem: pasteProblem, hasPaste: attachedPaste != nil,
-            status: { if status != "Ready" { statusRow } }, openAttachedPaste: { showingDockPaste = true },
+            status: {
+                if talkStatus != .ready { statusRow }
+                if talkStatus == .destinationChanged { unsentTranscript }
+            }, openAttachedPaste: { showingDockPaste = true },
             onIntent: { intent in
                 switch intent {
                 case .talk, .finish:
@@ -44,7 +47,7 @@ extension TranscriptionLabView {
             }))
         .preference(key: StationTalkReportKey.self, value: StationTalkReport(
             phase: talk.phase,
-            turn: TurnOutcome.observed(status: status, failure: pasteRefusalHandling.deliveryFailure)))
+            turn: talkStatus.outcome(pasteFailure: pasteRefusalHandling.deliveryFailure)))
         .sheet(isPresented: $showingDockPaste) {
             NavigationStack {
                 ScrollView { pastePanel.padding() }

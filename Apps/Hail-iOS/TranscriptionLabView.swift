@@ -60,10 +60,7 @@ struct StationTranscriptionView: View {
     @State var finalText = ""
     @State var volatileText = ""
     @State var talkStatus = StationTalkStatus.ready
-    var status: String {
-        get { talkStatus.text }
-        nonmutating set { talkStatus = .message(newValue) }
-    }
+    var status: String { talkStatus.text }
     @State var isStarting = false
     @State var isFinalizing = false
     @State var hasReceivedAudio = false

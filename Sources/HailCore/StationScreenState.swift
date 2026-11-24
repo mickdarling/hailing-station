@@ -24,21 +24,3 @@ extension TalkCapturePhase {
         }
     }
 }
-
-extension TurnOutcome {
-    /// Only owner-reported outcomes. An error writing to the transport may follow partial delivery.
-    public static func observed(status: String, failure: TurnOutcome? = nil) -> Self? {
-        switch status {
-        case "Sending…": .sending
-        case "Waiting for reply…": .waitingForReply
-        case "No reply yet — tap to talk again": .noReplyYet
-        case "Reply received": .replyReceived
-        case "Reply received — turn unverified", "Sent — reply turn unverified": .sentUnverified
-        case "Destination changed — request not sent": .notSent(reason: status)
-        case "Ready":
-            if case .refused = failure { failure } else { nil }
-        default:
-            status.hasPrefix("Send failed:") ? failure ?? .sentUnverified : nil
-        }
-    }
-}

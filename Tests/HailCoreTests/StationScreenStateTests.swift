@@ -19,20 +19,24 @@ struct StationScreenStateTests {
         #expect(TalkCapturePhase(starting: false, recording: true, finishing: true) == .finishing)
     }
 
+    @Test func turnEvidenceIsIndependentOfDisplayCopy() {
+        let changed = StationTalkStatus.destinationChanged
+        #expect(changed.outcome() == .notSent(reason: "the destination changed"))
+        #expect(StationTalkStatus.message(changed.text).outcome() == nil)
+        for outcome: TurnOutcome in [.sending, .waitingForReply, .replyReceived, .noReplyYet, .sentUnverified] {
+            #expect(StationTalkStatus.turn(outcome, text: "Ready").outcome() == outcome)
+            #expect(StationTalkStatus.turn(outcome, text: changed.text).outcome() == outcome)
+        }
+    }
+
     @Test func recoveryRequiresTheOwnersDeliveryEvidence() {
-        #expect(TurnOutcome.observed(status: "Listening") == nil)
-        #expect(TurnOutcome.observed(status: "Sending…") == .sending)
-        #expect(TurnOutcome.observed(status: "Waiting for reply…") == .waitingForReply)
-        #expect(TurnOutcome.observed(status: "Reply received") == .replyReceived)
-        #expect(TurnOutcome.observed(status: "No reply yet — tap to talk again") == .noReplyYet)
-        #expect(TurnOutcome.observed(status: "Send failed: write failed") == .sentUnverified)
-        #expect(TurnOutcome.observed(status: "Reply received — turn unverified") == .sentUnverified)
         let local = TurnOutcome.notSent(reason: "Paste rejected locally")
         let refused = TurnOutcome.refused(reason: "Refused by the selected Mac")
-        #expect(TurnOutcome.observed(status: "Send failed: paste", failure: local) == local)
-        #expect(TurnOutcome.observed(status: "Ready", failure: refused) == refused)
-        #expect(TurnOutcome.observed(status: "Sending…", failure: refused) == .sending)
-        let changed = "Destination changed — request not sent"
-        #expect(TurnOutcome.observed(status: changed) == .notSent(reason: changed))
+        let failed = StationTalkStatus.sendFailed("Waiting for reply")
+        #expect(failed.outcome() == .sentUnverified)
+        #expect(failed.outcome(pasteFailure: local) == local)
+        #expect(StationTalkStatus.ready.outcome(pasteFailure: local) == nil)
+        #expect(StationTalkStatus.ready.outcome(pasteFailure: refused) == refused)
+        #expect(StationTalkStatus.turn(.sending, text: "Ready").outcome(pasteFailure: refused) == .sending)
     }
 }

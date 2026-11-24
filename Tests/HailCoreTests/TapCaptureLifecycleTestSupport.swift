@@ -33,10 +33,7 @@ final class TranscriptionLabView {
     var playbackRestoreRequested = false
     var finalText = "", volatileText = ""
     var talkStatus = StationTalkStatus.ready
-    var status: String {
-        get { talkStatus.text }
-        set { talkStatus = .message(newValue) }
-    }
+    var status: String { talkStatus.text }
     var pendingSendID: UUID?, activeUtteranceID: UUID?, finishGeneration: UUID?
     var destinationGeneration = UUID()
     private static let fixtureDestination = ConversationDestinationID(endpointID: "fixture-mac", targetID: "target")
