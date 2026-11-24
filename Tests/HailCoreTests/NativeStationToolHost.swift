@@ -70,8 +70,9 @@ final class NativeStationToolHost {
     func pop() { path.values = [] }
 
     func back() async throws {
+        let appearancesBeforeBack = path.appearances
         path.values = []
-        try await waitUntil { await MainActor.run { self.path.appearances > 1 } }
+        try await waitUntil { await MainActor.run { self.path.appearances > appearancesBeforeBack } }
     }
 
     func finish() { window.close() }

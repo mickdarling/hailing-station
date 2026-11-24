@@ -99,6 +99,10 @@ extension RootView {
                 Label("Voices and replies", systemImage: "quote.bubble")
             }
             .accessibilityIdentifier("settings.voices.entry")
+            NavigationLink { notificationSettingsOverview } label: {
+                Label("Notifications and updates", systemImage: "bell")
+            }
+            .accessibilityIdentifier("settings.notifications.entry")
             NavigationLink { targetsSettingsOverview } label: {
                 Label("Targets", systemImage: "scope")
             }
