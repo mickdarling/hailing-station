@@ -66,15 +66,22 @@ public final class HostConnectionStore {
         stationSceneDisposed = true
         installedAmbientController?.stopForSceneDisposal()
         installedAmbientController = nil
-        onAmbientMovedHere = nil
+        installedMovedHereCallback = nil
     }
     /// Which overheard turns hosts should send (#398): `off`, `owner` or `everyone`; re-sent to each capable host as it
     /// reaches ready. Sends to one host run in order, so the last choice is the one it keeps.
     public private(set) var overheardScope = "off"
     @ObservationIgnored var overheardScopeSends: [HostEndpoint.Identifier: Task<Void, Never>] = [:]
+    @ObservationIgnored private var installedMovedHereCallback: (@MainActor (HostEndpoint.Identifier, String?) -> Void)?
     /// Told when a host says this device's ambient stream took listening over from another device (#366), with
     /// that device's class. The ambient card hands it to its controller.
-    @ObservationIgnored public var onAmbientMovedHere: (@MainActor (HostEndpoint.Identifier, String?) -> Void)?
+    public var onAmbientMovedHere: (@MainActor (HostEndpoint.Identifier, String?) -> Void)? {
+        get { installedMovedHereCallback }
+        set {
+            guard !stationSceneDisposed else { return }
+            installedMovedHereCallback = newValue
+        }
+    }
     /// Hosts that said RightyO does not recognise the owner's voice on this device's input (rightyo#164), until they
     /// say it does, the device starts a new stream, or the host is removed.
     public private(set) var ownerVoiceUnrecognized: Set<HostEndpoint.Identifier> = []
