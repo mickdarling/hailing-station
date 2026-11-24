@@ -36,7 +36,7 @@ enum StationRedesignLaunch {
 }
 
 extension StationRootView {
-    /// The shell choice is fixed for the launch. Every owner stays on `RootView` above both branches.
+    /// The launch flag selects the themed shell. Both branches share the same owners on `RootView`.
     @ViewBuilder
     var stationRoot: some View {
         if StationRedesignLaunch.flags.isOn(.shell) {
@@ -47,6 +47,7 @@ extension StationRootView {
                 inspector: { EmptyView() },
                 dock: { _ in EmptyView() }
             )
+            .environment(\.stationTheme, .astra)
         } else {
             NavigationStack { content }
         }
@@ -58,11 +59,10 @@ extension StationRootView {
     func stationSection(_ section: StationSection) -> some View {
         switch section {
         case .station:
-            // The station's tool links open their section rather than push under a station that hides while another
-            // section shows (`StationToolLink`). Selecting a section is the only thing the opener can do.
+            // The station's tool links can only select their section, keeping pushes out of the hidden station.
             content.environment(\.stationSectionOpener, StationSectionOpener { navigation.apply(.select($0)) })
         case .sessions:
-            // Until the destination step lands, the station owns the destination picker.
+            // The station owns destination selection until the destination step.
             ContentUnavailableView {
                 Label(section.title, systemImage: section.systemImage)
             } description: {
@@ -107,6 +107,7 @@ private struct ShellToolList<Destination: View>: View {
                 row(.setup, "Mac Setup", "network", "station.devices.mac-setup")
             } else {
                 ShellAppearanceEntry()
+                    .listRowBackground(StationRowSurface())
                 row(.listening, "Listening and attention", "ear", "settings.listening.entry")
                 row(.audio, "Audio", "waveform", "station.settings.audio")
                 row(.privacy, "Privacy", "hand.raised", "station.settings.privacy")
@@ -141,9 +142,11 @@ private struct ShellToolList<Destination: View>: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(identifier)
+        .listRowBackground(StationRowSurface())
         #else
         NavigationLink { destination(tool) } label: { label }
             .accessibilityIdentifier(identifier)
+            .listRowBackground(StationRowSurface())
         #endif
     }
 }

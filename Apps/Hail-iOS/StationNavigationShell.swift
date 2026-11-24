@@ -8,6 +8,7 @@ import AppKit
 
 /// Keeps capture mounted in the Mac detail column or over the iOS detail slot, which can disappear on compact iPad.
 struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
+    @Environment(\.stationPalette) private var palette
     let state: StationNavigationState
     let idiom: StationNavigationIdiom
     let send: (StationNavigationIntent) -> Void
@@ -40,6 +41,9 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
                 .allowsHitTesting(slot != nil)
             }
             #endif
+            .tint(palette[.brand])
+            .foregroundStyle(palette[.textPrimary], palette[.textSecondary])
+            .background(palette[.surface])
     }
 
     @ViewBuilder private var arrangement: some View {
@@ -77,12 +81,17 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
                                    preferredCompactColumn: compactColumn) {
             List(selection: sectionSelection) {
                 ForEach(StationSection.allCases) { section in
+                    let selected = state.section == section
                     Label(section.title, systemImage: section.systemImage)
+                        .foregroundStyle(palette[selected ? .onSidebarSelection : .textSecondary])
+                        .listRowBackground(palette[selected ? .sidebarSelection : .sidebar])
                         .tag(section)
                         .accessibilityIdentifier("station.section.\(section.rawValue)")
                 }
             }
             .toolbar(removing: isCollapsed ? nil : .sidebarToggle)
+            .scrollContentBackground(.hidden)
+            .background(palette[.sidebar])
             .navigationTitle("Hailing Station")
             .navigationSplitViewColumnWidth(min: 180, ideal: 215, max: 260)
         } detail: {
@@ -114,8 +123,13 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
                         .environment(\.stationAccessibilityHidden, hidden)
                         .stationCollapsed(hidden)
                     if hidden {
-                        NavigationStack(path: $detailPath) { detail(state.section).id(state.section) }
-                            .environment(\.shellDetailPath, $detailPath)
+                        NavigationStack(path: $detailPath) {
+                            detail(state.section)
+                                .id(state.section)
+                                .scrollContentBackground(.hidden)
+                                .background(palette[.surface])
+                        }
+                        .environment(\.shellDetailPath, $detailPath)
                     }
                 }
                 .frame(width: viewport.size.width, height: viewport.size.height)
@@ -147,7 +161,7 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
             if section == .station {
                 detail(section).stationHiddenNavigationBar().stationAccessibilityScope()
             } else {
-                detail(section)
+                detail(section).scrollContentBackground(.hidden).background(palette[.surface])
             }
         }
         // SwiftUI hosts the inset separately from the root (#1183).
@@ -187,14 +201,4 @@ private struct StationSlotKey: PreferenceKey {
     static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
         value = value ?? nextValue()
     }
-}
-
-#Preview("Navigation shell · synthetic") {
-    @Previewable @State var state = StationNavigationState()
-    StationNavigationShell(state: state, idiom: StationRedesignLaunch.idiom,
-        send: { state.apply($0) },
-        detail: { Text($0.title).frame(maxWidth: .infinity, maxHeight: .infinity).navigationTitle($0.title) },
-        inspector: { Text("Inspector") },
-        dock: { _ in Button("Full conversation") { state.apply(.toggleFullConversation) }.padding() }
-    )
 }
