@@ -2,8 +2,14 @@ import HailCore
 import SwiftUI
 
 /// The existing chat still owns its transcript layout, reading position, attribution and playback controls.
-struct StationConversationPane: View {
-    let root: RootView
+struct StationConversationPane<Chat: View, Fallback: View, Tools: View>: View {
+    let hasThread: Bool
+    let needsSetup: Bool
+    let playbackHeld: Bool
+    @ViewBuilder let chat: () -> Chat
+    @ViewBuilder let fallback: () -> Fallback
+    @ViewBuilder let tools: () -> Tools
+    let openDevices: () -> Void
     let showsTools: Bool
     let showsRecovery: Bool
     let reviewRecovery: () -> Void
@@ -11,15 +17,14 @@ struct StationConversationPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            root.chatSurface
-                .frame(minHeight: root.chatThread != nil ? 140 : nil)
-            if root.stationAvailability == .unconfigured {
+            chat()
+                .frame(minHeight: hasThread ? 140 : nil)
+            if needsSetup {
                 onboarding
-            } else if root.destination == nil {
-                root.conversationSurface
+            } else {
+                fallback()
             }
-            if let reply = root.playback.presentationForControls, root.playback.isPaused,
-               let destination = root.destination, root.replyPresentation(for: destination)?.id == reply.id {
+            if playbackHeld {
                 Label("Reply playback is paused", systemImage: "pause.circle")
                     .font(.callout).padding(10)
                     .background(palette[.surface], in: .rect(cornerRadius: 8))
@@ -30,9 +35,11 @@ struct StationConversationPane: View {
                     .buttonStyle(.bordered)
                     .accessibilityIdentifier("station.review-recovery")
             }
-            if showsTools || root.destination == nil {
-                root.stationTools
+            if showsTools {
+                tools()
+                #if !os(macOS)
                 StationBuildFooter().stationRemovedWhileHidden()
+                #endif
             }
         }
         .padding(.horizontal, 18)
@@ -50,9 +57,7 @@ struct StationConversationPane: View {
             Text("Connect to a Mac running Hailing Station, choose a session, then speak.")
             Text("Microphone access is requested when you start capture.")
                 .font(.callout).foregroundStyle(palette[.textSecondary])
-            StationToolLink(section: .devices) {
-                ConnectivityLabView(store: root.connections, endpointsChanged: root.persist)
-            } label: {
+            Button(action: openDevices) {
                 Label("Set up a Mac", systemImage: "plus.circle")
             }
             .buttonStyle(.borderedProminent)
