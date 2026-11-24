@@ -10,6 +10,7 @@ typealias RootView = StationRootView
 struct StationRootView: View, AmbientDestinationOwner {
     private static let savedHostsKey = "hailing-station.host-endpoints.v1"
     let selectionStore: any DestinationSelectionStoring
+    @State private var talkSession = StationTalkSession()
     @StateObject var station: StationSceneState<StationResources>
     var connections: HostConnectionStore { station.value.connections }
     var audioSession: ManagedAudioSession { station.value.audioSession }
@@ -52,7 +53,7 @@ struct StationRootView: View, AmbientDestinationOwner {
         _station = StateObject(wrappedValue: StationSceneState(makeResources))
     }
     var body: some View {
-        stationRoot
+        stationRoot.sharingTalkSession(talkSession)
         .environment(connections)
         .modifier(StationMenuStatusPublisher(connections: connections, destination: destination?.label))
         .modifier(ReplySegmentNotices(connections: connections, banners: $station.value.announcementBanners))
@@ -85,7 +86,7 @@ struct StationRootView: View, AmbientDestinationOwner {
                 if !connections.ambientStreaming {
                     // Ambient listening keeps the audio session active in the background (#282): deactivating it
                     // would stop capture and let iOS suspend the app. The controller releases it when it stops.
-                    await audioRoutes.sceneBecameInactive()
+                    await talkSession.cleanUpScene { await audioRoutes.sceneBecameInactive() }
                 }
                 // Only after that release, which would otherwise stop the keepalive it started. Only in the
                 // background: Control Center, a permission alert or the app switcher leave the scene merely
@@ -135,7 +136,6 @@ struct StationRootView: View, AmbientDestinationOwner {
             await restoreSelectionOnce()
         }
     }
-
     @MainActor
     private func restoreHostsOnce() async {
         guard !didRestoreHosts else { return }
