@@ -25,7 +25,7 @@ extension ConversationChatView {
         } icon: {
             Image(systemName: "music.note")
         }
-        .font(classicSize?.font() ?? .subheadline)
+        .modifier(TranscriptDetailFont(.music))
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)

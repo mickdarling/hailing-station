@@ -89,7 +89,6 @@ struct ReplyMetadataView: View {
     let source: String
     private let blocks: [MarkdownBlock]
     @State private var showsRaw = false
-    @Environment(\.classicTranscriptSize) private var classicSize
 
     /// `blocks` is the entry's cached parse of `source` (`ConversationEntry.metadataBlocks`).
     init(source: String, blocks: [MarkdownBlock]) {
@@ -101,7 +100,7 @@ struct ReplyMetadataView: View {
         VStack(alignment: .leading, spacing: 6) {
             if showsRaw || blocks.isEmpty {
                 Text(verbatim: source)
-                    .font(classicSize?.font(.monospaced) ?? .footnote.monospaced())
+                    .modifier(TranscriptDetailFont(.code))
                     .textSelection(.enabled)
             } else {
                 ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
@@ -114,7 +113,7 @@ struct ReplyMetadataView: View {
                     .buttonStyle(.borderless)
             }
         }
-        .font(classicSize?.font() ?? .callout)
+        .modifier(TranscriptDetailFont(.metadata))
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)

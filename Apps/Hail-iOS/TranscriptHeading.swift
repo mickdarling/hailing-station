@@ -1,44 +1,37 @@
 import SwiftUI
-#if os(macOS)
-import AppKit
-private typealias HeadingPlatformFont = NSFont
-#else
-import UIKit
-private typealias HeadingPlatformFont = UIFont
-#endif
 
 struct TranscriptHeading: View {
     let level: Int
     let text: AttributedString
-    @Environment(\.classicTranscriptSize) private var size
-    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         Text(text)
-            .font(font)
+            .modifier(TranscriptDetailFont(.heading(level)))
             .foregroundStyle(.primary)
             .accessibilityAddTraits(.isHeader)
     }
+}
 
-    private var font: Font {
-        switch level {
-        case 1: scaled(.headline, style: .headline)
-        case 2: scaled(.subheadline.weight(.semibold), style: .subheadline)
-        default: scaled(.footnote.weight(.semibold), style: .footnote)
+struct TranscriptDetailFont: ViewModifier {
+    enum Style {
+        case metadata, code, music, heading(Int)
+
+        func font(in environment: EnvironmentValues) -> Font {
+            switch self {
+            case .metadata: environment.transcriptFont(.callout, style: .callout)
+            case .code: environment.transcriptFont(.footnote, style: .footnote) { $0.monospaced() }
+            case .music: environment.transcriptFont(.subheadline, style: .subheadline)
+            case .heading(1): environment.transcriptFont(.headline, style: .headline)
+            case .heading(2): environment.transcriptFont(.subheadline, style: .subheadline) { $0.weight(.semibold) }
+            case .heading: environment.transcriptFont(.footnote, style: .footnote) { $0.weight(.semibold) }
+            }
         }
     }
 
-    private func scaled(_ font: Font, style: HeadingPlatformFont.TextStyle) -> Font {
-        guard let size, !size.preference.isDefault else { return font }
-        let scale = size.preference.scale
-        if #available(iOS 26, macOS 26, *) { return font.scaled(by: scale) }
-        // On earlier releases, resolve the native text style at the current category before applying Aa once.
-        #if os(macOS)
-        let native = NSFont.preferredFont(forTextStyle: style, options: [:])
-        #else
-        let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(typeSize))
-        let native = UIFont.preferredFont(forTextStyle: style, compatibleWith: traits)
-        #endif
-        return .system(size: native.pointSize * scale, weight: .semibold)
-    }
+    private let style: Style
+    @Environment(\.self) private var environment
+
+    init(_ style: Style) { self.style = style }
+
+    func body(content: Content) -> some View { content.font(style.font(in: environment)) }
 }

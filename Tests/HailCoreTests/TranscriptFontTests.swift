@@ -61,10 +61,9 @@ struct TranscriptFontTests {
         _ = NSApplication.shared
         let heading = AttributedString("Same heading at every level")
         func widths(_ preference: ConversationTextSize?) -> [CGFloat] {
-            let size = preference.map { ClassicTranscriptSize(preference: $0, bodyScale: 1) }
-            return (1...6).map { level in
+            (1...6).map { level in
                 let view = TranscriptHeading(level: level, text: heading)
-                    .environment(\.classicTranscriptSize, size).fixedSize()
+                    .environment(\.classicTranscriptScale, preference?.scale ?? 1).fixedSize()
                 return NSHostingView(rootView: view).fittingSize.width
             }
         }

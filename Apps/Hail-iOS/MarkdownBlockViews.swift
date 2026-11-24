@@ -6,12 +6,11 @@ import SwiftUI
 struct CodeBlockView: View {
     let language: String?
     let code: String
-    @Environment(\.classicTranscriptSize) private var classicSize
 
     var body: some View {
         ScrollView(.horizontal) {
             Text(verbatim: code)
-                .font(classicSize?.font(.monospaced) ?? .footnote.monospaced())
+                .modifier(TranscriptDetailFont(.code))
                 .foregroundStyle(.primary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: true, vertical: false)
