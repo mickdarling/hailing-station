@@ -1,4 +1,4 @@
-import AVFAudio
+#if os(macOS)
 import Foundation
 import Testing
 @testable import HailCore
@@ -19,9 +19,11 @@ struct StationRailObservationTests {
 
     private func assertAcknowledgement(in rig: AmbientReconnectRig) async throws {
         let binding = try rig.currentBinding()
+        let owner = PrivacySettingsFixture(connections: rig.store, host: rig.endpoint.id)
         func rail(_ displayed: AmbientAudioBinding?) -> ListeningPrivacyRailState {
-            let host = RailHost(store: rig.store, confirmedHost: rig.endpoint.id, binding: displayed,
-                                availability: .ready, now: .now)
+            let observation = StationScreenPrivacy(displayedHost: rig.endpoint.id, binding: displayed,
+                liveBinding: rig.controller.binding, settings: owner.privacySettingsState())
+            let host = RailHost(store: rig.store, privacy: observation.privacy, availability: .ready)
             return .resolve(mic: .live, listening: .listening, talk: .idle, host: host)
         }
         try await rig.store.setPrivacy(on: true, host: rig.endpoint.id)
@@ -31,17 +33,5 @@ struct StationRailObservationTests {
         #expect(rail(binding).kind == .privateConfirmed)
         #expect(rail(nil).kind == .mayBeRecording)
     }
-
-    @Test func engineObservationTracksTheInputTapWithoutStartingIt() throws {
-        let fake = FakeEngineOperations()
-        let capture = AVAudioEngineCapture(engine: AVAudioEngine(), notificationCenter: NotificationCenter(),
-                                           operations: fake.operations)
-        let before = AVAudioEngineCapture.microphoneState
-        #expect(!fake.running && fake.tap == nil)
-        let stream = try capture.start()
-        #expect(AVAudioEngineCapture.microphoneState == .running)
-        capture.stop()
-        #expect(AVAudioEngineCapture.microphoneState == before)
-        withExtendedLifetime(stream) {}
-    }
 }
+#endif

@@ -24,7 +24,7 @@ extension TranscriptionLabView {
     func stationDock(_ controls: StationDockControls) -> some View {
         let talk = dockTalk
         let accessories = DockAccessories(escape: onEscape != nil, privacy: true,
-            paste: attachedPaste != nil || (pasteOffer.accepts && onFinalized != nil))
+            paste: attachedPaste != nil || (pasteOffer.accepts && onFinalized != nil), privacyEnabled: controls.privacy != nil)
         let state = VoiceDockState.resolve(talk: talk, destination: controls.destination(), accessories: accessories)
         return observingPaste(StationTalkDock(
             state: state, caption: transcript, pasteProblem: pasteProblem, hasPaste: attachedPaste != nil,
@@ -36,7 +36,7 @@ extension TranscriptionLabView {
                 case .escape:
                     if state.escape == .enabled, let onEscape { startInterrupt(using: onEscape) }
                 case .paste: if state.paste == .enabled { showingDockPaste = true }
-                case .privacy: controls.privacy()
+                case .privacy: controls.privacy?()
                 case .listeningControls: controls.listening()
                 case .audioRoutes: controls.routes()
                 }

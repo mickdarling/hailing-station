@@ -12,15 +12,25 @@ extension RootView {
         return active == ambientDestinationBinding && listeningPhase == .listening
     }
 
-    private func railHost(at date: Date) -> RailHost {
-        RailHost(store: connections, confirmedHost: destination?.hostID, binding: ambientDestinationBinding,
-                 availability: stationAvailability, now: date)
+    func stationPrivacy(at date: Date = .now) -> StationScreenPrivacy {
+        StationScreenPrivacy(displayedHost: destination?.hostID, binding: ambientDestinationBinding,
+                             liveBinding: connections.ambientController?.binding, settings: privacySettingsState(now: date))
+    }
+
+    func activateStationPrivacy(_ shown: StationScreenPrivacy) {
+        guard case .privacy(let on, let host, let generation) = shown.intent else { return }
+        Task { @MainActor in
+            guard stationPrivacy() == shown else { return }
+            await requestPrivacy(on, host: host, generation: generation)
+        }
     }
 
     func stationRail(talk: TalkCapturePhase?, details: Binding<Bool>) -> some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            let host = railHost(at: context.date)
-            let mic = MicLiveInputs(engine: AVAudioEngineCapture.microphoneState, ambient: listeningPhase, talk: talk)
+            let privacy = stationPrivacy(at: context.date)
+            let host = RailHost(store: connections, privacy: privacy.privacy, availability: stationAvailability)
+            // The classic owners do not publish process-wide input-engine state.
+            let mic = MicLiveInputs(engine: .unknown, ambient: listeningPhase, talk: talk)
             let state = ListeningPrivacyRailState.resolve(mic: mic.state, listening: listeningPhase,
                                                            talk: talk, host: host)
             VStack(alignment: .leading, spacing: 4) {
@@ -28,13 +38,10 @@ extension RootView {
                     ListeningPrivacyRailView(state: state, isDetailPresented: details,
                                              listeningDevice: listeningPhase == .listening && talk == .idle
                                                 ? localDeviceTitle : nil)
-                    if let intent = stationPrivacyIntent(at: context.date) {
-                        Button(privacyActionTitle(host.privacy)) {
-                            if stationPrivacyIntent() == intent { performPrivacySettings(intent) }
-                        }
+                    Button(privacy.title) { activateStationPrivacy(privacy) }
+                        .disabled(privacy.intent == nil)
                         .buttonStyle(.borderless)
                         .accessibilityIdentifier("station.rail.privacy")
-                    }
                 }
                 if details.wrappedValue {
                     Text(state.detail).font(.callout).accessibilityIdentifier("station.rail.detail")
@@ -61,27 +68,13 @@ extension RootView {
         }
     }
 
-    private func privacyActionTitle(_ privacy: RailPrivacy?) -> String {
-        if case .status(let status) = privacy, status.isPrivate { return "Leave private mode" }
-        return "Go private"
-    }
-
-    func stationPrivacyIntent(at date: Date = .now) -> PrivacySettingsIntent? {
-        let state = privacySettingsState(now: date)
-        guard let host = state.host, host.id == destination?.hostID,
-              !state.isListeningToHost || listeningAtDestination,
-              state.canRequestPrivacy, !state.privacy.pending else { return nil }
-        return .privacy(!state.privacy.isPrivate, host: host.id, generation: host.connectionGeneration)
-    }
-
     var hasListeningRecovery: Bool {
         let reconnect = connections.ambientController?.reconnect
         return reconnect?.isPending == true || reconnect?.notice.map { $0.outcome != .applied } == true
     }
 
     func recoveryState(at date: Date, turn: TurnOutcome?) -> RecoverySheetState {
-        let host = railHost(at: date)
-        return .resolve(availability: stationAvailability, destination: screenDestination, privacy: host.privacy,
+        .resolve(availability: stationAvailability, destination: screenDestination, privacy: stationPrivacy(at: date).privacy,
                         listening: (listeningPhase, hasListeningRecovery || listeningPhase.isOn), turn: turn)
     }
 }
