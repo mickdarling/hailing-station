@@ -59,7 +59,8 @@ struct StationTalkDock: View {
             }
         )
         .preference(key: StationTalkReportKey.self, value: StationTalkReport(
-            phase: phase, turn: TurnOutcome.observed(status: owner.status)))
+            phase: phase, turn: TurnOutcome.observed(status: owner.status,
+                                                     failure: owner.pasteRefusalHandling.deliveryFailure)))
         .sheet(isPresented: $showingPaste) {
             NavigationStack {
                 ScrollView { owner.pastePanel.padding() }

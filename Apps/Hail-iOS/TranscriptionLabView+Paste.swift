@@ -12,6 +12,7 @@ struct PasteOffer: Equatable {
 struct PasteRefusalHandling {
     /// The refusal already handled, so the same one never puts a paste back twice.
     var handledID: UUID?
+    var deliveryFailure: TurnOutcome?
     /// A status set without being spoken, because the shared request refusal already announced the event once.
     var quietStatus: String?
 }
@@ -23,6 +24,11 @@ struct PasteRefusalHandling {
 /// When the Mac refuses a sent paste, it comes back attached with the reason.
 extension TranscriptionLabView {
     var attachedPaste: PastedDraft? { pastes.attached }
+
+    func noteUnsentPaste(_ reason: String) {
+        pasteProblem = reason
+        pasteRefusalHandling.deliveryFailure = .notSent(reason: reason)
+    }
 
     var pasteControl: some View { observingPaste(pastePanel) }
 
@@ -54,6 +60,7 @@ extension TranscriptionLabView {
         .onChange(of: destinationID) { _, _ in
             pastes.attach(nil)
             pasteProblem = nil
+            pasteRefusalHandling.deliveryFailure = nil
         }
         .onChange(of: pasteOffer.refusal) { _, refusal in
             // Only a new refusal of the request this station is waiting on, to this destination: an old one seen
@@ -62,6 +69,7 @@ extension TranscriptionLabView {
                   pendingDestinationID == destinationID,
                   let restored = try? PastedDraft(refusal.pasted) else { return }
             pasteRefusalHandling.handledID = refusal.id
+            pasteRefusalHandling.deliveryFailure = .refused(reason: refusal.message)
             pastes.restore(restored, refusing: refused)
             pasteProblem = PastedDraft.Problem.refusedByHost(refusal.message).message
             // That request is over: no reply will come for it, so its reply wait ends and the status leaves

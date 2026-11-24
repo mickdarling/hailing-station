@@ -27,6 +27,11 @@ struct StationScreenStateTests {
         #expect(TurnOutcome.observed(status: "No reply yet — tap to talk again") == .noReplyYet)
         #expect(TurnOutcome.observed(status: "Send failed: write failed") == .sentUnverified)
         #expect(TurnOutcome.observed(status: "Reply received — turn unverified") == .sentUnverified)
+        let local = TurnOutcome.notSent(reason: "Paste rejected locally")
+        let refused = TurnOutcome.refused(reason: "Refused by the selected Mac")
+        #expect(TurnOutcome.observed(status: "Send failed: paste", failure: local) == local)
+        #expect(TurnOutcome.observed(status: "Ready", failure: refused) == refused)
+        #expect(TurnOutcome.observed(status: "Sending…", failure: refused) == .sending)
         let changed = "Destination changed — request not sent"
         #expect(TurnOutcome.observed(status: changed) == .notSent(reason: changed))
     }

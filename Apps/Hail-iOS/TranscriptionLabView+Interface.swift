@@ -130,6 +130,7 @@ extension TranscriptionLabView {
         let sendID = UUID()
         let destinationAtSend = destinationID
         answeredSendID = nil
+        pasteRefusalHandling.deliveryFailure = nil
         pendingSendID = sendID
         pendingDestinationID = destinationAtSend
         status = "Sending…"
@@ -166,7 +167,7 @@ extension TranscriptionLabView {
             if problem == nil, let destinationAtSend { Self.uncorrelatedDestinations.insert(destinationAtSend) }
             clearPendingSend()
             // A refused paste stays attached, with the reason, so it can be fixed or removed (#608).
-            if let problem { pasteProblem = problem }
+            if let problem { noteUnsentPaste(problem) }
             status = "\(failurePrefix): \(problem ?? error.localizedDescription)"
         }
     }
