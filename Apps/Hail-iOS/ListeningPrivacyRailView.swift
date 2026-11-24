@@ -11,19 +11,20 @@ struct ListeningPrivacyRailView: View {
     @Environment(\.stationPalette) private var palette
     let state: ListeningPrivacyRailState
     @Binding var isDetailPresented: Bool
+    var listeningDevice: String?
     @ScaledMetric(relativeTo: .body) private var minimumHeight: CGFloat = 44
     @State private var announced: ListeningPrivacyRailState.Kind?
 
     var body: some View {
         Button {
-            isDetailPresented = true
+            isDetailPresented.toggle()
         } label: {
             HStack(spacing: 10) {
                 MicLiveIndicatorView(state: state.mic)
                 Image(systemName: symbol)
                     .foregroundStyle(tone.ink)
                     .imageScale(.medium)
-                Text(state.summary)
+                Text(summary)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(state.tone == .neutral ? palette[.textPrimary] : tone.ink)
                     .multilineTextAlignment(.leading)
@@ -40,7 +41,7 @@ struct ListeningPrivacyRailView: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(state.accessibilityLabel)
+        .accessibilityLabel("\(summary). \(state.detail)")
         .accessibilityHint("Shows listening and privacy details")
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("station.listening-privacy-rail")
@@ -51,6 +52,11 @@ struct ListeningPrivacyRailView: View {
             announced = key
             AccessibilityNotification.Announcement(state.summary).post()
         }
+    }
+
+    private var summary: String {
+        if state.kind == .recording, let listeningDevice { return "Listening on this \(listeningDevice)" }
+        return state.summary
     }
 
     /// A shape per kind, so the meaning never rests on colour alone.

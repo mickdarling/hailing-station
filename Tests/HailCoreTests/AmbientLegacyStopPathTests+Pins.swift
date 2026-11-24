@@ -24,6 +24,8 @@ extension AmbientLegacyStopPathTests {
         "Apps/Hail-iOS/RootView+Settings.swift": ["stopListening": 1, "turnOff": 1],
         "Apps/Hail-iOS/RootView.swift": ["destinationLost": 1, "forgetSelection": 1, "ownerChangedDestination": 1],
         "Apps/Hail-iOS/StationCard.swift": ["end": 1, "turnOff": 1],
+        // Station rail reads the existing controller and reconnect notice. No ambient stop.
+        "Apps/Hail-iOS/StationScreenListening.swift": [:],
         "Apps/Hail-iOS/StationMenuPublishers.swift": ["turnOff": 1],
         reconnectFile: [
             "block": 16, "cancelTransportRestore": 3,
