@@ -1,0 +1,7 @@
+custom_rules:
+  test_host_window_focus:
+    name: Test host window focus
+    regex: '\b(?:orderFront(?:Regardless)?|makeKey(?:AndOrderFront)?|(?:NSApp|NSApplication\s*\.\s*shared)[?!]?\s*\.\s*activate)\s*\('
+    match_kinds: [identifier, typeidentifier]
+    message: Use TestHostWindow to keep native test hosts offscreen and unfocused.
+    severity: error
