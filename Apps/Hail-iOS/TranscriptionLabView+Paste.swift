@@ -25,9 +25,13 @@ struct PasteRefusalHandling {
 extension TranscriptionLabView {
     var attachedPaste: PastedDraft? { pastes.attached }
 
+    func recordDockFailure(_ failure: TurnOutcome?) {
+        if dock != nil { pasteRefusalHandling.deliveryFailure = failure }
+    }
+
     func noteUnsentPaste(_ reason: String) {
         pasteProblem = reason
-        pasteRefusalHandling.deliveryFailure = .notSent(reason: reason)
+        recordDockFailure(.notSent(reason: reason))
     }
 
     var pasteControl: some View { observingPaste(pastePanel) }
@@ -60,7 +64,7 @@ extension TranscriptionLabView {
         .onChange(of: destinationID) { _, _ in
             pastes.attach(nil)
             pasteProblem = nil
-            pasteRefusalHandling.deliveryFailure = nil
+            recordDockFailure(nil)
         }
         .onChange(of: pasteOffer.refusal) { _, refusal in
             // Only a new refusal of the request this station is waiting on, to this destination: an old one seen
@@ -69,7 +73,7 @@ extension TranscriptionLabView {
                   pendingDestinationID == destinationID,
                   let restored = try? PastedDraft(refusal.pasted) else { return }
             pasteRefusalHandling.handledID = refusal.id
-            pasteRefusalHandling.deliveryFailure = .refused(reason: refusal.message)
+            recordDockFailure(.refused(reason: refusal.message))
             pastes.restore(restored, refusing: refused)
             pasteProblem = PastedDraft.Problem.refusedByHost(refusal.message).message
             // That request is over: no reply will come for it, so its reply wait ends and the status leaves

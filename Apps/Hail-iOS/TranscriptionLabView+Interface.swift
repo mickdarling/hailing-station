@@ -43,9 +43,9 @@ extension TranscriptionLabView {
     var talkButton: some View {
         Button {
             if isRecording {
-                Task { await finish() }
+                finishTalk()
             } else {
-                startTask = Task { await begin() }
+                startTalk()
             }
         } label: {
             let circle: CGFloat = compactTalk ? 52 : 82 // Smaller while the conversation is full screen (#819).
@@ -130,7 +130,7 @@ extension TranscriptionLabView {
         let sendID = UUID()
         let destinationAtSend = destinationID
         answeredSendID = nil
-        pasteRefusalHandling.deliveryFailure = nil
+        recordDockFailure(nil)
         pendingSendID = sendID
         pendingDestinationID = destinationAtSend
         status = "Sending…"

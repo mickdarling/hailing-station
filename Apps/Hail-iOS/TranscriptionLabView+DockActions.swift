@@ -16,12 +16,21 @@ extension TranscriptionLabView {
         let current = VoiceDockState.resolve(talk: dockTalk, destination: destination, accessories: accessories)
         guard current.primaryIntent == intent else { return nil }
         switch intent {
-        case .finish:
-            return Task { await finish() }
-        case .talk:
-            startTask = Task { await begin() }
-            return startTask
+        case .finish: return finishTalk()
+        case .talk: return startTalk()
         default: return nil
         }
+    }
+
+    @MainActor @discardableResult
+    func startTalk() -> Task<Void, Never> {
+        let task = Task { await begin() }
+        startTask = task
+        return task
+    }
+
+    @MainActor @discardableResult
+    func finishTalk() -> Task<Void, Never> {
+        Task { await finish() }
     }
 }
