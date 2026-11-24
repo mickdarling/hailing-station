@@ -36,9 +36,7 @@ enum StationRedesignLaunch {
 }
 
 extension StationRootView {
-    /// Today's single station, or with the Shell step on, the native navigation shell around it. The choice is fixed
-    /// for the launch. Every owner stays on `RootView` above both branches; the shell only renders `navigation` and
-    /// sends its intents back here.
+    /// The shell choice is fixed for the launch. Every owner stays on `RootView` above both branches.
     @ViewBuilder
     var stationRoot: some View {
         if StationRedesignLaunch.flags.isOn(.shell) {
@@ -64,8 +62,7 @@ extension StationRootView {
             // section shows (`StationToolLink`). Selecting a section is the only thing the opener can do.
             content.environment(\.stationSectionOpener, StationSectionOpener { navigation.apply(.select($0)) })
         case .sessions:
-            // The destination step fills this in. Until then the station's own destination control is the one place
-            // to choose a destination.
+            // Until the destination step lands, the station owns the destination picker.
             ContentUnavailableView {
                 Label(section.title, systemImage: section.systemImage)
             } description: {
@@ -123,7 +120,14 @@ private struct ShellToolList<Destination: View>: View {
         }
         .navigationTitle(section.title)
         #if os(macOS)
-        .navigationDestination(for: ShellTool.self, destination: destination)
+        .navigationDestination(for: ShellTool.self) { tool in
+            switch tool {
+            case .setup, .advanced, .labs: destination(tool) // Already scrollable.
+            case .listening, .audio, .privacy, .voices, .notifications, .targets, .turnTaking:
+                // A non-scrolling Mac Form can size the entire split view taller than its window.
+                ScrollView { destination(tool) }
+            }
+        }
         #endif
     }
 

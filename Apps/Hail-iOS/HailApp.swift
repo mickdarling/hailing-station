@@ -1,5 +1,9 @@
 import HailCore
 import SwiftUI
+#if os(macOS) && DEBUG
+import AppKit
+import Combine
+#endif
 
 @main
 struct HailApp: App {
@@ -21,6 +25,14 @@ struct HailApp: App {
                 .environment(menuStatus)
                 .environment(appearance)
                 .frame(minWidth: 760, minHeight: 620)
+                #if DEBUG
+                .background {
+                    // Only Debug-ShellUITests uses this bundle identifier.
+                    if Bundle.main.bundleIdentifier == "com.mickdarling.Hail-macOS-shell-tests" {
+                        ShellTestWindowPlacement()
+                    }
+                }
+                #endif
         }
         .windowResizability(.contentMinSize)
         .commands { shellCommands }
@@ -84,6 +96,34 @@ struct HailApp: App {
         return ConversationAppearancePreferences()
     }
 }
+
+#if os(macOS) && DEBUG
+private struct ShellTestWindowPlacement: NSViewRepresentable {
+    func makeNSView(context: Context) -> PlacementView { PlacementView() }
+    func updateNSView(_ view: PlacementView, context: Context) {}
+
+    final class PlacementView: NSView {
+        private var firstKey: AnyCancellable?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            firstKey = nil
+            guard let window, let value = ProcessInfo.processInfo.environment["SHELL_UI_TEST_WINDOW_FRAME"] else {
+                return
+            }
+            let frame = NSRectFromString(value)
+            // Set the actual station window's frame after AppKit has restored or positioned it.
+            if window.isKeyWindow {
+                window.setFrame(frame, display: true)
+            } else {
+                firstKey = NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification, object: window)
+                    .first()
+                    .sink { [weak window] _ in window?.setFrame(frame, display: true) }
+            }
+        }
+    }
+}
+#endif
 
 #if DEBUG
 /// Replaces an outer layout branch under the real window-owned settings presenter; no station resources exist.

@@ -96,7 +96,7 @@ final class ShellWindowUITests: XCTestCase {
         disableShell(in: app)
         app.terminate()
         app.launchArguments = baseArguments
-        app.launch()
+        launchStation(app)
         screen("station.connection", named: "station-shell-off", in: app)
         XCTAssertFalse(section("settings", in: app).exists)
     }

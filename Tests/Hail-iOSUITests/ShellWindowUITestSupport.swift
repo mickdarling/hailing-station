@@ -1,4 +1,7 @@
 import XCTest
+#if os(macOS)
+import AppKit
+#endif
 
 @MainActor
 extension ShellWindowUITests {
@@ -37,12 +40,37 @@ extension ShellWindowUITests {
             #endif
         }
         app.launchArguments = reset + ["-seed-navigation-shell"]
-        app.launch()
+        launchStation(app)
         XCTAssertTrue(section("station", in: app).waitForExistence(timeout: 10))
         #if os(macOS)
         XCTAssertEqual(app.windows.matching(identifier: "station").count, 1, "There must be one Station window")
         #endif
         return app
+    }
+
+    func launchStation(_ app: XCUIApplication) {
+        #if os(macOS)
+        // The first screen is the primary display, independent of the previous key window or focused display.
+        guard let primary = NSScreen.screens.first else {
+            XCTFail("Station UI tests require a primary display")
+            return
+        }
+        let visible = primary.visibleFrame
+        let width = min(900, visible.width)
+        let height = min(672, visible.height)
+        let frame = CGRect(x: floor(visible.midX - width / 2), y: floor(visible.midY - height / 2),
+                           width: width, height: height)
+        app.launchEnvironment["SHELL_UI_TEST_WINDOW_FRAME"] = NSStringFromRect(frame)
+        app.launch()
+        // XCTest measures from the primary display's top edge. AppKit measures from its bottom edge.
+        let expected = CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY, width: width, height: height)
+        let window = stationWindow(in: app)
+        XCTAssertTrue(window.waitForExistence(timeout: 10))
+        XCTAssertTrue(window.wait(for: \.frame, toEqual: expected, timeout: 10),
+                      "Station should open at \(expected) on the primary display")
+        #else
+        app.launch()
+        #endif
     }
 
     func stationWindow(in app: XCUIApplication) -> XCUIElement {
