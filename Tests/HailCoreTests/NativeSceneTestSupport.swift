@@ -27,6 +27,8 @@ struct ReplySegmentNotices: ViewModifier {
 
 extension StationRootView {
     var content: some View { NativeSceneStationContent(root: self) }
+    /// Today's root, as with every redesign flag off (#1115).
+    var stationRoot: some View { NavigationStack { content } }
     var destination: Destination? {
         guard let binding = ambientDestinationBinding, let host = connections.snapshots[binding.hostID],
               let target = host.targets.first(where: { $0.id == binding.targetID }) else { return nil }

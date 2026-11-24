@@ -19,6 +19,11 @@ actor SyntheticSelfVoice: SelfVoiceRendering {
         profiles.append(.init(id: id, name: name))
     }
 
+    func replaceProfile(named name: String, id: String) {
+        profiles.removeAll { $0.name == name }
+        addProfile(id: id, name: name)
+    }
+
     func profileID(named name: String, at origin: URL) throws -> String {
         try SelfVoiceRenderer.exactID(named: name, in: profiles)
     }

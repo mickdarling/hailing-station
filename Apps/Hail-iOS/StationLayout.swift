@@ -56,7 +56,9 @@ extension RootView {
         .stationHiddenNavigationBar()
         .background(StationPlatform.background)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            StationBuildFooter()
+            // SwiftUI hosts an inset apart from the station's root, and `.accessibilityHidden` doesn't reach it there, so
+            // the footer, which holds no state, leaves the tree while the shell hides the station (#1115).
+            StationBuildFooter().stationRemovedWhileHidden()
         }
         .onAppear {
             // Weak, and never cleared on disappear: a pushed tool screen hides this view while its heals still count,
