@@ -398,9 +398,9 @@ extension RightyoAmbientPipeline {
     }
 
     /// Accounts for a withheld segment, enqueueing only the silence for a preceding gap.
-    /// As with send, suppression succeeds without advancing and writer refusal returns false.
-    func withhold(sequence: Int, byteCount: Int) -> Bool {
-        admit(nil, byteCount: byteCount, sequence: sequence).accepted
+    /// Returns the same acceptance and gap as forwarding the segment.
+    func withhold(sequence: Int, byteCount: Int) -> (accepted: Bool, gap: AmbientGapFill?) {
+        admit(nil, byteCount: byteCount, sequence: sequence)
     }
 
     private func admit(_ pcm: Data?, byteCount: Int, sequence: Int) -> (accepted: Bool, gap: AmbientGapFill?) {

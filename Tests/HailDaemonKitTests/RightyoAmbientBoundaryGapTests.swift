@@ -28,7 +28,7 @@ import Testing
             #expect(pipeline.reportDuck(true))
             clock.advance(.milliseconds(300))
             #expect(pipeline.reportDuck(false))
-            #expect(pipeline.withhold(sequence: 1, byteCount: Self.fragment.count))
+            #expect(pipeline.withhold(sequence: 1, byteCount: Self.fragment.count).accepted)
             let result = pipeline.send(audio: next, sequence: 2)
             #expect(result.accepted && result.gap == nil)
         }
@@ -48,55 +48,62 @@ import Testing
 
     @Test func withheldFragmentPreservesPrecedingHoleSilence() async throws {
         let first = AmbientGapFillRig.chunk(0), next = AmbientGapFillRig.chunk(3)
-        func captureHole(withhold: Bool) async throws -> Data {
-            try await capture { pipeline, clock in
+        func captureHole(withhold: Bool) async throws -> (heard: Data, gap: AmbientGapFill?) {
+            var gap: AmbientGapFill?
+            let heard = try await capture { pipeline, clock in
                 #expect(pipeline.send(audio: first, sequence: 0).accepted)
                 clock.advance(.milliseconds(300))
-                #expect(Self.submitFragment(to: pipeline, sequence: 2, withhold: withhold))
+                let fragment = Self.submitFragment(to: pipeline, sequence: 2, withhold: withhold)
+                #expect(fragment.accepted)
+                gap = fragment.gap
                 let result = pipeline.send(audio: next, sequence: 3)
                 #expect(result.accepted && result.gap == nil)
             }
+            return (heard, gap)
         }
         let forwarded = try await captureHole(withhold: false)
-        let prefixBytes = forwarded.count - first.count - Self.fragment.count - next.count
+        let prefixBytes = forwarded.heard.count - first.count - Self.fragment.count - next.count
         try #require(prefixBytes > 0)
         let silence = Data(repeating: 0, count: prefixBytes)
-        #expect(forwarded == AmbientGapFillRig.joined(first, silence, Self.fragment, next))
+        #expect(forwarded.heard == AmbientGapFillRig.joined(first, silence, Self.fragment, next))
         let withheld = try await captureHole(withhold: true)
-        #expect(withheld == AmbientGapFillRig.joined(first, silence, next))
+        #expect(withheld.gap == forwarded.gap && withheld.gap?.bytes == prefixBytes)
+        #expect(withheld.heard == AmbientGapFillRig.joined(first, silence, next))
     }
 
-    /// Charging the fragment and its prefix leaves 199.9375 ms for the last probe, enough for one whole slice.
-    @Test(arguments: [false, true])
-    func suppressionAndRemainingBudgetMatchForwarding(_ withhold: Bool) async throws {
+    /// The probe has 199.9375 ms of credit. Another 62,500 ns buys the second 100 ms slice.
+    @Test(arguments: [false, true], [0, 62_500])
+    func suppressionAndRemainingBudgetMatchForwarding(_ withhold: Bool, extraNanoseconds: Int) async throws {
         let first = AmbientGapFillRig.chunk(0), resumed = AmbientGapFillRig.chunk(2), last = AmbientGapFillRig.chunk(7)
         let silence = AmbientGapFillRig.silence(1)
+        let expectedProbeBytes = extraNanoseconds == 0 ? 3_200 : 6_400
         let heard = try await capture { pipeline, clock in
             #expect(pipeline.send(audio: first, sequence: 0).accepted)
             clock.advance(.milliseconds(300))
             #expect(pipeline.reportDuck(true))
             #expect(!pipeline.hearsAudio)
-            #expect(Self.submitFragment(to: pipeline, sequence: 1, withhold: withhold))
+            #expect(Self.submitFragment(to: pipeline, sequence: 1, withhold: withhold).accepted)
             #expect(!pipeline.hearsAudio)
             #expect(pipeline.reportDuck(false))
             let resume = pipeline.send(audio: resumed, sequence: 2)
             #expect(resume.accepted && resume.gap?.bytes == 3_200)
 
             clock.advance(.milliseconds(100))
-            #expect(Self.submitFragment(to: pipeline, sequence: 4, withhold: withhold))
-            clock.advance(.milliseconds(200))
+            #expect(Self.submitFragment(to: pipeline, sequence: 4, withhold: withhold).accepted)
+            clock.advance(.milliseconds(200) + .nanoseconds(extraNanoseconds))
             let probe = pipeline.send(audio: last, sequence: 7)
-            #expect(probe.accepted && probe.gap?.missing == 2 && probe.gap?.bytes == 3_200)
+            #expect(probe.accepted && probe.gap?.missing == 2 && probe.gap?.bytes == expectedProbeBytes)
         }
         var expected = AmbientGapFillRig.joined(first, silence, resumed, silence)
         if !withhold { expected.append(Self.fragment) }
-        expected.append(silence + last)
+        expected.append(Data(repeating: 0, count: expectedProbeBytes) + last)
         #expect(heard == expected)
     }
 
-    private static func submitFragment(to pipeline: RightyoAmbientPipeline, sequence: Int, withhold: Bool) -> Bool {
+    private static func submitFragment(to pipeline: RightyoAmbientPipeline, sequence: Int, withhold: Bool)
+        -> (accepted: Bool, gap: AmbientGapFill?) {
         if withhold { return pipeline.withhold(sequence: sequence, byteCount: fragment.count) }
-        return pipeline.send(audio: fragment, sequence: sequence).accepted
+        return pipeline.send(audio: fragment, sequence: sequence)
     }
 
     @Test func writerRefusalDoesNotConsumeASequence() async throws {
@@ -105,12 +112,12 @@ import Testing
             #expect(pipeline.send(audio: first, sequence: 0).accepted)
             clock.advance(.milliseconds(300))
             for byteCount in [-2, 0, 1, 65_538] {
-                #expect(!pipeline.withhold(sequence: 1, byteCount: byteCount))
+                #expect(!pipeline.withhold(sequence: 1, byteCount: byteCount).accepted)
             }
             let result = pipeline.send(audio: next, sequence: 2)
             #expect(result.accepted && result.gap?.bytes == 3_200)
             pipeline.finishInput()
-            #expect(!pipeline.withhold(sequence: 3, byteCount: Self.fragment.count))
+            #expect(!pipeline.withhold(sequence: 3, byteCount: Self.fragment.count).accepted)
         }
         #expect(heard == AmbientGapFillRig.joined(first, AmbientGapFillRig.silence(1), next))
     }
