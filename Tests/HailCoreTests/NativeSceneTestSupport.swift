@@ -2,8 +2,8 @@ import HailCore
 import HailProtocol
 import SwiftUI
 
-// Only peripheral UI/platform work is replaced. Both shipped initializers, their stored wrappers,
-// the owner, the resource construction, and the native view bodies compile from symlinked app sources.
+// The surrounding station layout and peripheral UI/platform work are fixtures. The shipped root, owners,
+// navigation/shell, ambient surface/card and resource construction compile from symlinked app sources.
 @MainActor
 enum StationPlatform {
     static var ambientCaptureMode: AmbientCaptureMode { .plain }
@@ -27,8 +27,6 @@ struct ReplySegmentNotices: ViewModifier {
 
 extension StationRootView {
     var content: some View { NativeSceneStationContent(root: self) }
-    /// Today's root, as with every redesign flag off (#1115).
-    var stationRoot: some View { NavigationStack { content } }
     var destination: Destination? {
         guard let binding = ambientDestinationBinding, let host = connections.snapshots[binding.hostID],
               let target = host.targets.first(where: { $0.id == binding.targetID }) else { return nil }
@@ -48,10 +46,6 @@ extension EnvironmentValues {
         get { false }
         set { _ = newValue }
     }
-}
-
-extension View {
-    func stationCollapsed(_ collapsed: Bool) -> some View { self }
 }
 
 extension StationTranscriptionView {

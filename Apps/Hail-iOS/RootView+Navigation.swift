@@ -28,7 +28,7 @@ enum StationRedesignLaunch {
     }
 }
 
-extension RootView {
+extension StationRootView {
     /// Today's single station, or with the Shell step on, the native navigation shell around it. The choice is fixed
     /// for the launch. Every owner stays on `RootView` above both branches; the shell only renders `navigation` and
     /// sends its intents back here.
@@ -99,6 +99,10 @@ extension RootView {
                 Label("Voices and replies", systemImage: "quote.bubble")
             }
             .accessibilityIdentifier("settings.voices.entry")
+            NavigationLink { notificationSettingsOverview } label: {
+                Label("Notifications and updates", systemImage: "bell")
+            }
+            .accessibilityIdentifier("settings.notifications.entry")
             NavigationLink { targetsSettingsOverview } label: {
                 Label("Targets", systemImage: "scope")
             }

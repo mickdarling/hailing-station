@@ -20,6 +20,7 @@ struct StationResources {
     let echoGuard: AmbientReplyEchoGuard
     let keepalive: BackgroundKeepalive
     let diagnostics: DeviceDiagnostics
+    let notificationAccess = NotificationAccessModel()
     var announcementBanners = AnnouncementBanners()
 
     init(
