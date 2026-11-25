@@ -3,14 +3,22 @@ import SwiftUI
 import Testing
 @testable import HailCore
 
+extension EnvironmentValues {
+    @Entry var onNativeTalkMount: (@MainActor (StationTalkSession) -> Void)?
+}
+
 /// NativeSceneTestSupport replaces the button chrome. Its appearance gives the fixture the installed @State.
 struct NativeTranscriptionMount: View {
     let view: StationTranscriptionView
     @Environment(NativeSceneAmbientProbe.self) private var probe: NativeSceneAmbientProbe?
+    @Environment(\.onNativeTalkMount) private var onMount
 
     var body: some View {
         Text(String(describing: type(of: view.capture)))
-            .onAppear { probe?.transcription?.mounted = view }
+            .onAppear {
+                probe?.transcription?.mounted = view
+                onMount?(view.talkSession)
+            }
             .onDisappear { probe?.transcription?.didDisappear() }
     }
 }
@@ -21,6 +29,9 @@ final class NativeBackgroundTranscription {
     let mode: Surface
     let tap = FakeAudioCapture()
     let speech = FakeTranscriber()
+    private lazy var session = StationTalkSession { [tap, speech] in
+        TranscriptionResources(capture: tap, transcriber: speech)
+    }
     var mounted: StationTranscriptionView?
     private(set) var sends = 0
     private(set) var disappearances = 0
@@ -37,13 +48,14 @@ final class NativeBackgroundTranscription {
         switch mode {
         case .talk:
             if let destination = root.destination {
-                StationTranscriptionView(audioSession: root.audioRoutes, capture: self.tap, transcriber: speech,
+                StationTranscriptionView(audioSession: root.audioRoutes,
                     destinationLabel: destination.label, destinationID: StationConversationDestinationID(
                         endpointID: destination.hostID, targetID: destination.target.id
                     ), onFinalized: { _, _ in self.sends += 1 })
+                    .sharingTalkSession(session)
             }
         case .labs:
-            StationTranscriptionView(audioSession: root.audioRoutes, capture: self.tap, transcriber: speech)
+            StationTranscriptionView(audioSession: root.audioRoutes).sharingTalkSession(session)
         }
     }
 

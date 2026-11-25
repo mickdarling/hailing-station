@@ -25,6 +25,7 @@ extension AmbientLegacyStopPathTests {
         "Apps/Hail-iOS/RootView.swift": ["destinationLost": 1, "forgetSelection": 1, "ownerChangedDestination": 1],
         "Apps/Hail-iOS/StationCard.swift": ["end": 1, "turnOff": 1],
         "Apps/Hail-iOS/StationMenuPublishers.swift": ["turnOff": 1],
+        "Apps/Hail-iOS/TranscriptionLabView.swift": [:],
         reconnectFile: [
             "block": 16, "cancelTransportRestore": 3,
             "legacy": 11, "privacySendFailed": 2, "privacyUnconfirmed": 6, "replacementFailed": 2, "sendFailed": 2,

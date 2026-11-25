@@ -53,6 +53,29 @@ extension StationBackgroundCaptureTests {
         await scene.rig.close()
     }
 
+    @Test func forcedFinishJoinsQueuedStationStartWhileAnotherPresentationOwnsTalk() async throws {
+        let scene = try await BackgroundCaptureScene()
+        defer { scene.host.finish() }
+        let talk = try await PendingTalk(scene) { _, _ in Issue.record("Unexpected send") }
+        talk.press()
+        let start = try #require(talk.view.startTask)
+        let session = talk.view.talkSession
+        let other = UUID()
+        let admitted = session.admit(other, receive: { _ in }, cleanup: {})
+        try #require(admitted)
+
+        await talk.view.finish(force: true)
+        #expect(start.isCancelled && talk.view.startTask == nil)
+        #expect(session.owner == other && talk.tap.stopCount == 0)
+        session.retire(other)
+        await start.value
+        #expect(talk.tap.startCount == 0 && !talk.view.isRecording)
+
+        await scene.host.render()
+        try await talk.expectStartAndFinish(after: start)
+        await scene.rig.close()
+    }
+
     @Test func occlusionBetweenPressAndBeginAlsoBlocksTheNextPress() async throws {
         let scene = try await BackgroundCaptureScene()
         defer { scene.host.finish() }

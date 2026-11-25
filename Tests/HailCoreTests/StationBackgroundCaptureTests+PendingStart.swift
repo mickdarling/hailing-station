@@ -78,12 +78,15 @@ struct PendingTalk {
     let view: StationTalkTestSupport.StationTranscriptionView
     let probe: MountedTalkProbe
 
-    init(_ scene: BackgroundCaptureScene) async throws {
+    init(_ scene: BackgroundCaptureScene, ambientStreaming: Bool = true,
+         onFinalized: (@MainActor (String, PastedDraft?) async throws -> Void)? = nil) async throws {
         self.scene = scene
         let root = try #require(scene.probe.root)
-        try await root.audioRoutes.activate()
-        await scene.rig.controller.turnOn(for: scene.binding)
-        try #require(scene.rig.store.ambientStreaming)
+        if ambientStreaming {
+            try await root.audioRoutes.activate()
+            await scene.rig.controller.turnOn(for: scene.binding)
+            try #require(scene.rig.store.ambientStreaming)
+        }
         let tap = FakeAudioCapture(), speech = FakeTranscriber()
         self.tap = tap
         self.speech = speech
@@ -93,12 +96,16 @@ struct PendingTalk {
         let probe = MountedTalkProbe()
         self.probe = probe
         scene.host.window.fixtureOcclusion = .visible
+        let session = StationTalkTestSupport.StationTalkSession {
+            StationTalkTestSupport.TranscriptionResources(capture: tap, transcriber: speech)
+        }
         scene.probe.talkSurface = AnyView(StationTalkTestSupport.StationTranscriptionView(
-            audioSession: root.audioRoutes, capture: tap, transcriber: speech,
+            audioSession: root.audioRoutes,
             onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
             onCaptureDidEnd: { CapturePlaybackSuppression.end($0, using: playback, resuming: $1) },
-            onCaptureTeardownCompleted: { CapturePlaybackSuppression.markCleanupComplete($0, using: playback) }
-        ).environment(probe))
+            onCaptureTeardownCompleted: { CapturePlaybackSuppression.markCleanupComplete($0, using: playback) },
+            onFinalized: onFinalized
+        ).sharingTalkSession(session).environment(probe))
         await scene.host.render()
         view = try #require(probe.view)
         try #require(probe.press != nil)

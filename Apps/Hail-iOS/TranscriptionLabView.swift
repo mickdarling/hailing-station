@@ -1,6 +1,4 @@
-import AVFAudio
 import HailCore
-import Speech
 import SwiftUI
 
 struct StationConversationDestinationID: Hashable {
@@ -26,7 +24,8 @@ struct StationTranscriptionView: View {
     let replyIDs: Set<String>
     let replyPlaybackStatus: String?
     let selectedReplyID: String?
-    let globalReplyAudioSpeaking: Bool
+    private let replyAudioIsBusy: @MainActor () -> Bool
+    var globalReplyAudioSpeaking: Bool { replyAudioIsBusy() }
     let controlledReplyPlaybackStatus: String?
     let replyFailureStatuses: [String: String]
     let onCaptureWillBegin: (@MainActor (UUID) -> Void)?
@@ -37,10 +36,10 @@ struct StationTranscriptionView: View {
     /// Whether the destination takes pasted text, and the latest paste its Mac refused (#608).
     let pasteOffer: PasteOffer
     let onEscape: (@MainActor () async throws -> Void)?
-
-    @StateObject var audio: StationSceneState<TranscriptionResources>
-    var capture: any AudioCapturing { audio.value.capture }
-    var transcriber: any Transcriber { audio.value.transcriber }
+    @WindowTalk var talkSession
+    @Environment(HostConnectionStore.self) private var connections: HostConnectionStore?
+    var capture: any AudioCapturing { talkSession.resources.capture }
+    var transcriber: any Transcriber { talkSession.resources.transcriber }
     @State var isRecording = false
     @State var finalText = ""
     @State var volatileText = ""
@@ -82,14 +81,12 @@ struct StationTranscriptionView: View {
 
     init(
         audioSession: any AudioSessionDiagnosticsProviding,
-        capture: @autoclosure @escaping () -> any AudioCapturing = AVAudioEngineCapture(),
-        transcriber: (any Transcriber)? = nil,
         destinationLabel: String? = nil,
         destinationID: StationConversationDestinationID? = nil,
         replyIDs: Set<String> = [],
         replyPlaybackStatus: String? = nil,
         selectedReplyID: String? = nil,
-        globalReplyAudioSpeaking: Bool = false,
+        globalReplyAudioSpeaking: @autoclosure @escaping @MainActor () -> Bool = false,
         controlledReplyPlaybackStatus: String? = nil,
         replyFailureStatuses: [String: String] = [:],
         onCaptureWillBegin: (@MainActor (UUID) -> Void)? = nil,
@@ -105,7 +102,7 @@ struct StationTranscriptionView: View {
         self.replyIDs = replyIDs
         self.replyPlaybackStatus = replyPlaybackStatus
         self.selectedReplyID = selectedReplyID
-        self.globalReplyAudioSpeaking = globalReplyAudioSpeaking
+        self.replyAudioIsBusy = globalReplyAudioSpeaking
         self.controlledReplyPlaybackStatus = controlledReplyPlaybackStatus
         self.replyFailureStatuses = replyFailureStatuses
         self.onCaptureWillBegin = onCaptureWillBegin
@@ -113,11 +110,11 @@ struct StationTranscriptionView: View {
         self.onCaptureTeardownCompleted = onCaptureTeardownCompleted
         (self.onFinalized, self.onEscape) = (onFinalized, onEscape)
         self.pasteOffer = pasteOffer
-        _audio = StateObject(wrappedValue: StationSceneState {
-            TranscriptionResources(capture: capture(), transcriber: transcriber ?? Self.defaultTranscriber())
-        })
     }
-
+    func deactivateTalkRoute() async {
+        guard !(connections?.ambientController?.isOn ?? false) else { return }
+        await audioSession.deactivate()
+    }
     var body: some View {
         VStack(spacing: compactTalk ? 10 : 18) {
             // The conversation thread shows each request as You (#318), so no separate last-request panel (#429).
@@ -133,7 +130,7 @@ struct StationTranscriptionView: View {
             // so expanding never rebuilds it.
             let row = compactTalk ? AnyLayout(HStackLayout(spacing: 10)) : AnyLayout(VStackLayout(spacing: 18))
             row {
-                talkButton
+                talkButton.disabled(talkSession.owner.map { $0 != captureOwnerID } ?? false)
                 if compactTalk { statusRow; escapeControl }
             }
 
@@ -150,7 +147,6 @@ struct StationTranscriptionView: View {
         .padding(compactTalk ? 12 : 18)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .navigationTitle("Conversation")
-        .task { await observeResults() }
         .onAppear { restorePlaybackAfterForcedTeardown() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { restorePlaybackAfterForcedTeardown(); announceDeferredStatusIfNeeded() }
@@ -164,8 +160,8 @@ struct StationTranscriptionView: View {
         .onChange(of: ownsCaptureSuppression) { wasSuppressed, isSuppressed in
             if wasSuppressed && !isSuppressed { announceDeferredStatusIfNeeded() }
         }
-        .onChange(of: selectedReplyPlaybackObservation) { _, current in
-            announceReplyStatusIfNeeded(current.status)
+        .onChange(of: SelectedReplyPlaybackObservation(id: selectedReplyID, status: replyPlaybackStatus)) { _, reply in
+            announceReplyStatusIfNeeded(reply.status)
         }
         .onChange(of: controlledReplyPlaybackStatus) { _, current in
             announceControlledReplyFailureIfNeeded(current)
@@ -183,18 +179,7 @@ struct StationTranscriptionView: View {
             if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
             clearPendingSend()
             startTask?.cancel()
-            Task { await finish(force: true) }
+            Task { await finishOnDisappear() }
         }
-    }
-}
-
-extension StationTranscriptionView {
-    var selectedReplyPlaybackObservation: SelectedReplyPlaybackObservation {
-        SelectedReplyPlaybackObservation(id: selectedReplyID, status: replyPlaybackStatus)
-    }
-
-    private static func defaultTranscriber() -> any Transcriber {
-        if #available(iOS 26.0, macOS 26.0, *) { return SpeechAnalyzerTranscriber() }
-        return SFSpeechRecognizerTranscriber()
     }
 }
