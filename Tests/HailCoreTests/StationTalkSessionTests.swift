@@ -66,7 +66,8 @@ struct StationTalkSessionTests {
 
         rig.session.retire(rig.station.captureOwnerID) // The older presentation's deferred removal.
         #expect(rig.session.owner == rig.labs.captureOwnerID)
-        let routes = AudioRouteModel(controller: ManagedAudioSession(backend: FakeAudioSessionBackend(inputs: [])))
+        let routes = AudioRouteModel(
+            controller: ManagedAudioSession(backend: FakeAudioSessionBackend(inputs: [.builtIn])))
         try await routes.activate()
         await rig.session.cleanUpScene {
             #expect(!rig.labs.isRecording && rig.session.owner == nil)
@@ -76,6 +77,14 @@ struct StationTalkSessionTests {
         }
         #expect(!routes.diagnostics.isActive && rig.labs.audioSession.deactivating)
         #expect(rig.speech.stops == 2 && rig.labs.sent.isEmpty)
+    }
+
+    @Test func routeActivationWithoutInputsThrowsNoSelectableInput() async {
+        let backend = FakeAudioSessionBackend(inputs: [])
+        let routes = AudioRouteModel(controller: ManagedAudioSession(backend: backend))
+        await #expect(throws: AudioInputSelectionError.noSelectableInput) {
+            try await routes.activate()
+        }
     }
 
     @Test func interruptKeepsOwnershipUntilTheInFlightConsumerExits() async throws {
