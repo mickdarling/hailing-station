@@ -15,12 +15,12 @@ struct NativeSettingsGalleryImage {
 @MainActor
 final class NativeSettingsGalleryHost {
     private let hosting: NSHostingView<AnyView>
-    private let window: NSWindow
+    private let window: TestHostWindow
     private let size: NSSize
 
     init(scene: AnyView, width: CGFloat, scheme: ColorScheme, typeSize: DynamicTypeSize) {
-        _ = NSApplication.shared
         size = NSSize(width: width, height: 900)
+        window = TestHostWindow(size: size)
         hosting = NSHostingView(rootView: AnyView(NavigationStack { scene }
             .frame(width: width, height: 900)
             .background(Color(nsColor: .windowBackgroundColor))
@@ -31,18 +31,14 @@ final class NativeSettingsGalleryHost {
         hosting.sizingOptions = []
         hosting.frame = NSRect(origin: .zero, size: size)
         hosting.autoresizingMask = [.width, .height]
-        window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
-                          styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
         hosting.appearance = window.appearance
         window.backgroundColor = .windowBackgroundColor
         window.isOpaque = true
-        window.contentView = hosting
+        window.mount(hosting)
         window.setContentSize(size)
         window.contentMinSize = size
         window.contentMaxSize = size
-        window.orderFront(nil)
     }
 
     func render() async {

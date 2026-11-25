@@ -105,17 +105,13 @@ struct PrivacySettingsRig {
 @MainActor
 final class NativePrivacySettingsHost {
     private let hosting: NSHostingView<AnyView>
-    private let window: NSWindow
+    private let window: TestHostWindow
 
     init(owner: PrivacySettingsFixture) {
-        _ = NSApplication.shared
+        window = TestHostWindow(size: NSSize(width: 480, height: 900))
         hosting = NSHostingView(rootView: AnyView(NavigationStack { owner.privacySettingsOverview }
             .transaction { $0.disablesAnimations = true; $0.animation = nil }))
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 900),
-                          styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = hosting
-        window.orderBack(nil)
+        window.mount(hosting)
     }
 
     func render() async {

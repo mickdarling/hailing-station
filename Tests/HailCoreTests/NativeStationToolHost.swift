@@ -36,19 +36,15 @@ private struct StationToolNavigationScene<Content: View>: View {
 @MainActor
 final class NativeStationToolHost {
     private let path = StationToolPath()
-    private let window: NSWindow
+    private let window: TestHostWindow
 
     init(_ content: some View, isTool: Bool = false) {
-        _ = NSApplication.shared
+        window = TestHostWindow(size: NSSize(width: 480, height: 640))
         let path = path
         if isTool { path.values = [1] }
         let root = StationToolNavigationScene(path: path, isTool: isTool, content: content)
         let hosting = NSHostingView(rootView: root)
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 640),
-                          styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = hosting
-        window.orderBack(nil)
+        window.mount(hosting)
         hosting.layoutSubtreeIfNeeded()
     }
 
