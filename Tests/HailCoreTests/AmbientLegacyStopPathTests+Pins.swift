@@ -28,7 +28,6 @@ extension AmbientLegacyStopPathTests {
         // Labs checks whether ambient owns the route before releasing it.
         "Apps/Hail-iOS/TranscriptionLabView.swift": [:],
         "Apps/Hail-iOS/StationMenuPublishers.swift": ["turnOff": 1],
-        "Apps/Hail-iOS/TranscriptionLabView.swift": [:],
         reconnectFile: [
             "block": 16, "cancelTransportRestore": 3,
             "legacy": 11, "privacySendFailed": 2, "privacyUnconfirmed": 6, "replacementFailed": 2, "sendFailed": 2,
