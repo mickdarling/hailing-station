@@ -15,6 +15,7 @@ final class NativeSceneAmbientProbe {
     }
 
     var transcription: NativeBackgroundTranscription?
+    var talkSurface: AnyView?
     var toolShown = false
     var disappearances = 0
     var appearances = 0
@@ -58,6 +59,7 @@ struct NativeSceneStationContent: View {
         }
         .overlay {
             if let transcription = probe?.transcription { transcription.surface(in: root) }
+            probe?.talkSurface
         }
         .navigationDestination(isPresented: Binding(get: { probe?.toolShown == true },
                                                    set: { probe?.toolShown = $0 })) { Text("Station tool") }

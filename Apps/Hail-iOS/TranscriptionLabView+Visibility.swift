@@ -15,6 +15,8 @@ extension StationTranscriptionView {
         finishGeneration = generation
         finishTask = Task {
             await pendingStart?.value
+            // A start rejected by begin()'s admission guard never reaches its cleanup defer.
+            if let pendingStart, startTask == pendingStart { startTask = nil }
             let consumer = bufferTask
             await discardCapture()
             await consumer?.value

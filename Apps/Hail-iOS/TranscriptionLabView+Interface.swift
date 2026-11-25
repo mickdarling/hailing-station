@@ -42,6 +42,7 @@ extension TranscriptionLabView {
 
     var talkButton: some View {
         Button {
+            guard !talkButtonDisabled else { return }
             if isRecording {
                 Task { await finish() }
             } else {
@@ -63,14 +64,16 @@ extension TranscriptionLabView {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(
-            isStarting || isFinalizing || isInterrupting || finishTask != nil || interruptTask != nil
-                || (!isRecording && pendingSendID != nil)
-        )
+        .disabled(talkButtonDisabled)
         .accessibilityIdentifier("station.talk")
         .accessibilityLabel(actionLabel)
         .accessibilityValue(status)
         .accessibilityHint(talkHint)
+    }
+
+    private var talkButtonDisabled: Bool {
+        startTask != nil || isStarting || isFinalizing || isInterrupting || finishTask != nil || interruptTask != nil
+            || (!isRecording && pendingSendID != nil)
     }
 
     var statusRow: some View {

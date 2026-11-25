@@ -103,7 +103,7 @@ import Testing
 }
 
 @MainActor
-private struct BackgroundCaptureScene {
+struct BackgroundCaptureScene {
     let rig: AmbientReconnectRig
     let binding: AmbientAudioBinding
     let probe: NativeSceneAmbientProbe
