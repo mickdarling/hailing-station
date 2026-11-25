@@ -9,6 +9,8 @@ struct ConversationChatView: View {
     /// its own session's thread is not.
     let threadTargetID: String?
     @Bindable var playback: ReplyPlaybackController
+    @Environment(\.classicNoticeFont) private var noticeFont
+    @Environment(\.classicMessageFont) var messageFont
     /// Overheard remarks (#398) appear only when the user chose to show them.
     @AppStorage(OverheardSettingsView.showKey) private var showsOverheard = false
     @AppStorage(OverheardSettingsView.whoseKey) private var overheardWhose = "owner"
@@ -90,7 +92,7 @@ struct ConversationChatView: View {
     /// A host's refusal of one request (#608, #636): a system line, not a message. The store announces it once.
     private func notice(_ entry: ConversationEntry) -> some View {
         Label(entry.text, systemImage: "exclamationmark.bubble")
-            .font(.footnote)
+            .font(noticeFont)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .center)
             .accessibilityLabel("Not sent, \(ChatTimestamps.time(entry.date)). \(entry.text)")
