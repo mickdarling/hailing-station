@@ -31,11 +31,11 @@ final class TranscriptionLabView {
     var isRecording = false, isStarting = false, isFinalizing = false, isInterrupting = false
     var isForcedTeardown = false, hasReceivedAudio = false, ownsCaptureSuppression = false
     var playbackRestoreRequested = false
-    var finalText = "", volatileText = "", activity = "Ready"
-    var refusal: TalkSendRefusal?
+    var finalText = "", volatileText = ""
+    var talkStatus = TalkCardStatus.activity("Ready")
     var status: String {
-        get { refusal?.message ?? activity }
-        set { (refusal, activity) = (nil, newValue) }
+        get { talkStatus.message }
+        set { talkStatus = .activity(newValue) }
     }
     var pendingSendID: UUID?, activeUtteranceID: UUID?, finishGeneration: UUID?
     var destinationGeneration = UUID()

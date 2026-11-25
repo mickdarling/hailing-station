@@ -14,8 +14,8 @@ struct StationTalkRoute {
     }
 }
 
+@MainActor
 extension TranscriptionLabView {
-    @MainActor
     func begin() async {
         guard !isRecording, !isStarting, !isFinalizing, !isInterrupting,
               finishTask == nil, interruptTask == nil, pendingSendID == nil else { return }
@@ -57,7 +57,6 @@ extension TranscriptionLabView {
             status = "Could not start: \(error.localizedDescription)"
         }
     }
-    @MainActor
     private func consumeCapture(_ buffers: AsyncStream<AudioCaptureBuffer>, utteranceID: UUID) async {
         guard activeUtteranceID == utteranceID else { return }
         // finish/interrupt already own cleanup and can be awaiting this task. Never await ourselves or send a
@@ -76,7 +75,6 @@ extension TranscriptionLabView {
             status = "Capture failed: \(error.localizedDescription)"
         }
     }
-    @MainActor
     func finish(force: Bool = false) async {
         guard talkSession.owner == captureOwnerID else { return }
         defer { retireTalkIfIdle() }
@@ -106,7 +104,6 @@ extension TranscriptionLabView {
         await task.value
         completeFinish(generation: generation)
     }
-    @MainActor
     private func performFinish(force: Bool) async {
         if force, await prepareForcedFinish() { return }
         if force, pendingSendID != nil, !isRecording, bufferTask == nil, activeUtteranceID == nil {
@@ -126,8 +123,8 @@ extension TranscriptionLabView {
             || recordingDestination != selectedBinding {
             finalText = text
             volatileText = ""
-            refusal = .destinationChanged
-            if force || isForcedTeardown || selectedBinding == nil { route?.reportRemoval(.destinationChanged) }
+            talkStatus = .notSent(.destinationChanged)
+            if isForcedTeardown || route?.selected() == nil { route?.reportRemoval(.destinationChanged) }
             return
         }
         guard !force, !isForcedTeardown else { status = "Ready"; return }
@@ -136,7 +133,6 @@ extension TranscriptionLabView {
         volatileText = ""
         if onFinalized != nil { await send(text, failurePrefix: "Send failed") } else { status = "Ready" }
     }
-    @MainActor
     func interruptTarget(using action: @MainActor () async throws -> Void) async {
         guard !isInterrupting else { return }
         if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
@@ -171,7 +167,6 @@ extension TranscriptionLabView {
         bufferTask = nil
         releaseCaptureExclusivityAfterWork()
     }
-    @MainActor
     private func handleStartCancellation() async {
         if isInterrupting {
             await discardCapture()
@@ -181,7 +176,6 @@ extension TranscriptionLabView {
         }
         releaseCaptureExclusivityAfterWork()
     }
-    @MainActor
     private func cleanUp() async -> String {
         capture.stop()
         let task = bufferTask

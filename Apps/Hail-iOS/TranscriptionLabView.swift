@@ -12,9 +12,15 @@ extension View {
     }
 }
 
-struct SelectedReplyPlaybackObservation: Equatable {
-    let id: String?
-    let status: String?
+enum TalkCardStatus: Equatable {
+    case activity(String), notSent(TalkSendRefusal)
+
+    var message: String {
+        switch self {
+        case .activity(let text): text
+        case .notSent(let reason): reason.message
+        }
+    }
 }
 
 /// Audio-first capture surface shared by compact and regular-width station layouts.
@@ -52,11 +58,10 @@ struct StationTranscriptionView: View {
     @State var isRecording = false
     @State var finalText = ""
     @State var volatileText = ""
-    @State var activity = "Ready"
-    @State var refusal: TalkSendRefusal?
+    @State var talkStatus = TalkCardStatus.activity("Ready")
     var status: String {
-        get { refusal?.message ?? activity }
-        nonmutating set { (refusal, activity) = (nil, newValue) }
+        get { talkStatus.message }
+        nonmutating set { talkStatus = .activity(newValue) }
     }
     @State var isStarting = false
     @State var isFinalizing = false
@@ -130,7 +135,6 @@ struct StationTranscriptionView: View {
         self.pasteOffer = pasteOffer
     }
 }
-
 extension StationTranscriptionView {
     var body: some View {
         VStack(spacing: compactTalk ? 10 : 18) {
@@ -152,7 +156,7 @@ extension StationTranscriptionView {
             }
 
             // Below the button, so its appearing never moves Tap to talk under a finishing tap.
-            if refusal == .destinationChanged {
+            if talkStatus == .notSent(.destinationChanged) {
                 Text(finalText).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
             } else { liveTranscript }
 
@@ -175,20 +179,16 @@ extension StationTranscriptionView {
         .onChange(of: ownsCaptureSuppression) { wasSuppressed, isSuppressed in
             if wasSuppressed && !isSuppressed { announceDeferredStatusIfNeeded() }
         }
-        .onChange(of: SelectedReplyPlaybackObservation(id: selectedReplyID, status: replyPlaybackStatus)) { _, new in
-            announceReplyStatusIfNeeded(new.status)
+        .onChange(of: [selectedReplyID, replyPlaybackStatus]) {
+            announceReplyStatusIfNeeded(replyPlaybackStatus)
         }
-        .onChange(of: controlledReplyPlaybackStatus) { _, current in
-            announceControlledReplyFailureIfNeeded(current)
-        }
-        .onChange(of: replyFailureStatuses) { previous, current in
-            announceNewReplyFailures(previous: previous, current: current)
-        }
+        .onChange(of: controlledReplyPlaybackStatus) { _, current in announceControlledReplyFailureIfNeeded(current) }
+        .onChange(of: replyFailureStatuses, announceNewReplyFailures)
         .onChange(of: globalReplyAudioSpeaking) { wasSpeaking, isSpeaking in
             if wasSpeaking && !isSpeaking { announceDeferredStatusIfNeeded() }
         }
-        .onChange(of: destinationID) { previous, current in
-            if refusal == nil { noteDestinationChange(previous: previous, current: current) }
+        .onChange(of: destinationID) { old, new in
+            if talkStatus != .notSent(.destinationChanged) { noteDestinationChange(previous: old, current: new) }
         }
         .onDisappear {
             if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
