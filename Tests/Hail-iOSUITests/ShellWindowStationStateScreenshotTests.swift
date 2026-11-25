@@ -74,8 +74,22 @@ final class ShellWindowStationStateScreenshotTests: XCTestCase, ShellWindowUITes
     func testHeldStation() {
         let app = seeded("held")
         confirmFixtureDestination(in: app)
-        XCTAssertTrue(app.buttons["Resume"].firstMatch.waitForExistence(timeout: 8))
         captureBoth("held", marker: "station.playback-held", in: app)
+    }
+
+    @MainActor
+    func testHeldReplyHasNoAudioControlsInTheRedesignedTranscript() {
+        let app = launchStation(shellEnabled: true, arguments: ["-seed-station-screen", "held",
+                                                                 "-seed-conversation", "1"])
+        confirmFixtureDestination(in: app)
+        XCTAssertTrue(element("station.playback-held", in: app).waitForExistence(timeout: 8))
+        let transcript = element("station.chat", in: app)
+        XCTAssertTrue(element("station.transcript.details", in: transcript).waitForExistence(timeout: 8))
+        for title in ["Replay", "Pause", "Resume", "Mute", "Unmute"] {
+            XCTAssertFalse(transcript.buttons[title].firstMatch.exists, title)
+        }
+        XCTAssertFalse(element("station.transcript.audio-status", in: transcript).exists)
+        XCTAssertFalse(transcript.staticTexts["Audio played"].firstMatch.exists)
     }
 }
 

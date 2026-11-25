@@ -101,7 +101,10 @@ targets:
     sources:
       - Tests/Hail-iOSUITests
       - Tests/StationUIFixtures/StationScreenSeed.swift
+      - Tests/StationUIFixtures/StationTranscriptSeed.swift
     dependencies:
+      - package: Hail
+        products: [HailCore]
       - target: Hail-iOS
     settings:
       base:
@@ -112,15 +115,20 @@ targets:
     type: bundle.ui-testing
     platform: macOS
     sources:
+      - Tests/Hail-iOSUITests/ShellWindowStationDisplaySeedTests.swift
       - Tests/Hail-iOSUITests/ShellWindowStationFixtureLaunchTests.swift
       - Tests/Hail-iOSUITests/ShellWindowStationScreenTests.swift
       - Tests/Hail-iOSUITests/ShellWindowStationStateScreenshotTests.swift
+      - Tests/Hail-iOSUITests/ShellWindowTranscriptTests.swift
       - Tests/Hail-iOSUITests/ShellWindowUITestSupport+Launch.swift
       - Tests/Hail-iOSUITests/ShellWindowUITestSupport.swift
       - Tests/Hail-iOSUITests/ShellWindowUITests.swift
       - Tests/Hail-iOSUITests/StationThemeScreenshotUITests.swift
       - Tests/StationUIFixtures/StationScreenSeed.swift
+      - Tests/StationUIFixtures/StationTranscriptSeed.swift
     dependencies:
+      - package: Hail
+        products: [HailCore]
       - target: Hail-macOS
     settings:
       base:

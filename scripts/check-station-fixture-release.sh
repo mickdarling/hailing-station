@@ -27,7 +27,7 @@ check_release() {
       echo "Missing app symbols in $product ($arch)" >&2
       return 1
     fi
-    if grep -E 'StationScreenSeed|StationSeedConnector|StationSeedSocket' "$scratch/symbols"; then
+    if grep -E 'StationScreenSeed|StationSeedConnector|StationSeedSocket|StationTranscriptSeed|StationDisplaySeedLaunch|StationDisplayFixture' "$scratch/symbols"; then
       echo "Found station fixture symbols in $product ($arch)" >&2
       return 1
     fi

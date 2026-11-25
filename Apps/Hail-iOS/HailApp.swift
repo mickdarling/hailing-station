@@ -52,6 +52,12 @@ struct HailApp: App {
         #endif
     }
 
+    #if STATION_UI_FIXTURES
+    private static let displaySeedName = StationDisplaySeedLaunch.name(
+        in: ProcessInfo.processInfo.arguments, bundleID: Bundle.main.bundleIdentifier,
+        shellEnabled: StationRedesignLaunch.flags.isOn(.shell))
+    #endif
+
     @CommandsBuilder private var shellCommands: some Commands {
         if StationRedesignLaunch.flags.isOn(.shell), StationRedesignLaunch.idiom != .phone {
             SidebarCommands()
@@ -74,7 +80,13 @@ struct HailApp: App {
             }
         } else {
             #if STATION_UI_FIXTURES
-            if let seed = StationScreenSeed.requested {
+            if let name = Self.displaySeedName {
+                if let state = StationTranscriptSeed(rawValue: name) {
+                    StationDisplayFixture(state: state)
+                } else {
+                    Text("Unknown station display fixture")
+                }
+            } else if let seed = StationScreenSeed.requested {
                 RootView(makeResources: seed.resources)
             } else {
                 RootView()
@@ -89,6 +101,16 @@ struct HailApp: App {
     }
 
     private static func makeAppearancePreferences() -> ConversationAppearancePreferences {
+        #if STATION_UI_FIXTURES
+        if Self.displaySeedName != nil {
+            let suite = "hailing-station.transcript-ui"
+            guard let defaults = UserDefaults(suiteName: suite) else {
+                preconditionFailure("Could not open isolated transcript preferences")
+            }
+            defaults.removePersistentDomain(forName: suite)
+            return ConversationAppearancePreferences(defaults: defaults)
+        }
+        #endif
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-appearance-preview") {
             let suite = "hailing-station.appearance-ui-preview"
