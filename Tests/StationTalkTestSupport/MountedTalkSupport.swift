@@ -25,6 +25,7 @@ final class MountedTalkProbe {
 // The Talk button uses .plain. Keep its native style and expose SwiftUI's actual trigger so tests can deliver
 // two activations in one main-actor turn, independent of accessibility event dispatch or a subsequent redraw.
 extension Button {
+    @MainActor
     func buttonStyle(_ style: PlainButtonStyle) -> some View {
         buttonStyle(MountedTalkButtonStyle(plain: style))
     }
