@@ -23,17 +23,16 @@ import Testing
         await backend.waitUntilAppendIsBlocked()
         source.stop()
         #expect(await backend.endAudioCount == 0)
-        let interrupt = Task { await view.interruptTarget(using: {}) }
-        while await backend.cancelCount == 0 { await Task.yield() }
-        await view.begin()
-        #expect(!view.isRecording)
-        await backend.resumeAppend()
-        await oldConsumer.value
-        await interrupt.value
+        // Escape can retire the utterance without joining the already suspended stop caller.
+        // That caller no longer exists; the suspended consumer is the only remaining stale completion.
+        await view.interruptTarget(using: {})
         await view.begin()
         let replacementID = try #require(view.activeUtteranceID)
         let replacementConsumer = try #require(view.bufferTask)
-        #expect(view.isRecording && playback.isCaptureSuppressed)
+        #expect(view.isRecording)
+        #expect(playback.isCaptureSuppressed)
+        await backend.resumeAppend()
+        await oldConsumer.value
         try source.yield(sineBuffer())
         try await waitUntil { await backend.appendCount == 1 }
         clock.advance(by: .seconds(1)) // Past the tail: masking must belong to the live replacement.

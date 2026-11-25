@@ -63,6 +63,7 @@ extension StationBackgroundCaptureTests {
         await first.value
         await installed.value
         #expect(talk.tap.startCount == 0 && !talk.view.isRecording)
+        #expect(talk.tap.stopCount == 0)
         #expect(await !talk.speech.isRunning)
         await scene.rig.close()
     }

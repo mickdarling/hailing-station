@@ -63,9 +63,9 @@ final class AudioRouteModel: AudioInputSelectionProviding, AudioSceneCleanupCoor
 
     func installSceneCleanup(_ cleanup: @escaping @MainActor () async -> Void) { sceneCleanup = cleanup }
     func removeSceneCleanup() { sceneCleanup = nil }
-    func sceneBecameInactive() async {
+    func sceneBecameInactive(while shouldRelease: @MainActor () -> Bool = { true }) async {
         await sceneCleanup?()
-        if diagnostics.isActive { await deactivate() }
+        if diagnostics.isActive, shouldRelease() { await deactivate() }
     }
 
     func select(_ input: AudioPort?) async {

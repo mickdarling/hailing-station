@@ -1,14 +1,8 @@
+import AVFAudio
 import HailCore
+import Speech
 import SwiftUI
-// Only the Talk presentation can read this window dependency. Route tools receive AudioRouteModel.
-private extension EnvironmentValues {
-    @Entry var windowTalkSession: StationTalkSession?
-}
-extension View {
-    func sharingTalkSession(_ session: StationTalkSession) -> some View {
-        environment(\.windowTalkSession, session)
-    }
-}
+
 struct StationConversationDestinationID: Hashable {
     let endpointID: HostEndpoint.Identifier
     let targetID: String
@@ -43,6 +37,7 @@ struct StationTranscriptionView: View {
     /// Whether the destination takes pasted text, and the latest paste its Mac refused (#608).
     let pasteOffer: PasteOffer
     let onEscape: (@MainActor () async throws -> Void)?
+
     @StateObject var audio: StationSceneState<TranscriptionResources>
     var capture: any AudioCapturing { audio.value.capture }
     var transcriber: any Transcriber { audio.value.transcriber }
@@ -119,7 +114,7 @@ struct StationTranscriptionView: View {
         (self.onFinalized, self.onEscape) = (onFinalized, onEscape)
         self.pasteOffer = pasteOffer
         _audio = StateObject(wrappedValue: StationSceneState {
-            TranscriptionResources(capture: capture(), transcriber: transcriber ?? StationTalkSession.makeSpeech())
+            TranscriptionResources(capture: capture(), transcriber: transcriber ?? Self.defaultTranscriber())
         })
     }
 
@@ -196,5 +191,10 @@ struct StationTranscriptionView: View {
 extension StationTranscriptionView {
     var selectedReplyPlaybackObservation: SelectedReplyPlaybackObservation {
         SelectedReplyPlaybackObservation(id: selectedReplyID, status: replyPlaybackStatus)
+    }
+
+    private static func defaultTranscriber() -> any Transcriber {
+        if #available(iOS 26.0, macOS 26.0, *) { return SpeechAnalyzerTranscriber() }
+        return SFSpeechRecognizerTranscriber()
     }
 }

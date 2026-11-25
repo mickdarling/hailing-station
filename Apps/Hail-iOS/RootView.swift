@@ -84,13 +84,13 @@ struct StationRootView: View, AmbientDestinationOwner {
                     return
                 }
                 if !connections.ambientStreaming {
-                    // Ambient listening keeps the audio session active in the background (#282): deactivating it
-                    // would stop capture and let iOS suspend the app. The controller releases it when it stops.
-                    await talkSession.cleanUpScene { await audioRoutes.sceneBecameInactive() }
+                    await talkSession.cleanUpScene {
+                        await audioRoutes.sceneBecameInactive {
+                            scenePhaseRevision == revision && !connections.ambientStreaming
+                        }
+                    }
                 }
-                // Only after that release, which would otherwise stop the keepalive it started. Only in the
-                // background: Control Center, a permission alert or the app switcher leave the scene merely
-                // inactive, and a keepalive started there could deactivate capture ambient has just activated (#354).
+                // Keepalive starts after release, only in the background, to preserve ambient capture (#354).
                 if scenePhaseRevision == revision, phase == .background { keepalive.sceneActive = false }
             }
         }
