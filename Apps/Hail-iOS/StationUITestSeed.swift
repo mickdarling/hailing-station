@@ -28,9 +28,10 @@ enum StationUITestSeed {
         return Int(arguments[index + 1])
     }
 
-    static func runIfRequested(into store: HostConnectionStore) async {
+    /// Returns true only to the task that populated the conversation.
+    static func runIfRequested(into store: HostConnectionStore) async -> Bool {
         #if DEBUG
-        guard let count, !didRun else { return }
+        guard let count, !didRun else { return false }
         didRun = true
         let tail = argument("-seed-overheard-tail") ?? 0
         let tailPause = argument("-seed-tail-ms") ?? 25
@@ -40,6 +41,9 @@ enum StationUITestSeed {
                 try? await Task.sleep(for: .milliseconds(turn > count - tail ? tailPause : 25))
             }
         }
+        return true
+        #else
+        return false
         #endif
     }
 
@@ -68,9 +72,19 @@ enum StationUITestSeed {
 }
 
 extension RootView {
+    func seedChatIfRequested() async {
+        guard await StationUITestSeed.runIfRequested(into: connections) else { return }
+        #if STATION_UI_FIXTURES
+        StationScreenSeed.requested?.finishThread(in: connections, playback: playback)
+        #endif
+    }
+
     /// The thread the station chat shows: the confirmed destination's, or in a DEBUG UI test the seeded one.
     var chatThread: (hostID: HostEndpoint.Identifier, targetID: String)? {
         if let destination { return (destination.hostID, destination.target.id) }
+        #if STATION_UI_FIXTURES
+        if StationScreenSeed.requested != nil { return nil } // Wait for the fixture peer to confirm its target.
+        #endif
         return StationUITestSeed.count == nil ? nil : (StationUITestSeed.hostID, StationUITestSeed.targetID)
     }
 }

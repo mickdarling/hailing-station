@@ -73,7 +73,15 @@ struct HailApp: App {
                 NavigationStack { AppearanceSettingsView() }
             }
         } else {
+            #if STATION_UI_FIXTURES
+            if let seed = StationScreenSeed.requested {
+                RootView(makeResources: seed.resources)
+            } else {
+                RootView()
+            }
+            #else
             RootView()
+            #endif
         }
         #else
         RootView()

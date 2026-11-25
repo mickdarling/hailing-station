@@ -11,7 +11,13 @@ configs:
   Debug: debug
   Release: release
   Debug-ShellUITests: debug
+  Debug-iOSUITests: debug
 settings:
+  configs:
+    Debug-ShellUITests:
+      "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx*]": "$(inherited) DEBUG STATION_UI_FIXTURES"
+    Debug-iOSUITests:
+      "SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator*]": "$(inherited) DEBUG STATION_UI_FIXTURES"
   base:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
@@ -32,6 +38,7 @@ targets:
     platform: iOS
     sources:
       - Apps/Hail-iOS
+      - Tests/StationUIFixtures
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -63,6 +70,7 @@ targets:
       - path: Apps/Hail-iOS
         # The iOS Info.plist, and the routing spike (#22), which probes the iOS audio session.
         excludes: [Info.plist, RoutingProbe.swift, RoutingSpikeView.swift]
+      - Tests/StationUIFixtures
     settings:
       configs:
         Debug-ShellUITests:
@@ -92,6 +100,7 @@ targets:
     platform: iOS
     sources:
       - Tests/Hail-iOSUITests
+      - Tests/StationUIFixtures/StationScreenSeed.swift
     dependencies:
       - target: Hail-iOS
     settings:
@@ -103,11 +112,14 @@ targets:
     type: bundle.ui-testing
     platform: macOS
     sources:
+      - Tests/Hail-iOSUITests/ShellWindowStationFixtureLaunchTests.swift
       - Tests/Hail-iOSUITests/ShellWindowStationScreenTests.swift
+      - Tests/Hail-iOSUITests/ShellWindowStationStateScreenshotTests.swift
       - Tests/Hail-iOSUITests/ShellWindowUITestSupport+Launch.swift
       - Tests/Hail-iOSUITests/ShellWindowUITestSupport.swift
       - Tests/Hail-iOSUITests/ShellWindowUITests.swift
       - Tests/Hail-iOSUITests/StationThemeScreenshotUITests.swift
+      - Tests/StationUIFixtures/StationScreenSeed.swift
     dependencies:
       - target: Hail-macOS
     settings:
@@ -123,7 +135,7 @@ schemes:
     run:
       config: Debug
     test:
-      config: Debug
+      config: Debug-iOSUITests
       targets:
         - Hail-iOSUITests
   Hail-macOS:
