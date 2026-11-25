@@ -45,7 +45,7 @@ struct TargetsSettingsState {
         }
     }
 
-    private static func label(
+    static func label(
         _ selection: DestinationSelection, hosts: [HostConnectionSnapshot], generation: UUID?
     ) -> DestinationLabel? {
         guard let host = hosts.first(where: { selection.matches(endpoint: $0.endpoint) }) else { return nil }

@@ -8,38 +8,40 @@ import SwiftUI
 /// The glyph is the microphone indicator itself, so a private tone never hides a live microphone's red. At ordinary
 /// text sizes the rail is at least 44 pt tall; at accessibility sizes it wraps and grows, with no truncation.
 struct ListeningPrivacyRailView: View {
+    @Environment(\.stationPalette) private var palette
     let state: ListeningPrivacyRailState
     @Binding var isDetailPresented: Bool
+    var listeningDevice: String?
     @ScaledMetric(relativeTo: .body) private var minimumHeight: CGFloat = 44
     @State private var announced: ListeningPrivacyRailState.Kind?
 
     var body: some View {
         Button {
-            isDetailPresented = true
+            isDetailPresented.toggle()
         } label: {
             HStack(spacing: 10) {
                 MicLiveIndicatorView(state: state.mic)
                 Image(systemName: symbol)
-                    .foregroundStyle(tint)
+                    .foregroundStyle(tone.ink)
                     .imageScale(.medium)
-                Text(state.summary)
+                Text(summary)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(state.tone == .neutral ? Color.primary : tint)
+                    .foregroundStyle(state.tone == .neutral ? palette[.textPrimary] : tone.ink)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(tone.ink)
             }
             .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, minHeight: minimumHeight, alignment: .leading)
-            .background(tint.opacity(state.tone == .neutral ? 0.06 : 0.12), in: .rect(cornerRadius: 12))
+            .background(tone.fill, in: .rect(cornerRadius: 12))
             .contentShape(.rect(cornerRadius: 12))
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(state.accessibilityLabel)
+        .accessibilityLabel("\(summary). \(state.detail)")
         .accessibilityHint("Shows listening and privacy details")
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("station.listening-privacy-rail")
@@ -50,6 +52,12 @@ struct ListeningPrivacyRailView: View {
             announced = key
             AccessibilityNotification.Announcement(state.summary).post()
         }
+    }
+
+    private var summary: String {
+        if state.kind == .off { return "Microphone off" }
+        if state.kind == .recording, let listeningDevice { return "Listening on this \(listeningDevice)" }
+        return state.summary
     }
 
     /// A shape per kind, so the meaning never rests on colour alone.
@@ -65,11 +73,14 @@ struct ListeningPrivacyRailView: View {
         }
     }
 
-    private var tint: Color {
-        switch state.tone {
-        case .alert: .red
-        case .private: .indigo
-        case .neutral: .secondary
+    private var tone: (ink: Color, fill: Color) {
+        if state.kind == .recording, listeningDevice != nil {
+            return (palette[.textPrimary], palette[.surface])
+        }
+        return switch state.tone {
+        case .alert: (palette[.stateLive], palette[.alertSurface])
+        case .private: (palette[.statePrivate], palette[.privateSurface])
+        case .neutral: (palette[.textSecondary], palette[.surface])
         }
     }
 }

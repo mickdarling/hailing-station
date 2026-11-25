@@ -20,9 +20,32 @@ struct StationFit {
 }
 
 extension RootView {
+    @ViewBuilder var stationPresentation: some View {
+        if StationRedesignLaunch.flags.isOn(.shell) { redesignedStation } else { classicStation }
+    }
     var content: some View {
         resetStationStateForUITestingIfRequested()
-        return StationExpansionReader { stored in GeometryReader { proxy in
+        return stationPresentation
+            .onAppear {
+                // Weak, and never cleared on disappear: a pushed tool screen hides this view while its heals still count,
+                // and a scene that goes without `onDisappear` leaves nothing alive here (#763 review).
+                CapturePlaybackSuppression.reportHeals(for: playback) { [weak diagnostics] in
+                    Self.logHeal($0, to: diagnostics)
+                }
+                CapturePlaybackSuppression.releaseCompleted(using: playback)
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { CapturePlaybackSuppression.releaseCompleted(using: playback) }
+            }
+            // A reply arriving also drops any capture hold left with no live capture, so it never queues silently (#760).
+            .onChange(of: playback.latest?.id) { _, _ in
+                guard scenePhase == .active || connections.ambientStreaming else { return }
+                CapturePlaybackSuppression.reconcile(using: playback)
+            }
+    }
+
+    var classicStation: some View {
+        StationExpansionReader { stored in GeometryReader { proxy in
             // Full screen only while there is a chat, which carries the toggle (#819 review): with no chat (a cold
             // launch before the host is ready, an unconfigured or unreachable Mac) the station shows, whatever the
             // device remembers, so setup and the way back are never hidden.
@@ -54,24 +77,8 @@ extension RootView {
         } }
         // The station header names the app; a "Conversation" bar above it only costs height (#288).
         .stationHiddenNavigationBar()
-        .background(StationPlatform.background)
+        .modifier(StationCanvasBackground(original: StationPlatform.background))
         .stationBuildFooter()
-        .onAppear {
-            // Weak, and never cleared on disappear: a pushed tool screen hides this view while its heals still count,
-            // and a scene that goes without `onDisappear` leaves nothing alive here (#763 review).
-            CapturePlaybackSuppression.reportHeals(for: playback) { [weak diagnostics] in
-                Self.logHeal($0, to: diagnostics)
-            }
-            CapturePlaybackSuppression.releaseCompleted(using: playback)
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { CapturePlaybackSuppression.releaseCompleted(using: playback) }
-        }
-        // A reply arriving also drops any capture hold left with no live capture, so it never queues silently (#760).
-        .onChange(of: playback.latest?.id) { _, _ in
-            guard scenePhase == .active || connections.ambientStreaming else { return }
-            CapturePlaybackSuppression.reconcile(using: playback)
-        }
     }
 
     /// Only an iPad with room for the conversation and side columns fits one screen. A large iPhone in landscape

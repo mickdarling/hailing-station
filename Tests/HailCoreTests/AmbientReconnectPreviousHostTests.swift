@@ -70,6 +70,51 @@ import Testing
         await rig.store.disconnect(second.id)
     }
 
+    #if os(macOS)
+    @Test(.enabled(if: NativeShellLaunchContext.optedIn))
+    func flagOnPrivacyStaysDisabledUntilTheDisplayedHostsBindingMatches() async throws {
+        NativeShellLaunchContext.install()
+        try #require(StationRedesignLaunch.flags.isOn(.shell))
+        let rig = try AmbientReconnectRig()
+        let second = try endpoint("second", "ws://station-b.invalid")
+        do {
+            try await rig.start()
+            let socket = try await connectSecondHost(second, rig: rig)
+            try await selectSecondHost(second, socket: socket, rig: rig)
+            let binding = try #require(rig.store.ambientBinding(host: second.id, targetID: rig.target.id))
+            try await socket.push(.duckMode(on: true, reason: "device"))
+            try await waitUntil { await MainActor.run { rig.store.privacySwitch(second.id).isPrivate } }
+            rig.store.notePrivateStop(HostConnectionFailure.remote("not_allowed: ambient stopped: fixture"),
+                                      binding: binding)
+            let owner = PrivacySettingsFixture(connections: rig.store, host: second.id)
+            func displayed() -> StationScreenPrivacy {
+                StationScreenPrivacy(displayedHost: second.id, binding: binding,
+                    liveBinding: rig.controller.binding, settings: owner.privacySettingsState())
+            }
+            let settings = owner.privacySettingsState()
+            try #require(settings.privacy.shown == .privateListeningUnavailable && settings.canRequestPrivacy)
+            try #require(rig.controller.isListening && rig.controller.binding?.hostID == rig.endpoint.id)
+            let mismatch = displayed()
+            #expect(mismatch.privacy == nil && mismatch.intent == nil && !mismatch.dockEnabled)
+
+            await rig.controller.turnOff()
+            await rig.controller.turnOn(for: binding)
+            try #require(rig.controller.isListening && rig.controller.binding == binding)
+            let matched = displayed()
+            #expect(matched.title == "Leave private mode" && matched.dockEnabled)
+            #expect(matched.intent == .privacy(false, host: second.id, generation: binding.connectionGeneration))
+            let frames = try await socket.sentFrames()
+            #expect(!frames.contains { if case .control(.setPrivacy) = $0.payload { true } else { false } })
+        } catch {
+            await rig.close()
+            await rig.store.disconnect(second.id)
+            throw error
+        }
+        await rig.close()
+        await rig.store.disconnect(second.id)
+    }
+    #endif
+
     private func connectSecondHost(_ second: HostEndpoint, rig: AmbientReconnectRig) async throws -> ScriptedSocket {
         let socket = ScriptedSocket()
         await rig.connector.enqueue(.socket(socket), for: second.url)

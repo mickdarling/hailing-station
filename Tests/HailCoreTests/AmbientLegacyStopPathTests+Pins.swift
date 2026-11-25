@@ -27,6 +27,8 @@ extension AmbientLegacyStopPathTests {
         "Apps/Hail-iOS/StationCard.swift": ["end": 1, "turnOff": 1],
         // Labs checks whether ambient owns the route before releasing it.
         "Apps/Hail-iOS/TranscriptionLabView.swift": [:],
+        // Station rail reads the existing controller and reconnect notice. No ambient stop.
+        "Apps/Hail-iOS/StationScreenListening.swift": [:],
         "Apps/Hail-iOS/StationMenuPublishers.swift": ["turnOff": 1],
         reconnectFile: [
             "block": 16, "cancelTransportRestore": 3,
@@ -34,6 +36,7 @@ extension AmbientLegacyStopPathTests {
             "socketBindingLost": 3, "systemCaptureEnded": 1, "targetLoss": 1, "veto": 2
         ],
         "Sources/HailCore/AmbientRestorePresentation.swift": [:],
+        "Sources/HailCore/RailHost+Station.swift": [:],
         stateFile: [
             "bindingLoss": 1, "captureStartFailed": 1,
             "diagnosticsDismissed": 1, "encodingFailed": 2, "hostRefused": 2, "leftForeground": 1, "legacy": 9,

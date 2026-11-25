@@ -5,6 +5,7 @@ import SwiftUI
 /// It renders a `RecoverySheetState` and emits `RecoveryIntent`s, which only open a check or a choice. It never
 /// retries, resends, flushes, interrupts, restarts or clears text; #1002 owns recovery.
 struct RecoverySheetView: View {
+    @Environment(\.stationPalette) private var palette
     let state: RecoverySheetState
     let onIntent: (RecoveryIntent) -> Void
 
@@ -19,13 +20,14 @@ struct RecoverySheetView: View {
                     .font(.headline)
                     .accessibilityAddTraits(.isHeader)
             }
+            .listRowBackground(palette[.elevatedSurface])
             if let request = state.request {
                 Section("Last request") {
                     Label {
                         Text(request).fixedSize(horizontal: false, vertical: true)
                     } icon: {
                         Image(systemName: state.requestNeedsAttention ? "exclamationmark.triangle.fill" : "text.bubble")
-                            .foregroundStyle(state.requestNeedsAttention ? Color.orange : Color.secondary)
+                            .foregroundStyle(palette[state.requestNeedsAttention ? .stateWarning : .textSecondary])
                     }
                     .font(state.requestNeedsAttention ? .body.weight(.semibold) : .body)
                     .accessibilityIdentifier("recovery.request")
@@ -33,6 +35,7 @@ struct RecoverySheetView: View {
                         Text(nextStep).font(.callout)
                     }
                 }
+                .listRowBackground(palette[.elevatedSurface])
             }
             Section("Next step") {
                 ForEach(state.intents, id: \.self) { intent in
@@ -40,7 +43,11 @@ struct RecoverySheetView: View {
                         .accessibilityIdentifier("recovery.\(intent)")
                 }
             }
+            .listRowBackground(palette[.elevatedSurface])
         }
+        .scrollContentBackground(.hidden)
+        .background(palette[.surface])
+        .foregroundStyle(palette[.textPrimary], palette[.textSecondary])
         .navigationTitle("Recovery")
     }
 
@@ -48,7 +55,7 @@ struct RecoverySheetView: View {
         Label {
             VStack(alignment: .leading, spacing: 2) {
                 Text(step.title).font(.subheadline.weight(.semibold))
-                Text(step.text).font(.callout).foregroundStyle(.secondary)
+                Text(step.text).font(.callout).foregroundStyle(palette[.textSecondary])
             }
         } icon: {
             Image(systemName: symbol(step.state))
@@ -70,10 +77,9 @@ struct RecoverySheetView: View {
 
     private func tint(_ state: RecoveryStep.State) -> Color {
         switch state {
-        case .confirmed: .green
-        case .waiting: .secondary
-        case .failed: .red
-        case .notApplicable: .secondary
+        case .confirmed: palette[.brand]
+        case .waiting, .notApplicable: palette[.textSecondary]
+        case .failed: palette[.stateWarning]
         }
     }
 

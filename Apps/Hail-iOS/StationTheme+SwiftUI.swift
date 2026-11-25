@@ -18,6 +18,18 @@ extension EnvironmentValues {
     }
 }
 
+#if !SWIFT_PACKAGE
+#Preview("Navigation shell · synthetic") {
+    @Previewable @State var state = StationNavigationState()
+    StationNavigationShell(state: state, idiom: StationRedesignLaunch.idiom,
+        send: { state.apply($0) },
+        detail: { Text($0.title).frame(maxWidth: .infinity, maxHeight: .infinity).navigationTitle($0.title) },
+        inspector: { Text("Inspector") },
+        dock: { _ in Button("Full conversation") { state.apply(.toggleFullConversation) }.padding() }
+    )
+}
+#endif
+
 struct StationPalette {
     let theme: StationTheme
     let scheme: ColorScheme
@@ -27,6 +39,23 @@ struct StationPalette {
         let rgb = scheme == .dark ? pair.dark : pair.light
         return Color(.sRGB, red: Double(rgb >> 16) / 255, green: Double((rgb >> 8) & 255) / 255,
                      blue: Double(rgb & 255) / 255)
+    }
+}
+
+/// Resolves in the row's own environment, including when SwiftUI hosts the list background separately.
+struct StationRowSurface: View {
+    @Environment(\.stationPalette) private var palette
+
+    var body: some View { palette[.elevatedSurface] }
+}
+
+/// Shared station surfaces retain their original colours when the shell has supplied no theme.
+struct StationCanvasBackground: ViewModifier {
+    let original: Color
+    @Environment(\.activeStationPalette) private var palette
+
+    func body(content: Content) -> some View {
+        content.background(palette?[.surface] ?? original)
     }
 }
 
