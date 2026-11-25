@@ -180,16 +180,6 @@ extension TranscriptionLabView {
     }
 
     @MainActor
-    func discardCapture() async {
-        capture.stop()
-        bufferTask?.cancel()
-        bufferTask = nil
-        activeUtteranceID = nil
-        await transcriber.cancel()
-        isRecording = false
-    }
-
-    @MainActor
     func quietReplyAudio() async throws {
         status = "Quieting reply audio…"
         try await Task.sleep(for: .milliseconds(200))

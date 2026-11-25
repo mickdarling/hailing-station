@@ -51,7 +51,7 @@ extension EnvironmentValues {
 extension StationTranscriptionView {
     static var uncorrelatedDestinations: Set<StationConversationDestinationID> = []
     var attachedPaste: PastedDraft? { nil }
-    var talkButton: some View { Text(String(describing: type(of: capture))) }
+    var talkButton: some View { NativeTranscriptionMount(view: self) }
     var statusRow: some View { Text(status) }
     var escapeControl: some View { EmptyView() }
     var liveTranscript: some View { EmptyView() }
@@ -69,6 +69,11 @@ extension StationTranscriptionView {
     ) {}
     func clearPendingSend() {}
     func finish(force: Bool) async {}
+    func completeFinish(generation: UUID) {
+        guard finishGeneration == generation else { return }
+        finishGeneration = nil
+        finishTask = nil
+    }
 }
 
 struct PasteOffer {}
