@@ -718,8 +718,41 @@ extension HostConnectionStore {
     }
 }
 
+public struct TalkDestinationID: Hashable, Sendable {
+    public let endpointID: HostEndpoint.Identifier
+    public let targetID: String
+
+    public init(endpointID: HostEndpoint.Identifier, targetID: String) {
+        self.endpointID = endpointID
+        self.targetID = targetID
+    }
+}
+
+/// The confirmed selection and socket a Talk recording was admitted on.
+public struct TalkDestinationBinding: Equatable, Sendable {
+    public let destination: TalkDestinationID
+    public let connectionGeneration: UUID
+    let selection: UInt64
+}
+
+public enum TalkSendRefusal: Error, Equatable, Sendable {
+    case destinationChanged
+
+    public var message: String { "Not sent: destination changed" }
+}
+
 /// Text and Escape to a target; sent text joins the station chat (#288).
 extension HostConnectionStore {
+    public func talkBinding(for destination: TalkDestinationID) -> TalkDestinationBinding? {
+        let (id, targetID) = (destination.endpointID, destination.targetID)
+        guard let request = selectionRequests[id], request == latestSelectionRequest, selectedTargets[id] == targetID,
+              let snapshot = snapshots[id], snapshot.state == .ready,
+              !snapshot.receivedTargetList || snapshot.targets.contains(where: { $0.id == targetID && $0.alive })
+        else { return nil }
+        return TalkDestinationBinding(destination: destination, connectionGeneration: snapshot.connectionGeneration,
+                                      selection: selectionSerials[id, default: 0])
+    }
+
     /// `pasted` (#608) rides with `text`, which may then be empty; the transcript shows both once sent, the paste pending
     /// until a reply for the destination arrives or the Mac refuses it.
     public func sendFinalText(

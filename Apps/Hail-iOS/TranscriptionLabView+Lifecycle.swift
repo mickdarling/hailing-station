@@ -1,17 +1,31 @@
 import Foundation
 import HailCore
+typealias StationConversationDestinationID = TalkDestinationID
+
+@MainActor
+struct StationTalkRoute {
+    let store: HostConnectionStore
+    let selected: () -> TalkDestinationID?
+    let reportRemoval: (TalkSendRefusal) -> Void
+
+    func binding(for shown: TalkDestinationID?) -> TalkDestinationBinding? {
+        guard let shown, selected() == shown else { return nil }
+        return store.talkBinding(for: shown)
+    }
+}
 
 @MainActor
 extension TranscriptionLabView {
     func begin(whenVisible isVisible: @MainActor () -> Bool) async {
         guard isVisible(), !isRecording, !isStarting, !isFinalizing, !isInterrupting,
-              finishTask == nil, interruptTask == nil, pendingSendID == nil,
-              !Task.isCancelled, scenePhase == .active,
+              finishTask == nil, interruptTask == nil, pendingSendID == nil, !Task.isCancelled, scenePhase == .active,
               talkSession.admit(captureOwnerID, receive: receiveResult, cleanup: { await self.finish(force: true) })
         else {
             startTask = nil
             return
         }
+        recordingDestination = selectedBinding
+        recordingGeneration = destinationGeneration
         takeCaptureExclusivity()
         isStarting = true
         hasReceivedAudio = false
@@ -91,7 +105,6 @@ extension TranscriptionLabView {
         await finishTask?.value
         completeFinish(generation: generation)
     }
-
     func completeFinish(generation: UUID) {
         guard finishGeneration == generation else { return }
         finishGeneration = nil
@@ -109,34 +122,24 @@ extension TranscriptionLabView {
         isFinalizing = true
         defer { isFinalizing = false }
         status = "Finalizing…"
-        let destinationGenerationAtStart = destinationGeneration
         let finalized = await cleanUp()
-        guard !force else {
-            status = "Ready"
-            return
-        }
-        guard !isForcedTeardown else {
-            await deactivateTalkRoute()
-            status = "Ready"
-            return
-        }
+        if !force && isForcedTeardown { await deactivateTalkRoute() }
         releaseCaptureExclusivityAfterWork()
         let text = finalized.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else {
-            status = "Nothing heard"
+        if !text.isEmpty, onFinalized != nil,
+           recordingGeneration != destinationGeneration || recordingDestination == nil
+            || recordingDestination != selectedBinding {
+            finalText = text
+            volatileText = ""
+            talkStatus = .notSent(.destinationChanged)
+            if isForcedTeardown || route?.selected() == nil { route?.reportRemoval(.destinationChanged) }
             return
         }
+        guard !force, !isForcedTeardown else { status = "Ready"; return }
+        guard !text.isEmpty else { status = "Nothing heard"; return }
         finalText = text
         volatileText = ""
-        if onFinalized != nil {
-            guard destinationGeneration == destinationGenerationAtStart else {
-                status = "Destination changed — request not sent"
-                return
-            }
-            await send(text, failurePrefix: "Send failed")
-        } else {
-            status = "Ready"
-        }
+        if onFinalized != nil { await send(text, failurePrefix: "Send failed") } else { status = "Ready" }
     }
     func interruptTarget(using action: @MainActor () async throws -> Void) async {
         guard !isInterrupting else { return }
@@ -191,7 +194,6 @@ extension TranscriptionLabView {
         isRecording = false
         return finalized
     }
-
     private func retireTalkIfIdle() {
         guard !isStarting, !isRecording, !isFinalizing, !isInterrupting, finishTask == nil else { return }
         talkSession.retire(captureOwnerID)

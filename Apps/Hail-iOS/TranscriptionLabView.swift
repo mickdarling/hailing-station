@@ -1,14 +1,15 @@
 import HailCore
 import SwiftUI
 
-struct StationConversationDestinationID: Hashable {
-    let endpointID: HostEndpoint.Identifier
-    let targetID: String
-}
+enum TalkCardStatus: Equatable {
+    case activity(String), notSent(TalkSendRefusal)
 
-struct SelectedReplyPlaybackObservation: Equatable {
-    let id: String?
-    let status: String?
+    var message: String {
+        switch self {
+        case .activity(let text): text
+        case .notSent(let reason): reason.message
+        }
+    }
 }
 
 /// Audio-first capture surface shared by compact and regular-width station layouts.
@@ -21,6 +22,8 @@ struct StationTranscriptionView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
     let destinationLabel: String?
     let destinationID: StationConversationDestinationID?
+    let route: StationTalkRoute?
+    var selectedBinding: TalkDestinationBinding? { route?.binding(for: destinationID) }
     let replyIDs: Set<String>
     let replyPlaybackStatus: String?
     let selectedReplyID: String?
@@ -31,7 +34,6 @@ struct StationTranscriptionView: View {
     let onCaptureWillBegin: (@MainActor (UUID) -> Void)?
     let onCaptureDidEnd: (@MainActor (UUID, _ resumingPlayback: Bool) -> Void)?
     let onCaptureTeardownCompleted: (@MainActor (UUID) -> Void)?
-    /// Sends the spoken request, with the attached paste when there is one (#608).
     let onFinalized: (@MainActor (String, PastedDraft?) async throws -> Void)?
     /// Whether the destination takes pasted text, and the latest paste its Mac refused (#608).
     let pasteOffer: PasteOffer
@@ -43,7 +45,11 @@ struct StationTranscriptionView: View {
     @State var isRecording = false
     @State var finalText = ""
     @State var volatileText = ""
-    @State var status = "Ready"
+    @State var talkStatus = TalkCardStatus.activity("Ready")
+    var status: String {
+        get { talkStatus.message }
+        nonmutating set { talkStatus = .activity(newValue) }
+    }
     @State var isStarting = false
     @State var isFinalizing = false
     @State var hasReceivedAudio = false
@@ -58,6 +64,8 @@ struct StationTranscriptionView: View {
     /// so if that send then fails, its failure still shows rather than the arrival's "Reply received".
     @State var answeredSendID: UUID?
     @State var destinationGeneration = UUID()
+    @State var recordingDestination: TalkDestinationBinding?
+    @State var recordingGeneration: UUID?
     @State var replyTimeoutTask: Task<Void, Never>?
     @State var ownsCaptureSuppression = false
     /// Only what must stay reachable while the conversation is full screen (#819); the station sets it, Labs never.
@@ -83,6 +91,7 @@ struct StationTranscriptionView: View {
         audioSession: any AudioSessionDiagnosticsProviding,
         destinationLabel: String? = nil,
         destinationID: StationConversationDestinationID? = nil,
+        route: StationTalkRoute? = nil,
         replyIDs: Set<String> = [],
         replyPlaybackStatus: String? = nil,
         selectedReplyID: String? = nil,
@@ -99,6 +108,7 @@ struct StationTranscriptionView: View {
         self.audioSession = audioSession
         self.destinationLabel = destinationLabel
         self.destinationID = destinationID
+        self.route = route
         self.replyIDs = replyIDs
         self.replyPlaybackStatus = replyPlaybackStatus
         self.selectedReplyID = selectedReplyID
@@ -115,6 +125,8 @@ struct StationTranscriptionView: View {
         guard !(connections?.ambientController?.isOn ?? false) else { return }
         await audioSession.deactivate()
     }
+}
+extension StationTranscriptionView {
     var body: some View {
         VStack(spacing: compactTalk ? 10 : 18) {
             // The conversation thread shows each request as You (#318), so no separate last-request panel (#429).
@@ -125,7 +137,6 @@ struct StationTranscriptionView: View {
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
-
             // Full screen (#819), one row: talk, its status and Escape. The button keeps the first slot either way,
             // so expanding never rebuilds it.
             let row = compactTalk ? AnyLayout(HStackLayout(spacing: 10)) : AnyLayout(VStackLayout(spacing: 18))
@@ -135,12 +146,12 @@ struct StationTranscriptionView: View {
             }
 
             // Below the button, so its appearing never moves Tap to talk under a finishing tap.
-            liveTranscript
-
+            if talkStatus == .notSent(.destinationChanged) {
+                Text(finalText).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            } else { liveTranscript }
             // Always mounted (#819 review), so a destination change still clears a paste and a refused one comes
             // back. Full screen it hides only the bare Paste button: an attached paste or a problem still shows.
-            pasteControl
-                .stationCollapsed(compactTalk && attachedPaste == nil && pasteProblem == nil)
+            pasteControl.stationCollapsed(compactTalk && attachedPaste == nil && pasteProblem == nil)
 
             if !compactTalk { escapeControl; statusRow }
         }
@@ -151,29 +162,19 @@ struct StationTranscriptionView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { restorePlaybackAfterForcedTeardown(); announceDeferredStatusIfNeeded() }
         }
-        .onChange(of: replyIDs) { previous, current in
-            noteReplyArrival(previous: previous, current: current)
-        }
-        .onChange(of: status) { _, current in
-            announceStatusUnlessQuiet(current)
-        }
+        .onChange(of: replyIDs, noteReplyArrival)
+        .onChange(of: status) { _, current in announceStatusUnlessQuiet(current) }
         .onChange(of: ownsCaptureSuppression) { wasSuppressed, isSuppressed in
             if wasSuppressed && !isSuppressed { announceDeferredStatusIfNeeded() }
         }
-        .onChange(of: SelectedReplyPlaybackObservation(id: selectedReplyID, status: replyPlaybackStatus)) { _, reply in
-            announceReplyStatusIfNeeded(reply.status)
-        }
-        .onChange(of: controlledReplyPlaybackStatus) { _, current in
-            announceControlledReplyFailureIfNeeded(current)
-        }
-        .onChange(of: replyFailureStatuses) { previous, current in
-            announceNewReplyFailures(previous: previous, current: current)
-        }
+        .onChange(of: [selectedReplyID, replyPlaybackStatus]) { announceReplyStatusIfNeeded(replyPlaybackStatus) }
+        .onChange(of: controlledReplyPlaybackStatus) { _, current in announceControlledReplyFailureIfNeeded(current) }
+        .onChange(of: replyFailureStatuses, announceNewReplyFailures)
         .onChange(of: globalReplyAudioSpeaking) { wasSpeaking, isSpeaking in
             if wasSpeaking && !isSpeaking { announceDeferredStatusIfNeeded() }
         }
-        .onChange(of: destinationID) { previous, current in
-            noteDestinationChange(previous: previous, current: current)
+        .onChange(of: destinationID) { old, new in
+            if talkStatus != .notSent(.destinationChanged) { noteDestinationChange(previous: old, current: new) }
         }
         .onDisappear {
             if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
