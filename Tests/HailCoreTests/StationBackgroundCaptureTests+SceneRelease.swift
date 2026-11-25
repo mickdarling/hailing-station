@@ -29,9 +29,16 @@ extension StationBackgroundCaptureTests {
         if change != .startAmbient {
             scene.host.setScenePhase(.active)
             await scene.host.render()
+        } else {
+            // Model the card receiving inactivity after ambient starts, without advancing the root revision.
+            await scene.rig.controller.update(binding: scene.binding, scene: .active)
         }
         if change != .activateScene {
             await scene.rig.controller.turnOn(for: scene.binding)
+            if change == .startAmbient {
+                await scene.rig.controller.update(binding: scene.binding, scene: .inactive)
+            }
+            #expect(scene.rig.controller.isListening)
             #expect(scene.rig.store.ambientStreaming)
         }
         let before = await scene.backend.activationHistory
