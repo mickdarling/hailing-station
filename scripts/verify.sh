@@ -262,15 +262,13 @@ sim() {
 mac() {
   echo "== macOS build (Hail-macOS, #266)"
   xcodegen generate --quiet
-  local args=(-project HailingStation.xcodeproj -scheme Hail-macOS
-              -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO)
-  xcodebuild build "${args[@]}" 2>&1 | pretty
+  # Set the output path so diagnostics cannot affect which plist we check.
+  local derived_data="$PWD/.build/verify-mac"
+  xcodebuild build -project HailingStation.xcodeproj -scheme Hail-macOS \
+    -configuration Debug -derivedDataPath "$derived_data" \
+    -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO 2>&1 | pretty
 
-  local plist
-  # SwiftPM can print diagnostics before or after the build-settings array on stdout.
-  plist=$(xcodebuild "${args[@]}" -showBuildSettings -json |
-    jq -Rser 'capture("(?:^|\\n)[ \\t]*(?<settings>\\[(?=\\s*\\{)(?:[^\\n]*|.*?\\n)\\])[ \\t\\r]*(?:\\n|$)"; "m").settings | fromjson
-      | .[] | select(.target == "Hail-macOS") | .buildSettings | .TARGET_BUILD_DIR + "/" + .INFOPLIST_PATH')
+  local plist="$derived_data/Build/Products/Debug/Hail-macOS.app/Contents/Info.plist"
   if ! plutil -convert json -o - "$plist" |
     jq -e '.CFBundleName == "Hailing Station" and .CFBundleDisplayName == .CFBundleName' >/dev/null; then
     echo "$plist: CFBundleName and CFBundleDisplayName must both be 'Hailing Station'" >&2
