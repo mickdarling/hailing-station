@@ -1,9 +1,9 @@
 import Foundation
-import HailCore
+@testable import HailCore
 
 // The symlinked lifecycle/progress sources run the app's real capture and suppression code in SwiftPM. Only
 // SwiftUI storage, permissions, session IO and unrelated UI helpers are replaced; no microphone is opened.
-struct ConversationDestinationID: Hashable { let id: UUID }
+typealias ConversationDestinationID = StationConversationDestinationID
 
 @MainActor
 final class TapCaptureTestSession {
@@ -32,9 +32,21 @@ final class TranscriptionLabView {
     var isRecording = false, isStarting = false, isFinalizing = false, isInterrupting = false
     var isForcedTeardown = false, hasReceivedAudio = false, ownsCaptureSuppression = false
     var playbackRestoreRequested = false
-    var finalText = "", volatileText = "", status = "Ready"
+    var finalText = "", volatileText = ""
+    var talkStatus = TalkCardStatus.activity("Ready")
+    var status: String {
+        get { talkStatus.message }
+        set { talkStatus = .activity(newValue) }
+    }
     var pendingSendID: UUID?, activeUtteranceID: UUID?, finishGeneration: UUID?
     var destinationGeneration = UUID()
+    private static let fixtureDestination = ConversationDestinationID(endpointID: "fixture-mac", targetID: "target")
+    var destinationID: ConversationDestinationID? = TranscriptionLabView.fixtureDestination
+    var selectedDestinationID: ConversationDestinationID? = TranscriptionLabView.fixtureDestination
+    var connectionGeneration = UUID()
+    var route: StationTalkRoute?
+    var recordingDestination: TalkDestinationBinding?
+    var recordingGeneration: UUID?
     var pendingDestinationID: ConversationDestinationID?
     var startTask: Task<Void, Never>?, finishTask: Task<Void, Never>?
     var interruptTask: Task<Void, Never>?, bufferTask: Task<Void, Never>?, replyTimeoutTask: Task<Void, Never>?
@@ -72,6 +84,19 @@ final class TranscriptionLabView {
     }
     func prepareCaptureAuthorization() async -> Bool { true }
     func begin() async { await begin(whenVisible: { self.scenePhase == .active }) }
+    func bindStation(to target: String) async throws -> TalkDestinationStoreFixture {
+        let host = try await TalkDestinationStoreFixture.make()
+        try await host.select(target)
+        let shown = try host.binding(target).destination
+        destinationID = shown
+        route = StationTalkRoute(store: host.store, selected: { shown }, reportRemoval: { _ in })
+        return host
+    }
+    var selectedBinding: TalkDestinationBinding? {
+        if let route { return route.binding(for: destinationID) }
+        guard let id = selectedDestinationID, id == destinationID else { return nil }
+        return TalkDestinationBinding(destination: id, connectionGeneration: connectionGeneration, selection: 1)
+    }
     func quietReplyAudio() async throws {}
     func receiveResult(_ result: TranscriptionResult) {
         received.append(result)
@@ -101,7 +126,10 @@ final class TranscriptionLabView {
         pendingSendID = nil
         pendingDestinationID = nil
     }
-    func send(_ text: String, failurePrefix: String) async { sent.append(text) }
+    func send(_ text: String, failurePrefix: String) async {
+        sent.append(text)
+        await onFinalized?(text)
+    }
     func discardCapture() async {
         capture.stop()
         bufferTask?.cancel()

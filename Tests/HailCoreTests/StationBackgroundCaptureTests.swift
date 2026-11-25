@@ -118,8 +118,9 @@ struct BackgroundCaptureScene {
     let host: NativeSceneAmbientHost
     let backend = FakeAudioSessionBackend(inputs: [.builtIn])
 
-    init() async throws {
+    init(supportsText: Bool = false) async throws {
         rig = try AmbientReconnectRig()
+        if supportsText { rig.capabilities.append("send_text") }
         try await rig.start(listening: false)
         binding = try rig.currentBinding()
         probe = NativeSceneAmbientProbe(binding: binding)

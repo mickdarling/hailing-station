@@ -6,8 +6,9 @@ import Testing
 @MainActor
 struct StationTalkSessionTests {
     @Test(arguments: [false, true])
-    func stationFinalizesBeforeLabsCanStart(explicitFinish: Bool) async {
+    func stationFinalizesBeforeLabsCanStart(explicitFinish: Bool) async throws {
         let rig = TalkWindowFixture()
+        let host = try await rig.station.bindStation(to: "target")
         await rig.station.begin()
         rig.speech.holdNextStop = true
         let finishing = Task { await rig.station.finish(force: !explicitFinish) }
@@ -24,10 +25,12 @@ struct StationTalkSessionTests {
         #expect(rig.capture.startCount == 2 && rig.speech.subscriptions.withLock { $0 } == 1)
         await rig.labs.finish()
         #expect(rig.labs.finalText == rig.speech.text && rig.labs.sent.isEmpty)
+        await host.store.disconnect(host.host.id)
     }
 
-    @Test func closingLabsFinishesItsOwnCaptureBeforeStationResumes() async {
+    @Test func closingLabsFinishesItsOwnCaptureBeforeStationResumes() async throws {
         let rig = TalkWindowFixture()
+        let host = try await rig.station.bindStation(to: "target")
         await rig.labs.begin()
         await rig.station.finish(force: true)
         let escapes = TalkCallCounter()
@@ -47,6 +50,7 @@ struct StationTalkSessionTests {
         #expect(rig.station.isRecording && rig.speech.starts == 2)
         await rig.station.finish()
         #expect(rig.station.sent == [rig.speech.text])
+        await host.store.disconnect(host.host.id)
     }
 
     @Test func olderRegistrationExitsAfterLabsRegistersThenSceneGoesInactive() async throws {
