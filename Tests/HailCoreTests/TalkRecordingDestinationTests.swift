@@ -4,6 +4,20 @@ import Testing
 
 @MainActor
 struct TalkRecordingDestinationTests {
+    @Test func staleDockFinishPublishesTheUnsentRecording() async throws {
+        let rig = RecordingFixture()
+        await rig.record(on: rig.macA)
+        rig.select(rig.macB)
+        let finish = try #require(rig.card.dispatchDockPrimary(.finish, destination: .none,
+            accessories: DockAccessories(escape: false, privacy: false, paste: false)))
+        await finish.value
+
+        #expect(rig.deliveries.isEmpty)
+        #expect(rig.card.talkStatus == .destinationChanged)
+        #expect(rig.card.status == "Not sent: destination changed")
+        #expect(rig.card.finalText == rig.text)
+    }
+
     @Test func finishQueuedOnAClosesCaptureWithoutDeliveringAfterSwitchToB() async {
         let rig = RecordingFixture()
         await rig.record(on: rig.macA)
@@ -90,9 +104,9 @@ struct TalkRecordingDestinationTests {
     }
 
     @Test func refusalIdentityIsIndependentOfItsDisplayText() {
-        let refused = TalkCardStatus.notSent(.destinationChanged)
-        let activity = TalkCardStatus.activity("Not sent: destination changed")
-        #expect(activity.message == refused.message)
+        let refused = StationTalkStatus.notSent(.destinationChanged)
+        let activity = StationTalkStatus.message("Not sent: destination changed")
+        #expect(activity.text == refused.text)
         #expect(activity != refused)
     }
 
@@ -156,7 +170,7 @@ struct TalkRecordingDestinationTests {
         rig.card.scenePhase = .background
         if clearShown { (rig.card.destinationID, rig.card.destinationGeneration) = (nil, UUID()) }
         await rig.card.talkSession.cleanUpScene {}
-        #expect(rig.card.talkStatus == (switched ? .notSent(.destinationChanged) : .activity("Ready")))
+        #expect(rig.card.talkStatus == (switched ? .notSent(.destinationChanged) : .ready))
         #expect(notices == (switched ? [.destinationChanged] : []))
         #expect(try await host.socket.transcripts().isEmpty)
         #expect(rig.deliveries.isEmpty && rig.capture.stopCount == 1 && rig.card.talkSession.owner == nil)

@@ -13,6 +13,7 @@ struct VoiceDockView: View {
     /// The owner's live caption. It shows only while `state.showsCaption`.
     let caption: String?
     let onIntent: (VoiceDockIntent) -> Void
+    var talkIdentifier = "station.voice-dock.talk"
     @Environment(\.dynamicTypeSize) private var typeSize
     @ScaledMetric(relativeTo: .body) private var target: CGFloat = 44
 
@@ -63,7 +64,7 @@ struct VoiceDockView: View {
         .disabled(!state.isEnabled)
         .accessibilityValue(state.value)
         .accessibilityHint(state.hint)
-        .accessibilityIdentifier("station.voice-dock.talk")
+        .accessibilityIdentifier(talkIdentifier)
     }
 
     /// Side by side as icons, or, at accessibility sizes, stacked full width with their titles (Codex review of

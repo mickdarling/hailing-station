@@ -33,11 +33,8 @@ final class TranscriptionLabView {
     var isForcedTeardown = false, hasReceivedAudio = false, ownsCaptureSuppression = false
     var playbackRestoreRequested = false
     var finalText = "", volatileText = ""
-    var talkStatus = TalkCardStatus.activity("Ready")
-    var status: String {
-        get { talkStatus.message }
-        set { talkStatus = .activity(newValue) }
-    }
+    var talkStatus = StationTalkStatus.ready
+    var status: String { talkStatus.text }
     var pendingSendID: UUID?, activeUtteranceID: UUID?, finishGeneration: UUID?
     var destinationGeneration = UUID()
     private static let fixtureDestination = ConversationDestinationID(endpointID: "fixture-mac", targetID: "target")
@@ -84,6 +81,7 @@ final class TranscriptionLabView {
         beginCaptureExclusivity()
     }
     func prepareCaptureAuthorization() async -> Bool { true }
+    func isTalkVisible() -> Bool { scenePhase == .active }
     func begin() async { await begin(whenVisible: { self.scenePhase == .active }) }
     func bindStation(to target: String) async throws -> TalkDestinationStoreFixture {
         let host = try await TalkDestinationStoreFixture.make()
@@ -137,7 +135,7 @@ final class TranscriptionLabView {
             } catch let reason as TalkSendRefusal {
                 refuseRecording(reason)
             } catch {
-                status = "\(failurePrefix): \(error.localizedDescription)"
+                talkStatus = .sendFailed("\(failurePrefix): \(error.localizedDescription)")
             }
         } else {
             sent.append(text)

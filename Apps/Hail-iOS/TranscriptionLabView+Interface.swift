@@ -51,9 +51,9 @@ extension TranscriptionLabView {
         Button {
             guard !talkButtonDisabled(isVisible: isVisible()) else { return }
             if isRecording {
-                Task { await finish() }
+                finishTalk()
             } else {
-                startTask = Task { await begin(whenVisible: isVisible) }
+                startTalk()
             }
         } label: {
             let circle: CGFloat = compactTalk ? 52 : 82 // Smaller while the conversation is full screen (#819).
@@ -61,9 +61,7 @@ extension TranscriptionLabView {
                 Image(systemName: isRecording ? "stop.fill" : "mic.fill")
                     .font(.system(size: compactTalk ? 22 : 32, weight: .semibold))
                     .frame(width: circle, height: circle)
-                    .foregroundStyle(.white)
-                    .background(isRecording ? Color.red : Color.accentColor, in: Circle())
-                    .shadow(color: (isRecording ? Color.red : Color.accentColor).opacity(0.25), radius: 12, y: 6)
+                    .modifier(StationTalkDisc(recording: isRecording))
                 Text(actionLabel)
                     .font(.headline)
             }
@@ -76,11 +74,6 @@ extension TranscriptionLabView {
         .accessibilityLabel(actionLabel)
         .accessibilityValue(status)
         .accessibilityHint(talkHint)
-    }
-
-    private func talkButtonDisabled(isVisible: Bool) -> Bool {
-        startTask != nil || isStarting || isFinalizing || isInterrupting || finishTask != nil || interruptTask != nil
-            || (!isRecording && (!isVisible || pendingSendID != nil))
     }
 
     var statusRow: some View {
@@ -117,8 +110,8 @@ extension TranscriptionLabView {
     }
 
     var showsActivity: Bool {
-        isStarting || isRecording || isFinalizing || status == "Sending…"
-            || status == "Waiting for reply…"
+        isStarting || isRecording || isFinalizing || talkStatus.outcome() == .sending
+            || talkStatus.outcome() == .waitingForReply
     }
 
     var showsProgress: Bool {
@@ -141,9 +134,10 @@ extension TranscriptionLabView {
         let sendID = UUID()
         let destinationAtSend = destinationID
         answeredSendID = nil
+        recordDockFailure(nil)
         pendingSendID = sendID
         pendingDestinationID = destinationAtSend
-        status = "Sending…"
+        talkStatus = .turn(.sending, text: "Sending…")
         // Not a paste an earlier send still carries: a reply placed during that write (#636) lets this one start.
         let paste = pastes.take(for: sendID)
         do {
@@ -155,10 +149,10 @@ extension TranscriptionLabView {
             if answered { answeredSendID = nil; return }
             if let destinationAtSend, Self.uncorrelatedDestinations.contains(destinationAtSend) {
                 clearPendingSend()
-                status = "Sent — reply turn unverified"
+                talkStatus = .turn(.sentUnverified, text: "Sent — reply turn unverified")
                 return
             }
-            status = "Waiting for reply…"
+            talkStatus = .turn(.waitingForReply, text: "Waiting for reply…")
             scheduleReplyTimeout(sendID: sendID, destinationID: destinationAtSend)
         } catch {
             pastes.finish(sendID, delivered: false)
@@ -176,8 +170,8 @@ extension TranscriptionLabView {
             if problem == nil, let destinationAtSend { Self.uncorrelatedDestinations.insert(destinationAtSend) }
             clearPendingSend()
             // A refused paste stays attached, with the reason, so it can be fixed or removed (#608).
-            if let problem { pasteProblem = problem }
-            status = "\(failurePrefix): \(problem ?? error.localizedDescription)"
+            if let problem { noteUnsentPaste(problem) }
+            talkStatus = .sendFailed("\(failurePrefix): \(problem ?? error.localizedDescription)")
         }
     }
     private func deliver(_ text: String, paste: PastedDraft?, admitted: TalkDestinationBinding?,
@@ -190,11 +184,12 @@ extension TranscriptionLabView {
     /// A reply that arrived while `sendID` was still going ended its wait (#636), and nothing has happened since on
     /// that destination: no new send, capture or Escape has changed the status from "Reply received".
     func answeredEarly(_ sendID: UUID, at destination: ConversationDestinationID?) -> Bool {
-        answeredSendID == sendID && pendingSendID == nil && destinationID == destination && status == "Reply received"
+        answeredSendID == sendID && pendingSendID == nil && destinationID == destination
+            && talkStatus.outcome() == .replyReceived
     }
 
     func quietReplyAudio() async throws {
-        status = "Quieting reply audio…"
+        talkStatus = .message("Quieting reply audio…")
         try await Task.sleep(for: .milliseconds(200))
     }
 }

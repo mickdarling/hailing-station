@@ -26,7 +26,9 @@ extension StationTranscriptionView {
         }
     }
 
-    var talkButton: some View { StationTalkButton(station: self) }
+    func isTalkVisible() -> Bool { talkVisibility.allowsStart }
+
+    var talkButton: some View { makeTalkButton(whenVisible: isTalkVisible) }
 
     /// The station owns the shared audio route. Losing visibility only discards this view's microphone capture.
     func stopCaptureWhenHidden() {
@@ -42,9 +44,9 @@ extension StationTranscriptionView {
             if let pendingStart, startTask == pendingStart { startTask = nil }
             let consumer = bufferTask
             // A cancelled start cleans up before returning. Only a recording still owns resources to discard.
-            if isRecording { await discardCapture() }
+            if isRecording, talkSession.owner == captureOwnerID { await discardCapture() }
             await consumer?.value
-            status = "Ready"
+            talkStatus = .ready
             completeFinish(generation: generation)
         }
     }
@@ -60,9 +62,9 @@ extension StationTranscriptionView {
     }
 }
 
-/// Both the rendered button and its queued start read the current scene and window.
+/// Both layouts and their queued starts read the current scene and window.
 @MainActor @Observable
-private final class TalkVisibility {
+final class TalkVisibility {
     var sceneIsActive = false
     #if os(macOS)
     var windowIsVisible = false
@@ -77,20 +79,19 @@ private final class TalkVisibility {
     }
 }
 
-private struct StationTalkButton: View {
-    let station: StationTranscriptionView
+struct StationTalkVisibility: ViewModifier {
+    let visibility: TalkVisibility
+    let onHidden: @MainActor () -> Void
     @Environment(\.scenePhase) private var scenePhase
-    @State private var visibility = TalkVisibility()
 
-    var body: some View {
-        station.makeTalkButton(whenVisible: { [visibility] in visibility.allowsStart })
+    func body(content: Content) -> some View {
+        content
             #if os(macOS)
-            .background(TranscriptionWindowObserver(visibility: visibility,
-                                                    onHidden: station.stopCaptureWhenHidden))
+            .background(TranscriptionWindowObserver(visibility: visibility, onHidden: onHidden))
             #endif
             .onChange(of: scenePhase, initial: true) { _, phase in
                 visibility.sceneIsActive = phase == .active
-                if phase == .background { station.stopCaptureWhenHidden() }
+                if phase == .background { onHidden() }
             }
     }
 }

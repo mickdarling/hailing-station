@@ -12,6 +12,7 @@ struct PasteOffer: Equatable {
 struct PasteRefusalHandling {
     /// The refusal already handled, so the same one never puts a paste back twice.
     var handledID: UUID?
+    var deliveryFailure: TurnOutcome?
     /// A status set without being spoken, because the shared request refusal already announced the event once.
     var quietStatus: String?
 }
@@ -24,7 +25,18 @@ struct PasteRefusalHandling {
 extension TranscriptionLabView {
     var attachedPaste: PastedDraft? { pastes.attached }
 
-    var pasteControl: some View {
+    func recordDockFailure(_ failure: TurnOutcome?) {
+        if dock != nil { pasteRefusalHandling.deliveryFailure = failure }
+    }
+
+    func noteUnsentPaste(_ reason: String) {
+        pasteProblem = reason
+        recordDockFailure(.notSent(reason: reason))
+    }
+
+    var pasteControl: some View { observingPaste(pastePanel) }
+
+    var pastePanel: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let attachedPaste {
                 attachedPasteCard(attachedPaste)
@@ -45,9 +57,14 @@ extension TranscriptionLabView {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    func observingPaste<Content: View>(_ content: Content) -> some View {
+        content
         .onChange(of: destinationID) { _, _ in
             pastes.attach(nil)
             pasteProblem = nil
+            recordDockFailure(nil)
         }
         .onChange(of: pasteOffer.refusal) { _, refusal in
             // Only a new refusal of the request this station is waiting on, to this destination: an old one seen
@@ -56,13 +73,17 @@ extension TranscriptionLabView {
                   pendingDestinationID == destinationID,
                   let restored = try? PastedDraft(refusal.pasted) else { return }
             pasteRefusalHandling.handledID = refusal.id
+            recordDockFailure(.refused(reason: refusal.message))
             pastes.restore(restored, refusing: refused)
             pasteProblem = PastedDraft.Problem.refusedByHost(refusal.message).message
             // That request is over: no reply will come for it, so its reply wait ends and the status leaves
             // "Waiting for reply". The new status is not spoken: the shared request refusal (#692) already adds
             // the one line and the one announcement.
             clearPendingSend()
-            if status != "Ready" { (pasteRefusalHandling.quietStatus, status) = ("Ready", "Ready") }
+            if talkStatus != .ready {
+                pasteRefusalHandling.quietStatus = StationTalkStatus.ready.text
+                talkStatus = .ready
+            }
         }
     }
 
