@@ -58,7 +58,7 @@ extension StationBackgroundCaptureTests {
         scene.probe.talkSurface = surfaces.showingBoth(true)
         await scene.host.render()
         let staying = try #require(surfaces.staying.view)
-        try await surfaces.finishLeavingTalk(socket: scene.rig.socket)
+        try await surfaces.finishLeavingTalk()
 
         switch user {
         case .none: break
@@ -94,6 +94,7 @@ private struct TalkDepartureSurfaces {
     let stationLeaves: Bool
     let leaving = MountedTalkProbe(), staying = MountedTalkProbe()
     let departures = TalkCallCounter()
+    let sends = TalkCallCounter()
     let session = StationTalkTestSupport.StationTalkSession {
         StationTalkTestSupport.TranscriptionResources(capture: FakeAudioCapture(), transcriber: FakeTranscriber())
     }
@@ -105,7 +106,7 @@ private struct TalkDepartureSurfaces {
         }.sharingTalkSession(session))
     }
 
-    func finishLeavingTalk(socket: ScriptedSocket) async throws {
+    func finishLeavingTalk() async throws {
         let view = try #require(leaving.view)
         let speech = try #require(view.transcriber as? FakeTranscriber)
         try #require((view.onFinalized != nil) == stationLeaves)
@@ -115,10 +116,6 @@ private struct TalkDepartureSurfaces {
         try #require(view.recordingDestination?.destination == view.destinationID)
         await speech.emit(TranscriptionResult(text: "fixture request", isFinal: true))
         await view.finish()
-        let sends = TalkCallCounter()
-        sends.value = try await socket.sentFrames().count { frame in
-            if case .text = frame.payload { true } else { false }
-        }
         try #require(sends.value == (stationLeaves ? 1 : 0))
         try #require(!view.isRecording && session.owner == nil && root.audioRoutes.diagnostics.isActive)
     }
@@ -128,9 +125,7 @@ private struct TalkDepartureSurfaces {
     }
 
     private func talk(station: Bool) -> some View {
-        let send: @MainActor (String, PastedDraft?) async throws -> Void = { _, _ in
-            Issue.record("Station transcript bypassed its recorded destination")
-        }
+        let send: @MainActor (String, PastedDraft?) async throws -> Void = { _, _ in sends.value += 1 }
         return StationTalkTestSupport.StationTranscriptionView(audioSession: root.audioRoutes,
             destinationID: station ? destinationID : nil,
             route: station ? StationTalkTestSupport.StationTalkRoute(

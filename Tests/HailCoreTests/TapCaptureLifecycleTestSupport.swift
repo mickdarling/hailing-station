@@ -84,6 +84,14 @@ final class TranscriptionLabView {
     }
     func prepareCaptureAuthorization() async -> Bool { true }
     func begin() async { await begin(whenVisible: { self.scenePhase == .active }) }
+    func bindStation(to target: String) async throws -> TalkDestinationStoreFixture {
+        let host = try await TalkDestinationStoreFixture.make()
+        try await host.select(target)
+        let shown = try host.binding(target).destination
+        destinationID = shown
+        route = StationTalkRoute(store: host.store, selected: { shown }, reportRemoval: { _ in })
+        return host
+    }
     var selectedBinding: TalkDestinationBinding? {
         if let route { return route.binding(for: destinationID) }
         guard let id = selectedDestinationID, id == destinationID else { return nil }
