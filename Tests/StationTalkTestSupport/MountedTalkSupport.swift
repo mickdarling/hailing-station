@@ -5,12 +5,6 @@ import SwiftUI
 typealias TranscriptionLabView = StationTranscriptionView
 typealias ConversationDestinationID = StationConversationDestinationID
 
-@MainActor
-final class StationSceneState<Value>: ObservableObject {
-    let value: Value
-    init(_ makeValue: () -> Value) { value = makeValue() }
-}
-
 struct TranscriptionResources {
     let capture: any AudioCapturing
     let transcriber: any Transcriber
@@ -71,7 +65,27 @@ extension StationTranscriptionView {
     var attachedPaste: PastedDraft? { nil }
     var pasteControl: some View { TalkMount(talk: self) }
     func announceStatusUnlessQuiet(_ current: String) {}
-    func observeResults() async {}
+
+    // StationCard's result and destination callbacks are excluded under SWIFT_PACKAGE.
+    func receiveResult(_ result: TranscriptionResult) {
+        guard result.utteranceID == activeUtteranceID else { return }
+        let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if result.isFinal {
+            if !text.isEmpty { finalText = [finalText, text].filter { !$0.isEmpty }.joined(separator: " ") }
+            volatileText = ""
+        } else {
+            volatileText = text
+        }
+    }
+
+    func noteDestinationChange(previous: ConversationDestinationID?, current: ConversationDestinationID?) {
+        guard current != previous else { return }
+        destinationGeneration = UUID()
+        let invalidatedSend = pendingSendID != nil
+        if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
+        clearPendingSend()
+        if invalidatedSend || (!isStarting && !isRecording && !isFinalizing && !isInterrupting) { status = "Ready" }
+    }
 
     // Synthetic authorization and injected session, microphone and transcriber keep the mounted button off hardware.
     func prepareCaptureAuthorization() async -> Bool { true }
@@ -86,10 +100,7 @@ extension StationTranscriptionView {
         beginCaptureExclusivity()
     }
 
-    func completeFinish(generation: UUID) {
-        guard finishGeneration == generation else { return }
-        finishGeneration = nil
-        finishTask = nil
+    func restorePlaybackAfterFinish() {
         if scenePhase == .active {
             isForcedTeardown = false
             endCaptureExclusivity(resumingPlayback: true)
@@ -102,7 +113,7 @@ extension StationTranscriptionView {
     func prepareForcedFinish() async -> Bool {
         let pendingStart = startTask
         pendingStart?.cancel()
-        await audioSession.deactivate()
+        await deactivateTalkRoute()
         await pendingStart?.value
         guard let interruptTask else { return false }
         await interruptTask.value

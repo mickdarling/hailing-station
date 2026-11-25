@@ -5,18 +5,21 @@ actor FakeTranscriber: Transcriber {
     nonisolated let results: AsyncStream<TranscriptionResult>
 
     private let continuation: AsyncStream<TranscriptionResult>.Continuation
+    private let prepare: (@Sendable () async -> Void)?
     private(set) var consumedBuffers = 0
     private(set) var isRunning = false
     private var finalText = ""
     private var utteranceID = TranscriptionResult.unscopedUtteranceID
 
-    init() {
+    init(prepare: (@Sendable () async -> Void)? = nil) {
+        self.prepare = prepare
         let pair = AsyncStream<TranscriptionResult>.makeStream()
         results = pair.stream
         continuation = pair.continuation
     }
 
-    func start() -> UUID {
+    func start() async -> UUID {
+        await prepare?()
         isRunning = true
         finalText = ""
         utteranceID = UUID()

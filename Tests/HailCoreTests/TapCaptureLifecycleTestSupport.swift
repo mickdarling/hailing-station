@@ -22,8 +22,12 @@ final class TapCaptureTestSession {
 final class TranscriptionLabView {
     let audioSession = TapCaptureTestSession()
     let playback: ReplyPlaybackController
-    let capture: any AudioCapturing
-    let transcriber: any Transcriber
+    let talkSession: StationTalkSession
+    var capture: any AudioCapturing { talkSession.resources.capture }
+    var transcriber: any Transcriber { talkSession.resources.transcriber }
+    var globalReplyAudioSpeaking: Bool { playback.isReplyAudioOutputBusy }
+    var received: [TranscriptionResult] = []
+    var onResult: (@MainActor (TranscriptionResult) -> Void)?
     let captureOwnerID = UUID()
     var isRecording = false, isStarting = false, isFinalizing = false, isInterrupting = false
     var isForcedTeardown = false, hasReceivedAudio = false, ownsCaptureSuppression = false
@@ -39,10 +43,15 @@ final class TranscriptionLabView {
     var scenePhase = ScenePhase.active
     enum ScenePhase { case active, background }
 
-    init(capture: any AudioCapturing, playback: ReplyPlaybackController, transcriber: any Transcriber) {
-        self.capture = capture
+    convenience init(capture: any AudioCapturing, playback: ReplyPlaybackController, transcriber: any Transcriber) {
+        self.init(talkSession: StationTalkSession {
+            TranscriptionResources(capture: capture, transcriber: transcriber)
+        }, playback: playback)
+    }
+
+    init(talkSession: StationTalkSession, playback: ReplyPlaybackController) {
+        self.talkSession = talkSession
         self.playback = playback
-        self.transcriber = transcriber
     }
 
     // Optional callback properties match the app's surface for the symlinked progress code.
@@ -64,20 +73,22 @@ final class TranscriptionLabView {
     func prepareCaptureAuthorization() async -> Bool { true }
     func begin() async { await begin(whenVisible: { self.scenePhase == .active }) }
     func quietReplyAudio() async throws {}
+    func receiveResult(_ result: TranscriptionResult) {
+        received.append(result)
+        onResult?(result)
+    }
     func markAudioReceived() { hasReceivedAudio = true }
+    func deactivateTalkRoute() async { await audioSession.deactivate() }
     func prepareForcedFinish() async -> Bool {
         let pendingStart = startTask
         pendingStart?.cancel()
-        await audioSession.deactivate()
+        await deactivateTalkRoute()
         await pendingStart?.value
         guard let pendingInterrupt = interruptTask else { return false }
         await pendingInterrupt.value
         return true
     }
-    func completeFinish(generation: UUID) {
-        guard finishGeneration == generation else { return }
-        finishGeneration = nil
-        finishTask = nil
+    func restorePlaybackAfterFinish() {
         if scenePhase == .active {
             isForcedTeardown = false
             endCaptureExclusivity(resumingPlayback: true)

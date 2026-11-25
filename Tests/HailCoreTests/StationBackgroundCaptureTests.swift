@@ -85,7 +85,15 @@ import Testing
         let tap = FakeAudioCapture()
         let speech = FakeTranscriber()
         let talk = TranscriptionLabView(capture: tap, playback: root.playback, transcriber: speech)
-        root.audioRoutes.installSceneCleanup { await talk.finish(force: true) }
+        // Enroll the synthetic capture with the actual session that the mounted root cleans up.
+        scene.probe.talkSurface = AnyView(StationTranscriptionView(audioSession: root.audioRoutes)
+            .environment(\.onNativeTalkMount, { session in
+                _ = session.admit(talk.captureOwnerID, receive: talk.receiveResult) { [weak session] in
+                    await talk.finish(force: true)
+                    session?.retire(talk.captureOwnerID)
+                }
+            }))
+        await scene.host.render()
         try await root.audioRoutes.activate()
         await talk.begin()
         try #require(talk.isRecording && tap.startCount == 1 && tap.stopCount == 0)

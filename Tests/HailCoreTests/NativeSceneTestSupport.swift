@@ -58,7 +58,6 @@ extension StationTranscriptionView {
     var escapeControl: some View { EmptyView() }
     var liveTranscript: some View { EmptyView() }
     var pasteControl: some View { EmptyView() }
-    func observeResults() async {}
     func restorePlaybackAfterForcedTeardown() {}
     func announceDeferredStatusIfNeeded() {}
     func noteReplyArrival(previous: Set<String>, current: Set<String>) {}
@@ -70,7 +69,7 @@ extension StationTranscriptionView {
         previous: StationConversationDestinationID?, current: StationConversationDestinationID?
     ) {}
     func clearPendingSend() {}
-    func finish(force: Bool) async {}
+    func finishOnDisappear() async {}
     func completeFinish(generation: UUID) {
         guard finishGeneration == generation else { return }
         finishGeneration = nil

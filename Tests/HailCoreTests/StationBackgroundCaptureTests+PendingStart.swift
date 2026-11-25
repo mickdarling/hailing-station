@@ -6,6 +6,49 @@ import Testing
 @testable import StationTalkTestSupport
 
 extension StationBackgroundCaptureTests {
+    @Test(arguments: [ScenePhase.inactive, .active])
+    func talkRechecksSceneAfterSpeechPreparation(_ phase: ScenePhase) async throws {
+        let scene = try await BackgroundCaptureScene()
+        defer { scene.host.finish() }
+        let root = try #require(scene.probe.root)
+        let preparing = CompletionFlag(), resume = OpenGate()
+        let speech = FakeTranscriber {
+            await preparing.set()
+            await resume.wait()
+        }
+        let talk = try await PendingTalk(scene, speech: speech)
+        let view = talk.view
+        talk.press()
+        let start = try #require(view.startTask)
+        do {
+            try await waitUntil { await preparing.isSet }
+        } catch {
+            await resume.release()
+            throw error
+        }
+        #expect(view.talkSession.owner == view.captureOwnerID && talk.tap.startCount == 0)
+        let activations = await scene.backend.activationHistory
+        scene.host.setScenePhase(phase)
+        await scene.host.render()
+        #expect(!start.isCancelled)
+        await resume.release()
+        await start.value
+
+        #expect(view.startTask == nil)
+        if phase == .inactive {
+            #expect(talk.tap.startCount == 0 && !view.isRecording)
+            #expect(view.talkSession.owner == nil)
+            #expect(await !speech.isRunning)
+        } else {
+            #expect(talk.tap.startCount == 1 && view.isRecording)
+            #expect(view.talkSession.owner == view.captureOwnerID)
+        }
+        #expect(await scene.backend.activationHistory == activations)
+        try await scene.expectAmbientContinues(root: root)
+        if view.isRecording { await view.finish() }
+        await scene.rig.close()
+    }
+
     @Test func hidingBeforeBeginRetiresTheStartAndAllowsAnotherTalk() async throws {
         let scene = try await BackgroundCaptureScene()
         defer { scene.host.finish() }
@@ -78,13 +121,16 @@ struct PendingTalk {
     let view: StationTalkTestSupport.StationTranscriptionView
     let probe: MountedTalkProbe
 
-    init(_ scene: BackgroundCaptureScene) async throws {
+    init(_ scene: BackgroundCaptureScene, ambientStreaming: Bool = true, speech: FakeTranscriber = FakeTranscriber(),
+         onFinalized: (@MainActor (String, PastedDraft?) async throws -> Void)? = nil) async throws {
         self.scene = scene
         let root = try #require(scene.probe.root)
-        try await root.audioRoutes.activate()
-        await scene.rig.controller.turnOn(for: scene.binding)
-        try #require(scene.rig.store.ambientStreaming)
-        let tap = FakeAudioCapture(), speech = FakeTranscriber()
+        if ambientStreaming {
+            try await root.audioRoutes.activate()
+            await scene.rig.controller.turnOn(for: scene.binding)
+            try #require(scene.rig.store.ambientStreaming)
+        }
+        let tap = FakeAudioCapture()
         self.tap = tap
         self.speech = speech
         let playback = root.playback
@@ -93,12 +139,16 @@ struct PendingTalk {
         let probe = MountedTalkProbe()
         self.probe = probe
         scene.host.window.fixtureOcclusion = .visible
+        let session = StationTalkTestSupport.StationTalkSession {
+            StationTalkTestSupport.TranscriptionResources(capture: tap, transcriber: speech)
+        }
         scene.probe.talkSurface = AnyView(StationTalkTestSupport.StationTranscriptionView(
-            audioSession: root.audioRoutes, capture: tap, transcriber: speech,
+            audioSession: root.audioRoutes,
             onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: playback) },
             onCaptureDidEnd: { CapturePlaybackSuppression.end($0, using: playback, resuming: $1) },
-            onCaptureTeardownCompleted: { CapturePlaybackSuppression.markCleanupComplete($0, using: playback) }
-        ).environment(probe))
+            onCaptureTeardownCompleted: { CapturePlaybackSuppression.markCleanupComplete($0, using: playback) },
+            onFinalized: onFinalized
+        ).sharingTalkSession(session).environment(probe))
         await scene.host.render()
         view = try #require(probe.view)
         try #require(probe.press != nil)
