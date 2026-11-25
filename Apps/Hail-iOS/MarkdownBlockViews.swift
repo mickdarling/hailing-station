@@ -10,7 +10,7 @@ struct CodeBlockView: View {
     var body: some View {
         ScrollView(.horizontal) {
             Text(verbatim: code)
-                .font(.footnote.monospaced())
+                .modifier(TranscriptDetailFont(.code))
                 .foregroundStyle(.primary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: true, vertical: false)

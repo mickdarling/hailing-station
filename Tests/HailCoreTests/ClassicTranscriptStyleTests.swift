@@ -19,6 +19,29 @@ struct ClassicTranscriptStyleTests {
         try expectStyle(.callout, native: .callout, formatted: { $0.monospaced() }, font: { $0.classicPasteFont })
     }
 
+    @Test func replyMetadataKeepsCallout() throws {
+        try expectStyle(.callout, native: .callout, font: TranscriptDetailFont.Style.metadata.font(in:))
+    }
+
+    @Test func rawMetadataAndCodeKeepMonospacedFootnote() throws {
+        try expectStyle(.footnote, native: .footnote, formatted: { $0.monospaced() },
+                        font: TranscriptDetailFont.Style.code.font(in:))
+    }
+
+    @Test func musicKeepsSubheadline() throws {
+        try expectStyle(.subheadline, native: .subheadline, font: TranscriptDetailFont.Style.music.font(in:))
+    }
+
+    @Test(arguments: 1...6)
+    func headingsKeepTheirStyleAndWeight(level: Int) throws {
+        let font = TranscriptDetailFont.Style.heading(level).font(in:)
+        switch level {
+        case 1: try expectStyle(.headline, native: .headline, font: font)
+        case 2: try expectStyle(.subheadline, native: .subheadline, formatted: { $0.weight(.semibold) }, font: font)
+        default: try expectStyle(.footnote, native: .footnote, formatted: { $0.weight(.semibold) }, font: font)
+        }
+    }
+
     private func expectStyle(
         _ base: Font, native style: NSFont.TextStyle, formatted: (Font) -> Font = { $0 },
         font: (EnvironmentValues) throws -> Font

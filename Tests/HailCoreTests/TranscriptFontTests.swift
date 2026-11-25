@@ -56,6 +56,34 @@ struct TranscriptFontTests {
             }
         }
     }
+
+    @Test func markdownHeadingsKeepTheirOrderAtEachAaSize() {
+        _ = NSApplication.shared
+        let heading = AttributedString("Same heading at every level")
+        func widths(_ preference: ConversationTextSize?) -> [CGFloat] {
+            (1...6).map { level in
+                let view = TranscriptHeading(level: level, text: heading)
+                    .environment(\.classicTranscriptScale, preference?.scale ?? 1).fixedSize()
+                return NSHostingView(rootView: view).fittingSize.width
+            }
+        }
+
+        let platform = ConversationTextSize.Platform.mac
+        let original = widths(nil)
+        var previous: [CGFloat]?
+        for step in platform.steps {
+            let measured = widths(ConversationTextSize(platform: platform, stored: step))
+            #expect(measured[0] > measured[1])
+            #expect(measured[1] > measured[2])
+            #expect(measured[2] > 0)
+            #expect(measured.suffix(3).allSatisfy { $0 == measured[2] })
+            if step == platform.defaultSize { #expect(measured == original) }
+            if let previous {
+                for level in measured.indices { #expect(measured[level] > previous[level]) }
+            }
+            previous = measured
+        }
+    }
 }
 
 private struct TranscriptTestParagraph: View {
