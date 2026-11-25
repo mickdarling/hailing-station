@@ -37,7 +37,11 @@ let package = Package(
         .target(name: "HailTestSupport", path: "Tests/HailTestSupport", swiftSettings: strict),
 
         .target(name: "HailCore", dependencies: ["HailProtocol"], swiftSettings: strict),
-        .testTarget(name: "HailCoreTests", dependencies: ["HailCore", "HailTestSupport"], swiftSettings: strict),
+        // Isolate the mounted Talk view from HailCoreTests' same-named, storage-only lifecycle fixture.
+        .target(name: "StationTalkTestSupport", dependencies: ["HailCore"],
+                path: "Tests/StationTalkTestSupport", swiftSettings: strict),
+        .testTarget(name: "HailCoreTests", dependencies: ["HailCore", "HailTestSupport", "StationTalkTestSupport"],
+                    swiftSettings: strict),
 
         .target(name: "HailDaemonKit", dependencies: ["HailProtocol"], swiftSettings: strict),
         .testTarget(

@@ -1,23 +1,23 @@
-import AVFAudio
+import Foundation
 import HailCore
-import Speech
 extension TranscriptionLabView {
     @MainActor
-    func begin() async {
-        guard !isRecording, !isStarting, !isFinalizing, !isInterrupting,
-              finishTask == nil, interruptTask == nil, pendingSendID == nil else { return }
+    func begin(whenVisible isVisible: @MainActor () -> Bool) async {
+        guard isVisible(), !isRecording, !isStarting, !isFinalizing, !isInterrupting,
+              finishTask == nil, interruptTask == nil, pendingSendID == nil else {
+            startTask = nil
+            return
+        }
         takeCaptureExclusivity()
         isStarting = true
         hasReceivedAudio = false
-        finalText = ""
-        volatileText = ""
+        (finalText, volatileText) = ("", "")
         defer {
             isStarting = false
             startTask = nil
             restorePlaybackIfRequestedAndReady()
         }
         guard await prepareCaptureAuthorization() else { return }
-
         do {
             try await quietReplyAudio()
             try Task.checkCancellation()

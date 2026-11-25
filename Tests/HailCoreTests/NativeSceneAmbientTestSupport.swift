@@ -14,6 +14,8 @@ final class NativeSceneAmbientProbe {
         let disappearances: Int
     }
 
+    var transcription: NativeBackgroundTranscription?
+    var talkSurface: AnyView?
     var toolShown = false
     var disappearances = 0
     var appearances = 0
@@ -55,6 +57,10 @@ struct NativeSceneStationContent: View {
                 }
             } else { Text("Station") }
         }
+        .overlay {
+            if let transcription = probe?.transcription { transcription.surface(in: root) }
+            probe?.talkSurface
+        }
         .navigationDestination(isPresented: Binding(get: { probe?.toolShown == true },
                                                    set: { probe?.toolShown = $0 })) { Text("Station tool") }
         .onAppear { probe?.install(root) }
@@ -67,7 +73,8 @@ struct NativeSceneStationContent: View {
 @MainActor
 final class NativeSceneAmbientHost {
     private let hosting: NSHostingView<AnyView>
-    private let window: TestHostWindow
+    let window: TestHostWindow
+    private let scene: AnyView
     private let resourceFactory: NativeSceneResourceFactory
 
     var resourceFactoryCalls: Int { resourceFactory.calls }
@@ -77,10 +84,11 @@ final class NativeSceneAmbientHost {
         window = TestHostWindow(size: NSSize(width: width, height: 620))
         let factory = NativeSceneResourceFactory(resources: resources)
         resourceFactory = factory
-        hosting = NSHostingView(rootView: AnyView(StationRootView(selectionStore: RootSelectionStore(),
-            makeResources: { factory.make() }).environment(probe).environment(\.scenePhase, .active)
+        scene = AnyView(StationRootView(selectionStore: RootSelectionStore(),
+            makeResources: { factory.make() }).environment(probe)
             .environment(\.accessibilityEnabled, true)
-            .transaction { $0.disablesAnimations = true; $0.animation = nil }))
+            .transaction { $0.disablesAnimations = true; $0.animation = nil })
+        hosting = NSHostingView(rootView: AnyView(scene.environment(\.scenePhase, .active)))
         window.mount(hosting)
     }
 
@@ -93,6 +101,10 @@ final class NativeSceneAmbientHost {
                 DispatchQueue.main.async { continuation.resume() }
             }
         }
+    }
+
+    func setScenePhase(_ phase: ScenePhase) {
+        hosting.rootView = AnyView(scene.environment(\.scenePhase, phase))
     }
 
     func visibleText() -> [String] { accessibilityText(hosting) }
