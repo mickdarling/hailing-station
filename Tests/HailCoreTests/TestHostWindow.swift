@@ -3,6 +3,9 @@ import AppKit
 
 @MainActor
 final class TestHostWindow: NSPanel {
+    /// Visibility tests can deliver an occlusion transition while the real panel stays safely offscreen.
+    var fixtureOcclusion: NSWindow.OcclusionState?
+    override var occlusionState: NSWindow.OcclusionState { fixtureOcclusion ?? super.occlusionState }
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 

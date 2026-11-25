@@ -62,6 +62,7 @@ final class TranscriptionLabView {
         beginCaptureExclusivity()
     }
     func prepareCaptureAuthorization() async -> Bool { true }
+    func begin() async { await begin(whenVisible: { self.scenePhase == .active }) }
     func quietReplyAudio() async throws {}
     func markAudioReceived() { hasReceivedAudio = true }
     func prepareForcedFinish() async -> Bool {
