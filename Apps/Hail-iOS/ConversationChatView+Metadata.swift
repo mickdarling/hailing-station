@@ -61,8 +61,8 @@ extension ConversationChatView {
         if let metadata = entry.metadata {
             Button("Copy Details", systemImage: "doc.plaintext") { StationPlatform.copy(metadata) }
         }
-        linkActions(segments)
-        linkActions(Self.metadataLinks(entry.metadataBlocks))
+        Self.linkActions(segments)
+        Self.linkActions(Self.metadataLinks(entry.metadataBlocks))
     }
 
     /// The checked web links in a reply's parsed metadata, as link segments for Copy Link and Share Link (#444).
@@ -86,62 +86,83 @@ extension ConversationChatView {
 /// semantic colours (Dark Mode). Blocks are read in order by VoiceOver; headings are headers. "Show Raw Text" shows the
 /// source exactly as received, so nothing the model could not place is ever hidden.
 struct ReplyMetadataView: View {
+    enum Presentation { case classic, message, details }
+
     let source: String
+    let presentation: Presentation
+    @Environment(\.activeStationPalette) private var palette
     private let blocks: [MarkdownBlock]
     @State private var showsRaw = false
 
     /// `blocks` is the entry's cached parse of `source` (`ConversationEntry.metadataBlocks`).
-    init(source: String, blocks: [MarkdownBlock]) {
+    init(source: String, blocks: [MarkdownBlock], presentation: Presentation = .classic) {
+        self.presentation = presentation
         self.source = source
         self.blocks = blocks
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: presentation == .message ? 9 : 6) {
             if showsRaw || blocks.isEmpty {
                 Text(verbatim: source)
-                    .modifier(TranscriptDetailFont(.code))
+                    .transcriptBlockFont(.code, base: .footnote.monospaced(), redesigned: presentation != .classic)
                     .textSelection(.enabled)
             } else {
                 ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                     view(block)
                 }
             }
-            if !blocks.isEmpty {
+            if !blocks.isEmpty, presentation != .message || containsTruncatedTable {
                 Button(showsRaw ? "Show Formatted" : "Show Raw Text") { showsRaw.toggle() }
                     .font(.caption)
                     .buttonStyle(.borderless)
             }
         }
-        .modifier(TranscriptDetailFont(.metadata))
-        .foregroundStyle(.secondary)
+        .transcriptBlockFont(.metadata, base: .callout, redesigned: presentation != .classic)
+        .foregroundStyle(palette.map { AnyShapeStyle($0[presentation == .message ? .textPrimary : .textSecondary]) }
+                         ?? AnyShapeStyle(.secondary))
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Details, not spoken")
+        .accessibilityLabel(presentation == .message ? "Reply text" : "Details, not spoken")
+    }
+
+    private var containsTruncatedTable: Bool {
+        blocks.contains { if case .table(let table) = $0 { table.truncated } else { false } }
     }
 
     @ViewBuilder
     private func view(_ block: MarkdownBlock) -> some View {
         switch block {
         case .heading(let level, let text):
-            TranscriptHeading(level: level, text: Self.styled(text))
+            if presentation == .classic {
+                TranscriptHeading(level: level, text: Self.styled(text))
+            } else {
+                Text(Self.styled(text, palette: palette))
+                    .font(Self.headingFont(level))
+                    .foregroundStyle(palette?[.textPrimary] ?? .primary)
+                    .accessibilityAddTraits(.isHeader)
+            }
         case .paragraph(let text):
-            Text(Self.styled(text))
+            Text(Self.styled(text, palette: palette))
         case .listItem(let depth, let marker, let text):
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(verbatim: marker).monospacedDigit()
-                Text(Self.styled(text))
+                Text(Self.styled(text, palette: palette))
             }
             .padding(.leading, CGFloat(depth) * 14)
             .accessibilityElement(children: .combine)
         case .quote(let text):
             HStack(spacing: 8) {
-                RoundedRectangle(cornerRadius: 1.5).fill(.tertiary).frame(width: 3)
-                Text(Self.styled(text)) // The bar marks a quote; italics are reserved for spoken words.
+                if let palette {
+                    RoundedRectangle(cornerRadius: 1.5).fill(palette[.separator]).frame(width: 3)
+                } else {
+                    RoundedRectangle(cornerRadius: 1.5).fill(.tertiary).frame(width: 3)
+                }
+                Text(Self.styled(text, palette: palette))
             }
             .fixedSize(horizontal: false, vertical: true)
         case .code(let language, let text):
-            CodeBlockView(language: language, code: text)
+            CodeBlockView(language: language, code: text, redesigned: presentation != .classic)
         case .table(let table):
             MarkdownTableView(table: table)
         case .rule:
@@ -149,14 +170,23 @@ struct ReplyMetadataView: View {
         }
     }
 
+    /// Text styles, so headings scale with Dynamic Type; a level 1 heading stays below the chat's own headline size.
+    private static func headingFont(_ level: Int) -> Font {
+        switch level {
+        case 1: .headline
+        case 2: .subheadline.weight(.semibold)
+        default: .footnote.weight(.semibold)
+        }
+    }
+
     /// Links underlined, so they read as links in any tint; the model itself stays UI-framework free. Italics are
     /// reserved for the words Haili spoke (#606), so Markdown emphasis in the details is shown in the primary colour
     /// against their secondary text instead.
-    static func styled(_ text: AttributedString) -> AttributedString {
+    static func styled(_ text: AttributedString, palette: StationPalette? = nil) -> AttributedString {
         var styled = text
         for run in text.runs {
             if run.link != nil { styled[run.range].underlineStyle = .single }
-            if var intent = run.inlinePresentationIntent, intent.contains(.emphasized) {
+            if palette == nil, var intent = run.inlinePresentationIntent, intent.contains(.emphasized) {
                 intent.remove(.emphasized)
                 styled[run.range].inlinePresentationIntent = intent.isEmpty ? nil : intent
                 styled[run.range].foregroundColor = .primary
