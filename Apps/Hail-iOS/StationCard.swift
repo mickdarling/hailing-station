@@ -8,26 +8,6 @@ import UserNotifications
 import UIKit
 #endif
 
-struct StationConversationDestinationID: Hashable {
-    let endpointID: HostEndpoint.Identifier
-    let targetID: String
-    typealias Connection = (id: StationConversationDestinationID, generation: UUID)
-}
-
-extension StationTranscriptionView {
-    static let destinationChangedStatus = "Not sent: destination changed"
-
-    @ViewBuilder var recoverableTranscript: some View {
-        if status == Self.destinationChangedStatus {
-            Text(finalText)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            liveTranscript
-        }
-    }
-}
-
 // SwiftPM's native lifecycle adapter compiles the real card, with peripheral panels supplied by its fixture.
 #if !SWIFT_PACKAGE
 extension View {
@@ -135,8 +115,7 @@ extension TranscriptionLabView {
             status = "Ready"
             return
         }
-        guard !isStarting, !isRecording, !isFinalizing, !isInterrupting, status != Self.destinationChangedStatus
-        else { return }
+        guard !isStarting, !isRecording, !isFinalizing, !isInterrupting else { return }
         status = "Ready"
     }
 

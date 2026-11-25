@@ -10,11 +10,8 @@ extension RootView {
                 audioSession: audioRoutes,
                 destinationLabel: destination.label,
                 destinationID: boundID,
-                selectedDestination: {
-                    guard let current = self.destination, let host = connections.snapshots[current.hostID]
-                    else { return nil }
-                    return (current.talkID, host.connectionGeneration)
-                },
+                route: StationTalkRoute(store: connections, selected: { self.destination?.talkID },
+                                        reportRemoval: { announcementBanners.append($0.message) }),
                 replyIDs: threadReplyIDs(for: destination),
                 replyPlaybackStatus: replyStatus(for: destination),
                 selectedReplyID: replyPresentation(for: destination)?.id,

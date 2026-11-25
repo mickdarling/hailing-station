@@ -1,5 +1,19 @@
 import Foundation
 import HailCore
+typealias StationConversationDestinationID = TalkDestinationID
+
+@MainActor
+struct StationTalkRoute {
+    let store: HostConnectionStore
+    let selected: () -> TalkDestinationID?
+    let reportRemoval: (TalkSendRefusal) -> Void
+
+    func binding(for shown: TalkDestinationID?) -> TalkDestinationBinding? {
+        guard let shown, selected() == shown else { return nil }
+        return store.talkBinding(for: shown)
+    }
+}
+
 extension TranscriptionLabView {
     @MainActor
     func begin() async {
@@ -8,7 +22,7 @@ extension TranscriptionLabView {
         guard !Task.isCancelled, scenePhase == .active,
               talkSession.admit(captureOwnerID, receive: receiveResult, cleanup: { await self.finish(force: true) })
         else { startTask = nil; return }
-        recordingDestination = boundDestination
+        recordingDestination = selectedBinding
         recordingGeneration = destinationGeneration
         takeCaptureExclusivity()
         isStarting = true
@@ -104,37 +118,23 @@ extension TranscriptionLabView {
         defer { isFinalizing = false }
         status = "Finalizing…"
         let finalized = await cleanUp()
-        guard !force else {
-            status = "Ready"
-            return
-        }
-        guard !isForcedTeardown else {
-            await audioSession.deactivate()
-            status = "Ready"
-            return
-        }
+        if !force && isForcedTeardown { await audioSession.deactivate() }
         releaseCaptureExclusivityAfterWork()
         let text = finalized.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else {
-            status = "Nothing heard"
+        if !text.isEmpty, onFinalized != nil,
+           recordingGeneration != destinationGeneration || recordingDestination == nil
+            || recordingDestination != selectedBinding {
+            finalText = text
+            volatileText = ""
+            refusal = .destinationChanged
+            if force || isForcedTeardown || selectedBinding == nil { route?.reportRemoval(.destinationChanged) }
             return
         }
+        guard !force, !isForcedTeardown else { status = "Ready"; return }
+        guard !text.isEmpty else { status = "Nothing heard"; return }
         finalText = text
         volatileText = ""
-        guard onFinalized != nil else {
-            status = "Ready"
-            return
-        }
-        guard recordingGeneration == destinationGeneration, let recordingDestination,
-              let current = boundDestination, current == recordingDestination else {
-            status = StationTranscriptionView.destinationChangedStatus
-            return
-        }
-        await send(text, failurePrefix: "Send failed")
-    }
-    private var boundDestination: ConversationDestinationID.Connection? {
-        guard let selected = selectedDestination(), selected.id == destinationID else { return nil }
-        return selected
+        if onFinalized != nil { await send(text, failurePrefix: "Send failed") } else { status = "Ready" }
     }
     @MainActor
     func interruptTarget(using action: @MainActor () async throws -> Void) async {

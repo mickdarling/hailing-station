@@ -1,5 +1,5 @@
 import Foundation
-import HailCore
+@testable import HailCore
 
 // The symlinked lifecycle/progress sources run the app's real capture and suppression code in SwiftPM. Only
 // SwiftUI storage, permissions, session IO and unrelated UI helpers are replaced; no microphone is opened.
@@ -31,14 +31,20 @@ final class TranscriptionLabView {
     var isRecording = false, isStarting = false, isFinalizing = false, isInterrupting = false
     var isForcedTeardown = false, hasReceivedAudio = false, ownsCaptureSuppression = false
     var playbackRestoreRequested = false
-    var finalText = "", volatileText = "", status = "Ready"
+    var finalText = "", volatileText = "", activity = "Ready"
+    var refusal: TalkSendRefusal?
+    var status: String {
+        get { refusal?.message ?? activity }
+        set { (refusal, activity) = (nil, newValue) }
+    }
     var pendingSendID: UUID?, activeUtteranceID: UUID?, finishGeneration: UUID?
     var destinationGeneration = UUID()
     private static let fixtureDestination = ConversationDestinationID(endpointID: "fixture-mac", targetID: "target")
     var destinationID: ConversationDestinationID? = TranscriptionLabView.fixtureDestination
     var selectedDestinationID: ConversationDestinationID? = TranscriptionLabView.fixtureDestination
     var connectionGeneration = UUID()
-    var recordingDestination: (id: ConversationDestinationID, generation: UUID)?
+    var route: StationTalkRoute?
+    var recordingDestination: TalkDestinationBinding?
     var recordingGeneration: UUID?
     var pendingDestinationID: ConversationDestinationID?
     var startTask: Task<Void, Never>?, finishTask: Task<Void, Never>?
@@ -76,8 +82,10 @@ final class TranscriptionLabView {
         beginCaptureExclusivity()
     }
     func prepareCaptureAuthorization() async -> Bool { true }
-    func selectedDestination() -> (id: ConversationDestinationID, generation: UUID)? {
-        selectedDestinationID.map { ($0, connectionGeneration) }
+    var selectedBinding: TalkDestinationBinding? {
+        if let route { return route.binding(for: destinationID) }
+        guard let id = selectedDestinationID, id == destinationID else { return nil }
+        return TalkDestinationBinding(destination: id, connectionGeneration: connectionGeneration, selection: 1)
     }
     func quietReplyAudio() async throws {}
     func receiveResult(_ result: TranscriptionResult) {

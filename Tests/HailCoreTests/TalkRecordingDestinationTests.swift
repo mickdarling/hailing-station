@@ -63,6 +63,44 @@ struct TalkRecordingDestinationTests {
         #expect(rig.deliveries.isEmpty && rig.card.status == "Not sent: destination changed")
     }
 
+    @Test(arguments: [false, true])
+    func reselectionBeforeViewUpdateRefusesTheOriginalTurn(visitOtherTarget: Bool) async throws {
+        let host = try await TalkDestinationStoreFixture.make()
+        let rig = RecordingFixture()
+        let shown = ConversationDestinationID(endpointID: host.host.id, targetID: "a")
+        try await host.select("a")
+        rig.card.route = StationTalkRoute(store: host.store, selected: { shown }, reportRemoval: { _ in })
+        await rig.record(on: shown)
+        let admitted = try #require(rig.card.recordingDestination)
+        let viewGeneration = rig.card.destinationGeneration
+        if visitOtherTarget { try await host.select("b") }
+        try await host.select("a")
+        let current = try host.binding("a")
+        #expect(current.connectionGeneration == admitted.connectionGeneration)
+        #expect(current.selection != admitted.selection)
+        #expect(rig.card.destinationGeneration == viewGeneration)
+        await rig.card.finish()
+        #expect(rig.card.refusal == .destinationChanged && rig.card.finalText == rig.text)
+        #expect(rig.deliveries.isEmpty && rig.capture.stopCount == 1)
+        await host.store.disconnect(host.host.id)
+    }
+
+    @Test func removalDuringRecordingReportsRefusalOutsideTheUnmountedCard() async throws {
+        let host = try await TalkDestinationStoreFixture.make()
+        let rig = RecordingFixture()
+        let shown = ConversationDestinationID(endpointID: host.host.id, targetID: "a")
+        var notices: [TalkSendRefusal] = []
+        try await host.select(shown.targetID)
+        rig.card.route = StationTalkRoute(store: host.store, selected: { shown }, reportRemoval: { notices.append($0) })
+        await rig.record(on: shown)
+        _ = try #require(rig.card.recordingDestination)
+        await host.store.remove(host.host.id)
+        await rig.card.finish(force: true)
+        #expect(rig.deliveries.isEmpty && rig.capture.stopCount == 1 && rig.card.talkSession.owner == nil)
+        #expect(notices == [.destinationChanged] && rig.card.refusal == .destinationChanged)
+        #expect(rig.card.status == "Not sent: destination changed" && rig.card.finalText == rig.text)
+    }
+
     @Test func reconnectingTheSameMacAndTargetDoesNotReviveItsRecording() async {
         let rig = RecordingFixture()
         await rig.record(on: rig.macA)
