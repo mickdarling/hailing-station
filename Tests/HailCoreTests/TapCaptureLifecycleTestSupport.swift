@@ -44,6 +44,7 @@ final class TranscriptionLabView {
     var selectedDestinationID: ConversationDestinationID? = TranscriptionLabView.fixtureDestination
     var connectionGeneration = UUID()
     var route: StationTalkRoute?
+    private var fixtureRequest = TalkSelectionRequest(destination: TranscriptionLabView.fixtureDestination)
     var recordingDestination: TalkDestinationBinding?
     var recordingGeneration: UUID?
     var pendingDestinationID: ConversationDestinationID?
@@ -85,7 +86,9 @@ final class TranscriptionLabView {
     var selectedBinding: TalkDestinationBinding? {
         if let route { return route.binding(for: destinationID) }
         guard let id = selectedDestinationID, id == destinationID else { return nil }
-        return TalkDestinationBinding(destination: id, connectionGeneration: connectionGeneration, selection: 1)
+        if fixtureRequest.destination != id { fixtureRequest = TalkSelectionRequest(destination: id) }
+        return TalkDestinationBinding(destination: id, connectionGeneration: connectionGeneration,
+                                      selection: 1, request: fixtureRequest)
     }
     func quietReplyAudio() async throws {}
     func receiveResult(_ result: TranscriptionResult) {
@@ -118,9 +121,19 @@ final class TranscriptionLabView {
         pendingSendID = nil
         pendingDestinationID = nil
     }
-    func send(_ text: String, failurePrefix: String) async {
-        sent.append(text)
-        await onFinalized?(text)
+    func send(_ text: String, failurePrefix: String, admitted: TalkDestinationBinding) async {
+        if let route {
+            do {
+                try await route.store.sendFinalText(text, pasted: nil, to: admitted)
+            } catch let reason as TalkSendRefusal {
+                refuseRecording(reason)
+            } catch {
+                status = "\(failurePrefix): \(error.localizedDescription)"
+            }
+        } else {
+            sent.append(text)
+            await onFinalized?(text)
+        }
     }
     func discardCapture() async {
         capture.stop()

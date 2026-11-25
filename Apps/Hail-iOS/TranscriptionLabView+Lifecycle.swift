@@ -123,16 +123,21 @@ extension TranscriptionLabView {
             || recordingDestination != selectedBinding {
             finalText = text
             volatileText = ""
-            talkStatus = .notSent(.destinationChanged)
-            if isForcedTeardown || route?.selected() == nil { route?.reportRemoval(.destinationChanged) }
+            refuseRecording(.destinationChanged)
             return
         }
         guard !force, !isForcedTeardown else { status = "Ready"; return }
         guard !text.isEmpty else { status = "Nothing heard"; return }
         finalText = text
         volatileText = ""
-        if onFinalized != nil { await send(text, failurePrefix: "Send failed") } else { status = "Ready" }
+        guard onFinalized != nil, let recordingDestination else { status = "Ready"; return }
+        await send(text, failurePrefix: "Send failed", admitted: recordingDestination)
     }
+    func refuseRecording(_ reason: TalkSendRefusal) {
+        talkStatus = .notSent(reason)
+        if isForcedTeardown || route?.selected() == nil { route?.reportRemoval(reason) }
+    }
+
     func interruptTarget(using action: @MainActor () async throws -> Void) async {
         guard !isInterrupting else { return }
         if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
@@ -186,7 +191,6 @@ extension TranscriptionLabView {
         isRecording = false
         return finalized
     }
-
     private func retireTalkIfIdle() {
         guard !isStarting, !isRecording, !isFinalizing, !isInterrupting, finishTask == nil else { return }
         talkSession.retire(captureOwnerID)

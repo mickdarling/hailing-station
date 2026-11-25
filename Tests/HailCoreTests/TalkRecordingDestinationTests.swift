@@ -81,7 +81,11 @@ struct TalkRecordingDestinationTests {
         #expect(rig.card.destinationGeneration == viewGeneration)
         await rig.card.finish()
         #expect(rig.card.talkStatus == .notSent(.destinationChanged) && rig.card.finalText == rig.text)
-        #expect(rig.deliveries.isEmpty && rig.capture.stopCount == 1)
+        #expect(rig.capture.stopCount == 1)
+        #expect(try await host.socket.transcripts().isEmpty)
+        await rig.record(on: shown)
+        await rig.card.finish()
+        #expect(try await host.socket.transcripts().map(\.text) == [rig.text])
         await host.store.disconnect(host.host.id)
     }
 
@@ -104,6 +108,7 @@ struct TalkRecordingDestinationTests {
         await host.store.remove(host.host.id)
         await rig.card.finish(force: true)
         #expect(rig.deliveries.isEmpty && rig.capture.stopCount == 1 && rig.card.talkSession.owner == nil)
+        #expect(try await host.socket.transcripts().isEmpty)
         #expect(notices == [.destinationChanged] && rig.card.talkStatus == .notSent(.destinationChanged))
         #expect(rig.card.status == "Not sent: destination changed" && rig.card.finalText == rig.text)
     }

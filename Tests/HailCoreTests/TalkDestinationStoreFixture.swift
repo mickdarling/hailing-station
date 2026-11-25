@@ -11,9 +11,10 @@ struct TalkDestinationStoreFixture {
     let host: HostEndpoint
     let socket: TalkDestinationSocket
 
-    static func make() async throws -> Self {
+    static func make(wallNow: @escaping HostConnection.WallNow = { 1 }) async throws -> Self {
         let connector = ScriptedConnector()
-        let store = HostConnectionStore(connector: connector, deadlineSleep: { _ in throw CancellationError() })
+        let store = HostConnectionStore(connector: connector, deadlineSleep: { _ in throw CancellationError() },
+                                        wallNow: wallNow)
         let host = try endpoint()
         let socket = try await connect(host, store: store, connector: connector)
         return Self(store: store, connector: connector, host: host, socket: socket)

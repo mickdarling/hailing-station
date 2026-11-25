@@ -6,6 +6,7 @@ public import Foundation
 public import HailProtocol
 public import Observation
 import Network
+import Synchronization
 /// Main-actor model for the UI. Every endpoint owns a separate actor and a separate stale-callback token.
 @MainActor
 @Observable
@@ -76,7 +77,7 @@ public final class HostConnectionStore {
     private var selectionSerials: [HostEndpoint.Identifier: UInt64] = [:]
     /// Independent confirmation tokens also retire older overlapping reauthorizations (#904).
     private var selectionRequests: [HostEndpoint.Identifier: UUID] = [:]
-    @ObservationIgnored private var latestSelectionRequest: UUID?
+    @ObservationIgnored private var latestSelectionRequest: TalkSelectionRequest?
     @ObservationIgnored fileprivate var confirmedHostSwitch: (generation: UUID, destination: AmbientAudioBinding)?
     /// The target each host last confirmed through `selectTarget`, the one its connection addresses audio to.
     /// Ambient bindings exist only for it (#218).
@@ -163,6 +164,7 @@ extension HostConnectionStore {
         conversation.forgetHeardTurns(endpoint.id)
         let existing = connections.removeValue(forKey: endpoint.id)
         if restoring {
+            invalidateTalkSelection(host: endpoint.id)
             selectedTargets[endpoint.id] = nil
             selectionRequests[endpoint.id] = nil
         } else { forgetSelection(endpoint.id, stop: stop) }
@@ -230,8 +232,10 @@ extension HostConnectionStore {
         if restoring, let current = ambientBinding(host: id, targetID: targetID),
            ambientController?.binding == current, ambientController?.isListening == true,
            ambientController?.reconnect.isPending == false { return }
-        let request = UUID()
-        latestSelectionRequest = request
+        let selection = TalkSelectionRequest(destination: TalkDestinationID(endpointID: id, targetID: targetID))
+        let request = selection.id
+        latestSelectionRequest?.invalidate()
+        latestSelectionRequest = selection
         confirmedHostSwitch = nil
         let previousIntent = restoring ? nil : ambientController?.listeningState.intent
         if !restoring {
@@ -252,7 +256,7 @@ extension HostConnectionStore {
         // A later selection, endpoint change or removal owns the outcome.
         if selectionSerials[id] == serial, selectionRequests[id] == request, connections[id] === connection {
             selectedTargets[id] = targetID
-            if latestSelectionRequest == request, let previousIntent, previousIntent.destination.hostID != id,
+            if latestSelectionRequest?.id == request, let previousIntent, previousIntent.destination.hostID != id,
                ambientController?.listeningState.intent == previousIntent,
                let destination = ambientBinding(host: id, targetID: targetID) {
                 confirmedHostSwitch = (previousIntent.generation, destination)
@@ -315,9 +319,15 @@ extension HostConnectionStore {
     /// Every selection change, endpoint change or removal invalidates outstanding bindings for the host.
     private func forgetSelection(_ id: HostEndpoint.Identifier, stop: AmbientListeningState.StopReason) {
         ambientController?.attributeSelectionLoss(host: id, serial: selectionSerials[id, default: 0], stop: stop)
+        invalidateTalkSelection(host: id)
         selectionSerials[id, default: 0] &+= 1
         selectedTargets[id] = nil
         selectionRequests[id] = nil
+    }
+
+    private func invalidateTalkSelection(host id: HostEndpoint.Identifier) {
+        guard let request = latestSelectionRequest, request.id == selectionRequests[id] else { return }
+        request.invalidate()
     }
 
     private func transportLost(host: HostEndpoint.Identifier, generation: UUID, sending: Bool, token: UUID) {
@@ -339,6 +349,14 @@ extension HostConnectionStore {
             revokeProactiveSpeech(snapshot.id)
         }
         retireUnavailableProactiveTargets(snapshot)
+        if let request = latestSelectionRequest, request.destination.endpointID == snapshot.id,
+           let old, old.state == .ready, request.includesTarget(in: old),
+           snapshot.state != .ready || old.connectionGeneration != snapshot.connectionGeneration
+            || !request.includesTarget(in: snapshot) {
+            request.invalidate()
+            // A target can return on the same socket. Only a fresh recording may use the confirmed selection then.
+            latestSelectionRequest = TalkSelectionRequest(destination: request.destination, id: request.id)
+        }
         let previous = old?.state
         ambientController?.reconnect.receive(snapshot, previous: old, store: self)
         if snapshot.state != .ready { selectedTargets[snapshot.id] = nil; selectionRequests[snapshot.id] = nil }
@@ -733,6 +751,7 @@ public struct TalkDestinationBinding: Equatable, Sendable {
     public let destination: TalkDestinationID
     public let connectionGeneration: UUID
     let selection: UInt64
+    let request: TalkSelectionRequest
 }
 
 public enum TalkSendRefusal: Error, Equatable, Sendable {
@@ -741,16 +760,59 @@ public enum TalkSendRefusal: Error, Equatable, Sendable {
     public var message: String { "Not sent: destination changed" }
 }
 
+/// The store retires a selection synchronously, even when the next selection belongs to another Mac.
+final class TalkSelectionRequest: Equatable, Sendable {
+    let id: UUID
+    let destination: TalkDestinationID
+    private let valid = Mutex(true)
+    var isCurrent: Bool { valid.withLock { $0 } }
+
+    init(destination: TalkDestinationID, id: UUID = UUID()) {
+        self.destination = destination
+        self.id = id
+    }
+
+    static func == (lhs: TalkSelectionRequest, rhs: TalkSelectionRequest) -> Bool { lhs === rhs }
+
+    func invalidate() { valid.withLock { $0 = false } }
+
+    func chooseSocket(_ choose: () -> (any WebSocketTransport)?) throws -> any WebSocketTransport {
+        try valid.withLock { current in
+            guard current, let socket = choose() else { throw TalkSendRefusal.destinationChanged }
+            return socket
+        }
+    }
+
+    func includesTarget(in snapshot: HostConnectionSnapshot) -> Bool {
+        !snapshot.receivedTargetList || snapshot.targets.contains { $0.id == destination.targetID && $0.alive }
+    }
+}
+
 /// Text and Escape to a target; sent text joins the station chat (#288).
 extension HostConnectionStore {
     public func talkBinding(for destination: TalkDestinationID) -> TalkDestinationBinding? {
         let (id, targetID) = (destination.endpointID, destination.targetID)
-        guard let request = selectionRequests[id], request == latestSelectionRequest, selectedTargets[id] == targetID,
-              let snapshot = snapshots[id], snapshot.state == .ready,
-              !snapshot.receivedTargetList || snapshot.targets.contains(where: { $0.id == targetID && $0.alive })
+        guard let request = latestSelectionRequest, request.isCurrent, request.id == selectionRequests[id],
+              selectedTargets[id] == targetID, let snapshot = snapshots[id], snapshot.state == .ready,
+              request.includesTarget(in: snapshot)
         else { return nil }
         return TalkDestinationBinding(destination: destination, connectionGeneration: snapshot.connectionGeneration,
-                                      selection: selectionSerials[id, default: 0])
+                                      selection: selectionSerials[id, default: 0], request: request)
+    }
+
+    func connection(for binding: TalkDestinationBinding) throws -> HostConnection {
+        guard talkBinding(for: binding.destination) == binding,
+              let connection = connections[binding.destination.endpointID] else {
+            throw TalkSendRefusal.destinationChanged
+        }
+        return connection
+    }
+
+    public func sendFinalText(_ text: String, pasted: PastedDraft?, to binding: TalkDestinationBinding) async throws {
+        let connection = try connection(for: binding)
+        try await sendFinalText(text, pasted: pasted, to: binding.destination) {
+            try await connection.sendFinalText(text, pasted: pasted, to: binding.destination.targetID, binding: binding)
+        }
     }
 
     /// `pasted` (#608) rides with `text`, which may then be empty; the transcript shows both once sent, the paste pending
@@ -759,6 +821,14 @@ extension HostConnectionStore {
         _ text: String, pasted: PastedDraft? = nil, host id: HostEndpoint.Identifier, targetID: String
     ) async throws {
         guard let connection = connections[id] else { throw HostConnectionFailure.notReady }
+        try await sendFinalText(text, pasted: pasted, to: TalkDestinationID(endpointID: id, targetID: targetID)) {
+            try await connection.sendFinalText(text, pasted: pasted, to: targetID, binding: nil)
+        }
+    }
+
+    private func sendFinalText(_ text: String, pasted: PastedDraft?, to destination: TalkDestinationID,
+                               write: @MainActor () async throws -> Void) async throws {
+        let (id, targetID) = (destination.endpointID, destination.targetID)
         // The address and the request's own entry are recorded under the scope the request goes out on, before the
         // send can suspend (#636): a reply that comes back first is placed, and shows after its request. Both are taken
         // back if the send fails.
@@ -766,11 +836,7 @@ extension HostConnectionStore {
                                            targets: snapshots[id]?.targets ?? [], scope: addressScope(id))
         let sent = conversation.noteSent(text, pasted: pasted?.text, endpointID: id, targetID: targetID)
         do {
-            if let pasted {
-                try await connection.sendFinalText(text, pasted: pasted, to: targetID)
-            } else {
-                try await connection.sendFinalText(text, to: targetID)
-            }
+            try await write()
         } catch {
             conversation.retractAddress(address)
             conversation.retractSent(sent)

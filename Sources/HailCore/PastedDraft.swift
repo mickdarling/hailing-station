@@ -102,13 +102,36 @@ extension HostConnection {
     /// The final text with a paste (#608): `pasted` goes only to a host that advertises `pasted_text` and only in a
     /// frame within the host's cap; otherwise nothing is sent and the problem says why.
     public func sendFinalText(_ text: String, pasted: PastedDraft, to targetID: String) async throws {
+        try await sendFinalText(text, pasted: pasted, to: targetID, binding: nil)
+    }
+
+    func sendFinalText(_ text: String, pasted: PastedDraft?, to targetID: String,
+                       binding: TalkDestinationBinding?) async throws {
+        if let binding { try validate(binding, targetID: targetID) }
         try requireReady(capability: "send_text")
-        let payload = TextPayload(text: text, pasted: PastedText(text: pasted.text))
+        let payload = TextPayload(text: text, pasted: pasted.map { PastedText(text: $0.text) })
         let data = try PastedDraft.encodedRequest(Frame(
             version: snapshot.negotiatedVersion ?? ProtocolVersion.current, timestamp: wallNow(), target: targetID,
             source: deviceName, payload: .text(payload)
         ), hostCapabilities: snapshot.capabilities)
-        guard let socket else { throw HostConnectionFailure.notReady }
-        try await socket.send(data)
+        // Encoding a paste can take time. Read the store's revocable selection at socket dispatch.
+        let transport: any WebSocketTransport
+        if let binding {
+            transport = try binding.request.chooseSocket { socket }
+        } else {
+            guard let socket else { throw HostConnectionFailure.notReady }
+            transport = socket
+        }
+        try await transport.send(data)
+    }
+
+    private func validate(_ binding: TalkDestinationBinding, targetID: String) throws {
+        guard binding.request.isCurrent, snapshot.state == .ready, socket != nil,
+              snapshot.id == binding.destination.endpointID,
+              snapshot.connectionGeneration == binding.connectionGeneration,
+              confirmedSelectionGeneration == binding.connectionGeneration, selectionSettled,
+              targetID == binding.destination.targetID, desiredTargetID == targetID,
+              binding.request.includesTarget(in: snapshot)
+        else { throw TalkSendRefusal.destinationChanged }
     }
 }
