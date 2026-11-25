@@ -35,6 +35,7 @@ struct HailApp: App {
                 #endif
         }
         .windowResizability(.contentMinSize)
+        .commands { shellCommands }
         MenuBarExtra("Hailing Station", systemImage: MacMenuBar.symbol(for: menuStatus)) {
             MacMenuBarContent(status: menuStatus)
         }
@@ -47,7 +48,14 @@ struct HailApp: App {
         WindowGroup {
             stationWindow.environment(appearance)
         }
+        .commands { shellCommands }
         #endif
+    }
+
+    @CommandsBuilder private var shellCommands: some Commands {
+        if StationRedesignLaunch.flags.isOn(.shell), StationRedesignLaunch.idiom != .phone {
+            SidebarCommands()
+        }
     }
 
     private var stationWindow: some View {
