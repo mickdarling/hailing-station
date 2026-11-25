@@ -38,7 +38,7 @@ extension StationBackgroundCaptureTests {
         #expect(talk.tap.startCount == previousStarts && !view.isRecording)
         #expect(await !talk.speech.isRunning)
 
-        scene.host.window.fixtureOcclusion = .visible
+        talk.setOcclusion(.visible)
         await scene.host.render()
         talk.press()
         let restarted = try #require(view.startTask)
@@ -69,13 +69,13 @@ extension StationBackgroundCaptureTests {
 }
 
 @MainActor
-private struct PendingTalk {
+struct PendingTalk {
     let scene: BackgroundCaptureScene
     let tap: FakeAudioCapture
     let speech: FakeTranscriber
     let playback: ReplyPlaybackController
     let view: StationTalkTestSupport.StationTranscriptionView
-    let press: @MainActor () -> Void
+    let probe: MountedTalkProbe
 
     init(_ scene: BackgroundCaptureScene) async throws {
         self.scene = scene
@@ -90,6 +90,7 @@ private struct PendingTalk {
         self.playback = playback
         playback.captureLivenessSleep = { _ in throw CancellationError() }
         let probe = MountedTalkProbe()
+        self.probe = probe
         scene.host.window.fixtureOcclusion = .visible
         scene.probe.talkSurface = AnyView(StationTalkTestSupport.StationTranscriptionView(
             audioSession: root.audioRoutes, capture: tap, transcriber: speech,
@@ -99,13 +100,19 @@ private struct PendingTalk {
         ).environment(probe))
         await scene.host.render()
         view = try #require(probe.view)
-        press = try #require(probe.press)
+        try #require(probe.press != nil)
         try #require(view.scenePhase == .active && !view.isRecording)
     }
 
-    func occlude() throws -> Task<Void, Never> {
-        scene.host.window.fixtureOcclusion = []
+    func press() { probe.press?() }
+
+    func setOcclusion(_ state: NSWindow.OcclusionState) {
+        scene.host.window.fixtureOcclusion = state
         NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: scene.host.window)
+    }
+
+    func occlude() throws -> Task<Void, Never> {
+        setOcclusion([])
         return try #require(view.finishTask)
     }
 }

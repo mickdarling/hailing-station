@@ -37,6 +37,7 @@ struct StationTranscriptionView: View {
     /// Whether the destination takes pasted text, and the latest paste its Mac refused (#608).
     let pasteOffer: PasteOffer
     let onEscape: (@MainActor () async throws -> Void)?
+
     @StateObject var audio: StationSceneState<TranscriptionResources>
     var capture: any AudioCapturing { audio.value.capture }
     var transcriber: any Transcriber { audio.value.transcriber }
@@ -116,6 +117,7 @@ struct StationTranscriptionView: View {
             TranscriptionResources(capture: capture(), transcriber: transcriber ?? Self.defaultTranscriber())
         })
     }
+
     var body: some View {
         VStack(spacing: compactTalk ? 10 : 18) {
             // The conversation thread shows each request as You (#318), so no separate last-request panel (#429).
@@ -150,9 +152,7 @@ struct StationTranscriptionView: View {
         .navigationTitle("Conversation")
         .task { await observeResults() }
         .onAppear { restorePlaybackAfterForcedTeardown() }
-        .onTranscriptionWindowHidden(stopCaptureWhenHidden)
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background { stopCaptureWhenHidden() }
             if phase == .active { restorePlaybackAfterForcedTeardown(); announceDeferredStatusIfNeeded() }
         }
         .onChange(of: replyIDs) { previous, current in

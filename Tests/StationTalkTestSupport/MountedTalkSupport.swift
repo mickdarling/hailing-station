@@ -20,6 +20,7 @@ struct TranscriptionResources {
 final class MountedTalkProbe {
     var view: StationTranscriptionView?
     var press: (@MainActor () -> Void)?
+    var buttonIsEnabled = false
 }
 
 // The Talk button uses .plain. Keep its native style and expose SwiftUI's actual trigger so tests can deliver
@@ -34,10 +35,14 @@ extension Button {
 private struct MountedTalkButtonStyle: PrimitiveButtonStyle {
     let plain: PlainButtonStyle
     @Environment(MountedTalkProbe.self) private var probe
+    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         plain.makeBody(configuration: configuration)
-            .onAppear { probe.press = { configuration.trigger() } }
+            .onChange(of: isEnabled, initial: true) { _, enabled in
+                probe.buttonIsEnabled = enabled
+                probe.press = { configuration.trigger() }
+            }
     }
 }
 

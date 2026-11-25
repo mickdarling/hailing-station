@@ -51,7 +51,9 @@ extension EnvironmentValues {
 extension StationTranscriptionView {
     static var uncorrelatedDestinations: Set<StationConversationDestinationID> = []
     var attachedPaste: PastedDraft? { nil }
-    var talkButton: some View { NativeTranscriptionMount(view: self) }
+    func makeTalkButton(whenVisible: @escaping @MainActor () -> Bool) -> some View {
+        NativeTranscriptionMount(view: self)
+    }
     var statusRow: some View { Text(status) }
     var escapeControl: some View { EmptyView() }
     var liveTranscript: some View { EmptyView() }

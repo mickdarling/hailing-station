@@ -40,13 +40,13 @@ extension TranscriptionLabView {
         }
     }
 
-    var talkButton: some View {
+    func makeTalkButton(whenVisible isVisible: @escaping @MainActor () -> Bool) -> some View {
         Button {
-            guard !talkButtonDisabled else { return }
+            guard !talkButtonDisabled(isVisible: isVisible()) else { return }
             if isRecording {
                 Task { await finish() }
             } else {
-                startTask = Task { await begin() }
+                startTask = Task { await begin(whenVisible: isVisible) }
             }
         } label: {
             let circle: CGFloat = compactTalk ? 52 : 82 // Smaller while the conversation is full screen (#819).
@@ -64,16 +64,16 @@ extension TranscriptionLabView {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(talkButtonDisabled)
+        .disabled(talkButtonDisabled(isVisible: isVisible()))
         .accessibilityIdentifier("station.talk")
         .accessibilityLabel(actionLabel)
         .accessibilityValue(status)
         .accessibilityHint(talkHint)
     }
 
-    private var talkButtonDisabled: Bool {
+    private func talkButtonDisabled(isVisible: Bool) -> Bool {
         startTask != nil || isStarting || isFinalizing || isInterrupting || finishTask != nil || interruptTask != nil
-            || (!isRecording && pendingSendID != nil)
+            || (!isRecording && (!isVisible || pendingSendID != nil))
     }
 
     var statusRow: some View {
