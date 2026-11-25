@@ -267,8 +267,10 @@ mac() {
   xcodebuild build "${args[@]}" 2>&1 | pretty
 
   local plist
+  # SwiftPM can print diagnostics before or after the build-settings array on stdout.
   plist=$(xcodebuild "${args[@]}" -showBuildSettings -json |
-    jq -er '.[] | select(.target == "Hail-macOS") | .buildSettings | .TARGET_BUILD_DIR + "/" + .INFOPLIST_PATH')
+    jq -Rser 'capture("(?:^|\\n)[ \\t]*(?<settings>\\[(?=\\s*\\{)(?:[^\\n]*|.*?\\n)\\])[ \\t\\r]*(?:\\n|$)"; "m").settings | fromjson
+      | .[] | select(.target == "Hail-macOS") | .buildSettings | .TARGET_BUILD_DIR + "/" + .INFOPLIST_PATH')
   if ! plutil -convert json -o - "$plist" |
     jq -e '.CFBundleName == "Hailing Station" and .CFBundleDisplayName == .CFBundleName' >/dev/null; then
     echo "$plist: CFBundleName and CFBundleDisplayName must both be 'Hailing Station'" >&2
