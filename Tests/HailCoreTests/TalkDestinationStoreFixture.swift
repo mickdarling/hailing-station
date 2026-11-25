@@ -11,9 +11,10 @@ struct TalkDestinationStoreFixture {
     let host: HostEndpoint
     let socket: TalkDestinationSocket
 
-    static func make() async throws -> Self {
+    static func make(wallNow: @escaping HostConnection.WallNow = { 1 }) async throws -> Self {
         let connector = ScriptedConnector()
-        let store = HostConnectionStore(connector: connector, deadlineSleep: { _ in throw CancellationError() })
+        let store = HostConnectionStore(connector: connector, deadlineSleep: { _ in throw CancellationError() },
+                                        wallNow: wallNow)
         let host = try endpoint()
         let socket = try await connect(host, store: store, connector: connector)
         return Self(store: store, connector: connector, host: host, socket: socket)
@@ -25,10 +26,20 @@ struct TalkDestinationStoreFixture {
         await connector.enqueue(.socket(socket), for: host.url)
         try await socket.base.push(.hello(HelloInfo(versions: VersionNegotiation.supported,
             capabilities: ["ping", "select_target", "send_text", PastedText.capability], deviceName: "Fixture")))
+        let targets = ["a", "b", "target"].map { TargetInfo(id: $0, kind: "tmux", name: "Fixture", alive: true) }
+        try await socket.base.push(.targets(targets))
         await store.upsert(host)
         await store.connect(host.id)
-        await arrivalObserved { store.snapshots[host.id]?.state == .ready }
+        await arrivalObserved {
+            store.snapshots[host.id]?.state == .ready && store.snapshots[host.id]?.targets == targets
+        }
         return socket
+    }
+
+    func publishTarget(_ id: String, named name: String) async throws {
+        let target = TargetInfo(id: id, kind: "tmux", name: name, alive: true)
+        try await socket.base.push(.targets([target]))
+        await arrivalObserved { store.snapshots[host.id]?.targets == [target] }
     }
 
     func select(_ target: String) async throws {

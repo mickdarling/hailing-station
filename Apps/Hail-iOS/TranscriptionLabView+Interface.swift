@@ -1,7 +1,14 @@
 import HailCore
 import SwiftUI
 
+@MainActor
 extension TranscriptionLabView {
+    func finishOnDisappear() async {
+        guard talkSession.owner == nil else { return await finish(force: true) }
+        if startTask != nil { await finish(force: true) }
+        if talkSession.owner == nil, !globalReplyAudioSpeaking { await deactivateTalkRoute() }
+    }
+
     /// Read-only words as they are recognized. The station shows them only while capturing, since each sent request
     /// then appears in the conversation as You (#318, #429); Labs, with no destination, keeps its last transcript.
     @ViewBuilder
@@ -127,8 +134,7 @@ extension TranscriptionLabView {
             : "Stops listening and sends the request."
     }
 
-    @MainActor
-    func send(_ text: String, failurePrefix: String) async {
+    func send(_ text: String, failurePrefix: String, admitted: TalkDestinationBinding? = nil) async {
         guard let onFinalized, pendingSendID == nil else { return }
         replyTimeoutTask?.cancel()
         replyTimeoutTask = nil
@@ -141,18 +147,12 @@ extension TranscriptionLabView {
         // Not a paste an earlier send still carries: a reply placed during that write (#636) lets this one start.
         let paste = pastes.take(for: sendID)
         do {
-            try await onFinalized(text, paste)
-            // Handed to the Mac with this request (#608), so it is cleared whatever happened meanwhile. If the Mac
-            // refuses it, it comes back attached with the reason (`pasteOffer.refusal`) and stays; so does a paste
-            // attached while this one was in flight.
-            // Only its own paste's problem: a newer paste's problem stays.
+            try await deliver(text, paste: paste, admitted: admitted, standalone: onFinalized)
+            // Clear only this request's paste and its problem (#608).
             if pastes.finish(sendID, delivered: true) { pasteProblem = nil }
             let answered = answeredEarly(sendID, at: destinationAtSend)
             guard answered || (pendingSendID == sendID && pendingDestinationID == destinationAtSend) else { return }
-            if answered {
-                answeredSendID = nil
-                return
-            }
+            if answered { answeredSendID = nil; return }
             if let destinationAtSend, Self.uncorrelatedDestinations.contains(destinationAtSend) {
                 clearPendingSend()
                 status = "Sent — reply turn unverified"
@@ -162,7 +162,12 @@ extension TranscriptionLabView {
             scheduleReplyTimeout(sendID: sendID, destinationID: destinationAtSend)
         } catch {
             pastes.finish(sendID, delivered: false)
-            // A reply that arrived during this send (#636) does not hide its failure: the store took that reply back.
+            if let reason = error as? TalkSendRefusal {
+                clearPendingSend()
+                refuseRecording(reason)
+                return
+            }
+            // A reply placed during the write does not hide its failure (#636).
             let answered = answeredEarly(sendID, at: destinationAtSend)
             guard answered || (pendingSendID == sendID && pendingDestinationID == destinationAtSend) else { return }
             answeredSendID = nil
@@ -175,14 +180,19 @@ extension TranscriptionLabView {
             status = "\(failurePrefix): \(problem ?? error.localizedDescription)"
         }
     }
+    private func deliver(_ text: String, paste: PastedDraft?, admitted: TalkDestinationBinding?,
+                         standalone: @MainActor (String, PastedDraft?) async throws -> Void) async throws {
+        if let admitted, let route { return try await route.store.sendFinalText(text, pasted: paste, to: admitted) }
+        guard admitted == nil, text.isEmpty else { throw TalkSendRefusal.destinationChanged }
+        try await standalone(text, paste)
+    }
+
     /// A reply that arrived while `sendID` was still going ended its wait (#636), and nothing has happened since on
     /// that destination: no new send, capture or Escape has changed the status from "Reply received".
-    @MainActor
     func answeredEarly(_ sendID: UUID, at destination: ConversationDestinationID?) -> Bool {
         answeredSendID == sendID && pendingSendID == nil && destinationID == destination && status == "Reply received"
     }
 
-    @MainActor
     func quietReplyAudio() async throws {
         status = "Quieting reply audio…"
         try await Task.sleep(for: .milliseconds(200))
