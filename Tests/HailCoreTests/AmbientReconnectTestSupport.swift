@@ -11,6 +11,7 @@ final class AmbientReconnectRig {
     let endpoint: HostEndpoint
     let capture = FakeAudioCapture()
     let target = TargetInfo(id: "tmux:synthetic", kind: "tmux", name: "Synthetic", alive: true)
+    var capabilities = ["ping", "select_target", "stream_audio", "set_privacy"]
     var socket = ScriptedSocket()
     var transport: (any WebSocketTransport)?
     var wrapReconnect: (ScriptedSocket) -> any WebSocketTransport = { $0 }
@@ -106,7 +107,7 @@ final class AmbientReconnectRig {
             return true
         }; return false } }
         try await socket.push(.hello(HelloInfo(
-            versions: [ProtocolVersion.current], capabilities: ["ping", "select_target", "stream_audio", "set_privacy"],
+            versions: [ProtocolVersion.current], capabilities: capabilities,
             deviceName: "Synthetic"
         )))
         if let mode { try await socket.push(mode) }

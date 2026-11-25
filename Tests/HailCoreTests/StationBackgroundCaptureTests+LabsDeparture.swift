@@ -50,7 +50,7 @@ extension StationBackgroundCaptureTests {
     }
 
     private func expectDeparture(_ user: RouteUser, stationLeaves: Bool) async throws {
-        let scene = try await BackgroundCaptureScene()
+        let scene = try await BackgroundCaptureScene(supportsText: true)
         defer { scene.host.finish() }
         let root = try #require(scene.probe.root)
         let surfaces = TalkDepartureSurfaces(root: root, stationLeaves: stationLeaves)
@@ -58,7 +58,7 @@ extension StationBackgroundCaptureTests {
         scene.probe.talkSurface = surfaces.showingBoth(true)
         await scene.host.render()
         let staying = try #require(surfaces.staying.view)
-        try await surfaces.finishLeavingTalk()
+        try await surfaces.finishLeavingTalk(socket: scene.rig.socket)
 
         switch user {
         case .none: break
@@ -94,7 +94,6 @@ private struct TalkDepartureSurfaces {
     let stationLeaves: Bool
     let leaving = MountedTalkProbe(), staying = MountedTalkProbe()
     let departures = TalkCallCounter()
-    let sends = TalkCallCounter()
     let session = StationTalkTestSupport.StationTalkSession {
         StationTalkTestSupport.TranscriptionResources(capture: FakeAudioCapture(), transcriber: FakeTranscriber())
     }
@@ -106,25 +105,36 @@ private struct TalkDepartureSurfaces {
         }.sharingTalkSession(session))
     }
 
-    func finishLeavingTalk() async throws {
+    func finishLeavingTalk(socket: ScriptedSocket) async throws {
         let view = try #require(leaving.view)
         let speech = try #require(view.transcriber as? FakeTranscriber)
         try #require((view.onFinalized != nil) == stationLeaves)
         try #require((view.destinationID != nil) == stationLeaves)
         await view.begin(whenVisible: { true })
         try #require(view.isRecording && session.owner == view.captureOwnerID)
+        try #require(view.recordingDestination?.destination == view.destinationID)
         await speech.emit(TranscriptionResult(text: "fixture request", isFinal: true))
         await view.finish()
+        let sends = TalkCallCounter()
+        sends.value = try await socket.sentFrames().count { frame in
+            if case .text = frame.payload { true } else { false }
+        }
         try #require(sends.value == (stationLeaves ? 1 : 0))
         try #require(!view.isRecording && session.owner == nil && root.audioRoutes.diagnostics.isActive)
     }
 
+    private var destinationID: TalkDestinationID? {
+        root.destination.map { TalkDestinationID(endpointID: $0.hostID, targetID: $0.target.id) }
+    }
+
     private func talk(station: Bool) -> some View {
-        let send: @MainActor (String, PastedDraft?) async throws -> Void = { _, _ in sends.value += 1 }
+        let send: @MainActor (String, PastedDraft?) async throws -> Void = { _, _ in
+            Issue.record("Station transcript bypassed its recorded destination")
+        }
         return StationTalkTestSupport.StationTranscriptionView(audioSession: root.audioRoutes,
-            destinationID: station ? root.destination.map {
-                StationTalkTestSupport.StationConversationDestinationID(endpointID: $0.hostID, targetID: $0.target.id)
-            } : nil,
+            destinationID: station ? destinationID : nil,
+            route: station ? StationTalkTestSupport.StationTalkRoute(
+                store: root.connections, selected: { destinationID }, reportRemoval: { _ in }) : nil,
             globalReplyAudioSpeaking: root.playback.isReplyAudioOutputBusy,
             onCaptureWillBegin: { CapturePlaybackSuppression.begin($0, using: root.playback) },
             onCaptureDidEnd: { CapturePlaybackSuppression.end($0, using: root.playback, resuming: $1) },
