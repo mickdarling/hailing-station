@@ -78,6 +78,15 @@ struct VoiceDockView: View {
         .accessibilityIdentifier(talkIdentifier)
     }
 
+    private enum AccessoryTitle: String {
+        case paste = "Paste"
+        case interrupt = "Interrupt"
+        case privacy = "Privacy"
+        case more = "More controls"
+
+        var compact: String { self == .more ? "More" : rawValue }
+    }
+
     /// Side by side as icons, or, at accessibility sizes, stacked full width with their titles (Codex review of
     /// #1155): three scaled icon targets in a row would push controls off a narrow iPhone.
     private var accessories: some View {
@@ -85,15 +94,15 @@ struct VoiceDockView: View {
         let layout = stacked ? AnyLayout(VStackLayout(spacing: 6)) : AnyLayout(HStackLayout(spacing: 6))
         return layout {
             if state.paste != .hidden {
-                iconButton("Paste", symbol: "plus", intent: .paste, item: state.paste,
+                iconButton(.paste, symbol: "plus", intent: .paste, item: state.paste,
                            hint: "Opens pasted text for the next request.")
             }
             if wide, state.escape != .hidden {
-                iconButton("Interrupt", symbol: "xmark.octagon", intent: .escape, item: state.escape,
+                iconButton(.interrupt, symbol: "xmark.octagon", intent: .escape, item: state.escape,
                            hint: "Discards any recording and sends Escape to the selected target.")
             }
             if state.privacy != .hidden {
-                iconButton("Privacy", symbol: "lock", intent: .privacy, item: state.privacy,
+                iconButton(.privacy, symbol: "lock", intent: .privacy, item: state.privacy,
                            hint: "Requests a privacy change when available, or shows listening details.")
             }
             moreMenu
@@ -101,7 +110,7 @@ struct VoiceDockView: View {
     }
 
     private func iconButton(
-        _ title: String, symbol: String, intent: VoiceDockIntent, item: VoiceDockState.Item, hint: String
+        _ title: AccessoryTitle, symbol: String, intent: VoiceDockIntent, item: VoiceDockState.Item, hint: String
     ) -> some View {
         Button {
             onIntent(intent)
@@ -127,27 +136,27 @@ struct VoiceDockView: View {
                     .accessibilityHint("Discards any active recording and sends Escape immediately to the target.")
             }
         } label: {
-            accessoryLabel("More controls", symbol: "ellipsis")
+            accessoryLabel(.more, symbol: "ellipsis")
         }
         .buttonStyle(.bordered)
         .accessibilityIdentifier("station.voice-dock.more")
     }
 
     @ViewBuilder
-    private func accessoryLabel(_ title: String, symbol: String) -> some View {
+    private func accessoryLabel(_ title: AccessoryTitle, symbol: String) -> some View {
         if typeSize.isAccessibilitySize {
-            Label(title, systemImage: symbol)
+            Label(title.rawValue, systemImage: symbol)
                 .frame(maxWidth: .infinity, minHeight: target, alignment: .leading)
         } else if wide {
-            Label(title, systemImage: symbol)
+            Label(title.rawValue, systemImage: symbol)
                 .frame(minHeight: target)
         } else {
             VStack(spacing: 2) {
                 Image(systemName: symbol)
-                Text(title == "More controls" ? "More" : title).font(.caption2)
+                Text(title.compact).font(.caption2)
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(title)
+            .accessibilityLabel(title.rawValue)
             .frame(minWidth: target, minHeight: target)
         }
     }

@@ -24,7 +24,7 @@ extension RootView {
                 ambientListeningSurface.stationCollapsed(!details.wrappedValue)
             }, pane: { details, recovery, review in
                 StationConversationPane(hasThread: chatThread != nil, needsSetup: stationAvailability == .unconfigured,
-                    playbackHeld: selectedPlaybackHeld, chat: { chatSurface },
+                    playbackHeld: selectedPlaybackHeld, chat: stationDocument,
                     fallback: { if destination == nil { conversationSurface } }, tools: { stationTools },
                     openDevices: openDevices, showsTools: details || destination == nil,
                     showsRecovery: recovery, reviewRecovery: review)

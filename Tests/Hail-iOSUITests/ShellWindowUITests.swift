@@ -159,3 +159,14 @@ final class ShellWindowUITests: XCTestCase, ShellWindowUITestSupport {
         XCTAssertEqual(XCTWaiter().wait(for: [changed], timeout: 5), .completed)
     }
 }
+
+extension ShellWindowUITests {
+    @MainActor
+    func testRedesignedConversationHasNoTextSizeControl() {
+        let app = launchStation(shellEnabled: true, arguments: ["-seed-conversation", "1"])
+        XCTAssertTrue(element("station.chat", in: app).waitForExistence(timeout: 8))
+        XCTAssertTrue(element("station.chat-expand", in: app).exists)
+        XCTAssertFalse(element("station.text-size", in: app).exists)
+        XCTAssertFalse(app.buttons["Conversation text size"].firstMatch.exists)
+    }
+}

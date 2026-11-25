@@ -1,12 +1,12 @@
 import HailCore
 import SwiftUI
 
-/// The existing chat still owns its transcript layout, reading position, attribution and playback controls.
+/// Places the selected conversation surface alongside station status and tools.
 struct StationConversationPane<Chat: View, Fallback: View, Tools: View>: View {
     let hasThread: Bool
     let needsSetup: Bool
     let playbackHeld: Bool
-    @ViewBuilder let chat: () -> Chat
+    let chat: Chat
     @ViewBuilder let fallback: () -> Fallback
     @ViewBuilder let tools: () -> Tools
     let openDevices: () -> Void
@@ -17,7 +17,7 @@ struct StationConversationPane<Chat: View, Fallback: View, Tools: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            chat()
+            chat
                 .frame(minHeight: hasThread ? 140 : nil)
             if needsSetup {
                 onboarding
