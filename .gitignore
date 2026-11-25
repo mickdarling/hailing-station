@@ -39,6 +39,7 @@ recordings/
 .DS_Store
 Hail.xcodeproj/
 HailingStation.xcodeproj/
+Apps/Hail-macOS/Info.plist
 Tests/InstalledAppHarness/HailingStationInstalledAppTests.xcodeproj/
 *.entitlements
 .swiftpm/

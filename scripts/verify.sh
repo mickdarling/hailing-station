@@ -262,8 +262,18 @@ sim() {
 mac() {
   echo "== macOS build (Hail-macOS, #266)"
   xcodegen generate --quiet
+  # Set the output path so diagnostics cannot affect which plist we check.
+  local derived_data="$PWD/.build/verify-mac"
   xcodebuild build -project HailingStation.xcodeproj -scheme Hail-macOS \
+    -configuration Debug -derivedDataPath "$derived_data" \
     -destination 'generic/platform=macOS' CODE_SIGNING_ALLOWED=NO 2>&1 | pretty
+
+  local plist="$derived_data/Build/Products/Debug/Hail-macOS.app/Contents/Info.plist"
+  if ! plutil -convert json -o - "$plist" |
+    jq -e '.CFBundleName == "Hailing Station" and .CFBundleDisplayName == .CFBundleName' >/dev/null; then
+    echo "$plist: CFBundleName and CFBundleDisplayName must both be 'Hailing Station'" >&2
+    return 1
+  fi
 }
 
 pretty() {

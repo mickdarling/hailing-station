@@ -64,14 +64,18 @@ targets:
         TARGETED_DEVICE_FAMILY: ""
         # The shared AppIcon set already carries the Mac artwork (icon-mac-1024.png, mac 512@2x).
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        # XcodeGen would otherwise point INFOPLIST_FILE at the iOS plist found in the shared sources, merging
-        # UIBackgroundModes, UILaunchScreen and orientation keys into the Mac app.
-        INFOPLIST_FILE: ""
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Hailing Station
-        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: Hailing Station captures speech to send it to a host you choose. While ambient listening is on, it may also send room audio to that host.
-        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: Hailing Station transcribes speech on this Mac.
+        # Xcode's plist generator would override CFBundleName with PRODUCT_NAME.
+        GENERATE_INFOPLIST_FILE: NO
+    info:
+      path: Apps/Hail-macOS/Info.plist
+      properties:
+        CFBundleName: Hailing Station
+        CFBundleDisplayName: Hailing Station
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.productivity
+        NSMicrophoneUsageDescription: Hailing Station captures speech to send it to a host you choose. While ambient listening is on, it may also send room audio to that host.
+        NSSpeechRecognitionUsageDescription: Hailing Station transcribes speech on this Mac.
     dependencies:
       - package: Hail
         products: [HailCore, HailProtocol]
