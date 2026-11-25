@@ -31,7 +31,7 @@ extension TranscriptionLabView {
             let utteranceID = try await transcriber.start()
             activeUtteranceID = utteranceID
             try Task.checkCancellation()
-            guard scenePhase == .active else { throw CancellationError() }
+            guard isVisible(), scenePhase == .active else { throw CancellationError() }
             let buffers = try capture.start()
             isRecording = true
             status = "Listening"

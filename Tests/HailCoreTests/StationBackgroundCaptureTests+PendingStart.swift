@@ -6,6 +6,49 @@ import Testing
 @testable import StationTalkTestSupport
 
 extension StationBackgroundCaptureTests {
+    @Test(arguments: [ScenePhase.inactive, .active])
+    func talkRechecksSceneAfterSpeechPreparation(_ phase: ScenePhase) async throws {
+        let scene = try await BackgroundCaptureScene()
+        defer { scene.host.finish() }
+        let root = try #require(scene.probe.root)
+        let preparing = CompletionFlag(), resume = OpenGate()
+        let speech = FakeTranscriber {
+            await preparing.set()
+            await resume.wait()
+        }
+        let talk = try await PendingTalk(scene, speech: speech)
+        let view = talk.view
+        talk.press()
+        let start = try #require(view.startTask)
+        do {
+            try await waitUntil { await preparing.isSet }
+        } catch {
+            await resume.release()
+            throw error
+        }
+        #expect(view.talkSession.owner == view.captureOwnerID && talk.tap.startCount == 0)
+        let activations = await scene.backend.activationHistory
+        scene.host.setScenePhase(phase)
+        await scene.host.render()
+        #expect(!start.isCancelled)
+        await resume.release()
+        await start.value
+
+        #expect(view.startTask == nil)
+        if phase == .inactive {
+            #expect(talk.tap.startCount == 0 && !view.isRecording)
+            #expect(view.talkSession.owner == nil)
+            #expect(await !speech.isRunning)
+        } else {
+            #expect(talk.tap.startCount == 1 && view.isRecording)
+            #expect(view.talkSession.owner == view.captureOwnerID)
+        }
+        #expect(await scene.backend.activationHistory == activations)
+        try await scene.expectAmbientContinues(root: root)
+        if view.isRecording { await view.finish() }
+        await scene.rig.close()
+    }
+
     @Test func hidingBeforeBeginRetiresTheStartAndAllowsAnotherTalk() async throws {
         let scene = try await BackgroundCaptureScene()
         defer { scene.host.finish() }
@@ -78,7 +121,7 @@ struct PendingTalk {
     let view: StationTalkTestSupport.StationTranscriptionView
     let probe: MountedTalkProbe
 
-    init(_ scene: BackgroundCaptureScene, ambientStreaming: Bool = true,
+    init(_ scene: BackgroundCaptureScene, ambientStreaming: Bool = true, speech: FakeTranscriber = FakeTranscriber(),
          onFinalized: (@MainActor (String, PastedDraft?) async throws -> Void)? = nil) async throws {
         self.scene = scene
         let root = try #require(scene.probe.root)
@@ -87,7 +130,7 @@ struct PendingTalk {
             await scene.rig.controller.turnOn(for: scene.binding)
             try #require(scene.rig.store.ambientStreaming)
         }
-        let tap = FakeAudioCapture(), speech = FakeTranscriber()
+        let tap = FakeAudioCapture()
         self.tap = tap
         self.speech = speech
         let playback = root.playback
