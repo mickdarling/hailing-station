@@ -7,7 +7,6 @@ struct StationTalkRoute {
     let store: HostConnectionStore
     let selected: () -> TalkDestinationID?
     let reportRemoval: (TalkSendRefusal) -> Void
-
     func binding(for shown: TalkDestinationID?) -> TalkDestinationBinding? {
         guard let shown, selected() == shown else { return nil }
         return store.talkBinding(for: shown)
