@@ -4,7 +4,28 @@ import AppKit
 import HailCore
 import SwiftUI
 
+// Window injection is shared by Station and Labs. Only the Talk surface reads the private key.
+private extension EnvironmentValues {
+    @Entry var windowTalkSession: StationTalkSession?
+}
+
+extension View {
+    func sharingTalkSession(_ session: StationTalkSession) -> some View {
+        environment(\.windowTalkSession, session)
+    }
+}
+
 extension StationTranscriptionView {
+    @propertyWrapper
+    struct WindowTalk: DynamicProperty {
+        @Environment(\.windowTalkSession) private var session
+
+        var wrappedValue: StationTalkSession {
+            guard let session else { preconditionFailure("Talk requires its window’s session") }
+            return session
+        }
+    }
+
     var talkButton: some View { StationTalkButton(station: self) }
 
     /// The station owns the shared audio route. Losing visibility only discards this view's microphone capture.
@@ -20,7 +41,8 @@ extension StationTranscriptionView {
             // Retire only the start this hide cancelled.
             if let pendingStart, startTask == pendingStart { startTask = nil }
             let consumer = bufferTask
-            await discardCapture()
+            // A cancelled start cleans up before returning. Only a recording still owns resources to discard.
+            if isRecording { await discardCapture() }
             await consumer?.value
             status = "Ready"
             completeFinish(generation: generation)
