@@ -97,7 +97,10 @@ targets:
     sources:
       - Tests/Hail-iOSUITests
       - Tests/StationUIFixtures/StationScreenSeed.swift
+      - Tests/StationUIFixtures/StationTranscriptSeed.swift
     dependencies:
+      - package: Hail
+        products: [HailCore]
       - target: Hail-iOS
     settings:
       base:
@@ -111,7 +114,10 @@ targets:
       - path: Tests/Hail-iOSUITests
         includes: [ShellWindow*.swift, StationThemeScreenshotUITests.swift]
       - Tests/StationUIFixtures/StationScreenSeed.swift
+      - Tests/StationUIFixtures/StationTranscriptSeed.swift
     dependencies:
+      - package: Hail
+        products: [HailCore]
       - target: Hail-macOS
     settings:
       base:
