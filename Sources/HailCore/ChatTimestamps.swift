@@ -24,21 +24,22 @@ public enum ChatTimestamps {
     /// the date this year ("Mon, Oct 5 at 9:41 PM"), else with its year ("Oct 5, 2025 at 9:41 PM").
     public static func header(
         for date: Date, now: Date = Date(), calendar: Calendar = .autoupdatingCurrent,
-        locale: Locale = .autoupdatingCurrent
+        locale: Locale = .autoupdatingCurrent, separator: String? = nil
     ) -> String {
         let clock = time(date, calendar: calendar, locale: locale)
         let day = calendar.startOfDay(for: date), today = calendar.startOfDay(for: now)
         let daysAgo = calendar.dateComponents([.day], from: day, to: today).day ?? 0
         let style = Date.FormatStyle(locale: locale, calendar: calendar, timeZone: calendar.timeZone)
+        let gap = separator ?? " "
         switch daysAgo {
-        case ...0: return "Today \(clock)" // Any later day too: only a device clock stepped back gives one.
-        case 1: return "Yesterday \(clock)"
-        case 2...6: return "\(date.formatted(style.weekday(.wide))) \(clock)"
+        case ...0: return "Today\(gap)\(clock)" // Any later day too: only a device clock stepped back gives one.
+        case 1: return "Yesterday\(gap)\(clock)"
+        case 2...6: return "\(date.formatted(style.weekday(.wide)))\(gap)\(clock)"
         default:
             let sameYear = calendar.isDate(date, equalTo: now, toGranularity: .year)
             let dated = sameYear ? style.weekday(.abbreviated).month(.abbreviated).day()
                 : style.month(.abbreviated).day().year()
-            return "\(date.formatted(dated)) at \(clock)"
+            return "\(date.formatted(dated))\(separator ?? " at ")\(clock)"
         }
     }
 
