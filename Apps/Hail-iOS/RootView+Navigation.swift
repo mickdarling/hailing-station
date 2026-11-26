@@ -11,9 +11,16 @@ import UIKit
 enum StationRedesignLaunch {
     static let flags: StationRedesignFlags = {
         let defaults = UserDefaults.standard
-        // UI tests start every flag off, before the first frame reads them.
-        if ProcessInfo.processInfo.arguments.contains("-reset-station-state") {
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("-reset-station-state") {
             for step in StationRedesignStep.allCases { defaults.removeObject(forKey: step.key) }
+            #if DEBUG
+            // Seed the same Boolean Labs writes. An argument-domain string would fail the flag's type check
+            // and a permanent command-line override would mask the in-app opt-out on relaunch.
+            if arguments.contains("-seed-navigation-shell") {
+                defaults.set(true, forKey: StationRedesignStep.shell.key)
+            }
+            #endif
         }
         return StationRedesignFlags { defaults.object(forKey: $0) }
     }()
