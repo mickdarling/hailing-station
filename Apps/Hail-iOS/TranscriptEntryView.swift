@@ -1,17 +1,6 @@
 import HailCore
 import SwiftUI
 
-private extension TranscriptTurn.Delivery {
-    var title: String? {
-        switch self {
-        case .transportCompleted(let destination): "Sent to \(destination.hostName) · \(destination.targetName)"
-        case .notSent: "Not sent"
-        case .overheard: "Heard · not sent"
-        case .reply, .unknown: nil
-        }
-    }
-}
-
 enum TranscriptSheet: Identifiable {
     case details(String), selection(String)
 
@@ -56,9 +45,10 @@ struct TranscriptEntryView: View {
                             .accessibilityIdentifier("chat.reply.audio-problem")
                     }
                     actions
-                } else if let receipt = turn.delivery.title {
-                    Label(receipt, systemImage: receiptSymbol).font(.caption2)
-                        .foregroundStyle(palette[turn.delivery == .notSent ? .stateWarning : .textSecondary])
+                } else if case .transportCompleted(let destination) = turn.delivery {
+                    Text("\(destination.hostName) · \(destination.targetName)")
+                        .font(.caption2).foregroundStyle(palette[.textSecondary])
+                        .accessibilityHidden(true) // The Sent chip reads the full destination.
                 }
             }
         }
@@ -67,27 +57,44 @@ struct TranscriptEntryView: View {
         .accessibilityElement(children: .contain)
     }
 
-    private var receiptSymbol: String {
-        switch turn.delivery {
-        case .transportCompleted: "checkmark"
-        case .overheard: "ear"
-        default: "exclamationmark.circle"
-        }
-    }
-
     private var heading: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(turn.speaker).font(.caption.weight(.semibold))
-            if let session = turn.session {
-                Text(session).font(.caption2.weight(.semibold)).foregroundStyle(palette[.textSecondary])
-                    .padding(.horizontal, 7).padding(.vertical, 4)
-                    .background(palette[.surface], in: .rect(cornerRadius: 5))
+            if let chip = turn.delivery.chip {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 5) { badges(chip) }.fixedSize()
+                    VStack(alignment: .leading, spacing: 4) { badges(chip) }
+                }
+            } else {
+                Text(turn.speaker).font(.caption.weight(.semibold))
+                if let session = turn.session {
+                    Text(session).font(.caption2.weight(.semibold)).foregroundStyle(palette[.textSecondary])
+                        .padding(.horizontal, 7).padding(.vertical, 4)
+                        .background(palette[.surface], in: .rect(cornerRadius: 5))
+                }
             }
             Spacer(minLength: 4)
             Text(ChatTimestamps.time(entry.date)).font(.caption2).foregroundStyle(palette[.textSecondary])
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
+        .accessibilityElement(children: turn.delivery == .reply ? .combine : .contain)
+        .accessibilityAddTraits(turn.delivery == .reply ? .isHeader : [])
+        .accessibilityIdentifier("station.transcript.heading")
+    }
+
+    @ViewBuilder private func badges(_ chip: (title: String, accessibilityLabel: String)) -> some View {
+        Text(verbatim: turn.speaker)
+            .font(.caption.weight(.semibold)).foregroundStyle(palette[.textPrimary])
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(palette[.surface], in: Capsule())
+            .accessibilityLabel("Speaker: \(turn.speaker).")
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityIdentifier("station.transcript.speaker")
+        Text(chip.title)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(palette[turn.delivery.isHeldWarning ? .stateWarning : .textPrimary])
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .background(palette[turn.delivery.isHeldWarning ? .warningSurface : .surface], in: Capsule())
+            .accessibilityLabel(chip.accessibilityLabel)
+            .accessibilityIdentifier("station.transcript.dispatch")
     }
 
     @ViewBuilder private var content: some View {

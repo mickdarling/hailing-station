@@ -26,6 +26,24 @@ final class ShellWindowTranscriptTests: XCTestCase, ShellWindowUITestSupport {
     }
 
     @MainActor
+    func testHeardTurnsExposeTheirOwnSpeakerAndDispatch() {
+        let app = application()
+        launchDocument("attribution", in: app)
+        let headings = element("station.chat", in: app).descendants(matching: .any)
+            .matching(identifier: "station.transcript.heading")
+        for (speaker, dispatch) in [("You", "Heard. Send unconfirmed."), ("Speaker B", "Heard but not sent.")] {
+            let label = "Speaker: \(speaker)."
+            let badge = NSPredicate(format: "identifier == %@ AND (label == %@ OR value == %@)",
+                                    "station.transcript.speaker", label, label)
+            let heading = headings.containing(badge).firstMatch
+            XCTAssertTrue(heading.waitForExistence(timeout: 5), label)
+            let chip = element("station.transcript.dispatch", in: heading)
+            XCTAssertTrue(chip.exists)
+            XCTAssertTrue(chip.label == dispatch || chip.value as? String == dispatch, chip.debugDescription)
+        }
+    }
+
+    @MainActor
     func testReplyAudioProblemNoticeHasTheClassicAccessibleText() {
         let app = application()
         let cases: [(StationTranscriptSeed, String?)] = [

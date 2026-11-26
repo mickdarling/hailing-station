@@ -7,7 +7,7 @@ public import Observation
 /// One message in the station chat (#288): something the user sent, Haili's reply, or (#398) a remark the ambient
 /// stream heard but did not send, by the user or by someone else.
 public struct ConversationEntry: Identifiable, Equatable, Sendable {
-    public enum Speaker: Sendable { case you, haili, someone }
+    public enum Speaker: CaseIterable, Sendable { case you, haili, someone }
 
     public struct TransportDestination: Equatable, Sendable {
         public let hostName: String
@@ -26,10 +26,12 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     public internal(set) var transportCompletedTo: TransportDestination?
     /// A correlated ambient request refused by the host (#923); independent of overheard visibility.
     public var notSent = false
+    /// The host reported this ambient request as heard, including on hosts without turn UUIDs.
+    var ambientHeard = false
     /// Content-free correlation, memory only, bounded by the chat history and cleared with its connection.
     var heardTurn: UUID?
-    /// The known guest who said an overheard turn (#434), from the host's `name`; nil shows "Someone". Never the
-    /// owner's, never logged.
+    /// The known guest who said an overheard turn (#434), from the host's `name`. Nil for an unnamed speaker.
+    /// Never the owner's, never logged.
     public var name: String?
     /// A reply's unspoken Markdown (#606), shown beside its spoken `text` through `MessageMarkdown`; never spoken.
     public var metadata: String? {
@@ -133,6 +135,7 @@ public final class ConversationLog {
     /// Associates only a heard entry with its host's optional UUID (#923). No separate index can outlive history.
     func recordHeardTurn(_ turn: UUID?, for entryID: String?) {
         guard let entryID, let index = entries.firstIndex(where: { $0.id == entryID }) else { return }
+        entries[index].ambientHeard = true
         entries[index].heardTurn = turn
     }
 
