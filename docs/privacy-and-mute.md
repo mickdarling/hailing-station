@@ -5,20 +5,23 @@ These definitions come from the owner (2026-11-26) and are the single source for
 > "Privacy means everything coming into Hailing Station from my side is cut off. Nothing gets through. Mute means
 > nothing comes from you as audio to me, but I can still see text."
 
+The owner then clarified what Privacy stops (2026-11-26):
+
+> "For privacy, we still have the mic on, but we're not recording any of it. You still keep Talk, Paste, Interrupt
+> and the few other paths that still travel. Those are fine. I meant about audio being recorded. That's what privacy
+> stops. It stops your audio."
+
 ## Privacy
 
-Privacy is an **inbound** cut-off. While Privacy is on, nothing from the owner's side enters Hailing Station or reaches
-any agent:
+Privacy stops **ambient audio**. While Privacy is on:
 
-- ambient microphone input;
-- Talk (push-to-talk) capture and its final text;
-- paste and Send Paste;
-- typed or sent text;
-- Interrupt and Escape;
-- any other input path.
+- ambient audio and its words are not recorded, kept, logged or forwarded to any agent;
+- the microphone stays on only for the local voice exit, the voiceprint-gated "I'm back" command, which listens
+  transiently and keeps nothing;
+- deliberate owner actions still work: Talk, Paste and Send Paste, Interrupt and Escape, plain-text send, and the
+  other explicit paths.
 
-Because nothing enters, nothing from a privacy period is ever saved (#1423), as text or audio, whatever any save
-setting says.
+Nothing from ambient audio during a privacy period is ever saved (#1423), whatever any save setting says.
 
 ## Mute
 
@@ -29,10 +32,11 @@ reply audio plays. Muted replies are saved as text like any other.
 
 - **UI copy:** the Privacy and Mute controls, their tooltips and accessibility labels, the Settings Privacy section
   (#1406) and "Go private" (#1415) describe these behaviours and nothing narrower or broader.
-- **Tests:** Privacy tests assert that every inbound path is blocked. Mute tests assert that playback is suppressed
-  while reply text still renders.
+- **Tests:** Privacy tests assert that no ambient audio or words are recorded, kept, logged or forwarded while
+  private, and that deliberate actions (Talk, Paste, Interrupt, text send) still work. Mute tests assert that
+  playback is suppressed while reply text still renders.
 
 ## Known gaps
 
-A source audit on 2026-11-26 found that current Privacy behaviour does not yet meet this definition. Ambient audio,
-Talk, Paste, Send Paste and Escape are not all cut off. This is tracked in #1430. Mute matches its definition.
+#1430 tracks verifying and enforcing that no ambient audio or words are recorded, kept, logged or forwarded while
+private, beyond what the voice-exit detector needs transiently. Mute matches its definition.
