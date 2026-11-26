@@ -75,11 +75,6 @@ extension TranscriptionLabView {
             status = "Capture failed: \(error.localizedDescription)"
         }
     }
-    func finishOnDisappear() async {
-        guard talkSession.owner == nil else { return await finish(force: true) }
-        if startTask != nil { await finish(force: true) }
-        if talkSession.owner == nil, !globalReplyAudioSpeaking { await deactivateTalkRoute() }
-    }
     func finish(force: Bool = false) async {
         guard talkSession.owner == captureOwnerID else {
             if force, let pendingStart = startTask {
@@ -125,20 +120,24 @@ extension TranscriptionLabView {
         if !force && isForcedTeardown { await deactivateTalkRoute() }
         releaseCaptureExclusivityAfterWork()
         let text = finalized.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !text.isEmpty, onFinalized != nil,
-           recordingGeneration != destinationGeneration || recordingDestination == nil
-            || recordingDestination != selectedBinding {
-            finalText = text
-            volatileText = ""
-            talkStatus = .notSent(.destinationChanged)
-            if isForcedTeardown || route?.selected() == nil { route?.reportRemoval(.destinationChanged) }
-            return
+        let currentBinding = if force || isForcedTeardown, let route, let admitted = recordingDestination {
+            route.store.talkBinding(for: admitted.destination) // Inactivity can hide the still-selected target.
+        } else {
+            recordingGeneration == destinationGeneration ? selectedBinding : nil
+        }
+        if !text.isEmpty, onFinalized != nil, recordingDestination == nil || recordingDestination != currentBinding {
+            (finalText, volatileText) = (text, "")
+            return refuseRecording(.destinationChanged)
         }
         guard !force, !isForcedTeardown else { status = "Ready"; return }
         guard !text.isEmpty else { status = "Nothing heard"; return }
-        finalText = text
-        volatileText = ""
-        if onFinalized != nil { await send(text, failurePrefix: "Send failed") } else { status = "Ready" }
+        (finalText, volatileText) = (text, "")
+        guard onFinalized != nil, let recordingDestination else { status = "Ready"; return }
+        await send(text, failurePrefix: "Send failed", admitted: recordingDestination)
+    }
+    func refuseRecording(_ reason: TalkSendRefusal) {
+        talkStatus = .notSent(reason)
+        if isForcedTeardown || route?.selected() == nil { route?.reportRemoval(reason) }
     }
     func interruptTarget(using action: @MainActor () async throws -> Void) async {
         guard !isInterrupting else { return }
