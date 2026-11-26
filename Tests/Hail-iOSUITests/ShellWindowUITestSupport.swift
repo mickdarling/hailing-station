@@ -107,6 +107,16 @@ extension ShellWindowUITestSupport {
         }
     }
 
+    func captureBoth(_ state: String, marker: String, in app: XCUIApplication) {
+        let previous = XCUIDevice.shared.appearance
+        defer { XCUIDevice.shared.appearance = previous }
+        for style in [XCUIDevice.Appearance.light, .dark] {
+            XCUIDevice.shared.appearance = style
+            let appearance = style == .light ? "light" : "dark"
+            screen(marker, named: "s2-station-\(state)-\(appearance)", in: app)
+        }
+    }
+
     func screen(_ identifier: String, named name: String, in app: XCUIApplication) {
         let window = stationWindow(in: app)
         #if os(macOS)
