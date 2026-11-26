@@ -75,6 +75,7 @@ extension StationTranscriptionView {
         guard finishGeneration == generation else { return }
         finishGeneration = nil
         finishTask = nil
+        talkSession.retire(captureOwnerID)
     }
 }
 

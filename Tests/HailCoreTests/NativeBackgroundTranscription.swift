@@ -63,6 +63,10 @@ final class NativeBackgroundTranscription {
     func start() async throws {
         let view = try #require(mounted)
         #expect((view.onFinalized != nil) == (mode == .talk))
+        let admitted = view.talkSession.admit(view.captureOwnerID, receive: { _ in }, cleanup: {
+            Issue.record("Scene cleanup ran while ambient was streaming")
+        })
+        try #require(admitted)
         try await view.audioSession.activate()
         view.activeUtteranceID = await speech.start()
         let buffers = try view.capture.start()
