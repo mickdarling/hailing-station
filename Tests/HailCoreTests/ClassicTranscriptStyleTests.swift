@@ -34,9 +34,9 @@ struct ClassicTranscriptStyleTests {
                 #expect(actual == formatted(base).scaled(by: scale))
                 let context = environment.fontResolutionContext
                 let body = try #require(environment.classicMessageFont).resolve(in: context)
-                let ratio = actual.resolve(in: context).pointSize / body.pointSize
                 let original = formatted(base).resolve(in: context).pointSize / Font.body.resolve(in: context).pointSize
-                #expect(abs(ratio - original) < 0.01)
+                // Scaled styles resolve to rounded point sizes, so keep the native ratio to within half a point.
+                #expect(abs(actual.resolve(in: context).pointSize - original * body.pointSize) < 0.5)
             } else {
                 let native = NSFont.preferredFont(forTextStyle: style, options: [:])
                 let body = NSFont.preferredFont(forTextStyle: .body, options: [:])
