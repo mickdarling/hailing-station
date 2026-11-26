@@ -7,6 +7,7 @@ import HailProtocol
 final class RootView: AmbientDestinationOwner {
     enum Phase { case active, inactive, background }
     let connections: HostConnectionStore
+    lazy var playback = ReplyPlaybackController(player: FormatTestPlayer())
     let selectionStore: any DestinationSelectionStoring
     var selectedHostID: HostEndpoint.Identifier?
     var selectedTargetID: String?

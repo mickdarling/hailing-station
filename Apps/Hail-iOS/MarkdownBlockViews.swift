@@ -1,22 +1,32 @@
 import HailCore
 import SwiftUI
 
+extension View {
+    @ViewBuilder
+    func transcriptBlockFont(_ classic: TranscriptDetailFont.Style, base: Font, redesigned: Bool) -> some View {
+        if redesigned { font(base) } else { modifier(TranscriptDetailFont(classic)) }
+    }
+}
+
 /// Fenced code (#606): exactly as written, monospaced, scrolling sideways rather than wrapping, selectable and
 /// copyable on its own.
 struct CodeBlockView: View {
     let language: String?
     let code: String
+    let redesigned: Bool
+    @Environment(\.activeStationPalette) private var palette
 
     var body: some View {
         ScrollView(.horizontal) {
             Text(verbatim: code)
-                .modifier(TranscriptDetailFont(.code))
-                .foregroundStyle(.primary)
+                .transcriptBlockFont(.code, base: .footnote.monospaced(), redesigned: redesigned)
+                .foregroundStyle(palette.map { AnyShapeStyle($0[.textPrimary]) } ?? AnyShapeStyle(.primary))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: true, vertical: false)
                 .padding(8)
         }
-        .background(.quinary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(palette.map { AnyShapeStyle($0[.surface]) } ?? AnyShapeStyle(.quinary),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .contextMenu {
             Button("Copy Code", systemImage: "doc.on.doc") { StationPlatform.copy(code) }
         }
@@ -30,6 +40,7 @@ struct CodeBlockView: View {
 /// clips a column. Each row is one VoiceOver element that names its columns.
 struct MarkdownTableView: View {
     let table: MarkdownTable
+    @Environment(\.activeStationPalette) private var palette
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -48,7 +59,8 @@ struct MarkdownTableView: View {
         Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
             GridRow {
                 ForEach(Array(table.header.enumerated()), id: \.offset) { _, cell in
-                    Text(ReplyMetadataView.styled(cell)).fontWeight(.semibold).foregroundStyle(.primary)
+                    Text(ReplyMetadataView.styled(cell, palette: palette)).fontWeight(.semibold)
+                        .foregroundStyle(palette.map { AnyShapeStyle($0[.textPrimary]) } ?? AnyShapeStyle(.primary))
                 }
             }
             .accessibilityElement(children: .combine)
@@ -57,7 +69,7 @@ struct MarkdownTableView: View {
             ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
                 GridRow {
                     ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                        Text(ReplyMetadataView.styled(cell))
+                        Text(ReplyMetadataView.styled(cell, palette: palette))
                     }
                 }
                 .accessibilityElement(children: .combine)
@@ -70,7 +82,7 @@ struct MarkdownTableView: View {
             ForEach(Array(table.records.enumerated()), id: \.offset) { _, record in
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(record.enumerated()), id: \.offset) { _, pair in
-                        Text(Self.line(name: pair.name, value: pair.value))
+                        Text(line(name: pair.name, value: pair.value))
                     }
                 }
                 .accessibilityElement(children: .combine)
@@ -79,10 +91,10 @@ struct MarkdownTableView: View {
     }
 
     /// "Column: value", the column name bold; one string, so it wraps as one line of text.
-    private static func line(name: AttributedString, value: AttributedString) -> AttributedString {
+    private func line(name: AttributedString, value: AttributedString) -> AttributedString {
         var named = name
         named.inlinePresentationIntent = .stronglyEmphasized
-        return named + AttributedString(": ") + ReplyMetadataView.styled(value)
+        return named + AttributedString(": ") + ReplyMetadataView.styled(value, palette: palette)
     }
 }
 

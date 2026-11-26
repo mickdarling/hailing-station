@@ -47,8 +47,19 @@ struct PastedBlockView: View {
     /// Pending until a reply for the destination arrives. A refusal is not shown here: the conversation's
     /// request-refusal line (Part 11) shows and announces the Mac's reason once, and the paste goes back on its card.
     var state: ConversationEntry.PasteState?
-    @State private var expanded = false
     @Environment(\.classicPasteFont) private var pasteFont
+
+    var body: some View {
+        TranscriptPasteBlock(text: text, state: state, font: pasteFont)
+    }
+}
+
+struct TranscriptPasteBlock: View {
+    let text: String
+    let state: ConversationEntry.PasteState?
+    let font: Font
+    @Environment(\.activeStationPalette) private var palette
+    @State private var expanded = false
 
     private var stateLine: String? { state == .pending ? "Waiting for the Mac" : nil }
 
@@ -61,10 +72,10 @@ struct PastedBlockView: View {
                 systemImage: "doc.on.clipboard"
             )
             .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(palette.map { AnyShapeStyle($0[.textSecondary]) } ?? AnyShapeStyle(.secondary))
             Text(verbatim: expanded || !isLong ? text : PastedDraft.preview(text))
-                .font(pasteFont)
-                .foregroundStyle(.primary)
+                .font(font)
+                .foregroundStyle(palette.map { AnyShapeStyle($0[.textPrimary]) } ?? AnyShapeStyle(.primary))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 // VoiceOver reads the whole paste as the value, collapsed or not.
                 .accessibilityLabel("Pasted text")
@@ -72,7 +83,7 @@ struct PastedBlockView: View {
             if let stateLine {
                 Text(stateLine)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(palette.map { AnyShapeStyle($0[.textSecondary]) } ?? AnyShapeStyle(.secondary))
                     .accessibilityIdentifier("station.chat.paste.state")
             }
             if isLong {
@@ -85,7 +96,8 @@ struct PastedBlockView: View {
             }
         }
         .padding(10)
-        .background(.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(palette.map { AnyShapeStyle($0[.surface]) } ?? AnyShapeStyle(.background),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("station.chat.paste")
     }

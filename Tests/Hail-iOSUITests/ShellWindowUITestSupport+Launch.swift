@@ -49,8 +49,14 @@ extension ShellWindowUITestSupport {
             return
         }
         let visible = primary.visibleFrame
+        #if STATION_UI_FIXTURES
+        let usesTranscriptFrame = app.launchArguments.contains("-seed-station-state")
+        let width = min(usesTranscriptFrame ? 1_380 : 900, visible.width)
+        let height = min(usesTranscriptFrame ? 831 : 672, visible.height)
+        #else
         let width = min(900, visible.width)
         let height = min(672, visible.height)
+        #endif
         let frame = CGRect(x: floor(visible.midX - width / 2), y: floor(visible.midY - height / 2),
                            width: width, height: height)
         app.launchEnvironment["SHELL_UI_TEST_WINDOW_FRAME"] = NSStringFromRect(frame)
