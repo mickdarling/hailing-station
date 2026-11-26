@@ -1,7 +1,7 @@
 import XCTest
 
 /// Launch and drive the actual flag-on station window (#1339).
-final class ShellWindowUITests: XCTestCase {
+final class ShellWindowUITests: XCTestCase, ShellWindowUITestSupport {
     override func setUpWithError() throws {
         continueAfterFailure = false
         #if os(iOS)
@@ -12,7 +12,7 @@ final class ShellWindowUITests: XCTestCase {
 
     @MainActor
     func testStationControlsOpenDestinationPickerAndDevices() {
-        let app = launchShell()
+        let app = launchStation(shellEnabled: true)
         let picker = destinationPicker(in: app)
         #if os(macOS)
         picker.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
@@ -37,7 +37,7 @@ final class ShellWindowUITests: XCTestCase {
 
     @MainActor
     func testSectionDetailsAndSettingsRows() {
-        let app = launchShell()
+        let app = launchStation(shellEnabled: true)
         screen("station.connection", named: "station", in: app)
         choose("sessions", in: app)
         screen("shell.sessions.placeholder", named: "sessions", in: app)
@@ -65,7 +65,7 @@ final class ShellWindowUITests: XCTestCase {
 
     @MainActor
     func testSidebarRecoveryAndLabsOptOut() {
-        let app = launchShell()
+        let app = launchStation(shellEnabled: true)
         if device != "iphone" {
             toggleSidebar(in: app, visibleAfter: false)
             screen("station.connection", named: "station-sidebar-hidden", in: app)
@@ -103,12 +103,7 @@ final class ShellWindowUITests: XCTestCase {
 
     @MainActor
     private func disableShell(in app: XCUIApplication) {
-        #if os(macOS)
-        let checkbox = app.checkBoxes["station.redesign.shell"]
-        let toggle = checkbox.exists ? checkbox : app.switches["station.redesign.shell"]
-        #else
-        let toggle = app.switches["station.redesign.shell"]
-        #endif
+        let toggle = shellToggle(in: app)
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
         XCTAssertEqual(String(describing: toggle.value ?? ""), "1")
         #if os(macOS)

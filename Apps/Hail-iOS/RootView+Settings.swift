@@ -129,11 +129,15 @@ extension PrivacySettingsOwner {
             overheardFailure: privacySettingsRequest.overheardFailure)
     }
 
-    func performPrivacySettings(_ intent: PrivacySettingsIntent) {
+    func performPrivacySettings(_ intent: PrivacySettingsIntent,
+                                stillDisplayed: @escaping @MainActor () -> Bool = { true }) {
         switch intent {
         case .privacy(let on, let host, let generation):
             guard !privacySettingsState().privacy.pending else { return }
-            Task { await requestPrivacy(on, host: host, generation: generation) }
+            Task {
+                guard stillDisplayed() else { return }
+                await requestPrivacy(on, host: host, generation: generation)
+            }
         case .showOverheard(let show):
             guard !show || ["owner", "everyone"].contains(settingsWhoseOverheard) else {
                 privacySettingsRequest.overheardFailure = "Choose whose remarks to show first."

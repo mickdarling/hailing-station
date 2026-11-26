@@ -103,8 +103,11 @@ targets:
     type: bundle.ui-testing
     platform: macOS
     sources:
+      - Tests/Hail-iOSUITests/ShellWindowStationScreenTests.swift
+      - Tests/Hail-iOSUITests/ShellWindowUITestSupport+Launch.swift
       - Tests/Hail-iOSUITests/ShellWindowUITestSupport.swift
       - Tests/Hail-iOSUITests/ShellWindowUITests.swift
+      - Tests/Hail-iOSUITests/StationThemeScreenshotUITests.swift
     dependencies:
       - target: Hail-macOS
     settings:

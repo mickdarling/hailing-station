@@ -16,8 +16,10 @@ struct DestinationControlView<Browser: View>: View {
         case compact
     }
 
+    @Environment(\.stationPalette) private var palette
     let state: DestinationControlState
     var style: Style = .compact
+    var identifier = "station.destination-control"
     /// Owned by the station; the control only asks for the browser to be shown.
     @Binding var isBrowserPresented: Bool
     @ViewBuilder let browser: () -> Browser
@@ -28,13 +30,14 @@ struct DestinationControlView<Browser: View>: View {
             isBrowserPresented = true
         } label: {
             label
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Destination")
         .accessibilityValue(state.accessibilityValue)
         .accessibilityHint("Opens the Mac and target browser.")
-        .accessibilityIdentifier("station.destination-control")
+        .accessibilityIdentifier(identifier)
         .popover(isPresented: $isBrowserPresented) {
             browser()
                 .presentationCompactAdaptation(.sheet)
@@ -44,33 +47,50 @@ struct DestinationControlView<Browser: View>: View {
     @ViewBuilder
     private var label: some View {
         switch style {
+        case .toolbar where state.talkReady:
+            HStack(spacing: 10) {
+                glyph.padding(8).background(palette[.surface], in: .rect(cornerRadius: 8))
+                if case .confirmed(let label) = state {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(label.targetName).font(.headline)
+                        Text("\(label.hostName) · \(label.role)")
+                            .font(.caption).foregroundStyle(palette[.textSecondary])
+                    }
+                }
+                Image(systemName: "chevron.down").font(.caption)
+            }
         case .toolbar:
             Label { Text(state.singleLineText).lineLimit(1) } icon: { glyph }
-                .foregroundStyle(state.talkReady ? Color.primary : Color.secondary)
+                .foregroundStyle(state.talkReady ? palette[.textPrimary] : unavailableInk)
         case .compact:
             HStack(spacing: 12) {
                 glyph.font(.title3)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(state.primaryText)
                         .font(.headline)
-                        .foregroundStyle(state.talkReady ? Color.primary : Color.secondary)
+                        .foregroundStyle(state.talkReady ? palette[.textPrimary] : unavailableInk)
                     if let secondary = state.secondaryText {
                         Text(secondary)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(palette[.textSecondary])
                     }
                 }
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(palette[.textSecondary])
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(palette[.elevatedSurface], in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
+    }
+
+    private var unavailableInk: Color {
+        if case .unavailable(.offline, _) = state { return palette[.stateOffline] }
+        return palette[.textSecondary]
     }
 
     /// The scope glyph belongs to a confirmed destination only.
@@ -82,7 +102,7 @@ struct DestinationControlView<Browser: View>: View {
         case .none: "plus.circle"
         }
         return Image(systemName: symbol)
-            .foregroundStyle(state.talkReady ? Color.accentColor : Color.secondary)
+            .foregroundStyle(state.talkReady ? palette[.brand] : unavailableInk)
     }
 }
 

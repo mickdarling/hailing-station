@@ -65,7 +65,7 @@ struct StationMenuListeningPublisher: ViewModifier {
 
     /// The same order the card checks: listening, then paused, then moved to another device.
     @MainActor
-    private static func phase(_ controller: AmbientListeningController) -> StationMenuStatus.Listening {
+    static func phase(_ controller: AmbientListeningController) -> StationMenuStatus.Listening {
         if controller.isListening { return .listening }
         if controller.isOn { return controller.pausedReason == nil ? .starting : .paused }
         if case .movedAway = controller.handoff { return .elsewhere }

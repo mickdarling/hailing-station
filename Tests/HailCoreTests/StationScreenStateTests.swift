@@ -2,6 +2,16 @@ import Testing
 @testable import HailCore
 
 struct StationScreenStateTests {
+    @Test func connectionAndDestinationAreIndependent() {
+        for state: StationAvailability in [.ready, .chooseTarget, .noAllowedTargets, .waitingForTargets,
+                                          .restoringSelection, .selectionFailed] {
+            #expect(state.connectionLabel == "Connected")
+        }
+        #expect(StationAvailability.offline.connectionLabel == "Offline")
+        #expect(StationAvailability.reconnecting.connectionLabel == "Reconnecting")
+        #expect(StationAvailability.unconfigured.connectionLabel == "No Mac configured")
+    }
+
     @Test func finishingOwnsTheTransitionEvenWhileRecordingIsStillSet() {
         #expect(TalkCapturePhase(starting: false, recording: false, finishing: false) == .idle)
         #expect(TalkCapturePhase(starting: true, recording: false, finishing: false) == .starting)
