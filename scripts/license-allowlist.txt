@@ -1,0 +1,2 @@
+# One exception per line: exact Dependency column<TAB>exact SPDX column (or UNKNOWN)<TAB>review reason.
+# Blank lines and comments are ignored. GPL, AGPL and LGPL cannot be excepted.

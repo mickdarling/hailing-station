@@ -234,6 +234,7 @@ scripts_() {
     bash -n "$f"
     shellcheck "$f"
   done < <(find "${dirs[@]}" -type f \( -name '*.sh' -o -name 'hail-*' \) | sort)
+  python3 -m unittest scripts/tests/test_mobile_licenses.py
   scripts/tests/test-testflight.sh
   scripts/tests/test-host.sh
   npm ci --prefix scripts/codex-recovery --ignore-scripts --no-audit --no-fund
@@ -256,6 +257,7 @@ sim() {
   echo "== simulator build-for-testing (Hail-iOS)"
   xcodegen generate --quiet
   xcodebuild build-for-testing -project HailingStation.xcodeproj -scheme Hail-iOS \
+    -clonedSourcePackagesDirPath "$PWD/.build/mobile-packages" \
     -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO 2>&1 | pretty
 }
 
