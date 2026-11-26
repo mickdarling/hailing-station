@@ -81,6 +81,18 @@ struct StationNavigationTests {
         #expect(state.fullConversation)
     }
 
+    @Test(arguments: [StationNavigationIdiom.mac, .pad])
+    func restoringSidebarKeepsTheSelectedDetail(idiom: StationNavigationIdiom) {
+        var state = StationNavigationState(section: .devices)
+        state.apply(.setSidebarHidden(true))
+        #expect(state.layout(for: idiom) == .split(sidebarVisible: false))
+        state.apply(.setSidebarHidden(false))
+        #expect(state.layout(for: idiom) == .split(sidebarVisible: true))
+        #expect(state.section == .devices)
+        state.apply(.select(.settings))
+        #expect(state.sidebarSelection(collapsed: false) == .settings)
+    }
+
     @Test func aCollapsedSplitOpensOnTheStationDetail() {
         let state = StationNavigationState()
         #expect(state.compactColumn == .detail)
