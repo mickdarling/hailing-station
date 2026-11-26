@@ -41,6 +41,40 @@ struct StationConversationContentTests {
         await rig.close()
     }
 
+    @Test func onlyTheReplyAwaitingLateAudioGainsAndClearsANotice() async throws {
+        let rig = try AmbientReconnectRig()
+        try await rig.start(listening: false)
+        let root = try RootView(rig: rig, selectionStore: RootSelectionStore())
+        let audio = IdleRig()
+        root.playback = audio.controller
+        let host = rig.endpoint.id, target = rig.target.id
+        let late = ReplyDescriptor(id: UUID(), hostID: host, targetID: target, audioStreamID: UUID())
+        let heard = ReplyDescriptor(id: UUID(), hostID: host, targetID: target, audioStreamID: UUID())
+        for reply in [late, heard] {
+            let event = firstAudioText(reply, endpoint: host)
+            rig.store.conversation.noteReply(event)
+            root.playback.ingest(event)
+        }
+        root.playback.ingest(idleAudio(heard, sequence: 0, final: true, byte: 1, endpoint: host))
+        audio.player.completeReply()
+        guard case .history(let document) = root.stationDocument else {
+            Issue.record("Expected a document for the confirmed thread")
+            await rig.close()
+            return
+        }
+        let ids = document.allEntries.map(\.id)
+        let initial = ids.map { document.audioProblem($0) }
+        #expect(initial == [nil, nil])
+        audio.advance(by: .seconds(25))
+        let afterTimeout = ids.map { document.audioProblem($0) }
+        #expect(afterTimeout == ["Audio didn't arrive in full", nil])
+        root.playback.ingest(idleAudio(late, sequence: 0, final: true, byte: 2, endpoint: host))
+        audio.player.completeReply()
+        let afterArrival = ids.map { document.audioProblem($0) }
+        #expect(afterArrival == [nil, nil])
+        await rig.close()
+    }
+
     @Test func retainedDocumentReleasesRootAndPlayback() async throws {
         let rig = try AmbientReconnectRig()
         try await rig.start(listening: false)
@@ -71,6 +105,7 @@ struct ConversationDocument: View {
     let allEntries: [ConversationEntry]
     let hostName: String?
     let sessions: [String: String]
+    let audioProblem: @MainActor (String) -> String?
     let copy: (String) -> Void
 
     var body: some View { EmptyView() }

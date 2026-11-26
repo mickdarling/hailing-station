@@ -47,7 +47,8 @@ struct StationDisplayFixture: View {
 
     private var document: some View {
         ConversationDocument(allEntries: state.conversation, hostName: session.hostName,
-                             sessions: [session.targetID: session.targetName], copy: { _ in })
+                             sessions: [session.targetID: session.targetName],
+                             audioProblem: state.audioProblem(replyID:), copy: { _ in })
     }
 
     private var deviceTitle: String {

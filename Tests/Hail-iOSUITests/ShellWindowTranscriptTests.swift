@@ -26,6 +26,34 @@ final class ShellWindowTranscriptTests: XCTestCase, ShellWindowUITestSupport {
     }
 
     @MainActor
+    func testReplyAudioProblemNoticeHasTheClassicAccessibleText() {
+        let app = application()
+        let cases: [(StationTranscriptSeed, String?)] = [
+            (.decodeFailed, "Audio couldn't play"),
+            (.playbackFailed, "Audio couldn't play"),
+            (.incompleteAudio, "Audio didn't arrive in full"),
+            (.discardedAudio, "Audio not kept while paused"),
+            (.ready, nil)
+        ]
+        for (state, expected) in cases {
+            launchDocument(state.rawValue, in: app)
+            let chat = element("station.chat", in: app)
+            XCTAssertTrue(element("station.transcript.details", in: chat).waitForExistence(timeout: 5))
+            let notices = chat.descendants(matching: .any).matching(identifier: "chat.reply.audio-problem")
+            if let expected {
+                let reading = NSPredicate(format: "elementType != %@ AND (label == %@ OR value == %@)",
+                                          NSNumber(value: XCUIElement.ElementType.image.rawValue), expected, expected)
+                let matches = notices.matching(reading)
+                XCTAssertTrue(matches.firstMatch.waitForExistence(timeout: 5), state.rawValue)
+                XCTAssertEqual(matches.count, 1, "Only the affected reply should expose the notice")
+            } else {
+                XCTAssertFalse(notices.firstMatch.exists)
+            }
+            app.terminate()
+        }
+    }
+
+    @MainActor
     func testDeliveryDetailsShowTheReplyDestination() {
         let app = application()
         launchDocument("ready", in: app)

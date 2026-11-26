@@ -20,6 +20,7 @@ extension RootView {
             }
             ConversationDocument(allEntries: visible, hostName: host?.endpoint.name ?? thread.hostID,
                                  sessions: (host?.targets ?? []).reduce(into: [:]) { $0[$1.id] = $1.name },
+                                 audioProblem: { [weak playback] in playback?.audioProblem(replyID: $0) },
                                  copy: StationPlatform.copy)
         }
     }
