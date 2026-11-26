@@ -3,16 +3,7 @@ import Foundation
 import HailCore
 import HailProtocol
 
-extension RootView {
-    var availableDestinations: [Destination] {
-        connections.hosts.flatMap { host in
-            guard host.state == .ready else { return [Destination]() }
-            return host.targets.filter(\.alive).map {
-                Destination(endpoint: host.endpoint, target: $0)
-            }
-        }
-    }
-
+extension StationDestinationOwner {
     var destination: Destination? {
         guard let authorizedConnectionGeneration = ambientRestoreAuthorization.authorizedGeneration(
             hostID: selectedHostID, targetID: selectedTargetID,
@@ -24,6 +15,13 @@ extension RootView {
                 && connections.snapshots[$0.hostID]?.connectionGeneration == authorizedConnectionGeneration
                 && ambientRestoreAuthorization.matches(rememberedSelection, endpoint: $0.endpoint, target: $0.target)
         }
+    }
+
+    /// Device activity only belongs to the session whose current transport binding owns it.
+    var confirmedListeningActivity: ListeningSettingsState.Activity? {
+        guard let binding = ambientDestinationBinding, let controller = connections.ambientController,
+              controller.binding == binding else { return nil }
+        return ListeningSettingsState(controller: controller).activity
     }
 
     /// Only core's applied, still-current binding may advance authorization without a foreground selection.
@@ -146,7 +144,7 @@ extension RootView {
     }
 }
 
-extension RootView {
+extension StationDestinationOwner {
     @MainActor
     private func authorizeRememberedSelection(
         _ rememberedSelection: DestinationSelection,
@@ -245,13 +243,4 @@ extension RootView {
         authorizedConnectionGeneration = nil
         await selectionStore.save(nil)
     }
-}
-
-struct Destination: Identifiable, Equatable {
-    let endpoint: HostEndpoint
-    let target: TargetInfo
-
-    var hostID: HostEndpoint.Identifier { endpoint.id }
-    var id: String { "\(hostID)|\(target.id)" }
-    var label: String { "\(endpoint.name) · \(target.name)" }
 }

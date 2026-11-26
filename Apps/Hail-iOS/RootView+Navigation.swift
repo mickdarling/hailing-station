@@ -42,10 +42,11 @@ extension StationRootView {
     @ViewBuilder
     var stationRoot: some View {
         if StationRedesignLaunch.flags.isOn(.shell) {
+            let confirmed = destination
             StationNavigationShell(
-                state: navigation, idiom: StationRedesignLaunch.idiom, session: destination?.stationLabel,
+                state: navigation, idiom: StationRedesignLaunch.idiom, session: confirmed?.stationLabel,
                 send: { navigation.apply($0) },
-                detail: { stationSection($0) },
+                detail: { stationSection($0, confirmed: confirmed) },
                 inspector: { EmptyView() },
                 dock: { _ in EmptyView() }
             )
@@ -57,20 +58,16 @@ extension StationRootView {
 
     /// Each tool keeps its own back navigation and uses the scene’s existing owners.
     @ViewBuilder
-    func stationSection(_ section: StationSection) -> some View {
+    private func stationSection(_ section: StationSection, confirmed: Destination?) -> some View {
         switch section {
         case .station:
             // The station's tool links can only select their section, keeping pushes out of the hidden station.
             content.environment(\.stationSectionOpener, StationSectionOpener { navigation.apply(.select($0)) })
         case .sessions:
-            // The station owns destination selection until the destination step.
-            ContentUnavailableView {
-                Label(section.title, systemImage: section.systemImage)
-            } description: {
-                Text("Choose a destination from the station. Sessions will be listed here in a later update.")
-            }
-            .accessibilityIdentifier("shell.sessions.placeholder")
-            .navigationTitle(section.title)
+            StationSessionsDetail(destinations: availableDestinations, confirmed: confirmed,
+                                  listening: confirmedListeningActivity, conversation: connections.conversation,
+                                  select: select)
+                .navigationTitle(section.title)
         case .devices, .settings:
             ShellToolList(section: section, destination: shellTool)
         }
