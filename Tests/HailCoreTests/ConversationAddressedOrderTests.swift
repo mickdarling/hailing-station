@@ -30,10 +30,15 @@ extension HostConnectionStoreAmbientBindingTests {
             payload: .text(TextPayload(text: "Added it.", isFinal: true, reply: reply))
         )))
         try await waitUntil { await MainActor.run { store.conversation.entries.contains { $0.speaker == .haili } } }
+        let request = try #require(store.conversation.entries.first)
+        #expect(request.speaker == .you)
+        #expect(request.transportCompletedTo == nil)
         await socket.releaseSends()
         try await sending.value
         let thread = store.conversation.entries(endpointID: endpoint.id, targetID: "tmux:a", addressed: true)
         #expect(thread.map(\.text) == ["Deck, add a slide", "Added it."])
+        #expect(thread.first?.transportCompletedTo == .init(hostName: endpoint.name, targetName: "Hailing Scratch"))
+        #expect(thread.last?.transportCompletedTo == nil)
         #expect(thread.last?.source == "Deck")
         await store.disconnect(endpoint.id)
     }
@@ -48,6 +53,48 @@ extension HostConnectionStoreAmbientBindingTests {
         #expect(store.conversation.entries.isEmpty)
         await store.disconnect(endpoint.id)
     }
+
+    @Test func aFailedSocketWriteLeavesOnlyTheEarlierCompletedReceipt() async throws {
+        var host = try endpoint()
+        host.name = "Studio Mac"
+        let id = host.id
+        let socket = ScriptedSocket()
+        let connector = ScriptedConnector()
+        await connector.enqueue(.socket(FailingPlainTextSocket(base: socket)), for: host.url)
+        try await socket.push(.hello(HelloInfo(
+            versions: [ProtocolVersion.current], capabilities: ["ping", "send_text", PastedText.capability],
+            deviceName: "Synthetic"
+        )))
+        let store = HostConnectionStore(connector: connector)
+        await store.upsert(host)
+        await store.connect(id)
+        try await waitUntil { await MainActor.run { store.snapshots[id]?.state == .ready } }
+
+        try await store.sendFinalText("", pasted: PastedDraft("First"), host: id, targetID: "tmux:a")
+        let beforeFailure = store.conversation.entries
+        #expect(beforeFailure.count == 1)
+        #expect(beforeFailure.first?.transportCompletedTo == .init(hostName: host.name, targetName: "tmux:a"))
+
+        await #expect(throws: SocketTestError.self) {
+            try await store.sendFinalText("Second", host: id, targetID: "tmux:b")
+        }
+        #expect(store.conversation.entries == beforeFailure)
+        await store.disconnect(id)
+    }
+}
+
+private struct FailingPlainTextSocket: WebSocketTransport {
+    let base: ScriptedSocket
+
+    func send(_ data: Data) async throws {
+        if case .text(let payload) = try FrameCoding.decode(data).payload, payload.pasted == nil {
+            throw SocketTestError.closed
+        }
+        await base.send(data)
+    }
+
+    func receive() async throws -> Data { try await base.receive() }
+    func close() async { await base.close() }
 }
 
 /// The replies that answer a thread (#636): a placed reply joins its arrival set only with `addressed`.

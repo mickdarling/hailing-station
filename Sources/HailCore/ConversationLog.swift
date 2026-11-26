@@ -9,6 +9,11 @@ public import Observation
 public struct ConversationEntry: Identifiable, Equatable, Sendable {
     public enum Speaker: Sendable { case you, haili, someone }
 
+    public struct TransportDestination: Equatable, Sendable {
+        public let hostName: String
+        public let targetName: String
+    }
+
     public let id: String
     public let speaker: Speaker
     public var text: String
@@ -17,6 +22,8 @@ public struct ConversationEntry: Identifiable, Equatable, Sendable {
     public let date: Date
     /// Heard but not sent to the target (#398): shown greyed, and hidden with the overheard setting.
     public var overheard = false
+    /// Captured at dispatch and published only when the local transport send returns successfully.
+    public internal(set) var transportCompletedTo: TransportDestination?
     /// A correlated ambient request refused by the host (#923); independent of overheard visibility.
     public var notSent = false
     /// Content-free correlation, memory only, bounded by the chat history and cleared with its connection.
@@ -116,6 +123,11 @@ public final class ConversationLog {
         append(entry)
         address(trimmed, endpointID: endpointID, targetID: targetID, targets: targets, scope: scope)
         return entry.id
+    }
+
+    func recordTransportCompletion(_ id: String?, to destination: ConversationEntry.TransportDestination) {
+        guard let id, let index = entries.firstIndex(where: { $0.id == id }) else { return }
+        entries[index].transportCompletedTo = destination
     }
 
     /// Associates only a heard entry with its host's optional UUID (#923). No separate index can outlive history.
