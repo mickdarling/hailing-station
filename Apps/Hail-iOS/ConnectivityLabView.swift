@@ -1,121 +1,71 @@
 import HailCore
-import HailProtocol
 import SwiftUI
 
 /// Manual Mac setup and connection status for the station.
 struct ConnectivityLabView: View {
     @Bindable var store: HostConnectionStore
     let endpointsChanged: @MainActor ([HostEndpoint]) -> Void
+    var showsDevicesPage = false
+    @Environment(\.stationPalette) private var palette
+    @State private var addingMac = false
     @State private var editingID: HostEndpoint.Identifier?
     @State private var name = ""
-    @State private var url = "ws://127.0.0.1:8765"
+    @State private var url = ConnectivityLabView.defaultURL
     @State private var validation = ""
+    private static let defaultURL = "ws://127.0.0.1:8765"
 
     var body: some View {
+        #if os(macOS)
+        if showsDevicesPage {
+            devicesPage
+        } else {
+            setupList
+        }
+        #else
+        setupList
+        #endif
+    }
+
+    private var setupList: some View {
         List {
-            Section("How it works") {
-                Label("1. Add this Mac's Hailing Station WebSocket address.", systemImage: "1.circle")
-                Label("2. Connect and wait for Ready.", systemImage: "2.circle")
-                Label("3. Return to the station and choose a target.", systemImage: "3.circle")
-            }
-
-            Section("Add or edit a Mac") {
-                TextField("Name", text: $name)
-                TextField("WebSocket URL", text: $url)
-                    .stationURLInput()
-                    .autocorrectionDisabled()
-                if !validation.isEmpty { Text(validation).foregroundStyle(.red) }
-                Button(editingID == nil ? "Add Mac" : "Save Mac") { Task { await save() } }
-                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-
+            Section("How it works") { instructions }
+            Section("Add or edit a Mac") { editor }
             Section("Configured Macs") {
                 if store.hosts.isEmpty {
                     Text("Add a Mac address to begin.").foregroundStyle(.secondary)
                 }
                 ForEach(store.hosts) { host in
-                    hostRow(host)
+                    ConnectivityHostRow(host: host, store: store, edit: { beginEditing(host.endpoint) })
                 }
-                .onDelete { offsets in
-                    let ids = offsets.map { store.hosts[$0].id }
-                    Task {
-                        for id in ids { await store.remove(id) }
-                        endpointsChanged(store.hosts.map(\.endpoint))
-                    }
-                }
+                .onDelete { offsets in remove(offsets.map { store.hosts[$0].id }) }
             }
         }
         .navigationTitle("Mac Setup")
         .stationToolBackNavigation()
     }
 
-    private func hostRow(_ host: HostConnectionSnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                VStack(alignment: .leading) {
-                    Text(host.endpoint.name).font(.headline)
-                    Text(host.endpoint.url.absoluteString)
-                        .font(.caption.monospaced()).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(host.state.label).font(.caption.weight(.medium))
-            }
-            HStack {
-                Button("Connect") { Task { await store.connect(host.id) } }
-                Button("Disconnect") { Task { await store.disconnect(host.id) } }
-                Button("Edit") { beginEditing(host.endpoint) }
-            }
-            .buttonStyle(.bordered)
-            diagnostics(host)
-        }
-        .padding(.vertical, 4)
+    @ViewBuilder private var instructions: some View {
+        Label("1. Add this Mac's Hailing Station WebSocket address.", systemImage: "1.circle")
+        Label("2. Connect and wait for Ready.", systemImage: "2.circle")
+        Label("3. Return to the station and choose a target.", systemImage: "3.circle")
     }
 
-    @ViewBuilder
-    private func diagnostics(_ host: HostConnectionSnapshot) -> some View {
-        if let version = host.negotiatedVersion {
-            Text("protocol v\(version) · \(host.capabilities.joined(separator: ", "))")
-                .font(.caption.monospaced())
+    @ViewBuilder private var editor: some View {
+        TextField("Name", text: $name)
+        TextField("WebSocket URL", text: $url)
+            .stationURLInput()
+            .autocorrectionDisabled()
+        if !validation.isEmpty {
+            Text(validation).foregroundStyle(showsDevicesPage ? palette[.stateWarning] : .red)
         }
-        if let ping = host.lastPingMilliseconds {
-            Text("last ping \(ping.formatted(.number.precision(.fractionLength(1)))) ms")
-                .font(.caption.monospaced())
-        }
-        healthSummary(host)
-        if host.receivedTargetList, host.targets.isEmpty {
-            Text("No allowed targets returned.").font(.caption).foregroundStyle(.secondary)
-        }
-        ForEach(host.targets, id: \.id) { target in
-            Text("\(target.alive ? "●" : "○") \(target.name) · \(target.kind)").font(.caption)
-        }
+        Button(editingID == nil ? "Add Mac" : "Save Mac") { Task { await save() } }
+            .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
-    /// The host's doctor summary (#614), read-only, when it answers `health`; refreshable while connected.
-    @ViewBuilder
-    private func healthSummary(_ host: HostConnectionSnapshot) -> some View {
-        if let reading = store.health[host.id] {
-            let health = reading.report
-            VStack(alignment: .leading, spacing: 4) {
-                if reading.isStale(for: host) {
-                    Text("From an earlier connection").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                }
-                Label(health.headline, systemImage: health.healthy ? "checkmark.seal" : "exclamationmark.triangle")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(health.healthy ? Color.green : Color.orange)
-                ForEach(Array(health.lines.enumerated()), id: \.offset) { _, line in
-                    Label(line.title, systemImage: line.ok ? "checkmark" : "xmark")
-                        .font(.caption)
-                        .foregroundStyle(line.ok ? Color.secondary : Color.orange)
-                }
-                Text(health.buildLine).font(.caption2.monospaced()).foregroundStyle(.secondary)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("connectivity.host-health")
-        }
-        if host.state == .ready, host.capabilities.contains(HostHealth.capability) {
-            Button("Check host health") { store.requestHealth(host.id) }
-                .font(.caption)
-                .buttonStyle(.borderless)
+    private func remove(_ ids: [HostEndpoint.Identifier]) {
+        Task {
+            for id in ids { await store.remove(id) }
+            endpointsChanged(store.hosts.map(\.endpoint))
         }
     }
 
@@ -137,12 +87,14 @@ struct ConnectivityLabView: View {
             validation = ""
             editingID = nil
             name = ""
+            addingMac = false
         } catch {
             validation = "Enter a name and a ws:// or wss:// URL with a host."
         }
     }
 
     private func beginEditing(_ endpoint: HostEndpoint) {
+        addingMac = false
         editingID = endpoint.id
         name = endpoint.name
         url = endpoint.url.absoluteString
@@ -150,16 +102,77 @@ struct ConnectivityLabView: View {
     }
 }
 
-private extension HostConnectionState {
-    var label: String {
-        switch self {
-        case .disconnected: "disconnected"
-        case .connecting: "connecting"
-        case .negotiating: "negotiating"
-        case .ready: "ready"
-        case .reconnecting(let attempt, let delay):
-            "retry \(attempt) in \(delay.formatted(.number.precision(.fractionLength(1))))s"
-        case .failed(let reason): "failed: \(reason)"
+#if os(macOS)
+private extension ConnectivityLabView {
+    var devicesPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    heading("Configured Macs")
+                    Spacer()
+                    Button("Add a Mac", systemImage: "plus") { beginAdding() }
+                        .disabled(addingMac)
+                        .accessibilityIdentifier("station.devices.mac-setup")
+                }
+                if addingMac { panel { deviceEditor } }
+                if store.hosts.isEmpty {
+                    panel { Text("Add a Mac address to begin.").foregroundStyle(palette[.textSecondary]) }
+                }
+                ForEach(store.hosts) { host in
+                    panel {
+                        if editingID == host.id {
+                            deviceEditor
+                        } else {
+                            ConnectivityHostRow(host: host, store: store, palette: palette,
+                                                edit: { beginEditing(host.endpoint) }, remove: { remove([host.id]) })
+                        }
+                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("station.devices.host.\(host.id)")
+                }
+                heading("How it works").padding(.top, 6)
+                panel { instructions.font(.callout).foregroundStyle(palette[.textSecondary]) }
+            }
+            .padding(16)
         }
+        .background(palette[.surface])
+        .foregroundStyle(palette[.textPrimary], palette[.textSecondary])
+        .tint(palette[.brand])
+        .navigationTitle("Devices")
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("station.devices.setup-page")
+    }
+
+    var deviceEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            heading(addingMac ? "Add a Mac" : "Edit Mac")
+            editor
+            Button("Cancel") {
+                editingID = nil
+                addingMac = false
+            }
+        }
+        .textFieldStyle(.roundedBorder)
+    }
+
+    func beginAdding() {
+        editingID = nil
+        name = ""
+        url = Self.defaultURL
+        validation = ""
+        addingMac = true
+    }
+
+    func heading(_ title: LocalizedStringKey) -> some View {
+        Text(title).font(.headline).accessibilityAddTraits(.isHeader)
+    }
+
+    func panel<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8, content: content)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background { StationRowSurface() }
+            .clipShape(.rect(cornerRadius: 10))
     }
 }
+#endif

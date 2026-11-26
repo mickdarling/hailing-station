@@ -68,7 +68,13 @@ extension StationRootView {
                                   listening: confirmedListeningActivity, conversation: connections.conversation,
                                   select: select)
                 .navigationTitle(section.title)
-        case .devices, .settings:
+        case .devices:
+            #if os(macOS)
+            ConnectivityLabView(store: connections, endpointsChanged: persist, showsDevicesPage: true)
+            #else
+            ShellToolList(section: section, destination: shellTool)
+            #endif
+        case .settings:
             ShellToolList(section: section, destination: shellTool)
         }
     }
