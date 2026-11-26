@@ -49,7 +49,14 @@ enum StationTranscriptSeed: String, CaseIterable, Sendable {
                         listening: listeningPhase, talk: talkPhase, host: host)
     }
 
-    private var talkPhase: TalkCapturePhase { self == .recording ? .recording : .idle }
+    var talkPhase: TalkCapturePhase { self == .recording ? .recording : .idle }
+
+    var inputEngine: MicEngineState {
+        switch self {
+        case .ready, .handoff, .decodeFailed, .playbackFailed, .incompleteAudio, .discardedAudio: .stopped
+        case .listening, .private, .pending, .recording, .media, .held, .refused: .running
+        }
+    }
 
     var dock: VoiceDockState {
         let accessories = DockAccessories(escape: true, privacy: true, paste: true)

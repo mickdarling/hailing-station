@@ -1,6 +1,7 @@
 // swiftlint:disable file_length
 public import AVFAudio
 public import Foundation
+import Observation
 import Synchronization
 
 /// Events a trigger emits as the user speaks. Push-to-talk, wake phrase, continuous, and intent-gate
@@ -95,7 +96,8 @@ public final class AVAudioEngineCapture: AudioCapturing {
     private var admission: AudioCaptureAdmission?
     /// A system-ending run stays shut even if transport restoration reopens its shared admission.
     private var endingAdmission: AudioCaptureAdmission?
-    private var hasTap = false
+    @Observable fileprivate final class InputTap { var installed = false }
+    private let tap = InputTap()
     private var observer: AudioCaptureEndingObserver?
     /// Read when a run starts; set it before `start` to watch that run for stalls (#443).
     var stallPolicy: StallPolicy?
@@ -190,9 +192,9 @@ public final class AVAudioEngineCapture: AudioCapturing {
         watchdog?.cancel()
         watchdog = nil
         observer = nil
-        if hasTap {
+        if tap.installed {
             operations.removeTap(engine)
-            hasTap = false
+            tap.installed = false
         }
         operations.stop(engine)
         continuation?.finish()
@@ -243,12 +245,19 @@ public final class AVAudioEngineCapture: AudioCapturing {
                   let ownedBuffer = AudioCaptureAdmission.copy(buffer, through: admission) else { return }
             continuation.yield(ownedBuffer)
         }
-        hasTap = true
+        tap.installed = true
     }
 }
 
 /// The stall watchdog (#443). It runs on the main actor for one run; `stop` cancels it.
 extension AVAudioEngineCapture {
+    /// Read this capture owner's input tap and engine together. A running output engine alone proves nothing.
+    public var inputEngineState: MicEngineState {
+        guard tap.installed, operations.isRunning(engine) else { return .stopped }
+        guard admission?.isPaused == false, endingAdmission?.isPaused == false else { return .unknown }
+        return .running
+    }
+
     private func watch(_ policy: StallPolicy) -> Task<Void, Never> {
         let (now, sleep, delivered) = (now, sleep, delivered)
         return Task { @MainActor [weak self] in
@@ -282,9 +291,9 @@ extension AVAudioEngineCapture {
             endBySystem()
             return false
         }
-        if hasTap {
+        if tap.installed {
             operations.removeTap(engine)
-            hasTap = false
+            tap.installed = false
         }
         operations.stop(engine)
         installTap(continuation)

@@ -54,6 +54,22 @@ final class ShellWindowTranscriptTests: XCTestCase, ShellWindowUITestSupport {
     }
 
     @MainActor
+    func testOnAirAccessibilityFollowsCaptureAndPrivacy() {
+        let app = application()
+        let title = ["mac": "Mac", "ipad": "iPad", "iphone": "iPhone"][device] ?? device
+        let cases = [("listening", "Listening on this \(title), on air."), ("recording", "Recording, on air."),
+                     ("private", "Private"), ("pending", "Recording may be on."), ("ready", "Microphone off.")]
+        for (state, prefix) in cases {
+            launchDocument(state, in: app)
+            let rail = element("station.listening-privacy-rail", in: app)
+            XCTAssertTrue(rail.waitForExistence(timeout: 5))
+            XCTAssertTrue(rail.label.hasPrefix(prefix), rail.label)
+            XCTAssertEqual(rail.label.contains(", on air"), state == "listening" || state == "recording")
+            app.terminate()
+        }
+    }
+
+    @MainActor
     func testDeliveryDetailsShowTheReplyDestination() {
         let app = application()
         launchDocument("ready", in: app)
