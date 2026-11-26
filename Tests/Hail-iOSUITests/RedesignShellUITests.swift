@@ -74,6 +74,7 @@ final class RedesignShellUITests: XCTestCase {
         let appearanceScreen = app.descendants(matching: .any)
             .matching(identifier: "appearance.settings").firstMatch
         XCTAssertTrue(appearanceScreen.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Preview preference. Live conversation text sizing is not available yet."].exists)
         XCTAssertTrue(app.descendants(matching: .any)
             .matching(identifier: "appearance.text-size.value").firstMatch.exists)
         app.buttons["Done"].tap()
