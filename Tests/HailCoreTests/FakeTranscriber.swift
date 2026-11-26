@@ -6,6 +6,7 @@ actor FakeTranscriber: Transcriber {
 
     private let continuation: AsyncStream<TranscriptionResult>.Continuation
     private let prepare: (@Sendable () async -> Void)?
+    private(set) var cancelCount = 0
     private(set) var consumedBuffers = 0
     private(set) var isRunning = false
     private var finalText = ""
@@ -36,6 +37,7 @@ actor FakeTranscriber: Transcriber {
     }
 
     func cancel() {
+        cancelCount += 1
         isRunning = false
         finalText = ""
     }

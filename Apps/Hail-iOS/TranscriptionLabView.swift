@@ -1,22 +1,18 @@
 import HailCore
 import SwiftUI
 
-enum TalkCardStatus: Equatable {
-    case activity(String), notSent(TalkSendRefusal)
-
-    var message: String {
-        switch self {
-        case .activity(let text): text
-        case .notSent(let reason): reason.message
-        }
-    }
-}
-
 /// Audio-first capture surface shared by compact and regular-width station layouts.
 #if !SWIFT_PACKAGE
 typealias ConversationDestinationID = StationConversationDestinationID
 typealias TranscriptionLabView = StationTranscriptionView
 #endif
+
+struct StationDockControls {
+    let destination: () -> DestinationControlState
+    let privacy: (() -> Void)?
+    let listening: () -> Void
+    let routes: () -> Void
+}
 
 struct StationTranscriptionView: View {
     let audioSession: any AudioSessionDiagnosticsProviding
@@ -45,11 +41,8 @@ struct StationTranscriptionView: View {
     @State var isRecording = false
     @State var finalText = ""
     @State var volatileText = ""
-    @State var talkStatus = TalkCardStatus.activity("Ready")
-    var status: String {
-        get { talkStatus.message }
-        nonmutating set { talkStatus = .activity(newValue) }
-    }
+    @State var talkStatus = StationTalkStatus.ready
+    var status: String { talkStatus.text }
     @State var isStarting = false
     @State var isFinalizing = false
     @State var hasReceivedAudio = false
@@ -76,6 +69,7 @@ struct StationTranscriptionView: View {
     @State var deferredReplyFailures: [String: String] = [:]
     @State var deferredReplayNotice: String?
     @State var playbackRestoreRequested = false
+    @State var talkVisibility = TalkVisibility()
     @State var startTask: Task<Void, Never>?
     @State var finishTask: Task<Void, Never>?
     @State var finishGeneration: UUID?
@@ -121,42 +115,23 @@ struct StationTranscriptionView: View {
         (self.onFinalized, self.onEscape) = (onFinalized, onEscape)
         self.pasteOffer = pasteOffer
     }
+
+    /// Presentation only. The same installed owner supplies capture, paste and lifecycle callbacks in either layout.
+    var dock: StationDockControls?
+    @State var showingDockPaste = false
+
     func deactivateTalkRoute() async {
         guard !(connections?.ambientController?.isOn ?? false) else { return }
         await audioSession.deactivate()
     }
 }
+
 extension StationTranscriptionView {
     var body: some View {
-        VStack(spacing: compactTalk ? 10 : 18) {
-            // The conversation thread shows each request as You (#318), so no separate last-request panel (#429).
-            if !compactTalk, let destinationLabel {
-                Label(destinationLabel, systemImage: "desktopcomputer")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-            // Full screen (#819), one row: talk, its status and Escape. The button keeps the first slot either way,
-            // so expanding never rebuilds it.
-            let row = compactTalk ? AnyLayout(HStackLayout(spacing: 10)) : AnyLayout(VStackLayout(spacing: 18))
-            row {
-                talkButton.disabled(talkSession.owner.map { $0 != captureOwnerID } ?? false)
-                if compactTalk { statusRow; escapeControl }
-            }
-
-            // Below the button, so its appearing never moves Tap to talk under a finishing tap.
-            if talkStatus == .notSent(.destinationChanged) {
-                Text(finalText).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-            } else { liveTranscript }
-            // Always mounted (#819 review), so a destination change still clears a paste and a refused one comes
-            // back. Full screen it hides only the bare Paste button: an attached paste or a problem still shows.
-            pasteControl.stationCollapsed(compactTalk && attachedPaste == nil && pasteProblem == nil)
-
-            if !compactTalk { escapeControl; statusRow }
+        Group {
+            if let dock { stationDock(dock) } else { card }
         }
-        .padding(compactTalk ? 12 : 18)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .modifier(StationTalkVisibility(visibility: talkVisibility, onHidden: stopCaptureWhenHidden))
         .navigationTitle("Conversation")
         .onAppear { restorePlaybackAfterForcedTeardown() }
         .onChange(of: scenePhase) { _, phase in
@@ -173,9 +148,7 @@ extension StationTranscriptionView {
         .onChange(of: globalReplyAudioSpeaking) { wasSpeaking, isSpeaking in
             if wasSpeaking && !isSpeaking { announceDeferredStatusIfNeeded() }
         }
-        .onChange(of: destinationID) { old, new in
-            if talkStatus != .notSent(.destinationChanged) { noteDestinationChange(previous: old, current: new) }
-        }
+        .onChange(of: destinationID, noteDestinationChange)
         .onDisappear {
             if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
             clearPendingSend()

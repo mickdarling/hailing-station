@@ -19,10 +19,12 @@ public struct DockAccessories: Equatable, Sendable {
     public var escape: Bool
     /// The host has a privacy switch.
     public var privacy: Bool
+    public var privacyEnabled: Bool
     /// The talk owner takes pasted text with its next request.
     public var paste: Bool
 
-    public init(escape: Bool, privacy: Bool, paste: Bool) {
+    public init(escape: Bool, privacy: Bool, paste: Bool, privacyEnabled: Bool = true) {
+        self.privacyEnabled = privacyEnabled
         (self.escape, self.privacy, self.paste) = (escape, privacy, paste)
     }
 }
@@ -67,7 +69,7 @@ public struct VoiceDockState: Equatable, Sendable {
     public let primary: Primary
     public let label: String
     public let symbol: String
-    public let isEnabled: Bool
+    public private(set) var isEnabled: Bool
     /// The accessibility value: the destination, or why the button can't be used.
     public let value: String
     public let hint: String
@@ -83,6 +85,13 @@ public struct VoiceDockState: Equatable, Sendable {
         return primary == .finish ? .finish : .talk
     }
 
+    /// A mounted owner can additionally refuse the primary action, independently of the other dock controls.
+    public func allowingPrimary(_ allowed: Bool) -> Self {
+        var state = self
+        state.isEnabled = isEnabled && allowed
+        return state
+    }
+
     public static func resolve(
         talk: TalkActivity, destination: DestinationControlState, accessories: DockAccessories
     ) -> Self {
@@ -92,7 +101,7 @@ public struct VoiceDockState: Equatable, Sendable {
             button: primaryButton(talk: talk, destination: destination),
             showsCaption: phase.map { $0 != .idle } ?? false,
             escape: item(offered: accessories.escape, usable: !escapeBusy),
-            privacy: item(offered: accessories.privacy, usable: true),
+            privacy: item(offered: accessories.privacy, usable: accessories.privacyEnabled),
             paste: item(offered: accessories.paste, usable: !talk.sendPending))
     }
 

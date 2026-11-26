@@ -13,6 +13,7 @@ extension AmbientLegacyStopPathTests {
     ]
 
     // The keys pin the entire controller file set, including files with no stop names.
+    // The Station dock’s Interrupt calls the talk owner’s existing startInterrupt, never an ambient stop.
     static let controllerCounts: [String: [String: Int]] = [
         "Apps/Hail-iOS/AudioDiagnosticsView.swift": ["cancelForDiagnosticsDismissal": 1],
         // Listening settings page: reads the ambient controller only, no stop (#1115).
@@ -24,8 +25,9 @@ extension AmbientLegacyStopPathTests {
         "Apps/Hail-iOS/RootView+Settings.swift": ["stopListening": 1, "turnOff": 1],
         "Apps/Hail-iOS/RootView.swift": ["destinationLost": 1, "forgetSelection": 1, "ownerChangedDestination": 1],
         "Apps/Hail-iOS/StationCard.swift": ["end": 1, "turnOff": 1],
-        "Apps/Hail-iOS/StationMenuPublishers.swift": ["turnOff": 1],
+        // Labs checks whether ambient owns the route before releasing it.
         "Apps/Hail-iOS/TranscriptionLabView.swift": [:],
+        "Apps/Hail-iOS/StationMenuPublishers.swift": ["turnOff": 1],
         reconnectFile: [
             "block": 16, "cancelTransportRestore": 3,
             "legacy": 11, "privacySendFailed": 2, "privacyUnconfirmed": 6, "replacementFailed": 2, "sendFailed": 2,

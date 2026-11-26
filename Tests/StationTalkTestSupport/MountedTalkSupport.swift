@@ -17,22 +17,27 @@ final class MountedTalkProbe {
     var buttonIsEnabled = false
 }
 
-// The Talk button uses .plain. Keep its native style and expose SwiftUI's actual trigger so tests can deliver
+// Keep each primary button’s native style and expose its actual SwiftUI trigger so tests can deliver
 // two activations in one main-actor turn, independent of accessibility event dispatch or a subsequent redraw.
 extension Button {
     @MainActor
     func buttonStyle(_ style: PlainButtonStyle) -> some View {
-        buttonStyle(MountedTalkButtonStyle(plain: style))
+        buttonStyle(MountedTalkButtonStyle(style: style))
+    }
+
+    @MainActor
+    func buttonStyle(_ style: BorderedProminentButtonStyle) -> some View {
+        buttonStyle(MountedTalkButtonStyle(style: style))
     }
 }
 
-private struct MountedTalkButtonStyle: PrimitiveButtonStyle {
-    let plain: PlainButtonStyle
+private struct MountedTalkButtonStyle<Style: PrimitiveButtonStyle>: PrimitiveButtonStyle {
+    let style: Style
     @Environment(MountedTalkProbe.self) private var probe
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        plain.makeBody(configuration: configuration)
+        style.makeBody(configuration: configuration)
             .onChange(of: isEnabled, initial: true) { _, enabled in
                 probe.buttonIsEnabled = enabled
                 probe.press = { configuration.trigger() }
@@ -53,8 +58,8 @@ extension EnvironmentValues {
     var stationCompactTalk: Bool { false }
 }
 
-struct PasteOffer {}
-struct PasteRefusalHandling {}
+struct PasteOffer { var accepts = false }
+struct PasteRefusalHandling { var deliveryFailure: TurnOutcome? }
 
 enum StationPlatform {
     static let voiceOverRunning = false
@@ -64,6 +69,10 @@ enum StationPlatform {
 extension StationTranscriptionView {
     var attachedPaste: PastedDraft? { nil }
     var pasteControl: some View { TalkMount(talk: self) }
+    var pastePanel: some View { EmptyView() }
+    func observingPaste(_ content: some View) -> some View { content.background(TalkMount(talk: self)) }
+    func recordDockFailure(_ failure: TurnOutcome?) { pasteRefusalHandling.deliveryFailure = failure }
+    func noteUnsentPaste(_ reason: String) { pasteProblem = reason }
     func announceStatusUnlessQuiet(_ current: String) {}
 
     // StationCard's result and destination callbacks are excluded under SWIFT_PACKAGE.
@@ -84,7 +93,10 @@ extension StationTranscriptionView {
         let invalidatedSend = pendingSendID != nil
         if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
         clearPendingSend()
-        if invalidatedSend || (!isStarting && !isRecording && !isFinalizing && !isInterrupting) { status = "Ready" }
+        guard talkStatus != .destinationChanged else { return }
+        if invalidatedSend || (!isStarting && !isRecording && !isFinalizing && !isInterrupting) {
+            talkStatus = .ready
+        }
     }
 
     // Synthetic authorization and injected session, microphone and transcriber keep the mounted button off hardware.
@@ -118,13 +130,5 @@ extension StationTranscriptionView {
         guard let interruptTask else { return false }
         await interruptTask.value
         return true
-    }
-
-    func startInterrupt(using action: @escaping @MainActor () async throws -> Void) {
-        guard interruptTask == nil else { return }
-        interruptTask = Task {
-            await interruptTarget(using: action)
-            interruptTask = nil
-        }
     }
 }

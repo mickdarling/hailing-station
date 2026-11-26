@@ -58,14 +58,14 @@ extension TranscriptionLabView {
                 return
             }
             guard pendingSendID == sendID, pendingDestinationID == destinationID,
-                  status == "Waiting for reply…" else { return }
+                  talkStatus.outcome() == .waitingForReply else { return }
             if let destinationID {
                 Self.uncorrelatedDestinations.insert(destinationID)
             }
             pendingSendID = nil
             pendingDestinationID = nil
             replyTimeoutTask = nil
-            status = "No reply yet — tap to talk again"
+            talkStatus = .turn(.noReplyYet, text: "No reply yet — tap to talk again")
         }
     }
 }

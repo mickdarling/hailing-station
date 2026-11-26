@@ -52,19 +52,10 @@ struct CaptureSafeLabsView: View {
 
 extension TranscriptionLabView {
     @MainActor
-    func startInterrupt(using action: @escaping @MainActor () async throws -> Void) {
-        guard interruptTask == nil else { return }
-        interruptTask = Task {
-            await interruptTarget(using: action)
-            interruptTask = nil
-        }
-    }
-
-    @MainActor
     func prepareCaptureAuthorization() async -> Bool {
-        status = "Requesting microphone and speech access…"
+        talkStatus = .message("Requesting microphone and speech access…")
         guard await requestHailPermissions() else {
-            status = "Microphone and speech recognition permissions are required."
+            talkStatus = .message("Microphone and speech recognition permissions are required.")
             releaseCaptureExclusivityAfterWork()
             return false
         }
@@ -96,7 +87,7 @@ extension TranscriptionLabView {
     func markAudioReceived() {
         guard !hasReceivedAudio else { return }
         hasReceivedAudio = true
-        status = "Receiving audio"
+        talkStatus = .message("Receiving audio")
     }
 
     @MainActor
@@ -108,12 +99,10 @@ extension TranscriptionLabView {
         let invalidatedSend = pendingSendID != nil
         if let pendingDestinationID { Self.uncorrelatedDestinations.insert(pendingDestinationID) }
         clearPendingSend()
-        if invalidatedSend {
-            status = "Ready"
-            return
+        guard talkStatus != .destinationChanged else { return }
+        if invalidatedSend || (!isStarting && !isRecording && !isFinalizing && !isInterrupting) {
+            talkStatus = .ready
         }
-        guard !isStarting, !isRecording, !isFinalizing, !isInterrupting else { return }
-        status = "Ready"
     }
 
     func receiveResult(_ result: TranscriptionResult) {

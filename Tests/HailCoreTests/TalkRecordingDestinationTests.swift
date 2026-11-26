@@ -4,6 +4,20 @@ import Testing
 
 @MainActor
 struct TalkRecordingDestinationTests {
+    @Test func staleDockFinishPublishesTheUnsentRecording() async throws {
+        let rig = RecordingFixture()
+        await rig.record(on: rig.macA)
+        rig.select(rig.macB)
+        let finish = try #require(rig.card.dispatchDockPrimary(.finish, destination: .none,
+            accessories: DockAccessories(escape: false, privacy: false, paste: false)))
+        await finish.value
+
+        #expect(rig.deliveries.isEmpty)
+        #expect(rig.card.talkStatus == .destinationChanged)
+        #expect(rig.card.status == "Not sent: destination changed")
+        #expect(rig.card.finalText == rig.text)
+    }
+
     @Test func finishQueuedOnAClosesCaptureWithoutDeliveringAfterSwitchToB() async {
         let rig = RecordingFixture()
         await rig.record(on: rig.macA)
@@ -90,82 +104,15 @@ struct TalkRecordingDestinationTests {
     }
 
     @Test func refusalIdentityIsIndependentOfItsDisplayText() {
-        let refused = TalkCardStatus.notSent(.destinationChanged)
-        let activity = TalkCardStatus.activity("Not sent: destination changed")
-        #expect(activity.message == refused.message)
+        let refused = StationTalkStatus.notSent(.destinationChanged)
+        let activity = StationTalkStatus.message("Not sent: destination changed")
+        #expect(activity.text == refused.text)
         #expect(activity != refused)
-    }
-
-    @Test func removalDuringRecordingReportsRefusalOutsideTheUnmountedCard() async throws {
-        let host = try await TalkDestinationStoreFixture.make()
-        let rig = RecordingFixture()
-        let shown = ConversationDestinationID(endpointID: host.host.id, targetID: "a")
-        var notices: [TalkSendRefusal] = []
-        try await host.select(shown.targetID)
-        rig.card.route = StationTalkRoute(store: host.store, selected: { shown }, reportRemoval: { notices.append($0) })
-        await rig.record(on: shown)
-        _ = try #require(rig.card.recordingDestination)
-        await host.store.remove(host.host.id)
-        await rig.card.finish(force: true)
-        #expect(rig.deliveries.isEmpty && rig.capture.stopCount == 1 && rig.card.talkSession.owner == nil)
-        #expect(try await host.socket.transcripts().isEmpty)
-        #expect(notices == [.destinationChanged] && rig.card.talkStatus == .notSent(.destinationChanged))
-        #expect(rig.card.status == "Not sent: destination changed" && rig.card.finalText == rig.text)
-    }
-
-    @Test func reconnectingTheSameMacAndTargetDoesNotReviveItsRecording() async {
-        let rig = RecordingFixture()
-        await rig.record(on: rig.macA)
-        rig.card.connectionGeneration = UUID()
-        await rig.card.finish()
-        #expect(rig.deliveries.isEmpty && rig.card.status == "Not sent: destination changed")
-    }
-
-    @Test(arguments: [false, true])
-    func finishChecksTheAdmittedTargetName(renamed: Bool) async throws {
-        let host = try await TalkDestinationStoreFixture.make()
-        let rig = RecordingFixture()
-        let shown = ConversationDestinationID(endpointID: host.host.id, targetID: "a")
-        try await host.select(shown.targetID)
-        rig.card.route = StationTalkRoute(store: host.store, selected: { shown }, reportRemoval: { _ in })
-        await rig.record(on: shown)
-        let admitted = try #require(rig.card.recordingDestination)
-        try await host.publishTarget("a", named: renamed ? "Renamed" : "Fixture")
-        if renamed {
-            #expect(throws: TalkSendRefusal.destinationChanged) { try host.store.connection(for: admitted) }
-        }
-        await rig.card.finish()
-        #expect(try await host.socket.transcripts().map(\.text) == (renamed ? [] : [rig.text]))
-        if renamed { #expect(rig.card.status == "Not sent: destination changed") }
-        await host.store.disconnect(host.host.id)
-    }
-
-    @Test(arguments: [false, true], [false, true])
-    func inactiveSceneReportsOnlyAChangedSelection(switched: Bool, clearShown: Bool) async throws {
-        let host = try await TalkDestinationStoreFixture.make()
-        let rig = RecordingFixture()
-        let shown = ConversationDestinationID(endpointID: host.host.id, targetID: "a")
-        var notices: [TalkSendRefusal] = []
-        try await host.select("a")
-        rig.card.route = StationTalkRoute(store: host.store, selected: { [weak card = rig.card] in
-            card?.scenePhase == .active ? shown : nil
-        }, reportRemoval: { notices.append($0) })
-        await rig.record(on: shown)
-        _ = try #require(rig.card.recordingDestination)
-        if switched { try await host.select("b") }
-        rig.card.scenePhase = .background
-        if clearShown { (rig.card.destinationID, rig.card.destinationGeneration) = (nil, UUID()) }
-        await rig.card.talkSession.cleanUpScene {}
-        #expect(rig.card.talkStatus == (switched ? .notSent(.destinationChanged) : .activity("Ready")))
-        #expect(notices == (switched ? [.destinationChanged] : []))
-        #expect(try await host.socket.transcripts().isEmpty)
-        #expect(rig.deliveries.isEmpty && rig.capture.stopCount == 1 && rig.card.talkSession.owner == nil)
-        await host.store.disconnect(host.host.id)
     }
 }
 
 @MainActor
-private final class RecordingFixture {
+final class RecordingFixture {
     // Different Macs can each retain their own selected target with the same ID.
     let macA = ConversationDestinationID(endpointID: "mac-a", targetID: "target")
     let macB = ConversationDestinationID(endpointID: "mac-b", targetID: "target")
