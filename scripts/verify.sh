@@ -257,6 +257,7 @@ sim() {
   echo "== simulator build-for-testing (Hail-iOS)"
   xcodegen generate --quiet
   xcodebuild build-for-testing -project HailingStation.xcodeproj -scheme Hail-iOS \
+    -onlyUsePackageVersionsFromResolvedFile \
     -clonedSourcePackagesDirPath "$PWD/.build/mobile-packages" \
     -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO 2>&1 | pretty
 }

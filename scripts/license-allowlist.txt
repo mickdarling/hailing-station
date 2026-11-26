@@ -1,2 +1,6 @@
-# One exception per line: exact Dependency column<TAB>exact SPDX column (or UNKNOWN)<TAB>review reason.
+# One exception per line, using literal tabs between fields.
+# Known license: Dependency<TAB>SPDX<TAB>review reason
+# Unidentified file: Dependency<TAB>UNKNOWN<TAB>sha256:<64 lowercase hex digits><TAB>review reason
+# For UNKNOWN, hash the shipped file in the Dependency and Origin columns.
+# Unresolved component notices need evidence of the grants for their contents.
 # Blank lines and comments are ignored. GPL, AGPL and LGPL cannot be excepted.

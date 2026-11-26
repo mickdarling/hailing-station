@@ -43,6 +43,16 @@ Simulator verification additionally requires the full Xcode toolchain:
 scripts/verify.sh sim
 ```
 
+When adding or updating a remote Swift package used by an iOS product, generate
+the project and resolve the packages for the Hail-iOS scheme in Xcode. Review
+and commit the workspace lock that Xcode uses for that scheme. The project
+directory is ignored, so stage just the lock with
+`git add -f HailingStation.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`.
+The simulator build and release archive use only the resolved versions. After
+the simulator build, run `scripts/check-mobile-licenses.py` to check the
+selected checkouts against the committed pins. For local path packages, commit
+the manifest, selected sources, resources, and license evidence with the app.
+
 Never commit credentials, Apple signing material, device identifiers, private network information, captured media, transcripts, generated Xcode projects, or local configuration.
 
 ## Opt-in host-path guard
