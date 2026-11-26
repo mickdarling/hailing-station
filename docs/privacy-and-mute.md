@@ -16,8 +16,12 @@ The owner then clarified what Privacy stops (2026-11-26):
 Privacy stops **ambient audio**. While Privacy is on:
 
 - ambient audio and its words are not recorded, kept, logged or forwarded to any agent;
-- the microphone stays on only for the local voice exit, the voiceprint-gated "I'm back" command, which listens
-  transiently and keeps nothing;
+- the microphone stays on only for the voice exit, the voiceprint-gated "I'm back" command, which listens
+  transiently and keeps nothing. The exit detector runs in RightyO on the Mac, so the raw microphone audio still
+  streams from the device to the Mac while private, for that purpose only; no words or transcripts leave the
+  device, and nothing reaches an agent;
+- the device's local quiet meter (used to time proactive speech) still reads the microphone while private; it keeps
+  only timing and activity state, never words or audio;
 - deliberate owner actions still work: Talk, Paste and Send Paste, Interrupt and Escape, plain-text send, and the
   other explicit paths.
 
