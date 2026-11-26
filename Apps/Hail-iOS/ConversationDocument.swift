@@ -13,13 +13,11 @@ struct ConversationDocument: View {
     @Environment(\.stationPalette) private var palette
     @State private var links = MessageSegmentCache()
     @State private var sheet: TranscriptSheet?
-    @State private var atBottom = true
-    @State private var readingID: String?
 
     var body: some View {
-        ScrollView {
+        TranscriptScrollView { showReply in
             VStack(alignment: .leading, spacing: 18) {
-                heading(allEntries)
+                heading(allEntries, showReply: showReply)
                 if allEntries.isEmpty {
                     Text("Tap to talk. What you say and Haili’s replies appear here.")
                         .foregroundStyle(palette[.textSecondary])
@@ -30,14 +28,6 @@ struct ConversationDocument: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
         }
-        .scrollBounceBehavior(.basedOnSize)
-        .scrollPosition(id: $readingID)
-        .defaultScrollAnchor(.bottom, for: .initialOffset)
-        .defaultScrollAnchor(atBottom ? .bottom : nil, for: .sizeChanges)
-        .defaultScrollAnchor(.top, for: .alignment)
-        .onScrollGeometryChange(for: Bool.self) { geometry in
-            geometry.visibleRect.maxY >= geometry.contentSize.height - 2
-        } action: { _, bottom in atBottom = bottom }
         .tint(palette[.brand])
         .foregroundStyle(palette[.textPrimary], palette[.textSecondary])
         .accessibilityElement(children: .contain)
@@ -45,7 +35,7 @@ struct ConversationDocument: View {
         .sheet(item: $sheet) { selection in sheetContent(selection) }
     }
 
-    private func heading(_ entries: [ConversationEntry]) -> some View {
+    private func heading(_ entries: [ConversationEntry], showReply: @escaping (String) -> Void) -> some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Conversation").font(.title3.bold()).accessibilityAddTraits(.isHeader)
@@ -56,7 +46,7 @@ struct ConversationDocument: View {
             if !replies.isEmpty {
                 Menu {
                     ForEach(replies.reversed()) { entry in
-                        Button { readingID = entry.id } label: {
+                        Button { showReply(entry.id) } label: {
                             Text("\(entry.source ?? sessions[entry.targetID] ?? entry.targetID) · "
                                  + ChatTimestamps.header(for: entry.date))
                         }

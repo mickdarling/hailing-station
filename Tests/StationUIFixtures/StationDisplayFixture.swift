@@ -6,8 +6,14 @@ import SwiftUI
 struct StationDisplayFixture: View {
     let state: StationTranscriptSeed
     @State private var navigation = StationNavigationState()
+    @State private var entries: [ConversationEntry]
     private let session = StationTranscriptSeed.session
     private var device: StationNavigationIdiom { StationRedesignLaunch.idiom }
+
+    init(state: StationTranscriptSeed) {
+        self.state = state
+        _entries = State(initialValue: state.conversation)
+    }
 
     var body: some View {
         StationNavigationShell(state: navigation, idiom: device, session: session,
@@ -38,7 +44,7 @@ struct StationDisplayFixture: View {
             }.padding(.horizontal, 12)
         }, pane: { _, _, _ in
             StationConversationPane(hasThread: true, needsSetup: false, playbackHeld: state == .held,
-                                    chat: document, fallback: { EmptyView() }, tools: { EmptyView() },
+                                    chat: document, fallback: { scrollControls }, tools: { EmptyView() },
                                     openDevices: {}, showsTools: false, showsRecovery: false, reviewRecovery: {})
         }, dock: { _, _ in
             VoiceDockView(state: state.dock, caption: "Also check what happens after the connection…",
@@ -50,9 +56,22 @@ struct StationDisplayFixture: View {
     }
 
     private var document: some View {
-        ConversationDocument(allEntries: state.conversation, hostName: session.hostName,
+        ConversationDocument(allEntries: entries, hostName: session.hostName,
                              sessions: [session.targetID: session.targetName],
                              audioProblem: state.audioProblem(replyID:), copy: { _ in })
+    }
+
+    @ViewBuilder private var scrollControls: some View {
+        if state == .scrolling {
+            HStack {
+                Button("Append turn") { entries.append(StationTranscriptSeed.numberedTurn(entries.count + 1)) }
+                Button("Extend reply") {
+                    guard let last = entries.indices.last, entries[last].speaker == .haili else { return }
+                    StationTranscriptSeed.extendReply(&entries[last])
+                }
+                .disabled(entries.last?.speaker != .haili)
+            }
+        }
     }
 
     private var deviceTitle: String {

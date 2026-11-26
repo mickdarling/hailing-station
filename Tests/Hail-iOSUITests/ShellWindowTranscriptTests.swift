@@ -128,7 +128,7 @@ final class ShellWindowTranscriptTests: XCTestCase, ShellWindowUITestSupport {
 }
 
 @MainActor
-private extension ShellWindowTranscriptTests {
+extension ShellWindowTranscriptTests {
     func application() -> XCUIApplication {
         #if os(macOS)
         let app = XCUIApplication(bundleIdentifier: "com.mickdarling.Hail-macOS-shell-tests")
