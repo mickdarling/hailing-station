@@ -55,6 +55,9 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
         case .tabs(let tabBarVisible):
             VStack(spacing: 0) {
                 pages
+                    // The overlaid Station stack is clipped to its slot. Paint behind it up to the status bar.
+                    .background(state.section == .station ? palette[.elevatedSurface] : .clear,
+                                ignoresSafeAreaEdges: .top)
                 if tabBarVisible {
                     StationTabBar(selection: state.section) { send(.select($0)) }
                         .fixedSize(horizontal: false, vertical: true)
