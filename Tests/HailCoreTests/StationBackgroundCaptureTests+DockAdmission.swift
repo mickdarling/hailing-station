@@ -88,7 +88,10 @@ extension StationBackgroundCaptureTests {
             #expect(dock.dispatch(.talk) == nil && dock.view.startTask == first)
             let session = dock.view.talkSession
             let other = UUID()
-            if otherOwner { try #require(session.admit(other, receive: { _ in }, cleanup: {})) }
+            if otherOwner {
+                let admitted = session.admit(other, receive: { _ in }, cleanup: {})
+                try #require(admitted)
+            }
             defer { session.retire(other) }
             dock.scene.host.window.orderOut(nil)
             dock.occlusion([])
