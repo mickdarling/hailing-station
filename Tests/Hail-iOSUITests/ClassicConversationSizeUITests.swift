@@ -4,8 +4,8 @@ import XCTest
 extension AppearanceStationIntegrationUITests {
     @MainActor
     func testChangingAaResizesTheSameClassicParagraphWithoutRelaunch() {
-        let app = XCUIApplication()
-        app.launchArguments = ["-reset-station-state", "-seed-conversation", "3", "-overheard.show", "NO"]
+        let app = ClassicStationFixture.application(reset: true)
+        app.launchArguments += ["-seed-conversation", "3", "-overheard.show", "NO"]
         app.launch()
         let reply = "Turn 3. The invented weather stays mild and the invented garden needs watering again."
         let paragraph = app.staticTexts.matching(NSPredicate(format: "label == %@", reply)).firstMatch

@@ -14,16 +14,26 @@ enum StationRedesignLaunch {
     static let flags: StationRedesignFlags = {
         let defaults = UserDefaults.standard
         let arguments = ProcessInfo.processInfo.arguments
-        if arguments.contains("-reset-station-state") {
+        let reset = arguments.contains("-reset-station-state")
+        if reset {
             for step in StationRedesignStep.allCases { defaults.removeObject(forKey: step.key) }
-            #if DEBUG
-            // Seed the same Boolean Labs writes. An argument-domain string would fail the flag's type check
-            // and a permanent command-line override would mask the in-app opt-out on relaunch.
-            if arguments.contains("-seed-navigation-shell") {
-                defaults.set(true, forKey: StationRedesignStep.shell.key)
-            }
-            #endif
         }
+        #if DEBUG
+        let key = StationRedesignStep.shell.key
+        if arguments.contains("-seed-classic-shell") {
+            if reset {
+                // The isolated station starts classic and can change its saved choice in Labs.
+                defaults.set(false, forKey: key)
+            } else {
+                // Configured-device fixtures keep their saved settings. This override ends with the process.
+                var domain = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
+                domain[key] = false
+                defaults.setVolatileDomain(domain, forName: UserDefaults.argumentDomain)
+            }
+        } else if reset, arguments.contains("-seed-navigation-shell") {
+            defaults.set(true, forKey: key)
+        }
+        #endif
         return StationRedesignFlags { defaults.object(forKey: $0) }
     }()
 

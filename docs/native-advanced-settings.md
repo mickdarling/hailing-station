@@ -1,6 +1,6 @@
 # Native Advanced and diagnostics Settings (#1115)
 
-This slice adds **Settings > Advanced and diagnostics** inside the existing default-off
+This slice adds **Settings > Advanced and diagnostics** inside the existing default-on
 `station.redesign.shell` launch gate. It implements the local diagnostic controls and existing tools from
 the [settings design](design/settings-design.md), using a native Form and the system's navigation and safe areas.
 It does not implement the proposed remote configuration catalog shown in the design frames.

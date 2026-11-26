@@ -59,8 +59,8 @@ final class LongConversationUITests: XCTestCase {
 
     @MainActor
     private func launch(_ extra: [String]) -> XCUIApplication {
-        let app = XCUIApplication()
-        app.launchArguments += ["-reset-station-state", "-seed-conversation", "\(Self.turns)"] + extra
+        let app = ClassicStationFixture.application(reset: true)
+        app.launchArguments += ["-seed-conversation", "\(Self.turns)"] + extra
         app.launch()
         return app
     }

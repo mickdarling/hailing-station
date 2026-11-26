@@ -11,7 +11,7 @@ extension AdvancedSettingsUITests {
             app.terminate()
             XCUIDevice.shared.orientation = .portrait
         }
-        app.launchArguments = ["-reset-station-state"]
+        app.launchArguments = ClassicStationFixture.resetArguments
         app.launch()
         XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))
         let labs = app.buttons["Labs"]

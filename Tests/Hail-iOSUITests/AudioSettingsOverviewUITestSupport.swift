@@ -11,10 +11,10 @@ extension AudioSettingsOverviewUITests {
             app.terminate()
             XCUIDevice.shared.orientation = .portrait
         }
-        app.launchArguments = ["-reset-station-state"]
+        app.launchArguments = ClassicStationFixture.resetArguments
         app.launch()
         XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))
-        XCTAssertFalse(element("settings.audio.overview", in: app).exists, "Default-off station is unchanged")
+        XCTAssertFalse(element("settings.audio.overview", in: app).exists, "The classic station hides Audio settings")
         let labs = app.buttons["Labs"]
         reveal(labs, in: app)
         labs.tap()

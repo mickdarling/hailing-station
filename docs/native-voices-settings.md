@@ -1,6 +1,6 @@
 # Native Voices and replies Settings (#1115)
 
-This slice adds **Settings > Voices and replies** inside the existing default-off
+This slice adds **Settings > Voices and replies** inside the existing default-on
 `station.redesign.shell` launch gate. It is a native, read-only Form using system safe areas, an inline iOS
 navigation title and wrapping Dynamic Type. It implements the existing local portion of the
 [settings design](design/settings-design.md); it does not implement the proposed host voice map.

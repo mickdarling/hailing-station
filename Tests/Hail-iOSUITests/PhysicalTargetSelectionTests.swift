@@ -16,7 +16,7 @@ final class PhysicalTargetSelectionTests: XCTestCase {
         if ProcessInfo.processInfo.environment["SIMULATOR_UDID"] != nil {
             throw XCTSkip("The route-control proof requires a physical iPhone or iPad.")
         }
-        let app = XCUIApplication()
+        let app = ClassicStationFixture.application()
         app.launch()
         XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))
 
@@ -43,7 +43,7 @@ final class PhysicalTargetSelectionTests: XCTestCase {
               let targetLabel = ProcessInfo.processInfo.environment["HAIL_UI_TARGET_LABEL"] else {
             throw XCTSkip("Set HAIL_UI_HOST_NAME, HAIL_UI_HOST_URL, and HAIL_UI_TARGET_LABEL.")
         }
-        let app = XCUIApplication()
+        let app = ClassicStationFixture.application()
         app.launch()
         XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))
         let setup = app.buttons["station.mac-setup-tool"]
@@ -135,7 +135,7 @@ final class PhysicalTargetSelectionTests: XCTestCase {
             throw XCTSkip("Set HAIL_UI_TARGET_LABEL to a connected host and target label.")
         }
 
-        let app = XCUIApplication()
+        let app = ClassicStationFixture.application()
         app.launch()
         XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))
 

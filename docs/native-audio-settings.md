@@ -1,7 +1,7 @@
 # Native Audio Settings overview (#1115)
 
 This slice adopts a read-only **Settings > Audio** page from the [settings design](design/settings-design.md).
-It is reachable only inside the existing `station.redesign.shell` launch gate, which remains off by default.
+It is reachable only inside the existing `station.redesign.shell` launch gate, which is on by default.
 The Labs toggle takes effect after relaunch. No new flag, remote settings channel or route authority is added.
 Turning the shell off also hides this overview; there is no independent Audio-group toggle in this slice.
 
@@ -44,7 +44,7 @@ reset/apply/undo and the rest of the catalog remain deferred under #1115 and the
   Tapped links and Back buttons use typed, named controls. Rotation geometry is read on the main actor; bounded
   short drags choose their direction from the row's current frame to recover from accessibility-size overscroll.
   Future runs retain synthetic screenshots in their test results. The existing `RedesignShellUITests` remains the
-  default-off/launch-only/hidden-Station regression gate.
+  classic opt-in, relaunch and hidden-Station regression gate.
 - Pending host checks: compile both app targets; run these focused native and simulator suites plus the existing
   shell and `AudioDiagnosticsLifetimeTests`; check source lint and the repository verification/traceability gates.
   The directory-based XcodeGen app/UI-test source entries and test-only Swift-package symlinks include these files.

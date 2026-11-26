@@ -9,9 +9,9 @@ import Testing
 struct StationSceneLifetimeTests {
     init() { NativeShellLaunchContext.install() }
 
-    @Test func nativeRootUsesTheGenuineDefaultOffLaunchSnapshot() {
-        #expect(!NativeShellLaunchContext.optedIn, "Default-off fixtures run without the dedicated opt-in")
-        #expect(!StationRedesignLaunch.flags.isOn(.shell), "The actual default snapshot must stay off")
+    @Test func nativeRootUsesTheExplicitClassicLaunchPreference() {
+        #expect(!NativeShellLaunchContext.optedIn, "Classic fixtures run without the dedicated opt-in")
+        #expect(!StationRedesignLaunch.flags.isOn(.shell), "The production snapshot must honor the classic seed")
     }
 
     @Test func discardedNativeRootInitializersDoNotConstructResources() {

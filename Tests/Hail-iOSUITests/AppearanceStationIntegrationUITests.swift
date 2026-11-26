@@ -11,8 +11,7 @@ final class AppearanceStationIntegrationUITests: XCTestCase {
 
     @MainActor
     func testSettingsOpensAndClosesFromTheRealStation() {
-        let app = XCUIApplication()
-        app.launchArguments = ["-reset-station-state"]
+        let app = ClassicStationFixture.application(reset: true)
         app.launch()
         let settings = app.buttons["station.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 10))

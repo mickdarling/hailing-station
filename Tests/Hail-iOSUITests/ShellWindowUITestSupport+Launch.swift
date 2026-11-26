@@ -3,6 +3,18 @@ import XCTest
 import AppKit
 #endif
 
+enum ClassicStationFixture {
+    static let seed = "-seed-classic-shell"
+    static let resetArguments = ["-reset-station-state", seed]
+
+    @MainActor
+    static func application(reset: Bool = false) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments += reset ? resetArguments : [seed]
+        return app
+    }
+}
+
 @MainActor
 extension ShellWindowUITestSupport {
     var baseArguments: [String] {
@@ -15,6 +27,13 @@ extension ShellWindowUITestSupport {
     }
 
     func launchStation(shellEnabled: Bool, arguments: [String] = []) -> XCUIApplication {
+        let seed = shellEnabled ? "-seed-navigation-shell" : ClassicStationFixture.seed
+        let app = launchStation(arguments: [seed] + arguments)
+        if shellEnabled { XCTAssertTrue(section("station", in: app).waitForExistence(timeout: 10)) }
+        return app
+    }
+
+    func launchStation(arguments: [String] = []) -> XCUIApplication {
         #if os(macOS)
         let app = XCUIApplication(bundleIdentifier: "com.mickdarling.Hail-macOS-shell-tests")
         #else
@@ -32,9 +51,8 @@ extension ShellWindowUITestSupport {
             XCUIDevice.shared.orientation = orientation
             #endif
         }
-        app.launchArguments = (shellEnabled ? reset + ["-seed-navigation-shell"] : reset) + arguments
+        app.launchArguments = reset + arguments
         launchStation(app)
-        if shellEnabled { XCTAssertTrue(section("station", in: app).waitForExistence(timeout: 10)) }
         #if os(macOS)
         XCTAssertEqual(app.windows.matching(identifier: "station").count, 1, "There must be one Station window")
         #endif

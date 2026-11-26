@@ -13,7 +13,7 @@ final class AdaptiveStationUITests: XCTestCase {
         addTeardownBlock { @MainActor in
             XCUIDevice.shared.orientation = .portrait
         }
-        let app = XCUIApplication()
+        let app = ClassicStationFixture.application()
         app.launch()
 
         assertStationChrome(in: app)
@@ -23,7 +23,7 @@ final class AdaptiveStationUITests: XCTestCase {
 
     @MainActor
     func testMicrophoneMenuCanBootstrapAFreshSession() {
-        let app = XCUIApplication()
+        let app = ClassicStationFixture.application()
         app.launch()
         XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))
 
@@ -39,7 +39,7 @@ final class AdaptiveStationUITests: XCTestCase {
     func testIPadStationFitsOneScreenInBothOrientations() throws {
         guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("iPad layout only.") }
         addTeardownBlock { @MainActor in XCUIDevice.shared.orientation = .portrait }
-        let app = XCUIApplication()
+        let app = ClassicStationFixture.application()
         app.launch()
         for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
             XCUIDevice.shared.orientation = orientation
@@ -58,7 +58,7 @@ final class AdaptiveStationUITests: XCTestCase {
     /// #611: private coaching is visible on iPhone and iPad, disabled, and says it is not available here yet.
     @MainActor
     func testPrivateCoachingShowsDisabledNotYetAvailableEntry() {
-        let app = XCUIApplication()
+        let app = ClassicStationFixture.application()
         app.launch()
         XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))
 

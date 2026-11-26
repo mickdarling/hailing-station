@@ -38,23 +38,24 @@ manifest is changed, and no new production test hook, controller, owner or launc
 
 ## Process isolation and defaults
 
-Only the dedicated opt-in path of `NativeShellLaunchContext` installs one literal true Boolean in the process's
+`NativeShellLaunchContext` installs one Boolean in the process's
 volatile `NSArgumentDomain` before the actual production static launch snapshot is first read. The previous
 volatile domain is restored synchronously, before any suspension; it never calls a persistent defaults writer.
 The actual launch snapshot is then held for the process, just as in the app; no flags are re-read to swap a branch.
 The Swift spelling is `UserDefaults.argumentDomain`, as declared by Foundation's SDK API notes.
 
-Without `HAIL_NATIVE_SHELL_LIFETIME=1`, existing native-root fixtures only read the genuine production snapshot;
-no defaults domain is changed and no saved value is masked. CI's missing preference must remain default-off,
-which a named native fixture test asserts explicitly. The new suite is disabled. With the explicit environment
-opt-in, run ONLY the dedicated filtered suite in a NEW process, serially. Do not set the opt-in on
+Without `HAIL_NATIVE_SHELL_LIFETIME=1`, the native-root fixtures seed an explicit false to exercise classic
+navigation. A scene lifetime test checks that the production snapshot honors it. The dedicated suite is disabled.
+With the explicit environment opt-in, run only the dedicated flag-on tests in a new process, serially.
+Do not set the opt-in on
 `verify.sh all`, an unfiltered test process, a parallel CI lane or an installed app. A wrong/stale snapshot fails
 the new suite's explicit flag-on requirement rather than silently testing the legacy branch.
 
 The existing scene host reads/configures that context before constructing its root; direct-root lifetime tests do
-the same in their test-suite initializer. It occurs once on the main actor without yielding. Normal parallel CI
-does not receive a temporary override that could race the real-UserDefaults flag tests. Restoring the opt-in
-input does not mutate the cached snapshot. Synthetic diagnostics use a unique suite, assert collection is off,
+the same in their test-suite initializer. The Appearance fixture also installs the context before rendering.
+Both the temporary override and the real-UserDefaults flag tests run synchronously on the main actor, so their
+reads cannot overlap. Restoring the input does not mutate the cached snapshot. Synthetic diagnostics use a unique
+suite, assert collection is off,
 and write no preference values. Their temporary suite is removed on normal close and on startup failure.
 Neither launch path resets live-app preferences or writes a persistent flag.
 
@@ -74,7 +75,7 @@ The existing fixture's layout branch also removes and remounts the actual ambien
 popping an inert tool. Real surface appear/disappear counters witness that surface removal and remount. The shipped
 card's unmodified `onDisappear` handler remains attached in the removed subtree and forwards to the real root's
 destination reconciliation. Its callback execution is not separately instrumented in this flag-on fixture; a valid
-no-op reconcile cannot distinguish invocation from non-invocation. The default-off `StationToolAmbientLifetimeTests`
+no-op reconcile cannot distinguish invocation from non-invocation. The classic `StationToolAmbientLifetimeTests`
 directly observes that callback as supplemental evidence. No protected hook or replacement stop logic is introduced.
 Every section/removal/remount step checks the same store/controller/binding, requested-on and streaming state,
 `startCount == 1`, `stopCount == 0`, no release or new permission/streamer, and additional fake PCM frames delivered

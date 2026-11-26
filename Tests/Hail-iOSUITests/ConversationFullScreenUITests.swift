@@ -106,8 +106,8 @@ final class ConversationFullScreenUITests: XCTestCase {
     /// the station shows, with its setup panel.
     @MainActor
     func testARememberedChoiceWithoutAChatShowsTheStation() throws {
-        let app = XCUIApplication()
-        app.launchArguments += ["-reset-station-state", "-station.chatExpanded", "YES"]
+        let app = ClassicStationFixture.application(reset: true)
+        app.launchArguments += ["-station.chatExpanded", "YES"]
         app.launch()
         let setup = app.descendants(matching: .any)["station.availability"]
         XCTAssertTrue(setup.waitForExistence(timeout: 20))
@@ -133,8 +133,8 @@ final class ConversationFullScreenUITests: XCTestCase {
     /// The reset also clears the remembered choice, so each test starts with the station showing.
     @MainActor
     private func launch(reset: Bool = true, talk: Bool = false, extra: [String] = []) -> XCUIApplication {
-        let app = XCUIApplication()
-        app.launchArguments += (reset ? ["-reset-station-state"] : []) + ["-seed-conversation", "\(Self.turns)"]
+        let app = ClassicStationFixture.application(reset: reset)
+        app.launchArguments += ["-seed-conversation", "\(Self.turns)"]
             + (talk ? ["-seed-talk-card"] : []) + extra
         app.launch()
         return app

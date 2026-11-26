@@ -1,6 +1,6 @@
 # Native Notifications and Updates Settings (#1115)
 
-This slice adds **Settings > Notifications and updates** under the existing default-off
+This slice adds **Settings > Notifications and updates** under the existing default-on
 `station.redesign.shell` launch gate. Its four production files are `NotificationsSettingsView.swift`,
 `RootView+NotificationSettings.swift`, `RootView+Navigation.swift` and `StationSceneState.swift`. The last file
 defines the existing `StationResources`; one stored model there keeps the reading above every navigation branch.
