@@ -6,6 +6,16 @@ import AppKit
 
 @MainActor
 struct StationTranscriptStyleTests {
+    @Test(arguments: ConversationEntry.Speaker.allCases)
+    func onlyOwnerTurnsUseTrailingAlignment(speaker: ConversationEntry.Speaker) {
+        let expected: Alignment = switch speaker {
+        case .you: .trailing
+        case .haili, .someone: .leading
+        }
+        let actual = TranscriptEntryView.alignment(for: speaker)
+        #expect(actual == expected)
+    }
+
     @Test func redesignedRowsKeepTheirBaseStylesWithANondefaultClassicScale() {
         _ = NSApplication.shared
         let text = "A synthetic paragraph with enough words to wrap in the transcript."

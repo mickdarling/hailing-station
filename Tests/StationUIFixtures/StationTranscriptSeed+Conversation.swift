@@ -29,7 +29,10 @@ extension StationTranscriptSeed {
                                           date: time.addingTimeInterval(10))
             other.name = "Speaker B"
             other.overheard = true
-            return [request, other]
+            let reply = ConversationEntry(id: "reply", speaker: .haili, text: "The list is ready.",
+                                          endpointID: "fixture", targetID: Self.session.targetID,
+                                          date: time.addingTimeInterval(20))
+            return [request, other, reply]
         }
         if audioProblem(replyID: "reply") != nil {
             // The affected reply precedes a healthy one, so a latest-reply lookup loses the notice.
