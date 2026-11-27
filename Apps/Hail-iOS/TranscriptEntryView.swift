@@ -27,42 +27,62 @@ struct TranscriptEntryView: View {
     let present: (TranscriptSheet) -> Void
     @Environment(\.stationPalette) private var palette
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            if entry.notice {
-                TranscriptWarning(title: "Request not sent", detail: entry.text)
-            } else if let lyrics = MusicLine.lyrics(of: entry) {
-                Label(lyrics.isEmpty ? "Music" : lyrics, systemImage: "music.note")
-                    .font(.body).italic().foregroundStyle(palette[.textSecondary])
-            } else {
-                heading
-                content
-                if turn.delivery == .reply {
-                    if let audioProblem {
-                        Label(audioProblem, systemImage: "speaker.slash")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .accessibilityIdentifier("chat.reply.audio-problem")
-                    }
-                    actions
-                } else if case .transportCompleted(let destination) = turn.delivery {
-                    Text("\(destination.hostName) · \(destination.targetName)")
-                        .font(.caption2).foregroundStyle(palette[.textSecondary])
-                        .accessibilityHidden(true) // The Sent chip reads the full destination.
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contextMenu { menu }
-        .accessibilityElement(children: .contain)
+    nonisolated static func alignment(for speaker: ConversationEntry.Speaker) -> Alignment {
+        speaker == .you ? .trailing : .leading
     }
 
-    private var heading: some View {
+    var body: some View {
+        let lyrics = MusicLine.lyrics(of: entry)
+        let isMessage = !entry.notice && lyrics == nil
+        let side = isMessage ? Self.alignment(for: entry.speaker) : .leading
+        let gutter = Spacer(minLength: 28)
+        HStack(spacing: 0) {
+            if side == .trailing { gutter }
+            VStack(alignment: side.horizontal, spacing: 7) {
+                if entry.notice {
+                    TranscriptWarning(title: "Request not sent", detail: entry.text)
+                } else if let lyrics {
+                    Label(lyrics.isEmpty ? "Music" : lyrics, systemImage: "music.note")
+                        .font(.body).italic().foregroundStyle(palette[.textSecondary])
+                } else {
+                    heading(alignment: side.horizontal)
+                    content
+                    footer
+                }
+            }
+            // The owner's words read right-justified, everyone else's left-justified (#1417, owner 2026-11-26).
+            .multilineTextAlignment(side == .trailing ? .trailing : .leading)
+            .frame(maxWidth: isMessage ? 640 : .infinity, alignment: side)
+            .layoutPriority(1)
+            .contextMenu { menu }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("station.transcript.row.\(entry.id)")
+            if isMessage && side == .leading { gutter }
+        }
+    }
+
+    @ViewBuilder private var footer: some View {
+        if turn.delivery == .reply {
+            if let audioProblem {
+                Label(audioProblem, systemImage: "speaker.slash")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("chat.reply.audio-problem")
+            }
+            actions
+        } else if case .transportCompleted(let destination) = turn.delivery {
+            Text("\(destination.hostName) · \(destination.targetName)")
+                .font(.caption2).foregroundStyle(palette[.textSecondary])
+                .accessibilityHidden(true) // The Sent chip reads the full destination.
+        }
+    }
+
+    private func heading(alignment: HorizontalAlignment) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             if let chip = turn.delivery.chip {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 5) { badges(chip) }.fixedSize()
-                    VStack(alignment: .leading, spacing: 4) { badges(chip) }
+                    VStack(alignment: alignment, spacing: 4) { badges(chip) }
                 }
             } else {
                 Text(turn.speaker).font(.caption.weight(.semibold))
@@ -72,7 +92,7 @@ struct TranscriptEntryView: View {
                         .background(palette[.surface], in: .rect(cornerRadius: 5))
                 }
             }
-            Spacer(minLength: 4)
+            if alignment == .leading { Spacer(minLength: 4) }
             Text(ChatTimestamps.time(entry.date)).font(.caption2).foregroundStyle(palette[.textSecondary])
         }
         .accessibilityElement(children: turn.delivery == .reply ? .combine : .contain)

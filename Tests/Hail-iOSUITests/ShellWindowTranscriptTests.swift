@@ -44,6 +44,25 @@ final class ShellWindowTranscriptTests: XCTestCase, ShellWindowUITestSupport {
     }
 
     @MainActor
+    func testOnlyOwnerRowsSitOnTheRight() {
+        let app = application()
+        launchDocument("attribution", in: app)
+        let chat = element("station.chat", in: app)
+        let owner = element("station.transcript.row.request", in: chat)
+        XCTAssertTrue(owner.waitForExistence(timeout: 5))
+        let ownerFrame = owner.frame
+        XCTAssertFalse(ownerFrame.isEmpty)
+        for id in ["other", "reply"] {
+            let row = element("station.transcript.row.\(id)", in: chat)
+            XCTAssertTrue(row.waitForExistence(timeout: 5), id)
+            let frame = row.frame
+            XCTAssertFalse(frame.isEmpty, id)
+            XCTAssertGreaterThan(ownerFrame.minX, frame.minX, id)
+            XCTAssertGreaterThan(ownerFrame.maxX, frame.maxX, id)
+        }
+    }
+
+    @MainActor
     func testReplyAudioProblemNoticeHasTheClassicAccessibleText() {
         let app = application()
         let cases: [(StationTranscriptSeed, String?)] = [
@@ -64,6 +83,9 @@ final class ShellWindowTranscriptTests: XCTestCase, ShellWindowUITestSupport {
                 let matches = notices.matching(reading)
                 XCTAssertTrue(matches.firstMatch.waitForExistence(timeout: 5), state.rawValue)
                 XCTAssertEqual(matches.count, 1, "Only the affected reply should expose the notice")
+                let reply = element("station.transcript.row.reply", in: chat)
+                XCTAssertTrue(element("chat.reply.audio-problem", in: reply).exists)
+                XCTAssertTrue(element("station.transcript.details", in: reply).exists)
             } else {
                 XCTAssertFalse(notices.firstMatch.exists)
             }
