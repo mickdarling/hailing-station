@@ -3,10 +3,33 @@ import Foundation
 @testable import HailCore
 
 extension StationTranscriptSeed {
+    func audioProblem(replyID: String) -> String? {
+        guard replyID == "reply" else { return nil }
+        let status: String
+        switch self {
+        case .decodeFailed: status = ReplyPlaybackController.audioCouldNotBeDecoded
+        case .playbackFailed: status = ReplyPlaybackController.playbackFailed
+        case .incompleteAudio: status = ReplyPlaybackController.endedWithoutFinalAudio
+        case .discardedAudio: status = ReplyPlaybackController.pausedAudioNotKept
+        default: return nil
+        }
+        return ReplyPlaybackController.audioProblem(status)
+    }
+
     /// Authored examples from the Astra frames, fixed to 10:42 local time on the qualification day.
     var conversation: [ConversationEntry] {
         let day = Date.now
         let time = Calendar.current.date(bySettingHour: 10, minute: 42, second: 0, of: day) ?? day
+        if audioProblem(replyID: "reply") != nil {
+            // The affected reply precedes a healthy one, so a latest-reply lookup loses the notice.
+            return [
+                ConversationEntry(id: "reply", speaker: .haili, text: "First reply.",
+                                  endpointID: "fixture", targetID: Self.session.targetID, date: time),
+                ConversationEntry(id: "heard", speaker: .haili, text: "Next reply.",
+                                  endpointID: "fixture", targetID: Self.session.targetID,
+                                  date: time.addingTimeInterval(60))
+            ]
+        }
         var request = ConversationEntry(id: "request", speaker: .you,
                                         text: "Review the release checklist and tell me what still needs attention.",
                                         endpointID: "fixture", targetID: Self.session.targetID, date: time)

@@ -8,6 +8,7 @@ struct ConversationDocument: View {
     let allEntries: [ConversationEntry]
     let hostName: String?
     let sessions: [String: String]
+    let audioProblem: @MainActor (String) -> String?
     let copy: (String) -> Void
     @Environment(\.stationPalette) private var palette
     @State private var links = MessageSegmentCache()
@@ -76,6 +77,7 @@ struct ConversationDocument: View {
                 VStack(alignment: .leading, spacing: 17) {
                     if starts.contains(index) { divider(entry.date) }
                     TranscriptEntryView(entry: entry, turn: turn(entry), segments: links.segments(for: entry),
+                                        audioProblem: audioProblem(entry.id),
                                         copy: copy, present: { [sheet = $sheet] in sheet.wrappedValue = $0 })
                 }
                 .id(entry.id)

@@ -26,7 +26,7 @@ struct StationTranscriptStyleTests {
         for entry in [request, reply, notice, music] {
             let row = TranscriptEntryView(entry: entry, turn: TranscriptTurn(entry: entry, sessionName: "Session"),
                                           segments: MessageLinks.segments(entry.text),
-                                          copy: { _ in }, present: { _ in })
+                                          audioProblem: nil, copy: { _ in }, present: { _ in })
                 .environment(\.stationTheme, .astra)
                 .frame(width: 220)
                 .fixedSize(horizontal: false, vertical: true)

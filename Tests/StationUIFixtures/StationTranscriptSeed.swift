@@ -22,13 +22,14 @@ enum StationDisplaySeedLaunch {
 /// Immutable inputs for rendering the real Station components. No store, controllers, transport or input actions.
 enum StationTranscriptSeed: String, CaseIterable, Sendable {
     case listening, `private`, pending, recording, handoff, media, ready, held, refused
+    case decodeFailed, playbackFailed, incompleteAudio, discardedAudio
 
     static let session = DestinationLabel(hostName: "Studio Mac", targetName: "Workbench",
                                           targetKind: "tmux", targetID: "fixture-workbench")
 
     var listeningPhase: StationMenuStatus.Listening {
         switch self {
-        case .ready, .recording: .off
+        case .ready, .recording, .decodeFailed, .playbackFailed, .incompleteAudio, .discardedAudio: .off
         case .handoff: .elsewhere
         case .listening, .private, .pending, .media, .held, .refused: .listening
         }

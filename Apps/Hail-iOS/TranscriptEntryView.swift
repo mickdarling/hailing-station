@@ -33,6 +33,7 @@ struct TranscriptEntryView: View {
     let entry: ConversationEntry
     let turn: TranscriptTurn
     let segments: [MessageSegment]
+    let audioProblem: String?
     let copy: (String) -> Void
     let present: (TranscriptSheet) -> Void
     @Environment(\.stationPalette) private var palette
@@ -48,6 +49,12 @@ struct TranscriptEntryView: View {
                 heading
                 content
                 if turn.delivery == .reply {
+                    if let audioProblem {
+                        Label(audioProblem, systemImage: "speaker.slash")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("chat.reply.audio-problem")
+                    }
                     actions
                 } else if let receipt = turn.delivery.title {
                     Label(receipt, systemImage: receiptSymbol).font(.caption2)
