@@ -61,6 +61,7 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
                 if tabBarVisible {
                     StationTabBar(selection: state.section) { send(.select($0)) }
                         .fixedSize(horizontal: false, vertical: true)
+                        .background(palette[.elevatedSurface], ignoresSafeAreaEdges: .bottom)
                 }
             }
             .inspector(isPresented: inspectorPresented) { inspector() }
@@ -100,7 +101,6 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
         }
         .navigationSplitViewStyle(.balanced)
         #if os(macOS)
-        // The window owns this item even when a pushed tool replaces the detail's navigation items.
         .toolbar { toggle }
         .toolbarVisibility(.visible, for: .windowToolbar)
         #endif
@@ -110,7 +110,6 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     private var pages: some View {
         let hidden = state.section != .station
         return VStack(spacing: 0) {
-            // Size pages from the column. In the old inset layout AX children had frames inside a zero-height viewport.
             GeometryReader { viewport in
                 ZStack {
                     detail(.station)
@@ -140,7 +139,6 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     private var pages: some View {
         ZStack {
             if state.section == .station {
-                // The slot starts below the iPad split view's Back and sidebar controls (#1148).
                 Color.clear
                     .anchorPreference(key: StationSlotKey.self, value: .bounds) { $0 }
                     .navigationTitle(StationSection.station.title)
@@ -150,17 +148,19 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
             }
         }
     }
-
-    private func page(_ section: StationSection) -> some View {
-        NavigationStack {
+    @ViewBuilder private func page(_ section: StationSection) -> some View {
+        let stack = NavigationStack {
             if section == .station {
                 detail(section).stationHiddenNavigationBar().stationAccessibilityScope()
             } else {
                 detail(section).scrollContentBackground(.hidden).background(palette[.surface])
             }
         }
-        // SwiftUI hosts the inset separately from the root (#1183).
-        .safeAreaInset(edge: .bottom, spacing: 0) { dock(section).stationAccessibilityScope() }
+        if Dock.self == EmptyView.self {
+            stack
+        } else {
+            stack.safeAreaInset(edge: .bottom, spacing: 0) { dock(section).stationAccessibilityScope() }
+        }
     }
     #endif
 }

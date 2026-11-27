@@ -17,9 +17,34 @@ struct StationDisplayFixture: View {
     }
 
     var body: some View {
+        #if os(iOS)
+        if ProcessInfo.processInfo.arguments.contains("-measure-station-insets") {
+            GeometryReader { viewport in
+                let width = min(viewport.size.width, 402)
+                let legacy = ProcessInfo.processInfo.arguments.contains("-fixture-empty-dock-inset")
+                Group {
+                    if legacy { shell { Group { EmptyView() } } } else { shell { EmptyView() } }
+                }
+                .environment(\.horizontalSizeClass, .compact)
+                .frame(width: width)
+                .frame(maxWidth: .infinity)
+                .overlay(alignment: .topLeading) {
+                    Color.clear.frame(width: 1, height: 1).accessibilityElement()
+                        .accessibilityLabel("Window bottom safe area")
+                        .accessibilityValue(String(Double(viewport.safeAreaInsets.bottom)))
+                        .accessibilityIdentifier("fixture.bottom-inset")
+                }
+            }
+        } else { shell { EmptyView() } }
+        #else
+        shell { EmptyView() }
+        #endif
+    }
+
+    private func shell<Dock: View>(@ViewBuilder dock: @escaping () -> Dock) -> some View {
         StationNavigationShell(state: navigation, idiom: device, session: session,
                                send: { navigation.apply($0) }, detail: { _ in screen },
-                               inspector: { EmptyView() }, dock: { _ in EmptyView() })
+                               inspector: { EmptyView() }, dock: { _ in dock() })
             .environment(\.stationTheme, .astra)
     }
 

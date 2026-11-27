@@ -51,7 +51,9 @@ struct StationScreen<Header: View, Listening: View, Pane: View, Dock: View, Rout
                     dock({ listeningDetails = true }, { sheet = .routes })
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { dockHeight = $0 }
                 }
+                .contentMargins(.vertical, 0, for: .scrollContent)
                 .scrollBounceBehavior(.basedOnSize)
+                .accessibilityIdentifier("station.dock-scroll")
                 .frame(height: min(dockHeight, max(90, viewport.size.height * 0.5)))
             }
         }
