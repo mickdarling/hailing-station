@@ -8,23 +8,18 @@ These ten flows trace the owner's reports to decisions on merged main at [Hailin
 flowchart TD
     source["haild handles a Privacy change"]
     source -->|Owner turned Off on newer connection| off["Clear its hold, all parks and overflow"]
-    off -->|Older holder still counts| restore["FAIL · HS #1456<br/>Next Ambient start inherits Privacy again"]
-    source -->|Pre-arm or restore| unseen["FAIL · HS #1456 (inferred)<br/>Failed On notice leaves a holder armed"]
-    unseen -->|If the holder still counts| restore
-    restore --> child["haild reports On with reason=device<br/>and starts RightyO private"]
-    source -->|Active stream, Privacy off| entry["No pipeline accepts requested On"]
-    entry -->|Device switch| device["FAIL · HS #735<br/>Stay off. Attempt Off notice, then eligible not-sent clip"]
-    entry -->|Verified spoken entry| voice["FAIL · HS #735<br/>Stay off. Eligible not-sent clip only, no device notice"]
+    off -->|Unarmed B starts Ambient while older holder A still counts| restore["FAIL · HS #1456<br/>B restores Privacy from A, attempts On notice with reason=device<br/>and starts RightyO private"]
+    source -->|Pre-arm or restore| unseen["FAIL · HS #1456 (inferred)<br/>Failed On notice leaves connection A armed"]
+    unseen -->|Unarmed B starts Ambient while A still counts| restore
+    unseen -->|Ambient restarts on still-armed A| same["A starts RightyO private without another restore notice"]
     source -.-> other["(other paths: see source)"]
     click restore "https://github.com/mickdarling/hailing-station/issues/1456#issuecomment-7220204352"
     click unseen "https://github.com/mickdarling/hailing-station/issues/1456#issuecomment-7224732494"
-    click device "https://github.com/mickdarling/hailing-station/issues/735"
-    click voice "https://github.com/mickdarling/hailing-station/issues/735"
 ```
 
 The iPhone trace pairs `ambient_privacy_off_scoped` with a later `ambient_privacy_restored source=live device_match=false`. An older connection of the same phone still counted as a holder. On the Mac the owner confirmed a tap. A reconnect can also reassert On, so `reason=device` alone does not identify the source. [iPhone #1456][stale-holder] · [Failed-notice evidence][failed-notice] · [Mac tap][mac-tap] · [D01] · [D02] · [D03] · [D04] · [D12]
 
-For spoken control, haild acts on a matching live, non-echo final and retains the last 32 **entry or negation** IDs. A claimed request must repeat the same heard turn. While its ID is retained, haild holds the request without repeating the command, even if owner evidence changes. Changed words fail validation. After eviction, haild checks the same words against current owner evidence and can apply the command again. Neither command goes to the target. [R22] · [Request validation][request-check] · [Refused-entry notices, HS #735][hs735] · [Voice refusal test][voice-refusal]
+For spoken control, haild acts on a matching live, non-echo final and retains the last 32 **entry or negation** IDs. A claimed request must repeat the same heard turn. While its ID is retained, haild holds the request without repeating the command, even if owner evidence changes. Changed words fail validation. After eviction, haild checks the same words against current owner evidence and can apply the command again. Neither command goes to the target. If Privacy is off on an active stream and no pipeline accepts On, it stays off. For a device switch, haild attempts an Off notice, then plays the not-sent clip if eligible. For verified spoken entry, only the clip is eligible. [R22] · [Request validation][request-check] · [Refused-entry notices, HS #735][hs735] · [Voice refusal test][voice-refusal]
 
 ## 2. My statements to Jarvis didn't get through
 
@@ -130,7 +125,7 @@ flowchart TD
     click atten "https://github.com/mickdarling/hailing-station/issues/1457"
 ```
 
-In #1457, the reply to fragment three played over fragment four. The owner reported that little speech got through over the phone speaker. During reply playback and its default 400 ms tail, the guard zeroes samples if reply masking is enabled or the reply lacks an effective echo-cancelled route. With masking off and the reply on the VPIO engine, the guard forwards processed mic audio. A device `echo_guard masking=true` record distinguishes actual masking from possible VPIO attenuation. [HS #1457][hs1457] · [R08] · [I04] · [I05] · [P09]
+The owner reported that little of fragment four got through over the reply to fragment three. During playback and its default 400 ms tail, the guard zeroes samples if reply masking is enabled or the reply lacks an echo-cancelled route. With reply masking off and playback through VPIO, the guard forwards processed mic audio unless Tap to Talk or its tail is active. Match the overlap to the device’s `echo_guard` timestamps and check the `reason` on `masking=true` transitions, including `tap_to_talk`. [HS #1457][hs1457] · [R08] · [I04] · [I05] · [P09]
 
 ## 9. Uncued, unnamed side-talk reached the agent
 
@@ -144,7 +139,7 @@ flowchart TD
     click direct "https://github.com/mickdarling/rightyo/issues/340#issuecomment-7227615094"
 ```
 
-With a 120-second conversation window open, the first uncued follow-up had an attend probability of 0.37. Three more followed at 0.53, 0.53 and 0.25. The fresh `attend` scored 0.96 and needed neither a name nor follow-up promotion. Compare `follow_up=true` with a fresh attention decision carrying a request ID. [RightyO #340 follow-up evidence][side-follow] · [Fresh-request evidence][side-fresh] · [R13] · [R14] · [R16] · [R17] · [R18] · [R20]
+With a 120-second conversation window open, the uncued follow-ups had attend probabilities of 0.37, 0.53, 0.53 and 0.25. Both dispatch paths carry `request_id`. The promoted turns set `decision.follow_up=true`. The fresh, unnamed `attend` to `system` scored 0.96 and omitted `decision.follow_up`. [RightyO #340 follow-up evidence][side-follow] · [Fresh-request evidence][side-fresh] · [R13] · [R14] · [R16] · [R17] · [R18] · [R20]
 
 ## 10. An ordinary sentence can end Privacy
 
@@ -152,16 +147,14 @@ With a 120-second conversation window open, the first uncued follow-up had an at
 flowchart TD
     match["RightyO verifies the owner's turn locally<br/>Speech is wholly within the current private period"]
     match -->|Configured name then exit phrase| prefix["FAIL · RightyO #350<br/>Matcher accepts the exit phrase despite trailing words"]
-    match -->|Next turn starts with exit phrase within 4 s of verified name| prefix
+    match -->|Next turn starts with exit phrase within 4 s of verified name's end| prefix
     prefix --> exitEvent["Child emits content-free privacy.exit<br/>Armed haild requests Off and clears its hold"]
-    exitEvent --> control["Child receives Off on --control-fd 3"]
-    control -->|Plain Off| plain["Child applies Off on receipt"]
-    control -->|Off with after_sample| positioned["Child applies Off once it reaches the sample<br/>and catches up with received PCM"]
+    exitEvent -->|Off with after_sample on --control-fd 3| positioned["Child applies Off once it reaches the sample<br/>and catches up with received PCM"]
     match -.-> other["(other paths: see source)"]
     click prefix "https://github.com/mickdarling/rightyo/issues/350"
 ```
 
-Synthetic replay on RightyO `f134780` confirmed both forms for a bound owner. In the split case the next turn starts with the exit phrase within four seconds of the verified name's end. The same continuation without a name produced no exit. Haild receives only the action. Both Off commands travel on the control descriptor. Stdin carries PCM, and `after_sample` counts complete samples in that stream. [RightyO #350][ry350] · [Local phrase matcher][matcher] · [Private-turn check][private-check] · [Control descriptor][control-fd] · [Control reader][control-reader] · [Sample boundary][sample-boundary] · [R22] · [D04]
+Synthetic replay on RightyO `f134780` confirmed both named exits for a bound owner. The unnamed continuation produced no exit. This child advertises `duck_after_sample` with Privacy, so haild always uses positioned Off with this pair. The position counts complete PCM samples on stdin. The plain Off fallback is unreachable here. On hosts that send plain Off on the control descriptor, the child applies it on receipt and can publish audio buffered while private. [Plain-Off exposure, RightyO #354][ry354] · [RightyO #350][ry350] · [Local phrase matcher][matcher] · [Private-turn check][private-check] · [Control descriptor][control-fd] · [Control reader][control-reader] · [Sample boundary][sample-boundary] · [R22] · [D04]
 
 [hs-main]: https://github.com/mickdarling/hailing-station/tree/c36e14977d7f5a1c4dee8ff520577519db3c076e
 [ry-main]: https://github.com/mickdarling/rightyo/tree/f13478021bf387e9fcfdcf7ddc7a65ec61402422
@@ -181,6 +174,7 @@ Synthetic replay on RightyO `f134780` confirmed both forms for a bound owner. In
 [side-follow]: https://github.com/mickdarling/rightyo/issues/340#issuecomment-7227559870
 [side-fresh]: https://github.com/mickdarling/rightyo/issues/340#issuecomment-7227615094
 [ry350]: https://github.com/mickdarling/rightyo/issues/350
+[ry354]: https://github.com/mickdarling/rightyo/issues/354
 [request-check]: https://github.com/mickdarling/hailing-station/blob/c36e14977d7f5a1c4dee8ff520577519db3c076e/Sources/HailDaemonKit/Input/RightyoInputConsumer.swift#L913
 [voice-refusal]: https://github.com/mickdarling/hailing-station/blob/c36e14977d7f5a1c4dee8ff520577519db3c076e/Tests/HailDaemonKitTests/AmbientDuckModeTests.swift#L44
 [matcher]: https://github.com/mickdarling/rightyo/blob/f13478021bf387e9fcfdcf7ddc7a65ec61402422/src/rightyo/tool_events.py#L391
