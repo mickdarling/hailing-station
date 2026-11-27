@@ -125,7 +125,7 @@ flowchart TD
     click atten "https://github.com/mickdarling/hailing-station/issues/1457"
 ```
 
-The owner reported that little of fragment four got through over the reply to fragment three. During playback and its default 400 ms tail, the guard zeroes samples if reply masking is enabled or the reply lacks an echo-cancelled route. With reply masking off and playback through VPIO, the guard forwards processed mic audio unless Tap to Talk or its tail is active. Match the overlap to the device’s `echo_guard` timestamps and check the `reason` on `masking=true` transitions, including `tap_to_talk`. [HS #1457][hs1457] · [R08] · [I04] · [I05] · [P09]
+In #1457, the reply to fragment three played over fragment four. The owner also reports that little speech gets through while a reply plays on the phone speaker. During playback and its default 400 ms tail, the guard zeroes samples if reply masking is enabled or the reply lacks an echo-cancelled route. With reply masking off and playback through VPIO, the guard forwards processed mic audio unless Tap to Talk or its tail is active. Match the overlap to the device’s `echo_guard` timestamps and check the `reason` on `masking=true` transitions, including `tap_to_talk`. [HS #1457][hs1457] · [R08] · [I04] · [I05] · [P09]
 
 ## 9. Uncued, unnamed side-talk reached the agent
 
