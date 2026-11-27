@@ -28,7 +28,8 @@ struct AudioOutputRouteBurstTests {
             #expect(session.effects.isEmpty)
             #expect(session.decisionReasons.last == .userChoiceAssumed)
         } else {
-            #expect(session.effects == [.setCategory(.init())])
+            // A real external output releases the latch without clearing the speaker default (#1429).
+            #expect(session.effects.isEmpty)
             #expect(session.decisionReasons.last == .externalOutputActive)
         }
     }

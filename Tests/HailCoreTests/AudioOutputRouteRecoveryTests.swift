@@ -34,7 +34,8 @@ import Testing
         #expect(session.categories == 1)
         #expect(session.clears == 1)
         #expect(session.effects.count == 2)
-        #expect(!session.options.defaultToSpeaker)
+        // Capture recovery leaves the audible fallback enabled (#1429).
+        #expect(session.options.defaultToSpeaker)
     }
 
     @Test(arguments: [Policy.Category.playback, .other], [false, true])
