@@ -4,6 +4,28 @@ import XCTest
 /// Shared by Hail-macOSUITests and Hail-iOSUITests. Select only the in-memory peer's target and exercise
 /// presentation controls. Never press Talk, Interrupt, the system Paste button or Send.
 final class ShellWindowStationStateScreenshotTests: XCTestCase, ShellWindowUITestSupport {
+    @MainActor
+    func testTalkButtonSnapshotsInBothAppearances() {
+        let previous = XCUIDevice.shared.appearance
+        defer { XCUIDevice.shared.appearance = previous }
+        for appearance in [XCUIDevice.Appearance.light, .dark] {
+            XCUIDevice.shared.appearance = appearance
+            for state in [StationTranscriptSeed.ready, .awaitingReply, .recording] {
+                let app = launchStation(arguments: ["-seed-navigation-shell", "-seed-station-state", state.rawValue])
+                let button = app.buttons["station.talk"]
+                XCTAssertTrue(button.waitForExistence(timeout: 8))
+                XCTAssertEqual(button.isEnabled, state.dock.isEnabled)
+                XCTAssertEqual(button.label, state.dock.label)
+                let snapshot = XCTAttachment(screenshot: button.screenshot())
+                let scheme = appearance == .dark ? "dark" : "light"
+                snapshot.name = "\(device)-talk-\(state.rawValue)-\(scheme)"
+                snapshot.lifetime = .keepAlways
+                add(snapshot)
+                app.terminate()
+            }
+        }
+    }
+
     override func setUpWithError() throws {
         continueAfterFailure = false
         #if os(iOS) && !targetEnvironment(simulator)

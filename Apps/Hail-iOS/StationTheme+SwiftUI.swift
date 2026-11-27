@@ -76,3 +76,21 @@ struct StationTalkDisc: ViewModifier {
             .shadow(color: fill.opacity(0.25), radius: 12, y: 6)
     }
 }
+
+struct StationTalkButtonStyle: ButtonStyle {
+    let recording: Bool
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.stationPalette) private var palette
+
+    func makeBody(configuration: Configuration) -> some View {
+        let colors: (fill: StationTheme.Role, ink: StationTheme.Role) = isEnabled
+            ? (recording ? .stateLive : .accentTalk, .brandOnBrand)
+            : (.textSecondary, .elevatedSurface)
+        configuration.label
+            .padding(.horizontal, 8)
+            .foregroundStyle(palette[colors.ink])
+            .background(palette[colors.fill], in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+    }
+}

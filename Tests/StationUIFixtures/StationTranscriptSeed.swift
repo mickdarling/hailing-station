@@ -22,14 +22,15 @@ enum StationDisplaySeedLaunch {
 /// Immutable inputs for rendering the real Station components. No store, controllers, transport or input actions.
 enum StationTranscriptSeed: String, CaseIterable, Sendable {
     case listening, `private`, pending, recording, handoff, media, ready, held, refused
-    case decodeFailed, playbackFailed, incompleteAudio, discardedAudio, attribution, scrolling
+    case decodeFailed, playbackFailed, incompleteAudio, discardedAudio, attribution, scrolling, awaitingReply
 
     static let session = DestinationLabel(hostName: "Studio Mac", targetName: "Workbench",
                                           targetKind: "tmux", targetID: "fixture-workbench")
 
     var listeningPhase: StationMenuStatus.Listening {
         switch self {
-        case .ready, .recording, .decodeFailed, .playbackFailed, .incompleteAudio, .discardedAudio, .scrolling: .off
+        case .ready, .recording, .decodeFailed, .playbackFailed, .incompleteAudio, .discardedAudio,
+             .scrolling, .awaitingReply: .off
         case .handoff: .elsewhere
         case .listening, .private, .pending, .media, .held, .refused, .attribution: .listening
         }
@@ -53,14 +54,15 @@ enum StationTranscriptSeed: String, CaseIterable, Sendable {
 
     var inputEngine: MicEngineState {
         switch self {
-        case .ready, .handoff, .decodeFailed, .playbackFailed, .incompleteAudio, .discardedAudio, .scrolling: .stopped
+        case .ready, .handoff, .decodeFailed, .playbackFailed, .incompleteAudio, .discardedAudio,
+             .scrolling, .awaitingReply: .stopped
         case .listening, .private, .pending, .recording, .media, .held, .refused, .attribution: .running
         }
     }
 
     var dock: VoiceDockState {
         let accessories = DockAccessories(escape: true, privacy: true, paste: true)
-        return .resolve(talk: TalkActivity(phase: talkPhase, sendPending: false, interrupting: false),
+        return .resolve(talk: TalkActivity(phase: talkPhase, sendPending: self == .awaitingReply, interrupting: false),
                         destination: .confirmed(Self.session), accessories: accessories)
     }
 }

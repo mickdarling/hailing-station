@@ -66,12 +66,10 @@ struct VoiceDockView: View {
         } label: {
             Label(state.label, systemImage: state.symbol)
                 .font(.headline)
-                .foregroundStyle(palette[.brandOnBrand])
+                .labelStyle(.titleAndIcon)
                 .frame(maxWidth: .infinity, minHeight: target)
         }
-        .buttonStyle(.borderedProminent)
-        .tint(palette[state.primary == .finish ? .stateLive : .accentTalk])
-        .controlSize(.regular)
+        .buttonStyle(StationTalkButtonStyle(recording: state.primary == .finish))
         .disabled(!state.isEnabled)
         .accessibilityValue(state.value)
         .accessibilityHint(state.hint)
