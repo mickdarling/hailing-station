@@ -169,10 +169,10 @@ enum AudioOutputSessionRouting {
         let desired = AudioOutputRoutePolicy.configurationOptions(
             outputs: portTypes(current.outputs), options: policyOptions(options)
         )
-        try AudioRouteObservations.shared.categoryWrite(
-            before: AudioRoutePorts(current), result: AudioRouteSettings(session), policyApply: false
-        ) {
-            try session.setCategory(.playAndRecord, mode: .default, options: applying(desired, to: options))
+        try session.setCategoryIfNeeded(.playAndRecord, options: applying(desired, to: options)) { write in
+            try AudioRouteObservations.shared.categoryWrite(
+                before: AudioRoutePorts(current), result: AudioRouteSettings(session), policyApply: false, write: write
+            )
         }
     }
 
@@ -197,11 +197,11 @@ enum AudioOutputSessionRouting {
     static func apply(_ effect: AudioOutputRouteDriver.Effect, to session: AVAudioSession) throws {
         switch effect {
         case .setCategory(let desired):
-            try AudioRouteObservations.shared.categoryWrite(
-                before: AudioRoutePorts(session.currentRoute), result: AudioRouteSettings(session), policyApply: true
-            ) {
-                try session.setCategory(
-                    session.category, mode: session.mode, options: applying(desired, to: session.categoryOptions)
+            let options = applying(desired, to: session.categoryOptions)
+            try session.setCategoryIfNeeded(session.category, mode: session.mode, options: options) { write in
+                try AudioRouteObservations.shared.categoryWrite(
+                    before: AudioRoutePorts(session.currentRoute), result: AudioRouteSettings(session),
+                    policyApply: true, write: write
                 )
             }
         case .clearOverride:
@@ -228,9 +228,7 @@ enum AudioOutputSessionRouting {
     private static func applying(
         _ desired: AudioOutputRoutePolicy.Options, to options: AVAudioSession.CategoryOptions
     ) -> AVAudioSession.CategoryOptions {
-        var result = options
-        if desired.defaultToSpeaker { result.insert(.defaultToSpeaker) } else { result.remove(.defaultToSpeaker) }
-        return result
+        desired.defaultToSpeaker ? options.union(.defaultToSpeaker) : options
     }
 
     private static func reason(_ raw: UInt) -> AudioOutputRoutePolicy.Reason {
@@ -241,6 +239,22 @@ enum AudioOutputSessionRouting {
         case .categoryChange: .categoryChange
         case .routeConfigurationChange: .routeConfigurationChange
         default: .other
+        }
+    }
+}
+
+extension AVAudioSession {
+    @MainActor
+    func setCategoryIfNeeded(
+        _ category: Category, mode: Mode = .default, options: CategoryOptions,
+        observe: (_ write: () throws -> Void) throws -> Void = { try $0() }
+    ) throws {
+        try AudioOutputRouteDriver.writeCategoryIfNeeded(
+            .init(category: category, mode: mode, options: options),
+            live: .init(category: self.category, mode: self.mode, options: categoryOptions),
+            playAndRecord: .playAndRecord, allowA2DP: .allowBluetoothA2DP
+        ) { normalized in
+            try observe { try self.setCategory(category, mode: mode, options: normalized) }
         }
     }
 }
@@ -278,6 +292,25 @@ enum AudioOutputRouteDriver {
     enum Effect: Equatable, Sendable {
         case setCategory(AudioOutputRoutePolicy.Options)
         case clearOverride
+    }
+
+    struct CategorySettings<Category: Equatable, Mode: Equatable, Options: SetAlgebra>: Equatable {
+        let category: Category
+        let mode: Mode
+        var options: Options
+    }
+
+    /// Compare the complete AV settings after restoring A2DP, including on a keepalive restore (#1429).
+    static func writeCategoryIfNeeded<Category: Equatable, Mode: Equatable, Options: SetAlgebra>(
+        _ target: CategorySettings<Category, Mode, Options>, live: CategorySettings<Category, Mode, Options>,
+        playAndRecord: Category, allowA2DP: Options, write: (Options) throws -> Void
+    ) rethrows {
+        var normalized = target
+        if target.category == playAndRecord {
+            normalized.options = target.options.union(allowA2DP)
+        }
+        guard normalized != live else { return }
+        try write(normalized.options)
     }
 
     @MainActor

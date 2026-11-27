@@ -24,7 +24,7 @@ public final class SilentAudioKeepalive: NSObject, BackgroundKeepaliveRendering 
     public func start() throws {
         if !holdsCategory { found = (session.category, session.categoryOptions) }
         do {
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try session.setCategoryIfNeeded(.playback, options: [.mixWithOthers])
             try session.setActive(true)
             try startEngine()
         } catch {
@@ -44,7 +44,7 @@ public final class SilentAudioKeepalive: NSObject, BackgroundKeepaliveRendering 
         // Capture (tap-to-talk, ambient) has configured the session since: it is theirs, active or not (#354).
         guard holdsCategory else { return }
         try? session.setActive(false, options: .notifyOthersOnDeactivation)
-        if let found { try? session.setCategory(found.category, mode: .default, options: found.options) }
+        if let found { try? session.setCategoryIfNeeded(found.category, options: found.options) }
     }
 
     /// Still the category the keepalive set: nothing (tap-to-talk, ambient) has configured the session since.

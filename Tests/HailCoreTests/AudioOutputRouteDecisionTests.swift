@@ -17,7 +17,8 @@ import Testing
         )
         session.send(connected)
         #expect(session.decisionReasons.last == .repairRequested)
-        let repair: [AudioOutputRouteDriver.Effect] = [.setCategory(.init()), .clearOverride]
+        // A route repair keeps the live speaker default (#1429).
+        let repair: [AudioOutputRouteDriver.Effect] = [.setCategory(.init(defaultToSpeaker: true)), .clearOverride]
         #expect(session.effects == repair)
         session.send(connected)
         #expect(session.decisionReasons.last == .noHardwareEpisode)

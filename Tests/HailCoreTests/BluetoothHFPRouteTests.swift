@@ -107,7 +107,8 @@ struct BluetoothHFPRouteTests {
         session.overrideOutputs = [.bluetoothA2DP]
         session.send(connected)
         session.drainEchoes()
-        let repair: [AudioOutputRouteDriver.Effect] = [.setCategory(.init()), .clearOverride]
+        // A route repair keeps the live speaker default (#1429).
+        let repair: [AudioOutputRouteDriver.Effect] = [.setCategory(.init(defaultToSpeaker: true)), .clearOverride]
         #expect(session.effects == repair)
 
         for available in [[Policy.Port.builtInMic], [.builtInMic, .bluetoothHFP]] {

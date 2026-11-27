@@ -48,13 +48,14 @@ import Testing
             options: blip.options, outputs: [.speaker], inputs: [.usbAudio], reason: .newDeviceAvailable
         ), state: blip.state)
         #expect(returned.clearOverride)
-        #expect(!returned.options.defaultToSpeaker)
+        // Route changes can enable the speaker default, but cannot clear it (#1429).
+        #expect(returned.options.defaultToSpeaker)
         for reason in Self.recoveryReasons {
             let repeated = Policy.routeChange(.init(
                 options: returned.options, outputs: [.speaker], inputs: [.usbAudio], reason: reason
             ), state: returned.state)
             #expect(!repeated.clearOverride)
-            #expect(!repeated.options.defaultToSpeaker)
+            #expect(repeated.options.defaultToSpeaker)
         }
     }
 
@@ -65,7 +66,7 @@ import Testing
             previousOutputs: [.bluetoothA2DP], previousInputs: [.builtInMic], reason: reason
         ), state: .init())
         #expect(decision.clearOverride == Self.recoveryReasons.contains(reason))
-        if Self.recoveryReasons.contains(reason) { #expect(!decision.options.defaultToSpeaker) }
+        #expect(decision.options.defaultToSpeaker) // Even a repair keeps the fallback (#1429).
     }
 
     @Test(arguments: Policy.Reason.allCases)
@@ -88,8 +89,7 @@ import Testing
             options: .init(defaultToSpeaker: true), outputs: [output], inputs: [.usbAudio], reason: reason
         ), state: .init(externalOutputSeen: true,
                        lastInputs: [.usbAudio], lastOutputs: [output]))
-        let cacheOnly = reason == .categoryChange || reason == .routeConfigurationChange
-        #expect(decision.options.defaultToSpeaker == cacheOnly)
+        #expect(decision.options.defaultToSpeaker) // An active external output leaves the fallback alone (#1429).
         #expect(!decision.clearOverride)
         #expect(decision.state.externalOutputSeen)
     }

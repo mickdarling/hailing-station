@@ -15,7 +15,8 @@ import Testing
         let connected = Self.available(port, warm: warm)
         session.send(connected)
         #expect(session.decisionReasons.last == .repairRequested)
-        let repair: [AudioOutputRouteDriver.Effect] = [.setCategory(.init()), .clearOverride]
+        // A route repair keeps the live speaker default (#1429).
+        let repair: [AudioOutputRouteDriver.Effect] = [.setCategory(.init(defaultToSpeaker: true)), .clearOverride]
         #expect(session.effects == repair)
         #expect(session.state.externalOutputSeen)
         session.send(connected)
@@ -96,7 +97,8 @@ import Testing
         #expect(session.state.lastAvailability == nil)
         session.options.defaultToSpeaker = true
         session.send(.init(outputs: [.speaker], inputs: [.builtInMic], reason: .other))
-        #expect(session.effects == [.setCategory(.init()), .clearOverride])
+        // The same speaker-default rule applies after keepalive (#1429).
+        #expect(session.effects == [.setCategory(.init(defaultToSpeaker: true)), .clearOverride])
         #expect(!session.state.inputLossPending)
     }
 

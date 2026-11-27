@@ -94,7 +94,6 @@ struct AudioOutputRoutePolicy: Sendable {
         // Category/configuration notifications can cache evidence, but never cause effects or latch a choice.
         guard route.reason != .categoryChange, route.reason != .routeConfigurationChange else { return result }
         if externalOutput {
-            result.options.defaultToSpeaker = false
             result.reason = .externalOutputActive
             return result
         }
@@ -113,13 +112,15 @@ struct AudioOutputRoutePolicy: Sendable {
         }
         if route.reason == .oldDeviceUnavailable, !lostUSBInput(route) {
             result.state.externalOutputSeen = false
-            result.options = configurationOptions(outputs: route.outputs, options: route.options)
+            // Route changes may enable the audible fallback, but must never turn it off (#1429).
+            if !route.options.defaultToSpeaker {
+                result.options = configurationOptions(outputs: route.outputs, options: route.options)
+            }
             result.reason = .noExternalEvidence
             return result
         }
         result.reason = recoveryReason(route, episode: episode, state: result.state)
         guard result.reason == .repairRequested else { return result }
-        result.options.defaultToSpeaker = false
         result.clearOverride = true
         return result
     }

@@ -23,8 +23,9 @@ struct AudioOutputRouteCategoryChangeTests {
             #expect(session.effects.isEmpty)
             #expect(session.decisionReasons.last == .userChoiceAssumed)
         } else {
-            #expect(session.effects == [.setCategory(.init())])
-            #expect(!session.options.defaultToSpeaker)
+            // Hardware arrival must leave the live speaker default alone (#1429).
+            #expect(session.effects.isEmpty)
+            #expect(session.options.defaultToSpeaker)
         }
     }
 
