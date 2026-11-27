@@ -1,3 +1,4 @@
+import Combine
 import HailCore
 import SwiftUI
 
@@ -10,30 +11,42 @@ struct StationRedesignLabsSection: View {
         } header: {
             Text("Redesign")
         } footer: {
-            Text("Each one is off by default and takes effect after you relaunch Hailing Station.")
+            Text("Navigation is on by default. Turn it off to use the classic station. Changes apply after relaunch.")
         }
     }
 }
 
 private struct StationRedesignToggle: View {
     let step: StationRedesignStep
-    @AppStorage private var isOn: Bool
+    @AppStorage private var storedIsOn: Bool
+    @State private var hasMalformedValue: Bool
 
     init(step: StationRedesignStep) {
         self.step = step
-        _isOn = AppStorage(wrappedValue: false, step.key)
+        _storedIsOn = AppStorage(wrappedValue: step.isOnByDefault, step.key, store: .standard)
+        _hasMalformedValue = State(initialValue: step.hasMalformedValue(in: .standard))
     }
 
     var body: some View {
+        let isOn = hasMalformedValue ? step.isOnByDefault : storedIsOn
         VStack(alignment: .leading, spacing: 4) {
-            Toggle(step.title, isOn: $isOn)
-                .accessibilityIdentifier(step.key)
+            Toggle(step.title, isOn: Binding(get: { isOn }, set: { choice in
+                step.save(choice, in: .standard)
+                hasMalformedValue = false
+            }))
+            .accessibilityIdentifier(step.key)
             if isOn != StationRedesignLaunch.flags.isOn(step) {
                 Text("Relaunch to apply")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("\(step.key).pending")
             }
+        }
+        // A repair in another window can change the raw type without changing AppStorage's coerced Bool.
+        .onReceive(NotificationCenter.default.publisher(
+            for: UserDefaults.didChangeNotification, object: UserDefaults.standard
+        ).receive(on: RunLoop.main)) { _ in
+            hasMalformedValue = step.hasMalformedValue(in: .standard)
         }
     }
 }

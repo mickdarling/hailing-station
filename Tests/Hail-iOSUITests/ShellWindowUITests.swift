@@ -65,7 +65,8 @@ final class ShellWindowUITests: XCTestCase, ShellWindowUITestSupport {
 
     @MainActor
     func testSidebarRecoveryAndLabsOptOut() {
-        let app = launchStation(shellEnabled: true)
+        let app = launchStation()
+        XCTAssertTrue(section("station", in: app).waitForExistence(timeout: 10), "New installs use the shell")
         if device != "iphone" {
             toggleSidebar(in: app, visibleAfter: false)
             screen("station.connection", named: "station-sidebar-hidden", in: app)
@@ -161,6 +162,15 @@ final class ShellWindowUITests: XCTestCase, ShellWindowUITestSupport {
 }
 
 extension ShellWindowUITests {
+    @MainActor
+    func testMalformedShellPreferenceShowsTheLaunchDefaultInLabs() {
+        let app = launchStation(arguments: ["-station.redesign.shell", "invalid"])
+        choose("settings", in: app)
+        openSetting("station.settings.labs", shows: "station.redesign.shell", named: "labs-default", in: app)
+        XCTAssertEqual(String(describing: shellToggle(in: app).value ?? ""), "1")
+        XCTAssertFalse(element("station.redesign.shell.pending", in: app).exists)
+    }
+
     @MainActor
     func testRedesignedConversationHasNoTextSizeControl() {
         let app = launchStation(shellEnabled: true, arguments: ["-seed-conversation", "1"])

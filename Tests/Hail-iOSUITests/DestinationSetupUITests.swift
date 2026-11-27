@@ -10,8 +10,7 @@ final class DestinationSetupUITests: XCTestCase {
         guard ProcessInfo.processInfo.environment["SIMULATOR_UDID"] != nil else {
             throw XCTSkip("The empty-state setup check runs in a fresh simulator.")
         }
-        let app = XCUIApplication()
-        app.launchArguments.append("-reset-station-state")
+        let app = ClassicStationFixture.application(reset: true)
         app.launch()
 
         let setup = app.buttons["station.setup-mac"]
@@ -27,8 +26,7 @@ final class DestinationSetupUITests: XCTestCase {
         guard ProcessInfo.processInfo.environment["SIMULATOR_UDID"] != nil else {
             throw XCTSkip("The connection check runs in a fresh simulator.")
         }
-        let app = XCUIApplication()
-        app.launchArguments.append("-reset-station-state")
+        let app = ClassicStationFixture.application(reset: true)
         app.launch()
 
         let setup = app.buttons["station.setup-mac"]
@@ -76,7 +74,7 @@ final class DestinationSetupUITests: XCTestCase {
         guard let targetLabel = ProcessInfo.processInfo.environment["HAIL_UI_TARGET_LABEL"] else {
             throw XCTSkip("Set the sanitized physical host and target UI test environment.")
         }
-        let app = XCUIApplication()
+        let app = ClassicStationFixture.application()
         app.launch()
 
         let destination = app.buttons["station.destination"]

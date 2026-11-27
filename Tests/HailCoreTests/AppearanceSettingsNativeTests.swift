@@ -9,6 +9,7 @@ import Testing
 @MainActor
 struct AppearanceSettingsNativeTests {
     @Test func theNativeViewObservesChangesAndCanExportSyntheticScreenshots() async throws {
+        NativeShellLaunchContext.install() // Rendering Appearance can take the process's first shell snapshot.
         let suite = "AppearanceSettingsNativeTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }

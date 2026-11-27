@@ -1,6 +1,6 @@
 # Native Listening and attention Settings (#1115)
 
-This slice adds **Settings > Listening and attention** inside the existing default-off
+This slice adds **Settings > Listening and attention** inside the existing default-on
 `station.redesign.shell` launch gate. The [settings design](design/settings-design.md) supplies the group;
 the page exposes only the current ambient owner's reading and the existing local echo-mask preference.
 Native Form/navigation, system safe areas, wrapping and Dynamic Type replace illustrative frame geometry.

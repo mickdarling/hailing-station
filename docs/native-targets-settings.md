@@ -1,6 +1,6 @@
 # Native Targets Settings overview (#1115)
 
-This slice adds **Settings > Targets** inside the existing default-off `station.redesign.shell` launch gate.
+This slice adds **Settings > Targets** inside the existing default-on `station.redesign.shell` launch gate.
 It uses three production files: `TargetsSettingsView.swift`, `RootView+Settings.swift` and
 `RootView+Navigation.swift`. There is no new flag, HailCore change, selection owner or connection/persistence task.
 

@@ -11,8 +11,7 @@ final class StationBuildFooterTests: XCTestCase {
     @MainActor
     func testFooterRemainsVisibleAcrossStationScrollAndRotation() throws {
         addTeardownBlock { @MainActor in XCUIDevice.shared.orientation = .portrait }
-        let app = XCUIApplication()
-        app.launchArguments.append("-reset-station-state")
+        let app = ClassicStationFixture.application(reset: true)
         app.launch()
         let label = try assertFooter(in: app)
         app.scrollViews.firstMatch.swipeUp()
@@ -23,9 +22,9 @@ final class StationBuildFooterTests: XCTestCase {
 
     @MainActor
     func testFooterSupportsLargestDynamicTypeWhileScrolling() throws {
-        let app = XCUIApplication()
+        let app = ClassicStationFixture.application(reset: true)
         app.launchArguments += [
-            "-reset-station-state", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"
+            "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"
         ]
         app.launch()
         let label = try assertFooter(in: app)
@@ -35,8 +34,7 @@ final class StationBuildFooterTests: XCTestCase {
 
     @MainActor
     func testFooterRemainsAvailableWithAConfiguredOfflineMac() throws {
-        let app = XCUIApplication()
-        app.launchArguments.append("-reset-station-state")
+        let app = ClassicStationFixture.application(reset: true)
         app.launch()
         let label = try assertFooter(in: app)
         XCTAssertTrue(app.staticTexts["Connect Haili to a Mac"].exists)

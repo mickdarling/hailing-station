@@ -11,8 +11,7 @@ final class DiagnosticsLoggingUITests: XCTestCase {
 
     @MainActor
     func testTheToggleStartsOffAndSaysWhenNoMacIsCollecting() throws {
-        let app = XCUIApplication()
-        app.launchArguments.append("-reset-station-state")
+        let app = ClassicStationFixture.application(reset: true)
         app.launch()
         let toggle = app.switches["station.diagnostics-toggle"]
         for _ in 0..<4 where !toggle.exists { app.scrollViews.firstMatch.swipeUp() }

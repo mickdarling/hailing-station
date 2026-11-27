@@ -13,7 +13,7 @@ final class PreIOS26ConversationUITests: XCTestCase {
         guard let targetLabel = ProcessInfo.processInfo.environment["HAIL_UI_TARGET_LABEL"] else {
             throw XCTSkip("Set HAIL_UI_TARGET_LABEL to the configured physical target label.")
         }
-        let app = XCUIApplication()
+        let app = ClassicStationFixture.application()
         app.launch()
 
         assertDestination(targetLabel, in: app)
@@ -26,7 +26,7 @@ final class PreIOS26ConversationUITests: XCTestCase {
         guard let targetLabel = ProcessInfo.processInfo.environment["HAIL_UI_TARGET_LABEL"] else {
             throw XCTSkip("Set HAIL_UI_TARGET_LABEL to the configured physical target label.")
         }
-        let app = XCUIApplication()
+        let app = ClassicStationFixture.application()
         installPermissionHandler()
         app.launch()
         assertDestination(targetLabel, in: app)

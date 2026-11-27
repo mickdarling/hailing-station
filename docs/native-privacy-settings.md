@@ -1,6 +1,6 @@
 # Native Privacy Settings group (#1115)
 
-This slice adds **Settings > Privacy** inside the existing default-off `station.redesign.shell` launch gate.
+This slice adds **Settings > Privacy** inside the existing default-on `station.redesign.shell` launch gate.
 It uses four production files: `PrivacySettingsView.swift`, `RootView+Settings.swift`, `RootView+Navigation.swift`
 and `RootView.swift`. The fourth file keeps shared device preferences and request-error state above navigation.
 There is no new feature flag or HailCore change. Old station controls remain in place.

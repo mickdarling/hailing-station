@@ -8,12 +8,11 @@ enum NativeShellLaunchContext {
     nonisolated static let optedIn = ProcessInfo.processInfo.environment["HAIL_NATIVE_SHELL_LIFETIME"] == "1"
 
     private static let configured: Bool = {
-        guard optedIn else { return StationRedesignLaunch.flags.isOn(.shell) }
         let defaults = UserDefaults.standard
         let original = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
         let existed = defaults.volatileDomainNames.contains(UserDefaults.argumentDomain)
         var temporary = original
-        temporary[StationRedesignStep.shell.key] = true
+        temporary[StationRedesignStep.shell.key] = optedIn
         defaults.setVolatileDomain(temporary, forName: UserDefaults.argumentDomain)
         defer {
             if existed {

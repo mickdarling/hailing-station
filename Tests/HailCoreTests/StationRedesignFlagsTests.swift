@@ -5,62 +5,75 @@ import Testing
 
 @Suite("Station redesign flags (#1115)")
 struct StationRedesignFlagsTests {
-    @Test func everyStepIsOffWithNothingStored() {
+    // Mick, 2026-11-26: "I'd prefer to keep the new look for new installs. I can always switch it back.
+    // That part doesn't seem like it's degraded or going to revert."
+    @Test func onlyNavigationStartsOnWithNothingStored() {
         let flags = StationRedesignFlags { _ in nil }
         for step in StationRedesignStep.allCases {
-            #expect(!flags.isOn(step))
+            #expect(flags.isOn(step) == (step == .shell))
         }
+    }
+
+    @Test(arguments: [Stored.missing, .int(1), .string("YES"), .array])
+    func anUnlistedFutureStepStartsOff(stored: Stored) {
+        #expect(!StationRedesignStep.isOn(forKey: "station.redesign.future", storedValue: stored.value))
     }
 
     @Test(arguments: [
         (Stored.bool(true), true),
         (.bool(false), false),
-        (.missing, false),
-        (.int(1), false),
-        (.string("YES"), false),
-        (.string("true"), false)
+        (.missing, true),
+        (.int(0), true),
+        (.int(1), true),
+        (.string("NO"), true),
+        (.string("false"), true),
+        (.string("YES"), true),
+        (.string("true"), true),
+        (.array, true)
     ])
-    func aStepIsOnOnlyWhenItsValueIsExactlyTrue(stored: Stored, on: Bool) {
+    func onlyABooleanOverridesTheShellDefault(stored: Stored, on: Bool) {
         let flags = StationRedesignFlags { $0 == StationRedesignStep.shell.key ? stored.value : nil }
         #expect(flags.isOn(.shell) == on)
     }
 
-    @Test func numericPreferencesNeverEnableTheShellAfterUserDefaultsBridging() throws {
+    @MainActor @Test func numericPreferencesUseTheDefaultUntilLabsSavesABoolean() throws {
         let suite = "StationRedesignFlagsTests.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let isolatedDefaults = UserDefaults(suiteName: suite)
+        let defaults = try #require(isolatedDefaults)
         defer { defaults.removePersistentDomain(forName: suite) }
         let key = StationRedesignStep.shell.key
 
-        for value in [NSNumber(value: 1), NSNumber(value: 1.0)] {
+        for value in [NSNumber(value: 0), NSNumber(value: 0.0), NSNumber(value: 1), NSNumber(value: 1.0)] {
             defaults.removeObject(forKey: key)
             defaults.set(value, forKey: key)
-            let raw = try #require(defaults.object(forKey: key) as? NSNumber)
+            let stored = defaults.object(forKey: key) as? NSNumber
+            let raw = try #require(stored)
             #expect(CFGetTypeID(raw) != CFBooleanGetTypeID(), "Numeric fixture: \(Self.storedKind(raw))")
             let numeric = StationRedesignFlags { defaults.object(forKey: $0) }
-            #expect(!numeric.isOn(.shell))
+            #expect(numeric.isOn(.shell))
 
-            // Foundation can coalesce equal-valued writes and keep numeric 1 when true is stored over it.
-            // Do not require coalescing on every platform; when the captured value stays numeric it stays off.
-            defaults.set(true, forKey: key)
-            let afterTrue = try #require(defaults.object(forKey: key) as? NSNumber)
-            if CFGetTypeID(afterTrue) == CFNumberGetTypeID() {
-                let retainedNumeric = StationRedesignFlags { defaults.object(forKey: $0) }
-                #expect(!retainedNumeric.isOn(.shell),
-                        "Equal-valued write retained a number: \(Self.storedKind(afterTrue))")
-            }
+            // An equal numeric 0/1 must not survive the user's explicit false/true.
+            StationRedesignStep.shell.save(value.boolValue, in: defaults)
+            let saved = defaults.object(forKey: key) as? NSNumber
+            let choice = try #require(saved)
+            #expect(CFGetTypeID(choice) == CFBooleanGetTypeID(), "Labs choice: \(Self.storedKind(choice))")
+            let nextLaunch = StationRedesignFlags { defaults.object(forKey: $0) }
+            #expect(nextLaunch.isOn(.shell) == value.boolValue)
         }
     }
 
-    @Test func freshBooleanAndOffToOnPreferencesUseActualBooleanFixtures() throws {
+    @MainActor @Test func freshBooleanAndOffToOnPreferencesUseActualBooleanFixtures() throws {
         let suite = "StationRedesignFlagsTests.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let isolatedDefaults = UserDefaults(suiteName: suite)
+        let defaults = try #require(isolatedDefaults)
         defer { defaults.removePersistentDomain(forName: suite) }
         let key = StationRedesignStep.shell.key
         defaults.removeObject(forKey: key)
 
         for value in [true, false, true] {
             defaults.set(value, forKey: key)
-            let raw = try #require(defaults.object(forKey: key) as? NSNumber)
+            let stored = defaults.object(forKey: key) as? NSNumber
+            let raw = try #require(stored)
             #expect(CFGetTypeID(raw) == CFBooleanGetTypeID(), "Boolean fixture: \(Self.storedKind(raw))")
             #expect(raw.boolValue == value)
             let flags = StationRedesignFlags { defaults.object(forKey: $0) }
@@ -87,6 +100,7 @@ struct StationRedesignFlagsTests {
     /// taken, so the station is never rebuilt mid-session (and a capture never ended) until the next launch.
     @Test func aSnapshotIgnoresLaterChangesToTheStore() {
         let store = Store()
+        store.values[StationRedesignStep.shell.key] = false
         let atLaunch = StationRedesignFlags(stored: store.value)
         store.values[StationRedesignStep.shell.key] = true
         #expect(!atLaunch.isOn(.shell))
@@ -109,13 +123,14 @@ struct StationRedesignFlagsTests {
 }
 
 enum Stored: Sendable, CustomTestStringConvertible {
-    case bool(Bool), int(Int), string(String), missing
+    case bool(Bool), int(Int), string(String), array, missing
 
     var value: Any? {
         switch self {
         case .bool(let value): value
         case .int(let value): value
         case .string(let value): value
+        case .array: [false]
         case .missing: nil
         }
     }

@@ -14,7 +14,7 @@ final class PhysicalTranscriptionSmokeTests: XCTestCase {
             throw XCTSkip("On-device SpeechAnalyzer transcription requires iOS 26 or later.")
         }
 
-        let app = XCUIApplication()
+        let app = ClassicStationFixture.application()
         installPermissionHandler()
         app.launch()
         XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))

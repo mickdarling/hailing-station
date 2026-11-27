@@ -1,7 +1,6 @@
 import XCTest
 
-/// The redesign's Shell step (#1115): off by default, turned on from Labs, applied only after a relaunch, and the
-/// station stays mounted while another section shows.
+/// A classic user's Labs choice applies on relaunch. The station stays mounted while another section shows (#1115).
 final class RedesignShellUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -17,7 +16,7 @@ final class RedesignShellUITests: XCTestCase {
         // Landscape, so an iPad shows its sidebar without the system's reveal button.
         if isPad { XCUIDevice.shared.orientation = .landscapeLeft }
         addTeardownBlock { @MainActor in
-            // A reset launch turns every redesign flag off again, so no other test sees the shell.
+            // Clear this test's Labs choice.
             app.terminate()
             app.launchArguments = ["-reset-station-state"]
             app.launch()
@@ -25,10 +24,10 @@ final class RedesignShellUITests: XCTestCase {
             XCUIDevice.shared.orientation = .portrait
         }
 
-        app.launchArguments = ["-reset-station-state"]
+        app.launchArguments = ClassicStationFixture.resetArguments
         app.launch()
         XCTAssertTrue(app.staticTexts["Hailing Station"].waitForExistence(timeout: 10))
-        XCTAssertFalse(section("devices", in: app, isPad: isPad).exists, "The shell is off by default")
+        XCTAssertFalse(section("devices", in: app, isPad: isPad).exists, "The explicit classic preference is honored")
 
         turnOnShellInLabs(app)
         // Mid-run, the toggle changes nothing: the station is still today's, with no tabs or sidebar.
@@ -172,7 +171,7 @@ final class RedesignShellUITests: XCTestCase {
         let toggle = app.switches["station.redesign.shell"]
         for _ in 0..<4 where !(toggle.exists && toggle.isHittable) { app.swipeUp() }
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
-        XCTAssertEqual(toggle.value as? String, "0", "Off by default")
+        XCTAssertEqual(toggle.value as? String, "0", "The classic seed is off in Labs")
         // The switch itself sits at the trailing edge; a tap on the row's label does not flip it.
         toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
         XCTAssertEqual(toggle.value as? String, "1")
