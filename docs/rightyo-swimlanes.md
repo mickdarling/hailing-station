@@ -4,7 +4,9 @@ A Mac can show **Listening** before haild has a working recognizer. A child can 
 
 [Named request](#1-a-named-request-on-a-public-mac-stream) · [Unnamed statement](#2-an-unnamed-owner-statement) · [Privacy switch](#3-entering-and-leaving-privacy) · [Stale holder](#4-why-privacy-can-come-back-after-off) · [Meeting](#5-an-explicit-meeting-or-an-inferred-second-speaker) · [ASR loss](#6-asr-filtering-retry-and-missing-words) · [Child failure](#7-child-startup-failure-reload-and-retry) · [Reply and echo](#8-acknowledgement-reply-playback-and-echo)
 
-**How to read the map.** The eight columns in the sequence are responsibilities. ASR, identity and attention run inside RightyO. Privacy spans the child and haild. The reply lane includes host delivery and Station playback. The flowcharts expand the participating lanes. Read each lane from top to bottom. Labels on arrows between lanes name the data or control exchanged. A **K** number marks a **known**, issue-reported failure. An **S** number marks a **suspected** failure path. Its branch exists in code, but connecting it to a reported incident is an inference. Some gates intentionally refuse a turn. A repeated number denotes the same point throughout.
+**How to read the map.** The eight columns in the sequence are responsibilities. RightyO coordinates ASR and identity. For a public turn, the child can send bounded text and context over HTTPS to a configured hosted provider for a recipient and attention label. A transient provider failure can yield an unavailable decision for that turn. Given a decision, the child applies its own name, mode and follow-up gates. Privacy spans the child and haild. The reply lane includes host delivery and Station playback. See `providers.py:725`, `providers.py:773`, `prototype.py:1891`, `tool_events.py:3559`.
+
+Read each flowchart lane from top to bottom. Labels on arrows between lanes name the data or control exchanged. A **K** number marks a **known**, issue-reported failure. An **S** number marks a **suspected** failure path. Its branch exists in code, but connecting it to a reported incident is an inference. Some gates intentionally refuse a turn. A repeated number denotes the same point throughout.
 
 **Revisions.** Hailing Station is at `67c4906f` and RightyO main at `f134780`. The two **in review** changes for #340 are on separate RightyO branches, `fix/340-meeting-respond-when-addressed` at `4cbfdca` and `fix/whisper-silence-hallucinations` at `dd01083`. Thresholds below are source defaults unless an issue supplies the value for a particular incident. The maps describe source behavior and earlier issue reports. This trace used no live audio or device tests.
 
@@ -43,19 +45,24 @@ sequenceDiagram
     C-->>H: transcript
     H->>P: Check live final for an owner privacy command
     P-->>H: Ordinary speech
-    I->>I: Classify recipient and attention, apply name and mode rules
+    Note over C,I: Optional HTTPS call to hosted attention provider<br/>Public text and context out, recipient and attention label back
+    I->>I: Apply child name and mode rules to the provider decision
     I->>C: Final attend after stop and withdrawal checks
     Note over C,I: S17 Request formation can fail before publication
     C-->>H: attention with request ID, then request
-    H->>H: Validate correlation and provenance, check withdrawal, claim ID, check echo
-    H->>P: Check current hold and local commands again
-    P-->>H: Eligible for routing
-    H->>D: Resolve selected target and exact binding
-    D->>R: For an unrouted request, show heard and schedule eligible ack
-    D->>D: Recheck policy, hand off to adapter, commit reply owner
-    Note over H,D: S03 held, refused or consumed locally
-    D-->>R: Later correlated reply to originating peer
-    R-->>M: Playback changes the mic guard for subsequent chunks
+    alt Promoted owner has unknown recipient without follow_up=true
+        H->>H: Reject attention with input invalidEvent and end run before reading request
+    else Attention admitted
+        H->>H: Check request correlation and provenance, withdrawal, ID claim and echo
+        H->>P: Check current hold and local commands again
+        P-->>H: Eligible for routing
+        H->>D: Resolve selected target and exact binding
+        D->>R: For an unrouted request, show heard and schedule eligible ack
+        D->>D: Recheck policy, hand off to adapter, commit reply owner
+        Note over H,D: S03 held, refused or consumed locally
+        D-->>R: Later correlated reply to originating peer
+        R-->>M: Playback changes the mic guard for subsequent chunks
+    end
 ```
 
 | Point | What crosses the boundary and what can fail | Decision map and source |
@@ -64,6 +71,7 @@ sequenceDiagram
 | **S01 · No usable capture** | Startup needs a current binding, an active scene, mic permission and a running tap on the default input. A route read can reuse cached input. A stall can restart the engine or end capture. Conversion produces 16 kHz signed PCM16 mono in 100 ms chunks. Backlog drops old source buffers before sequencing or old encoded chunks afterwards. An apparent missing onset could lie on either side of that distinction. [HS #1440][hs1440], [HS #1483][hs1483] | M01–M09 · `StationPlatform.swift:79`, `MacDefaultAudioSessionBackend.swift:66`, `Capture.swift:238`, `Capture.swift:290`, `AmbientAudioStreamer.swift:75`, `AmbientAudioStreamer.swift:179`, `AmbientAudioStreamer.swift:418` |
 | **S02 · Lost before ASR** | A valid fresh start may take over a stream. An automatic resume yields to another active peer. A stale selection, invalid start/sequence or insufficient byte credit can refuse input. Ingress, reload and stdin queues can drop audio under pressure. Public forward gaps get bounded silence fill (up to 3 s against elapsed time). It preserves some timing but cannot recover the words. [HS #1483][hs1483] | D07, H03–H11 · `HostSession+Routing.swift:96`, `AmbientAudioGate.swift:305`, `AmbientAudioGate.swift:468`, `WebSocketIngressPump.swift:112`, `RightyoAmbientPipeline.swift:406`, `RightyoStdinWriter.swift:44` |
 | Named and addressed | Timestamped units join or split at speaker and loss boundaries. A bound owner's opening configured name can promote an available `uncertain` decision. A direct `attend` to the system also works. Meeting, media, guest-address, dismissal and stop gates can still win. Final attention and request carry the correlation ID. An eligible request engages the speaker after emission. | R07–R13, R15–R20 · `live_audio.py:2413`, `turn_merge.py:391`, `tool_events.py:1581`, `tool_events.py:1742`, `tool_events.py:3577`, `tool_events.py:3945`, `tool_events.py:3970` |
+| Host attention admission | On main, the opening-name promotion changes the label to `attend` and preserves the provider's recipient. For an `attention` with `attend` and a request ID, haild requires `recipient_kind=system` or `recipient_kind=unknown` with `follow_up=true`. Any follow-up also requires the session to have advertised conversation mode. A promoted `unknown` without the flag ends the run with `input invalidEvent` on the attention record, before haild consumes the request. | H12–H13, R20 · `tool_events.py:3599`, `RightyoInputEvent.swift:319`, `RightyoInputConsumer.swift:938`, `RightyoAmbientPipeline.swift:315` |
 | **S17 · Final recognized but request formation fails** | After the child decides to attend, an optional request former can raise or return unusable text. The child ends the session before emitting the request. A final transcript alone cannot distinguish this path from an attention refusal. [HS #1483][hs1483] | R13, R20, H15 · `tool_events.py:4045`, `tool_events.py:4082`, `RightyoInputConsumer.swift:714` |
 | **S03 · A request exists but the target gets no input** | haild checks session, sequence, provenance, prior withdrawal and echo, then privacy and local controls. An owner-addressed route needs a resolvable binding. An ambiguous route or pending input can refuse just this request. Confirmation can hold a request for a capable peer or refuse it for Station. A policy/rebind or other terminal failure can end the run. For a routed request the heard notice and ack wait for handoff. The unrouted ack above is asynchronous. [HS #636][hs636], [HS #894][hs894] | H12–H13, H19–H22, R20, P07 · `RightyoInputConsumer.swift:625`, `RightyoInputConsumer.swift:1031`, `RightyoInputConsumer.swift:1079`, `HostSession+Routing.swift:211`, `HostConnection+Protocol.swift:20`, `RightyoAmbientPipeline.swift:45` |
 
@@ -100,6 +108,12 @@ flowchart LR
         yes -->|veto| no
         yes -->|clear| emit["Emit attention and request"]
     end
+    subgraph host["haild"]
+        direction TB
+        recipient{"System recipient, or unknown<br/>with follow_up=true in conversation mode?"}
+        recipient -->|no| invalid["Reject attention: input invalidEvent<br/>End run before reading request"]
+        recipient -->|yes| consume["Validate matching request"]
+    end
     subgraph privacy["privacy"]
         direction TB
         veto{"Private at dispatch?"}
@@ -110,7 +124,8 @@ flowchart LR
         admit["Resolve binding and<br/>attempt handoff in §1"]
     end
     child -->|turn and context| identity
-    identity -->|request after final vetoes| privacy
+    identity -->|attention with request ID, then request| host
+    host -->|admitted request only| privacy
     privacy -->|public request| dispatch
 ```
 
@@ -119,7 +134,7 @@ flowchart LR
 | Inside the window | A request from an eligible stable, non-overlapping speaker opens or extends engagement. The usual time test is `from_ms <= start_ms < until_ms`. Conversation defaults, when enabled, are 20 s and a 0.4 follow-up floor. The setup described in RightyO #342 uses 0.5. A qualifying `uncertain` turn to system/unknown can become `attend` with `follow_up=true`. An enrolled-role floor, an appendix, a pending question or a request-linked spoken reply can change the applicable bar, cue or window. [RightyO #342][ry342] | R17–R18, R26 · `contracts.py:23`, `contracts.py:539`, `tool_events.py:1878`, `tool_events.py:2936`, `tool_events.py:2987`, `tool_events.py:3321` |
 | **S04 · Plausible follow-up stays unsent** | An in-window turn can fail on its speaker, recipient, probability, required cue, courtesy/closing, another person's answer, unavailable evidence, or a mode veto. An old engagement cannot grant a guest a follow-up. Inspect `follow_up outcome=refused reason=…` when emitted and `attention` without a request ID. A provider error can independently leave an unavailable decision or end the session. [RightyO #340][ry340], [HS #1483][hs1483] | R13–R19 · `prototype.py:1873`, `tool_events.py:2936`, `tool_events.py:3027`, `tool_events.py:3087`, `tool_events.py:3809` |
 | **K02 · Statement after the window lapses** | On main an unnamed owner gets neither the opening-name promotion nor an expired speaker's follow-up. A direct attend-to-system can still send. The epic reports missing owner statements after expiry. Voiceprint ownership alone supplies no instruction to send. [HS #1483][hs1483], [RightyO #340][ry340] | R16–R20 · `tool_events.py:1878`, `tool_events.py:2951`, `tool_events.py:3577`, `tool_events.py:3945` |
-| **#340 (b) · In review** | When ordinary follow-up returns `not_engaged`, a public, available provider `uncertain` with word attribution, verified `strict_owner` standing and **P(attend) ≥ 0.5** can form a request. At least one strictly attributed word must exist and all strict words must belong to that owner's label. It preserves provider recipient and confidence and marks `owner_low_confidence=true` on attention and request. An otherwise eligible follow-up can also carry the flag. The new path cannot bypass an engaged follow-up refusal, meeting/media block, other answer, stop, dismissal, cooldown or withdrawal, or supersede earlier work. “Always hear the owner” is a separate proposal. [RightyO #340][ry340], [RightyO #342][ry342] | R16–R20 · **in review** `tool_events.py:50`, `tool_events.py:3262`, `tool_events.py:3634`, `tool_events.py:3755`, `tool_events.py:3777`, `tool_events.py:3807`, `tool_events.py:3825` |
+| **#340 (b) · In review** | When ordinary follow-up returns `not_engaged`, a public, available provider `uncertain` with word attribution, verified `strict_owner` standing and **P(attend) ≥ 0.5** can form a request. At least one strictly attributed word must exist and all strict words must belong to that owner's label. The child preserves provider recipient and confidence and marks `owner_low_confidence=true` on attention and request. This promotion alone does not set `follow_up`. If it preserves `recipient_kind=unknown`, haild throws `input invalidEvent` on attention before consuming the request (§1). An ordinary eligible follow-up sets `follow_up=true` and can also carry the low-confidence flag. The new path cannot bypass an engaged follow-up refusal, meeting/media block, other answer, stop, dismissal, cooldown or withdrawal, or supersede earlier work. “Always hear the owner” is a separate proposal. [RightyO #340][ry340], [RightyO #342][ry342] | H13, R16–R20 · `RightyoInputEvent.swift:319`, `RightyoInputConsumer.swift:938` · **in review** `tool_events.py:50`, `tool_events.py:3262`, `tool_events.py:3634`, `tool_events.py:3755`, `tool_events.py:3777`, `tool_events.py:3807`, `tool_events.py:3825` |
 
 ## 3. Entering and leaving privacy
 
@@ -136,18 +151,25 @@ flowchart LR
         voice -->|verified| enter["Request On"]
         voice -->|no| deny["S06 Refuse, acknowledge<br/>negation or give hint"]
         device{"Device switch?"}
-        device -->|changed| change["Request On or scoped Off"]
+        device -->|change to On| enter
+        device -->|change to Off| off["Attempt Off writes for this connection"]
         device -->|same arming| same["No change"]
-        exit["Child privacy.exit:<br/>apply scoped Off"]
+        exit["Current child privacy.exit"] --> off
+        off --> clear["Clear host arming even if no child took Off"]
+        clear --> release["Queue reply-hold release, then device Off notice<br/>Release rechecks that privacy is off"]
     end
     subgraph child["RightyO child"]
         direction TB
-        proof{"Start private with proof<br/>or ack every on-write?"}
+        proof{"Start-private proof on session.started<br/>or ack for each On write?"}
         proof -->|no or timeout| fail["S05 Refuse child"]
         proof -->|yes| local{"Private turn?"}
         local -->|named verified owner exit| leave["Emit privacy.exit"]
         local -->|status query| stat["Emit privacy.status"]
         local -->|other or unverified S06| discard["Drop locally, stay private"]
+        received{"Off received: plain or positioned?"}
+        received -->|plain| applied["Apply Off and end child private span"]
+        received -->|after_sample| position["Wait until PCM through that sample<br/>and in-flight input are processed"]
+        position --> applied
     end
     subgraph priv["privacy"]
         direction TB
@@ -155,24 +177,25 @@ flowchart LR
         armed -->|pending proof| closed["Withhold PCM"]
         closed -->|proof kept| localPCM["Allow private PCM for matcher"]
         closed -->|proof fails| unavailable["Armed, listener unavailable"]
-        armed -->|accepted Off| publicPCM["End private span and release hold"]
     end
     subgraph reply["reply"]
         notice["State notice first,<br/>eligible confirmation clip next"]
     end
     mac <-->|set_privacy / duck_mode| host
-    host <-->|duck control / final, proof, exit or status| child
+    host <-->|delivered duck control / final, proof, exit or status| child
     child <-->|proof or refusal / PCM admission| priv
-    host -->|accepted On or Off| priv
-    priv -->|kept, unavailable or off| reply
+    host -->|accepted On| priv
+    priv -->|entry result| reply
+    host -->|Off notice before eligible clip| reply
 ```
 
 | Point | Branch and evidence | Decision map and source |
 |---|---|---|
 | Tap and live entry | Station sends `set_privacy` and shows pending until a current `duck_mode` notice or a 10 s UI timeout. Tap needs no voice check. A same-state switch normally does nothing. On voice entry haild checks a live non-echo final before request formation and checks the request if needed. An enrolled owner with `voiceprint` or `voiceprint_label` evidence can enter once per utterance. A pre-stream On follows §4. | D01–D02, H14, R22 · `HostConnectionStore.swift:538`, `HostConnectionStore.swift:706`, `WebSocketListener+DuckMode.swift:112`, `RightyoInputConsumer.swift:798`, `RightyoInputConsumer.swift:812`, `RightyoInputConsumer.swift:828` |
-| **S05 · On accepted but the listener cannot prove privacy** | First distinguish **no child takes On while off** (stay off, refusal notice/clip) from **already armed but proof fails** (stop/refuse the child, keep privacy). For start-private, require duck v3+ and `started.private=true`, default deadline 10 s. For running children, each written On needs a `privacy.on` acknowledgement, default 5 s. Haild holds output, closes conflicting modes and gates PCM. The entry ledger waits for proof across participating children before queuing the success clip. Recovery can announce success after an unavailable result without a new tap. [HS #735][hs735], [HS #1483][hs1483] | H11, H14, D02, D05 · `RightyoAmbientPipeline.swift:416`, `RightyoAmbientPipeline.swift:524`, `RightyoAmbientPipeline.swift:566`, `RightyoAmbientPipeline.swift:595`, `RightyoAmbientPipeline.swift:1013`, `WebSocketListener.swift:2597`, `WebSocketListener+PrivacyEntry.swift:127`, `WebSocketListener+DuckMode.swift:139` |
+| **S05 · On accepted but the listener cannot prove privacy** | First distinguish **no child takes On while off** (stay off, refusal notice/clip) from **already armed but proof fails** (stop/refuse the child, keep privacy). For start-private, inspect the `session` event with `phase=started`. Its top-level `duck` object must carry `duck.version >= 3` and the Boolean `duck.private == true`. The default deadline is 10 s. For running children, each written On needs a `privacy.on` acknowledgement, default 5 s. Haild holds output, closes conflicting modes and gates PCM. The entry ledger waits for proof across participating children before queuing the success clip. Recovery can announce success after an unavailable result without a new tap. [HS #735][hs735], [HS #1483][hs1483] | H11, H14, D02, D05 · `tool_events.py:1165`, `RightyoAmbientPipeline.swift:416`, `RightyoAmbientPipeline.swift:524`, `RightyoAmbientPipeline.swift:566`, `RightyoAmbientPipeline.swift:595`, `RightyoAmbientPipeline.swift:1013`, `RightyoAmbientPipeline.swift:1187`, `RightyoAmbientPipeline.swift:1300`, `WebSocketListener.swift:2597`, `WebSocketListener+PrivacyEntry.swift:127`, `WebSocketListener+DuckMode.swift:139` |
 | **S06 · Voice control changes nothing** | A non-owner entry is silently held. Owner-role without live voiceprint gets the refusal clip. An owner's negation leaves recording as it was. A request starting with a command followed by other words can get a hint. While private the child runs the local matcher in memory, suppresses ordinary finals, attention, requests and acks and silences private diarizer input. Status is available to anyone. Exit needs the name and exit phrase entirely within the current privacy period, with binding or isolated owner-voice proof, no inferred attribution or playback conflict. For a split exit, verify **both** parts within 4 s. Unverified speech leaves privacy on. See §6 for the additional decode-integrity check **in review**. [HS #735][hs735], [RightyO #340][ry340] | R22, R24–R25, H14 · `RightyoInputConsumer.swift:841`, `live_audio.py:1919`, `tool_events.py:126`, `tool_events.py:2022`, `tool_events.py:2071`, `tool_events.py:2139` |
-| Off and clips | For a matched private utterance, the child emits a content-free `privacy.exit` or `privacy.status`. A stale exit received while already off is ignored. Haild applies a current voice exit or a valid device Off, writes Off to children, withdraws pending entries, sends the device notice and releases the reply hold in order. Off with a child taking it can play `confirm-privacy-off`. Entry/status/refusal use their own reserved clip pools. They never dispatch a command to the target. A clean diarizer audit can preserve bindings and conversation. An uncertain audit with input can force forget/renewal. | D04–D05, R22, R24–R25, P07 · `RightyoInputConsumer.swift:856`, `WebSocketListener+DuckMode.swift:56`, `WebSocketListener+DuckMode.swift:93`, `WebSocketListener.swift:2610`, `prototype.py:2251`, `tool_events.py:2195` |
+| Host Off and clips | For a matched private utterance, the child emits a content-free `privacy.exit` or `privacy.status`. Haild ignores a stale exit while already off. On a current voice exit or valid device Off, haild attempts the child writes, clears the connection's arming even if zero children took Off, and withdraws open privacy entries. On the serial notice queue, reply-hold release comes **before** the device's `duck_mode` notice. The release checks that privacy is still off when it runs. An eligible `confirm-privacy-off` clip follows the notice only when a child took Off. Entry, status and refusal use separate clips. These controls never dispatch to the target. | D04–D05, H14, R22, P07 · `RightyoInputConsumer.swift:856`, `WebSocketListener+DuckMode.swift:56`, `WebSocketListener+DuckMode.swift:93`, `WebSocketListener+DuckMode.swift:153`, `WebSocketListener.swift:2610`, `WebSocketListener.swift:2629`, `WebSocketListener.swift:2784`, `WebSocketListener.swift:2802` |
+| Child Off boundary | A host Off notice alone cannot establish when a child left privacy. On stdin, a child with `duck_after_sample` support receives `duck=false` with `after_sample`. It applies Off when it has processed the specified sample and caught up with received PCM. Until then the child keeps the Off pending and stays private. A delivered plain Off applies on receipt. At the child boundary a clean diarizer audit can preserve bindings and conversation. An uncertain audit with input can force renewal. | H11, R22, R24–R25 · `RightyoAmbientPipeline.swift:1197`, `RightyoChildControl.swift:87`, `prototype.py:1795`, `prototype.py:2157`, `prototype.py:2203`, `prototype.py:2251`, `tool_events.py:2195` |
 
 ## 4. Why privacy can come back after Off
 
@@ -224,7 +247,7 @@ flowchart LR
 
 ## 5. An explicit meeting or an inferred second speaker
 
-An explicit meeting crosses the host control pipe. **Automatic meeting** is a child decision about a particular turn. It can suppress a request even when haild has no active meeting timer or recording.
+For an explicit meeting, haild sends `meeting=true` to a child that advertises meeting support and also writes `media=true`. RightyO snapshots each mode when it accepts the turn. The diagram follows a public turn with both controls on, or with both off when the child checks for another speaker. The latter can trigger **automatic meeting**. See `RightyoAmbientPipeline.swift:446`, `RightyoAmbientPipeline.swift:455`.
 
 ```mermaid
 flowchart LR
@@ -232,7 +255,7 @@ flowchart LR
         explicit["Explicit meeting control<br/>or S09 restored meeting"]
     end
     subgraph child["RightyO child"]
-        accepted["Snapshot explicit mode and<br/>presence when accepting the turn"]
+        accepted["Snapshot meeting, media and presence<br/>when accepting the turn"]
     end
     subgraph asr["ASR + filter"]
         direction TB
@@ -242,19 +265,23 @@ flowchart LR
     subgraph identity["identity + attention"]
         direction TB
         present{"Eligible other label in<br/>cue_when_others window?"}
-        present -->|yes, ordinary automatic policy| meeting{"Explicit or automatic<br/>meeting address bar?"}
+        present -->|yes, automatic meeting| meeting{"Does the address pass<br/>the meeting check?"}
         present -->|no, no explicit meeting| usual["Usual attention and follow-up"]
-        present -->|guest-address policy| cue["Apply ambient guest / cue rules"]
-        explicitTurn["Explicit meeting at acceptance"] --> meeting
-        meeting -->|main: labelled owner and name, or eligible fallback| allow["Continue final attention"]
-        meeting -->|main: missing authority or head| block["K06 Named turn blocked"]
-        meeting -.->|in review: named, no positive other| allow
+        present -->|main: guest-address policy| cue["Apply ambient guest / cue rules"]
+        explicitTurn["Explicit meeting and media on"] --> meeting
+        meeting -->|main: named labelled owner or automatic-only fallback| mediaGate{"Media on for this turn?"}
+        meeting -->|main: no qualifying owner address| block["K06 Named turn blocked"]
+        meeting -.->|in review: named, no positive other| mediaGate
         meeting -.->|in review: positively identified other| blockReview["Refuse meeting address"]
+        mediaGate -->|off| allow["Continue final attention"]
+        mediaGate -->|on| authority{"Named and either no speaker priority<br/>or owner authority?"}
+        authority -->|yes| allow
+        authority -->|no| mediaBlock["Media blocks request<br/>An attend at this gate becomes ignore, media=true"]
     end
     subgraph dispatch["dispatch"]
         send["Eligible public request<br/>to host admission"]
     end
-    host -->|meeting on or off| child
+    host -->|meeting control plus media gate| child
     child <-->|audio for decode / labelled units for snapshot| asr
     asr -->|speech, timing and label evidence| identity
     child -->|accepted mode| identity
@@ -267,7 +294,8 @@ flowchart LR
 | **K04 · Filler on silence creates presence** | RightyO #340 records a near-silence decode assigned a second label and a **120 s** lockout. On main, `cue_when_others_ms=0` disables this history by default. When enabled, a labelled turn meeting duration/word minima (defaults 1,000 ms / 3 words) can enter it. Playback overlap and per-turn owner/trusted roles are excluded. Compare a candidate's end with the new turn's start and engaged/current speaker label. Same-identity evidence can cancel split labels. [RightyO #340][ry340] | R03, R07, R12, R14 · `contracts.py:545`, `tool_events.py:3102`, `tool_events.py:3110`, `tool_events.py:3128`, `tool_events.py:3153` |
 | **K05 · Owner split or shown as unknown** | Diarization assigns spans. The voiceprint worker scores eligible non-overlapping labelled speech, then binds or stays tentative/unknown. Unlabelled speech, missing enrollment or insufficient strict coverage can leave an actual owner unverified. A split label can count toward presence on main without a positively different voiceprint. The unlabelled-owner score at this pin is diagnostic only. RightyO #336 proposes **diagnostic** topical similarity. Neither is an owner credential. [RightyO #332][ry332], [RightyO #334][ry334], [RightyO #336][ry336], [RightyO #340][ry340] | R07, R09–R11, R14, R23 · `live_audio.py:738`, `live_speaker_id.py:734`, `live_speaker_id.py:845`, `live_speaker_id.py:1131`, `tool_events.py:1575`, `tool_events.py:3110`, `TranscriptTurn.swift:34` |
 | **K06 · Named turns ignored in meeting** | On main, explicit meeting needs configured name, label and owner authority. Automatic meeting applies the same gate when others are present and the ambient guest-address policy is off. Its owner-vocative fallback needs a current voiceprint and an opening name within the diarized head for the same turn end. #340 records positive model attends blocked with `others_present`, `not_owner` or `head_unknown`. A mismatched merged end is one possible mechanism. The optional ask-anywhere setting can promote an eligible owner’s named uncertain turn if the mode bar passes. Automatic meeting refuses ordinary follow-ups. With guest-address policy, presence can instead impose a cue on a possible aside. [RightyO #340][ry340] | R14–R18 · `tool_events.py:2292`, `tool_events.py:2307`, `tool_events.py:2323`, `tool_events.py:2330`, `tool_events.py:2953`, `tool_events.py:2987`, `tool_events.py:3295` |
-| **#340 · In review** | Presence now needs non-overlapping timeline speech, enough strict words (with a compatibility path for older turns), and an identified participant or qualifying per-turn voiceprint evidence. A pending score alone cannot count. A bound non-owner/non-trusted identity or an unbound score below the owner bar can count, excluding self. In explicit meeting or presence, a configured name can admit an unattributed address, even without a matching head. A positively identified other vetoes it. An available admitted address can promote the decision to attend-to-system. This grants request admission only. Owner controls keep their own checks, and ordinary unnamed follow-up rules still apply where policy allows. [RightyO #340][ry340] | R14–R19 · **in review** `tool_events.py:2354`, `tool_events.py:2363`, `tool_events.py:2382`, `tool_events.py:2410`, `tool_events.py:3150`, `tool_events.py:3170`, `tool_events.py:3615`, `tool_events.py:3712` |
+| **#340 · In-review presence and address** | Presence now needs non-overlapping timeline speech, enough strict words (with a compatibility path for older turns), and an identified participant or qualifying per-turn voiceprint evidence. A pending score alone cannot count. A bound non-owner/non-trusted identity or an unbound score below the owner bar can count, excluding self. A configured name can pass the meeting address check even without attribution or a matching head. A positively identified other vetoes it. With media off, an otherwise eligible public address can promote an available decision to attend-to-system. Owner controls keep their own checks, and ordinary unnamed follow-up rules still apply where policy allows. [RightyO #340][ry340] | R14–R19 · **in review** `tool_events.py:2354`, `tool_events.py:2363`, `tool_events.py:2382`, `tool_events.py:2410`, `tool_events.py:3150`, `tool_events.py:3170`, `tool_events.py:3615`, `tool_events.py:3712` |
+| **#340 · In-review explicit meeting with media** | When both host controls took effect, a named, unattributed turn can pass the explicit meeting check and still fail media. With speaker priority configured, media requires owner authority as well as the name. Without that authority a direct `attend` becomes `ignore` with `media=true` and no request. Without speaker priority, the configured name satisfies the media check and the remaining attention gates still apply. | D09, R15, R19 · `RightyoAmbientPipeline.swift:455` · **in review** `tool_events.py:2312`, `tool_events.py:2395`, `tool_events.py:3615`, `tool_events.py:3705` |
 
 ## 6. ASR filtering, retry and missing words
 
@@ -323,7 +351,7 @@ flowchart LR
 
 ## 7. Child startup, failure, reload and retry
 
-The OS exit status and the stdout protocol answer different questions. The order of `started`, terminal event and EOF determines what haild can report. A successful reload response means the router installed the replacement. The replacement still has to read its configuration and produce events.
+The OS exit status and the stdout protocol answer different questions. The order of `started`, terminal event and EOF determines what haild can report. The clean-exit path below assumes the target session is unchanged. A successful reload response means the router installed the replacement. The replacement still has to read its configuration and produce events.
 
 ```mermaid
 flowchart LR
@@ -343,8 +371,11 @@ flowchart LR
         eof{"Which events preceded EOF?"}
         eof -->|no valid terminal| missing["K08 input invalidLifecycle"]
         eof -->|started then error| error["K09 input producerFailed"]
-        eof -->|started then stopped or cancelled| clean["Collect status and reap"]
-        missing --> notify["Log ambient_ended and<br/>notify affected live peer"]
+        eof -->|started then stopped or cancelled| clean["Collect status, reap and log ambient_ended"]
+        clean --> current{"Run still active and<br/>eligible to notify its peer?"}
+        current -->|no| quiet["No further notice for this run"]
+        current -->|yes| exited["Notify peer: ambient stopped: listener exited"]
+        missing --> notify["Log ambient_ended and<br/>notify affected live peer if eligible"]
         error --> notify
         reset["S14 Daemon restart clears router state"]
     end
@@ -357,7 +388,9 @@ flowchart LR
         runtime -->|abrupt death| crash["EOF without terminal"]
         runtime -->|orderly stop| done["Clean terminal, EOF"]
     end
-    mac <-->|fresh stream / stopped or unavailable| host
+    start -->|fresh stream| newrun
+    exited -->|transient stopped error| back
+    notify -->|reported failure| back
     host <-->|spawn or replace / stdout events then EOF| child
 ```
 
@@ -365,7 +398,7 @@ flowchart LR
 |---|---|---|
 | **K08 · Invalid config / missing lifecycle** | Before spawn, unsafe executable/ancestry or unreadable/nonregular config gives a host refusal such as `child unsafeConfig`. After spawn, RightyO loads the JSON and validates options/assets. `conversation.window_ms` must be 1,000–120,000. #1483 identifies an out-of-range value in one restart burst. Setup failure prints to child stderr and exits **2 before started**. EOF without a terminal event maps to `input invalidLifecycle`. A crash after started but before terminal can produce the same mapping. It does not identify the offending setting. [HS #1483][hs1483] | H01, H09–H10, H12, H15, R01 · `RightyoChildSupport.swift:54`, `tool.py:322`, `prototype.py:407`, `contracts.py:566`, `cli.py:502`, `RightyoInputConsumer.swift:714`, `RightyoAmbientPipeline.swift:336` |
 | **K09 · Producer failure after startup** | Once started, a processor failure can emit `session.error` and exit 2. An input overrun discards the unfinished tail. On a valid error terminal, `finish()` throws `producerFailed`. Protocol or dispatch errors can throw earlier. Privacy-proof failure has its own refusal. After an admitted stopped/cancelled terminal and EOF, haild collects the exit status. A still-active child exit can still end the stream. #1483 recorded both error names. The config incident establishes the cause of one burst only. [HS #1483][hs1483] | R01–R02, H12–H17 · `prototype.py:1601`, `prototype.py:2396`, `tool.py:435`, `RightyoInputConsumer.swift:876`, `RightyoInputConsumer.swift:715`, `RightyoAmbientPipeline.swift:337`, `WebSocketListener.swift:2038` |
-| Retry and **K01** | haild reaps the child, logs `ambient_ended` and normally reports the failure to the originating stream. A replaced or already-reported run does not stop its successor. Station can open a fresh stream on the same live mic for matching transient errors, after **1, 3, 10 s**. The budget resets after 120 s since the last recovery. Exhaustion ends listening. Each new child can reject the same file. Check the device's `ambient_start` against host `ambient_started` / `ambient_ended` and actual child finals. [HS #1483][hs1483] | I13, M09, H15–H17 · `WebSocketListener.swift:2058`, `WebSocketListener.swift:2073`, `HostConnectionStore.swift:1416`, `HostConnectionStore.swift:1423`, `HostConnectionStore.swift:1453`, `AmbientAudioStreamer.swift:495` |
+| Retry and **K01** | haild logs `ambient_ended` on clean and failed runs. A clean end after the stream has already ended needs no notice. If the clean run still owns the active stream and the target session is unchanged, haild reports `ambient stopped: listener exited` to the originating peer. Replaced or already-reported runs skip notification, as does a missing listener. Station treats the resulting `not_allowed: ambient stopped:` prefix as transient. With the streamer still live and retries available, it opens a fresh stream on the same capture after **1, 3, 10 s** on successive attempts. The budget resets after 120 s since the last recovery. Exhaustion ends listening. Each new child can reject the same file. Compare the device's `ambient_start` with host `ambient_started` / `ambient_ended` and actual child finals. [HS #1483][hs1483] | I13, M09, H15–H17 · `WebSocketListener.swift:568`, `WebSocketListener.swift:2058`, `WebSocketListener.swift:2073`, `HostConnectionStore.swift:1416`, `HostConnectionStore.swift:1423`, `HostConnectionStore.swift:1453`, `AmbientAudioStreamer.swift:495` |
 | **S13 · Replacement loses a pending turn or fails immediately** | `haild ambient reload` requires an active run and capacity. Construct first, retaining stream, selected target and binding. On construction failure log `ambient_reload_refused` and leave a still-active predecessor running. Recheck identity/capacity under lock before swap. A lost race reaps the unused child. Success logs `ambient_reloaded` then `ambient_started` for the replacement and retires the old child. A new child session rereads the same file. Pending audio, engagement and uncompleted work can be lost at the boundary. Host path checks do not parse the child schema before swap. [HS #405][hs405], [HS #1483][hs1483] | H08–H10, H15–H17 · `WebSocketListener.swift:1685`, `WebSocketListener.swift:1807`, `WebSocketListener.swift:2134`, `WebSocketListener.swift:2147`, `WebSocketListener.swift:2169`, `RightyoAmbientPipeline.swift:286`, `tool.py:322` |
 | **S14 · State absent after daemon restart** | A new router has no previous children, sockets, binding for the active stream, privacy parks/overflow or engagement. Station may reconnect, reselect and reassert its own privacy (§4). Persisting explicit session/owner intent across restart, validating config before replacement and surfacing end-to-end hearing health within 5 s are epic acceptance criteria. They are proposed work at these pins. [HS #1483][hs1483] | H18, H21, D03, D11–D12 · `WebSocketListener.swift:845`, `WebSocketListener.swift:1133`, `WebSocketListener+PrivacyPark.swift:7`, `AmbientListeningReconnect.swift:401`, `AmbientListeningReconnect.swift:414` |
 
