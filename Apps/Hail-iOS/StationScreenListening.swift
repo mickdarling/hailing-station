@@ -28,22 +28,12 @@ extension RootView {
 
     func stationRail(talk: TalkCapturePhase?, details: Binding<Bool>, privacy: StationScreenPrivacy) -> some View {
         let host = RailHost(store: connections, privacy: privacy.privacy, availability: stationAvailability)
-        // The classic owners do not publish process-wide input-engine state.
-        let mic = MicLiveInputs(engine: .unknown, ambient: listeningPhase, talk: talk)
-        let state = ListeningPrivacyRailState.resolve(mic: mic.state, listening: listeningPhase,
-                                                       talk: talk, host: host)
+        let rail = StationListeningRail(listening: listeningPhase, talk: talk, host: host)
         return VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                ListeningPrivacyRailView(state: state, isDetailPresented: details,
-                                         listeningDevice: listeningPhase == .listening && talk == .idle
-                                            ? localDeviceTitle : nil)
-                Button(privacy.title) { activateStationPrivacy(privacy) }
-                    .disabled(privacy.intent == nil)
-                    .buttonStyle(.borderless)
-                    .accessibilityIdentifier("station.rail.privacy")
-            }
-            if details.wrappedValue {
-                Text(state.detail).font(.callout).accessibilityIdentifier("station.rail.detail")
+            StationCaptureRail(rail: rail, ambientEngine: echoGuard.ambientInputEngineState,
+                               listeningDevice: rail.capture == .ambient ? localDeviceTitle : nil,
+                               details: details, privacy: privacy) {
+                activateStationPrivacy(privacy)
             }
             if case .status(let privacy) = host.privacy, privacy.pending {
                 Label("Privacy is not confirmed yet. Waiting for the Mac.", systemImage: "clock")
@@ -75,5 +65,42 @@ extension RootView {
         .resolve(availability: stationAvailability, destination: screenDestination,
                  privacy: stationPrivacy(at: date).privacy,
                  listening: (listeningPhase, hasListeningRecovery || listeningPhase.isOn), turn: turn)
+    }
+}
+
+/// Read only the installed window's Talk resources, and only while its dock reports a recording.
+private struct StationCaptureRail: View {
+    let rail: StationListeningRail
+    let ambientEngine: MicEngineState
+    let listeningDevice: String?
+    @Binding var details: Bool
+    let privacy: StationScreenPrivacy
+    let activatePrivacy: () -> Void
+    @StationTranscriptionView.WindowTalk var talkSession
+
+    private var engine: MicEngineState {
+        switch rail.capture {
+        case .inactive: return .unknown
+        case .ambient: return ambientEngine
+        case .talk:
+            guard let owner = talkSession.owner, CapturePlaybackSuppression.liveness[owner]?() == true,
+                  let input = talkSession.resources.capture as? AVAudioEngineCapture else { return .unknown }
+            return input.inputEngineState
+        }
+    }
+
+    var body: some View {
+        let (state, style) = rail.presentation(engine: engine)
+        HStack {
+            ListeningPrivacyRailView(state: state, isDetailPresented: $details, listeningDevice: listeningDevice,
+                                     barStyle: style)
+            Button(privacy.title, action: activatePrivacy)
+                .disabled(privacy.intent == nil)
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("station.rail.privacy")
+        }
+        if details {
+            Text(state.detail).font(.callout).accessibilityIdentifier("station.rail.detail")
+        }
     }
 }

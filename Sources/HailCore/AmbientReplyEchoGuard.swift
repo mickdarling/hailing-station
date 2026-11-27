@@ -44,6 +44,11 @@ public final class AmbientReplyEchoGuard: Sendable {
     private let tail: Duration
     private let now: Now
     private let reportTask: MaskingReportTaskFactory
+    @MainActor fileprivate weak var ambientInput: AVAudioEngineCapture?
+
+    /// Only the native input started through this window's guard can confirm ambient capture.
+    @MainActor public var ambientInputEngineState: MicEngineState { ambientInput?.inputEngineState ?? .unknown }
+
     @MainActor private(set) var maskingReportDrainer: MaskingReportDrainer?
     @MainActor public weak var diagnostics: DeviceDiagnostics? {
         didSet {
@@ -652,6 +657,7 @@ final class EchoMaskedCapture: AudioCapturing {
     @MainActor
     func start() throws -> AsyncStream<AudioCaptureBuffer> {
         let source = try capture.start()
+        echoGuard.ambientInput = capture as? AVAudioEngineCapture
         let captureToken = echoGuard.proactiveActivity.beginCapture()
         proactiveToken = captureToken
         routing?.attach()

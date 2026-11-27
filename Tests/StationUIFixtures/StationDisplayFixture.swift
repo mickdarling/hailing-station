@@ -26,9 +26,13 @@ struct StationDisplayFixture: View {
                     .padding(.trailing, 12)
             }
         }, listening: { _, details in
+            let rail = state.rail(on: device)
+            let capture = StationListeningCapture(listening: state.listeningPhase, talk: state.talkPhase)
             HStack {
-                ListeningPrivacyRailView(state: state.rail(on: device), isDetailPresented: details,
-                                         listeningDevice: state.listeningPhase == .listening ? deviceTitle : nil)
+                ListeningPrivacyRailView(state: rail, isDetailPresented: details,
+                                         listeningDevice: state.listeningPhase == .listening ? deviceTitle : nil,
+                                         barStyle: capture.barStyle(engine: state.inputEngine, rail: rail,
+                                                                    privacy: .status(state.privacy)))
                 Button(state.privacy.isPrivate ? "Leave private mode" : "Go private") {}
                     .buttonStyle(.borderless).disabled(state.privacy.pending)
             }.padding(.horizontal, 12)

@@ -1,6 +1,63 @@
 import HailCore
 import SwiftUI
 
+/// The owners that can confirm this station is on air. A phase alone cannot confirm its engine is running.
+enum StationListeningCapture: CaseIterable, Sendable {
+    case inactive, ambient, talk
+
+    init(listening: StationMenuStatus.Listening?, talk: TalkCapturePhase?) {
+        switch talk {
+        case .recording?: self = .talk
+        case .idle?:
+            switch listening {
+            case .listening?: self = .ambient
+            case .off?, .starting?, .paused?, .elsewhere?, nil: self = .inactive
+            }
+        case .starting?, .finishing?, nil: self = .inactive
+        }
+    }
+
+    func barStyle(engine: MicEngineState, rail: ListeningPrivacyRailState, privacy: RailPrivacy?) -> ListeningBarStyle {
+        // A running, open input tap stays on air during a USB callback stall because capture can resume.
+        guard self != .inactive, engine == .running, rail.kind == .recording else { return .standard }
+        switch privacy {
+        case .unsupported?: return .onAir
+        case .status(let status)?: return status.shown == .confirmedNotPrivate && !status.pending ? .onAir : .standard
+        case nil: return .standard
+        }
+    }
+}
+
+struct StationListeningRail {
+    let listening: StationMenuStatus.Listening?
+    let talk: TalkCapturePhase?
+    let host: RailHost
+
+    var capture: StationListeningCapture { StationListeningCapture(listening: listening, talk: talk) }
+
+    func presentation(engine: MicEngineState) -> (state: ListeningPrivacyRailState, style: ListeningBarStyle) {
+        // An individual owner's engine cannot prove the whole microphone off.
+        let mic = MicLiveInputs(engine: .unknown, ambient: listening, talk: talk).state
+        var ambient = listening
+        var railHost = host
+        if listening == .elsewhere, capture == .talk, engine == .running {
+            // The handoff and its stop notice describe the ambient run. Talk has its own local input.
+            ambient = .off
+            railHost.handoff = nil
+            if case .stopped? = railHost.connection { railHost.connection = nil }
+        }
+        let state = ListeningPrivacyRailState.resolve(mic: mic, listening: ambient, talk: talk, host: railHost)
+        return (state, capture.barStyle(engine: engine, rail: state, privacy: host.privacy))
+    }
+}
+
+enum ListeningBarStyle: Equatable, Sendable {
+    case standard, onAir
+
+    // Opaque sRGB #E60020 with white ink in both appearances.
+    static let onAirColors = (ink: Color.white, fill: Color(.sRGB, red: 230 / 255, green: 0, blue: 32 / 255))
+}
+
 /// The listening/privacy rail (#1115): one compact line that is always visible, with the full reason in the
 /// listening/privacy sheet. It renders a `ListeningPrivacyRailState` and has one action: asking for that sheet. It
 /// never starts, stops or changes listening, privacy, a target or a route.
@@ -12,10 +69,16 @@ struct ListeningPrivacyRailView: View {
     let state: ListeningPrivacyRailState
     @Binding var isDetailPresented: Bool
     var listeningDevice: String?
+    var barStyle: ListeningBarStyle = .standard
     @ScaledMetric(relativeTo: .body) private var minimumHeight: CGFloat = 44
-    @State private var announced: ListeningPrivacyRailState.Kind?
+
+    private struct Announcement: Equatable {
+        let kind: ListeningPrivacyRailState.Kind
+        let style: ListeningBarStyle
+    }
 
     var body: some View {
+        let tone = colors(in: palette)
         Button {
             isDetailPresented.toggle()
         } label: {
@@ -41,16 +104,12 @@ struct ListeningPrivacyRailView: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(summary). \(state.detail)")
+        .accessibilityLabel("\(spokenSummary). \(state.detail)")
         .accessibilityHint("Shows listening and privacy details")
         .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("station.listening-privacy-rail")
-        .onAppear { announced = state.announcementKey }
-        .onChange(of: state.announcementKey) { _, key in
-            // Only a change of kind is announced, and only once; the first appearance is not.
-            guard announced != key else { return }
-            announced = key
-            AccessibilityNotification.Announcement(state.summary).post()
+        .onChange(of: Announcement(kind: state.announcementKey, style: barStyle)) {
+            AccessibilityNotification.Announcement(spokenSummary).post()
         }
     }
 
@@ -60,9 +119,12 @@ struct ListeningPrivacyRailView: View {
         return state.summary
     }
 
+    var spokenSummary: String { barStyle == .onAir ? "\(summary), on air" : summary }
+
     /// A shape per kind, so the meaning never rests on colour alone.
     private var symbol: String {
-        switch state.kind {
+        if barStyle == .onAir { return "dot.radiowaves.left.and.right" }
+        return switch state.kind {
         case .paused: "pause.circle.fill"
         case .mayBeRecording: "exclamationmark.triangle.fill"
         case .recording: "waveform"
@@ -73,7 +135,8 @@ struct ListeningPrivacyRailView: View {
         }
     }
 
-    private var tone: (ink: Color, fill: Color) {
+    func colors(in palette: StationPalette) -> (ink: Color, fill: Color) {
+        if barStyle == .onAir { return ListeningBarStyle.onAirColors }
         if state.kind == .recording, listeningDevice != nil {
             return (palette[.textPrimary], palette[.surface])
         }
