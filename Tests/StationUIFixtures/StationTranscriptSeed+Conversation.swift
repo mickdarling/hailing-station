@@ -20,6 +20,17 @@ extension StationTranscriptSeed {
     var conversation: [ConversationEntry] {
         let day = Date.now
         let time = Calendar.current.date(bySettingHour: 10, minute: 42, second: 0, of: day) ?? day
+        if self == .attribution {
+            var request = ConversationEntry(id: "request", speaker: .you, text: "Check the list.",
+                                            endpointID: "fixture", targetID: Self.session.targetID, date: time)
+            request.ambientHeard = true
+            var other = ConversationEntry(id: "other", speaker: .someone, text: "Check the list.",
+                                          endpointID: "fixture", targetID: Self.session.targetID,
+                                          date: time.addingTimeInterval(10))
+            other.name = "Speaker B"
+            other.overheard = true
+            return [request, other]
+        }
         if audioProblem(replyID: "reply") != nil {
             // The affected reply precedes a healthy one, so a latest-reply lookup loses the notice.
             return [
