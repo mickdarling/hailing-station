@@ -265,6 +265,7 @@ archive_app() {
 
   echo "Archiving Hailing Station ${marketing_version} (${build_number})..."
   xcodebuild -quiet archive \
+    -onlyUsePackageVersionsFromResolvedFile \
     -project HailingStation.xcodeproj \
     -scheme Hail-iOS \
     -configuration Release \

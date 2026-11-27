@@ -63,6 +63,8 @@ jobs:
         run: brew bundle --file=Brewfile
       - name: Simulator build
         run: scripts/verify.sh sim
+      - name: Check licenses of mobile dependencies
+        run: scripts/check-mobile-licenses.py
       - name: macOS build
         run: scripts/verify.sh mac
 
