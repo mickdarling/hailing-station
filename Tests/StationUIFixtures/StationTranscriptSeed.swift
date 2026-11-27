@@ -22,14 +22,14 @@ enum StationDisplaySeedLaunch {
 /// Immutable inputs for rendering the real Station components. No store, controllers, transport or input actions.
 enum StationTranscriptSeed: String, CaseIterable, Sendable {
     case listening, `private`, pending, recording, handoff, media, ready, held, refused
-    case decodeFailed, playbackFailed, incompleteAudio, discardedAudio, attribution
+    case decodeFailed, playbackFailed, incompleteAudio, discardedAudio, attribution, scrolling
 
     static let session = DestinationLabel(hostName: "Studio Mac", targetName: "Workbench",
                                           targetKind: "tmux", targetID: "fixture-workbench")
 
     var listeningPhase: StationMenuStatus.Listening {
         switch self {
-        case .ready, .recording, .decodeFailed, .playbackFailed, .incompleteAudio, .discardedAudio: .off
+        case .ready, .recording, .decodeFailed, .playbackFailed, .incompleteAudio, .discardedAudio, .scrolling: .off
         case .handoff: .elsewhere
         case .listening, .private, .pending, .media, .held, .refused, .attribution: .listening
         }
@@ -53,7 +53,7 @@ enum StationTranscriptSeed: String, CaseIterable, Sendable {
 
     var inputEngine: MicEngineState {
         switch self {
-        case .ready, .handoff, .decodeFailed, .playbackFailed, .incompleteAudio, .discardedAudio: .stopped
+        case .ready, .handoff, .decodeFailed, .playbackFailed, .incompleteAudio, .discardedAudio, .scrolling: .stopped
         case .listening, .private, .pending, .recording, .media, .held, .refused, .attribution: .running
         }
     }

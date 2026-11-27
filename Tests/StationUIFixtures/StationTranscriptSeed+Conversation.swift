@@ -18,6 +18,7 @@ extension StationTranscriptSeed {
 
     /// Authored examples from the Astra frames, fixed to 10:42 local time on the qualification day.
     var conversation: [ConversationEntry] {
+        if self == .scrolling { return (1...20).map(Self.numberedTurn) }
         let day = Date.now
         let time = Calendar.current.date(bySettingHour: 10, minute: 42, second: 0, of: day) ?? day
         if self == .attribution {
@@ -60,6 +61,21 @@ extension StationTranscriptSeed {
                                       endpointID: "fixture", targetID: Self.session.targetID,
                                       date: time.addingTimeInterval(60))
         return [request, reply]
+    }
+
+    static func numberedTurn(_ number: Int) -> ConversationEntry {
+        let isReply = number.isMultiple(of: 2)
+        return ConversationEntry(id: "turn-\(number)", speaker: isReply ? .haili : .you,
+                                 text: isReply ? "Reply \(number)." : "Heard \(number).",
+                                 endpointID: "fixture", targetID: session.targetID,
+                                 date: Date(timeIntervalSince1970: Double(number)))
+    }
+
+    static func extendReply(_ reply: inout ConversationEntry) {
+        let next = reply.text.components(separatedBy: "\n\n").count
+        for number in next..<(next + 16) {
+            reply.text += "\n\nStream paragraph \(number)."
+        }
     }
 
     private static let reply = """

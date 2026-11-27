@@ -121,6 +121,7 @@ targets:
       - Tests/Hail-iOSUITests/ShellWindowStationScreenTests+Devices.swift
       - Tests/Hail-iOSUITests/ShellWindowStationStateScreenshotTests.swift
       - Tests/Hail-iOSUITests/ShellWindowTranscriptTests.swift
+      - Tests/Hail-iOSUITests/ShellWindowTranscriptTests+Scrolling.swift
       - Tests/Hail-iOSUITests/ShellWindowUITestSupport+Launch.swift
       - Tests/Hail-iOSUITests/ShellWindowUITestSupport.swift
       - Tests/Hail-iOSUITests/ShellWindowUITests.swift
