@@ -1,5 +1,7 @@
 # Native Privacy Settings group (#1115)
 
+The canonical meaning of Privacy and Mute is in [privacy-and-mute.md](privacy-and-mute.md).
+
 This slice adds **Settings > Privacy** inside the existing default-off `station.redesign.shell` launch gate.
 It uses four production files: `PrivacySettingsView.swift`, `RootView+Settings.swift`, `RootView+Navigation.swift`
 and `RootView.swift`. The fourth file keeps shared device preferences and request-error state above navigation.
