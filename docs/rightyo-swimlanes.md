@@ -42,37 +42,44 @@ sequenceDiagram
     C->>A: Frame PCM, track diarization, close speech window
     A->>I: Decoded units with timing, speaker coverage and turn boundaries
     I->>C: Public final, role and acceptance-time mode evidence
-    C->>C: Queue public transcript, then enqueue turn for decision
-    par Stdout drain and host handling
+    C->>C: Queue public transcript
+    alt activation=disabled
         C-->>H: transcript
         H->>P: Check live final for an owner privacy command
-        P-->>H: Ordinary speech
-    and Child decision worker
-        Note over C,I: Optional HTTPS call with public text and context<br/>Provider returns recipient and attention label
-        I->>I: Apply child name and mode rules to the decision
-        I->>C: Final attend after stop and withdrawal checks
-        Note over C,I: S17 Request formation can fail before publication
-        C->>C: Form request, queue attention then request
-    end
-    C-->>H: attention with request ID, then request
-    Note over H,C: Allow system, or unknown with follow_up=true<br/>Every follow-up requires advertised conversation mode
-    alt Recipient or follow-up fails admission
-        Note over H: other_human and known_speaker always fail the recipient check
-        H->>H: Reject attention with input invalidEvent and end run before reading request
-    else Attention admitted
-        H->>H: Read request and check correlation, provenance, withdrawal, ID claim and echo
-        H->>P: Check current hold and local commands again
-        P-->>H: Eligible for routing
-        H->>D: Resolve selected target and exact binding
-        D->>R: For an unrouted request, show heard and schedule eligible ack
-        D->>D: Recheck policy, hand off to adapter, commit reply owner
-        Note over H,D: S03 held, refused or consumed locally
-        D-->>R: Later correlated reply to originating peer
-        R-->>M: Playback changes the mic guard for subsequent chunks
+        Note over C: Continue listening without queueing the turn<br/>No attention or request
+    else Hosted decisions enabled
+        par Stdout drain and host handling
+            C-->>H: transcript
+            H->>P: Check live final for an owner privacy command
+            P-->>H: Ordinary speech
+        and Decision processing
+            C->>C: Enqueue turn for decision
+            Note over C,I: HTTPS call with public text and context<br/>Provider returns recipient and attention label
+            I->>I: Apply child name and mode rules to the decision
+            I->>C: Final attend after stop and withdrawal checks
+            Note over C,I: S17 Request formation can fail before publication
+            C->>C: Form request, queue attention then request
+        end
+        C-->>H: attention with request ID, then request
+        Note over H,C: Allow system, or unknown with follow_up=true<br/>Every follow-up requires advertised conversation mode
+        alt Recipient or follow-up fails admission
+            Note over H: other_human and known_speaker always fail the recipient check
+            H->>H: Reject attention with input invalidEvent and end run before reading request
+        else Attention admitted
+            H->>H: Read request and check correlation, provenance, withdrawal, ID claim and echo
+            H->>P: Check current hold and local commands again
+            P-->>H: Eligible for routing
+            H->>D: Resolve selected target and exact binding
+            D->>R: For an unrouted request, show heard and schedule eligible ack
+            D->>D: Recheck policy, hand off to adapter, commit reply owner
+            Note over H,D: S03 held, refused or consumed locally
+            D-->>R: Later correlated reply to originating peer
+            R-->>M: Playback changes the mic guard for subsequent chunks
+        end
     end
 ```
 
-RightyO queues the transcript before it offers the turn to the decision worker. A separate loop drains events to stdout. The hosted call can start before haild reads the final. Haild still reads the transcript before the corresponding attention and request. See `prototype.py:1129`, `prototype.py:1141`, `tool.py:431`.
+The stdout loop emits queued events in order. The hosted call can start before haild reads the transcript, but the transcript reaches haild before its attention and request. See `prototype.py:1129`, `prototype.py:1138`, `tool.py:431`.
 
 | Point | What crosses the boundary and what can fail | Decision map and source |
 |---|---|---|
@@ -144,7 +151,7 @@ flowchart LR
 
 ## 3. Entering and leaving privacy
 
-A tap is a host control. Spoken **entry** is recognized by haild on a public child event. Spoken **exit** must be recognized inside the private child. While privacy is armed, haild consumes and drops ordinary in-flight requests and holds ordinary reply delivery. Switching Off cannot replay a dropped request. It withholds private PCM from each child until that child proves it can handle it.
+A tap is a host control. Haild recognizes spoken **entry** on a public child event. The private child recognizes spoken **exit**. Haild withholds private PCM from each child until it proves it can handle it. An answer outstanding on this connection at entry cannot play after Off. See `HostReplyDelivery.swift:1759`.
 
 ```mermaid
 flowchart LR
@@ -162,7 +169,7 @@ flowchart LR
         device -->|same arming| same["No change"]
         exit["Current child privacy.exit"] --> off
         off --> clear["Clear host arming even if no pipeline accepted Off"]
-        clear --> release["Queue reply-hold release, then device Off notice<br/>Release rechecks that privacy is off"]
+        clear --> release["If still off, allow future replies only<br/>Then send device Off notice"]
     end
     subgraph child["RightyO child"]
         direction TB
@@ -179,7 +186,7 @@ flowchart LR
     end
     subgraph priv["privacy"]
         direction TB
-        armed["Armed: drop requests and hold reply delivery"]
+        armed["Drop this connection's pending and committed reply records on entry<br/>While private, drop ordinary requests and refuse ordinary replies"]
         armed -->|pending proof| closed["Withhold PCM"]
         closed -->|proof kept| localPCM["Allow private PCM for matcher"]
         closed -->|proof fails| unavailable["Armed, listener unavailable"]
@@ -262,7 +269,7 @@ flowchart LR
 
 ## 5. An explicit meeting or an inferred second speaker
 
-For an explicit meeting, haild sends `meeting=true` to a child that advertises meeting support and also writes `media=true`. RightyO snapshots each mode when it accepts the turn. The diagram follows a public turn with both controls on, or with both off when the child checks for another speaker. The latter can trigger **automatic meeting**. See `RightyoAmbientPipeline.swift:446`, `RightyoAmbientPipeline.swift:455`.
+For an explicit meeting, haild sends `meeting=true` to a child that advertises meeting support and also writes `media=true`. RightyO snapshots each mode when it accepts the turn. With both modes off, the configured guest-address rule applies even on the first turn. With that rule off, another eligible label can trigger **automatic meeting**. See `RightyoAmbientPipeline.swift:446`, `RightyoAmbientPipeline.swift:455`, `tool_events.py:3157`, `tool_events.py:3560`.
 
 ```mermaid
 flowchart LR
@@ -283,11 +290,13 @@ flowchart LR
         explicitTurn -->|yes| owner{"Named, labelled turn with owner authority?"}
         owner -->|yes| allow["Continue final attention"]
         owner -->|no| block["K06 Direct attend blocked"]
-        explicitTurn -->|both off| present{"Eligible other label in presence window?"}
+        explicitTurn -->|both off| guest{"Ambient guest-address policy active?"}
+        guest -->|yes| unaddressed{"Guest without a qualifying opening address?"}
+        unaddressed -->|yes| ignore["guest_unaddressed: ignore direct attend, no request"]
+        unaddressed -->|no| cue["Continue attention and follow-up cue checks"]
+        guest -->|no| present{"Eligible other label in presence window?"}
         present -->|no| usual["Usual attention and follow-up"]
-        present -->|yes| guest{"Ambient guest-address policy active?"}
-        guest -->|yes| cue["Apply guest and follow-up cue rules"]
-        guest -->|no| auto{"Meeting owner check or verified<br/>opening name in diarized head?"}
+        present -->|yes| auto{"Meeting owner check or verified<br/>opening name in diarized head?"}
         auto -->|yes| allow
         auto -->|no| block
     end
@@ -322,9 +331,13 @@ The energy gate decides whether there is a window to decode. RightyO validates W
 flowchart LR
     subgraph child["RightyO child"]
         direction TB
-        pcm["20 ms PCM after capture S01"] --> open{"Frame RMS at or above onset threshold?"}
-        open -->|no| pre["Keep bounded pre-roll"]
-        open -->|yes| endTurn["Close on hangover, duration<br/>or eligible end-of-turn score"]
+        pcm["20 ms PCM after capture S01"] --> active{"Window already open?"}
+        active -->|no| onset{"Frame RMS at or above onset threshold?"}
+        onset -->|no| pre["Keep frame in bounded pre-roll"]
+        onset -->|yes| start["Open with pre-roll"] --> append
+        active -->|yes| append["Append frame, including quiet frames"]
+        append -->|hangover, max duration or eligible end-of-turn verdict| closeWindow["Finalize window"]
+        append -->|clean end of input| closeWindow
     end
     subgraph asr["ASR"]
         direction TB
@@ -354,7 +367,7 @@ flowchart LR
 
 | Point | Branch and evidence | Decision map and source |
 |---|---|---|
-| **K04 · Filler** and **K07 · First word split** | Main compares each frame's normalized RMS with 0.008 by default. Below onset it keeps up to 240 ms pre-roll. Room noise can cross the gate and yield filler on main (§5). Once open, voiced frames reset the clock. Silence hangover (1,440 ms), max duration (12 s), or an eligible optional end-of-turn verdict finalizes. The merger may hold a wake fragment for continuation or release separate turns. A first word in a separate turn was observed. Loss of a first phoneme at capture or onset is a separate possibility (inferred). See S01 and S10. [HS #1440][hs1440], [RightyO #107][ry107], [RightyO #340][ry340] | M08, R03, R05–R08 · `live_audio.py:136`, `live_audio.py:1963`, `live_audio.py:2001`, `live_audio.py:2035`, `turn_merge.py:391`, `turn_merge.py:498` |
+| **K04 · Filler** and **K07 · First word split** | Before onset, frames below the default RMS threshold (0.008) fill up to 240 ms of pre-roll. Room noise can open a window and yield filler (§5). An open window keeps quiet frames through hangover (1,440 ms since the last voiced frame). The 12 s cap, an eligible end-of-turn verdict or clean end of input can close it sooner. The merger may hold a wake fragment for continuation or release separate turns. A first word in a separate turn was observed. Loss of a first phoneme at capture or onset is a separate possibility (inferred). See S01 and S10. [HS #1440][hs1440], [RightyO #107][ry107], [RightyO #340][ry340] | M08, R03, R05–R08 · `live_audio.py:136`, `live_audio.py:1963`, `live_audio.py:1972`, `live_audio.py:2035`, `live_audio.py:2642`, `turn_merge.py:391`, `turn_merge.py:498` |
 | **S10 · Unusable or absent public window** | Quiet speech may never open the gate. Even after onset, a valid empty decode (for example, an empty `transcription` list) can contribute no final, trigger no retry and emit no `asr_window` record. Main clamps small timing faults, falls back to segment timing and salvages usable neighbours with a loss boundary. Timing rejections that leave no usable units can trigger a bounded local re-decode. Completed windows publish in order. Deadline, backlog, privacy boundary or stop can cancel or discard work. Public recovery records use `asr_window outcome=salvaged/redecoded/lost`. A missing final and a silent recovery log fit both a missed onset and a valid empty decode. [HS #1440][hs1440], [HS #1483][hs1483] | R03, R05–R08 · `live_audio.py:1092`, `live_audio.py:1187`, `live_audio.py:2167`, `live_audio.py:2201`, `live_audio.py:2346`, `live_audio.py:2385` |
 | **S12 · Split owner exit interrupted** | The private matcher remembers the end of a verified name-only turn. It consumes that pending name on the next private turn it matches. An intervening ordinary turn clears the name, so a later exit phrase alone cannot complete the split exit. A fresh named exit still gets its own check (§3). | R22 · `tool_events.py:2038`, `tool_events.py:2058`, `tool_events.py:2068` |
 
