@@ -1,11 +1,10 @@
-import Foundation
+import SwiftUI
 import HailProtocol
 @testable import HailCore
 
 /// Compile the actual app extension against a state shell without loading the native audio/SwiftUI surface.
 @MainActor
-final class RootView: AmbientDestinationOwner {
-    enum Phase { case active, inactive, background }
+final class RootView: StationDestinationOwner {
     let connections: HostConnectionStore
     lazy var playback = ReplyPlaybackController(player: FormatTestPlayer())
     let selectionStore: any DestinationSelectionStoring
@@ -16,7 +15,7 @@ final class RootView: AmbientDestinationOwner {
     var authorizedConnectionGeneration: UUID?
     var selectionRevision: UInt = 0
     var scenePhaseRevision: UInt = 0
-    var scenePhase = Phase.active
+    var scenePhase = ScenePhase.active
     var didRestoreSelection = true
     var didRestoreHosts = true
     var isRestoringSelection = false
