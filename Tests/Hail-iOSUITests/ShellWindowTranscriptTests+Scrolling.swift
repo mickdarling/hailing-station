@@ -2,6 +2,24 @@
 import XCTest
 
 extension ShellWindowTranscriptTests {
+    #if os(iOS)
+    @MainActor
+    func testReplyGrowingDuringDragOffersJumpWhenGestureEndsAboveLatest() {
+        let app = application()
+        launchDocument("scrolling", in: app)
+        let chat = element("station.chat", in: app)
+        assertVisible("Reply 20.", in: chat)
+        activate(app.buttons["Extend on drag"])
+        let start = chat.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let end = start.withOffset(CGVector(dx: 0, dy: -24))
+        start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.5)
+        let jump = app.buttons["station.transcript.jump-to-latest"]
+        XCTAssertTrue(jump.waitForExistence(timeout: 5))
+        activate(jump)
+        assertVisible("Stream paragraph 16.", in: chat)
+    }
+    #endif
+
     @MainActor
     func testPinnedDocumentFollowsHeardTurnsRepliesAndStreamedGrowth() {
         let app = application()

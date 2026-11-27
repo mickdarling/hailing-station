@@ -30,6 +30,22 @@ struct TranscriptScrollViewportTests {
         #expect(after.followsLatest(after: before, wasPinned: true, userScrolling: false))
     }
 
+    @Test(arguments: [true, false])
+    func gestureEndingAfterGrowthUsesTheFinalDistanceToBottom(endsNearBottom: Bool) {
+        let before = TranscriptScrollViewport(bottomOffset: 500, offset: 475)
+        let grown = TranscriptScrollViewport(bottomOffset: 600, offset: 475)
+        let end = TranscriptScrollViewport(bottomOffset: 600, offset: endsNearBottom ? 570 : 510)
+        var scroll = TranscriptScrollState()
+        _ = scroll.updatePhase(.interacting, at: before)
+        scroll.pinned = grown.followsLatest(after: before, wasPinned: scroll.pinned,
+                                            userScrolling: scroll.userScrolling)
+        #expect(scroll.pinned)
+        _ = scroll.updatePhase(.decelerating, at: grown)
+        let restoreAnchor = scroll.updatePhase(.idle, at: end)
+        #expect(restoreAnchor == endsNearBottom)
+        #expect(scroll.pinned == endsNearBottom)
+    }
+
     @Test func bottomOffsetIncludesTheBottomInset() {
         let geometry = ScrollGeometry(contentOffset: CGPoint(x: 0, y: 300),
                                       contentSize: CGSize(width: 400, height: 800),
