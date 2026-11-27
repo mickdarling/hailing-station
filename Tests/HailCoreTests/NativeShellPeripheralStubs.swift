@@ -6,6 +6,7 @@ import SwiftUI
 struct ConnectivityLabView: View {
     let store: HostConnectionStore
     let endpointsChanged: @MainActor ([HostEndpoint]) -> Void
+    var showsDevicesPage = false
     var body: some View { Text("Mac Setup fixture") }
 }
 

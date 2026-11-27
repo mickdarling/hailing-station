@@ -118,6 +118,7 @@ targets:
       - Tests/Hail-iOSUITests/ShellWindowStationDisplaySeedTests.swift
       - Tests/Hail-iOSUITests/ShellWindowStationFixtureLaunchTests.swift
       - Tests/Hail-iOSUITests/ShellWindowStationScreenTests.swift
+      - Tests/Hail-iOSUITests/ShellWindowStationScreenTests+Devices.swift
       - Tests/Hail-iOSUITests/ShellWindowStationStateScreenshotTests.swift
       - Tests/Hail-iOSUITests/ShellWindowTranscriptTests.swift
       - Tests/Hail-iOSUITests/ShellWindowUITestSupport+Launch.swift
