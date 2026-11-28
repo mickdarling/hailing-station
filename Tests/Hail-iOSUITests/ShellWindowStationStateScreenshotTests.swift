@@ -71,7 +71,7 @@ final class ShellWindowStationStateScreenshotTests: XCTestCase, ShellWindowUITes
         activateButton("Done", in: app.buttons)
         XCTAssertTrue(routes.waitForNonExistence(timeout: 5))
         activate(element("station.voice-dock.more", in: app))
-        activate(element("station.voice-dock.listening", in: app))
+        activateListeningMenuItem(in: app)
         XCTAssertTrue(element("station.rail.detail", in: app).waitForExistence(timeout: 5))
     }
 
@@ -127,6 +127,20 @@ private extension ShellWindowStationStateScreenshotTests {
     func seeded(_ state: String) -> XCUIApplication {
         launchStation(shellEnabled: true, arguments: ["-seed-station-screen", state, "-seed-conversation", "4"],
                       fixtureAppearance: .light)
+    }
+
+    func activateListeningMenuItem(in app: XCUIApplication) {
+        let item = element("station.voice-dock.listening", in: app)
+        #if os(iOS)
+        if device == "ipad" {
+            XCTAssertTrue(item.waitForExistence(timeout: 5))
+            waitUntilHittable(item)
+            // The popover row overlaps its More button. Tap the leading part clear of the trigger.
+            item.coordinate(withNormalizedOffset: CGVector(dx: 0.12, dy: 0.5)).tap()
+            return
+        }
+        #endif
+        activate(item)
     }
 
     func confirmFixtureDestination(in app: XCUIApplication) {
