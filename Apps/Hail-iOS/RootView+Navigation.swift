@@ -157,8 +157,8 @@ private struct ShellToolList<Destination: View>: View {
         .buttonStyle(.plain)
         #else
         let link = NavigationLink { destination(tool) } label: {
-            // UIKit exposes the title as a child of its row. Both represent the same Settings destination.
-            Label { Text(title).accessibilityIdentifier(identifier) } icon: { Image(systemName: symbol) }
+            // UIKit exposes the title as a separate child of the actionable row.
+            Label { Text(title).accessibilityIdentifier("\(identifier).title") } icon: { Image(systemName: symbol) }
         }
         #endif
         link.accessibilityIdentifier(identifier).listRowBackground(StationRowSurface())

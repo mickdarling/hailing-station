@@ -23,20 +23,20 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     @State private var detailPath: [ShellTool] = []
     private var isCollapsed: Bool { false }
     #endif
+
     var body: some View {
         arrangement
             #if os(iOS)
             .overlayPreferenceValue(StationSlotKey.self) { slot in
                 GeometryReader { proxy in
                     let frame = slot.map { proxy[$0] }
+                    let hidden = frame == nil
                     page(.station)
-                        .environment(\.stationAccessibilityHidden, frame == nil)
+                        .environment(\.stationAccessibilityHidden, hidden)
                         .frame(width: frame?.width ?? 0, height: frame?.height ?? 0)
                         .position(x: frame?.midX ?? 0, y: frame?.midY ?? 0)
-                        .stationCollapsed(frame == nil)
-                        .onChange(of: frame == nil) {
-                            UIAccessibility.post(notification: .layoutChanged, argument: nil)
-                        }
+                        .stationCollapsed(hidden)
+                        .onChange(of: hidden) { UIAccessibility.post(notification: .layoutChanged, argument: nil) }
                 }
                 .allowsHitTesting(slot != nil)
             }
@@ -48,11 +48,9 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
 
     @ViewBuilder private var arrangement: some View {
         switch state.layout(for: idiom) {
-        case .split(let sidebarVisible):
-            split(sidebarVisible: sidebarVisible)
+        case .split(let sidebarVisible): split(sidebarVisible: sidebarVisible)
         #if os(iOS)
-        case .tabs:
-            pages.inspector(isPresented: inspectorPresented) { inspector() }
+        case .tabs: pages.inspector(isPresented: inspectorPresented) { inspector() }
         #else
         case .tabs: pages
         #endif
@@ -94,6 +92,7 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
         .toolbarVisibility(.visible, for: .windowToolbar)
         #endif
     }
+
     #if os(macOS)
     private var pages: some View {
         let hidden = state.section != .station
@@ -126,8 +125,7 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     }
     #else
     private var pages: some View {
-        let usesTabs = idiom == .phone || isCollapsed
-        return VStack(spacing: 0) {
+        VStack(spacing: 0) {
             ZStack {
                 if state.section == .station {
                     // The slot starts below the iPad split view's Back and sidebar controls (#1148).
@@ -140,15 +138,16 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
                 }
             }
             // The overlaid Station stack is clipped to its slot. Paint behind it up to the status bar.
-            .background(usesTabs && state.section == .station ? palette[.elevatedSurface] : .clear,
+            .background(idiom == .phone && state.section == .station ? palette[.elevatedSurface] : .clear,
                         ignoresSafeAreaEdges: .top)
-            if usesTabs && !state.fullConversation {
+            if idiom == .phone && !state.fullConversation {
                 StationTabBar(selection: state.section) { send(.select($0)) }
                     .fixedSize(horizontal: false, vertical: true)
                     .background(palette[.elevatedSurface], ignoresSafeAreaEdges: .bottom)
             }
         }
     }
+
     @ViewBuilder private func page(_ section: StationSection) -> some View {
         let stack = NavigationStack {
             if section == .station {
@@ -173,11 +172,13 @@ private extension StationNavigationShell {
             if let next { send(.select(next)) }
         })
     }
+
     var compactColumn: Binding<NavigationSplitViewColumn> {
         Binding(get: { state.compactColumn == .sidebar ? .sidebar : .detail }, set: { column in
             send(.setCompactColumn(column == .sidebar ? .sidebar : .detail))
         })
     }
+
     var inspectorPresented: Binding<Bool> {
         Binding(get: { state.showsInspector }, set: { shown in
             if shown != state.showsInspector { send(.toggleInspector) }

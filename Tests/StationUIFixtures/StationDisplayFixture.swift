@@ -23,7 +23,12 @@ struct StationDisplayFixture: View {
                 let width = min(viewport.size.width, 402)
                 let legacy = ProcessInfo.processInfo.arguments.contains("-fixture-empty-dock-inset")
                 Group {
-                    if legacy { shell { Group { EmptyView() } } } else { shell { EmptyView() } }
+                    // Measure the phone tab layout at compact width on both simulator families.
+                    if legacy {
+                        shell(idiom: .phone) { Group { EmptyView() } }
+                    } else {
+                        shell(idiom: .phone) { EmptyView() }
+                    }
                 }
                 .environment(\.horizontalSizeClass, .compact)
                 .frame(width: width)
@@ -41,8 +46,9 @@ struct StationDisplayFixture: View {
         #endif
     }
 
-    private func shell<Dock: View>(@ViewBuilder dock: @escaping () -> Dock) -> some View {
-        StationNavigationShell(state: navigation, idiom: device, session: session,
+    private func shell<Dock: View>(idiom: StationNavigationIdiom? = nil,
+                                   @ViewBuilder dock: @escaping () -> Dock) -> some View {
+        StationNavigationShell(state: navigation, idiom: idiom ?? device, session: session,
                                send: { navigation.apply($0) }, detail: { _ in screen },
                                inspector: { EmptyView() }, dock: { _ in dock() })
             .environment(\.stationTheme, .astra)

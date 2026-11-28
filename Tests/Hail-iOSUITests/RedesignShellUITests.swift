@@ -99,10 +99,13 @@ final class RedesignShellUITests: XCTestCase {
         let sensitive = ["microphone", "destination", "talk", "privacy", "private", "listening", "recording"]
         // Exempt only these exact Settings destinations, never other privacy/listening text or station IDs.
         // The full identifier sweep above still runs on the unmodified tree.
-        let withoutSettingsDestinations = tree.split(separator: "\n").filter {
-            let privacy = $0.contains("identifier: 'station.settings.privacy'") && $0.contains("label: 'Privacy'")
-            let listening = $0.contains("identifier: 'settings.listening.entry'")
-                && $0.contains("label: 'Listening and attention'")
+        let withoutSettingsDestinations = tree.split(separator: "\n").filter { line in
+            let privacy = ["station.settings.privacy", "station.settings.privacy.title"].contains { identifier in
+                line.contains("identifier: '\(identifier)'") && line.contains("label: 'Privacy'")
+            }
+            let listening = ["settings.listening.entry", "settings.listening.entry.title"].contains { identifier in
+                line.contains("identifier: '\(identifier)'") && line.contains("label: 'Listening and attention'")
+            }
             return !privacy && !listening
         }.joined(separator: "\n")
         let spoken = try captures(of: #"label: '([^']*)'"#, in: withoutSettingsDestinations).filter { label in

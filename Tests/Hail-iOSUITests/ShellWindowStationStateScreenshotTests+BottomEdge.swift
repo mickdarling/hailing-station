@@ -6,7 +6,8 @@ extension ShellWindowStationStateScreenshotTests {
     func testDockAndTabBarEdgesInCompactStation() throws {
         let arguments = ["-seed-navigation-shell", "-seed-station-state", "ready", "-measure-station-insets"]
         for legacy in [true, false] {
-            let app = launchStation(arguments: arguments + (legacy ? ["-fixture-empty-dock-inset"] : []))
+            let app = launchStation(arguments: arguments + (legacy ? ["-fixture-empty-dock-inset"] : []),
+                                    ipadPortrait: true)
             let window = stationWindow(in: app)
             let tabBar = window.tabBars.containing(.button, identifier: "station.tab.settings").firstMatch
             let dock = element("station.voice-dock", in: window)
