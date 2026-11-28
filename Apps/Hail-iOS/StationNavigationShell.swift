@@ -116,15 +116,15 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
                         .stationAccessibilityScope()
                         .environment(\.stationAccessibilityHidden, hidden)
                         .stationCollapsed(hidden)
-                    if hidden {
-                        NavigationStack(path: $detailPath) {
-                            detail(state.section)
-                                .id(state.section)
-                                .scrollContentBackground(.hidden)
-                                .background(palette[.surface])
+                    // Keep the detail stack mounted so changing sections doesn't remount Station's capture surface.
+                    NavigationStack(path: $detailPath) {
+                        if hidden {
+                            detail(state.section).id(state.section)
+                                .scrollContentBackground(.hidden).background(palette[.surface])
                         }
-                        .environment(\.shellDetailPath, $detailPath)
                     }
+                    .environment(\.shellDetailPath, $detailPath)
+                    .stationCollapsed(!hidden)
                 }
                 .frame(width: viewport.size.width, height: viewport.size.height)
             }
