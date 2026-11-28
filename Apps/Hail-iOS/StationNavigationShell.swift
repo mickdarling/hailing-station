@@ -51,19 +51,8 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
         case .split(let sidebarVisible):
             split(sidebarVisible: sidebarVisible)
         #if os(iOS)
-        case .tabs(let tabBarVisible):
-            VStack(spacing: 0) {
-                pages
-                    // The overlaid Station stack is clipped to its slot. Paint behind it up to the status bar.
-                    .background(state.section == .station ? palette[.elevatedSurface] : .clear,
-                                ignoresSafeAreaEdges: .top)
-                if tabBarVisible {
-                    StationTabBar(selection: state.section) { send(.select($0)) }
-                        .fixedSize(horizontal: false, vertical: true)
-                        .background(palette[.elevatedSurface], ignoresSafeAreaEdges: .bottom)
-                }
-            }
-            .inspector(isPresented: inspectorPresented) { inspector() }
+        case .tabs:
+            pages.inspector(isPresented: inspectorPresented) { inspector() }
         #else
         case .tabs: pages
         #endif
@@ -137,15 +126,26 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     }
     #else
     private var pages: some View {
-        ZStack {
-            if state.section == .station {
-                // The slot starts below the iPad split view's Back and sidebar controls (#1148).
-                Color.clear
-                    .anchorPreference(key: StationSlotKey.self, value: .bounds) { $0 }
-                    .navigationTitle(StationSection.station.title)
-                    .accessibilityHidden(true)
-            } else {
-                page(state.section).id(state.section)
+        let usesTabs = idiom == .phone || isCollapsed
+        return VStack(spacing: 0) {
+            ZStack {
+                if state.section == .station {
+                    // The slot starts below the iPad split view's Back and sidebar controls (#1148).
+                    Color.clear
+                        .anchorPreference(key: StationSlotKey.self, value: .bounds) { $0 }
+                        .navigationTitle(StationSection.station.title)
+                        .accessibilityHidden(true)
+                } else {
+                    page(state.section).id(state.section)
+                }
+            }
+            // The overlaid Station stack is clipped to its slot. Paint behind it up to the status bar.
+            .background(usesTabs && state.section == .station ? palette[.elevatedSurface] : .clear,
+                        ignoresSafeAreaEdges: .top)
+            if usesTabs && !state.fullConversation {
+                StationTabBar(selection: state.section) { send(.select($0)) }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(palette[.elevatedSurface], ignoresSafeAreaEdges: .bottom)
             }
         }
     }

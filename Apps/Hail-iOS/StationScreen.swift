@@ -21,6 +21,7 @@ struct StationScreen<Header: View, Listening: View, Pane: View, Dock: View, Rout
     @State private var dockHeight: CGFloat = 64
     @Environment(\.stationPalette) private var palette
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.stationAccessibilityHidden) private var stationHidden
 
     private enum Sheet: String, Identifiable {
         case recovery, routes
@@ -53,10 +54,10 @@ struct StationScreen<Header: View, Listening: View, Pane: View, Dock: View, Rout
                 }
                 .contentMargins(.vertical, 0, for: .scrollContent)
                 .scrollBounceBehavior(.basedOnSize)
-                .accessibilityIdentifier("station.dock-scroll")
                 .frame(height: min(dockHeight, max(90, viewport.size.height * 0.5)))
             }
         }
+        .scrollDisabled(stationHidden)
         .background(palette[.elevatedSurface])
         .onPreferenceChange(StationTalkReportKey.self) { report = $0 }
         .sheet(item: $sheet, onDismiss: completeRecoveryIntent) { selection in

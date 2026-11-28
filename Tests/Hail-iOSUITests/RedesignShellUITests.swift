@@ -87,6 +87,7 @@ final class RedesignShellUITests: XCTestCase {
     /// `stationAccessibilityScope()` fails here too.
     @MainActor
     private func assertNoStation(in app: XCUIApplication, named name: String) throws {
+        XCTAssertEqual(app.scrollViews.containing(.any, identifier: "station.voice-dock").count, 0)
         let tree = app.debugDescription
         attachTree(tree, named: name)
         let identifiers = try captures(of: #"identifier: '(station\.[^']*)'"#, in: tree)
@@ -114,6 +115,7 @@ final class RedesignShellUITests: XCTestCase {
     /// the build footer, which leaves the view tree while the station is hidden.
     @MainActor
     private func assertStationBack(in app: XCUIApplication, named name: String) {
+        XCTAssertEqual(app.scrollViews.containing(.any, identifier: "station.voice-dock").count, 1)
         for identifier in ["station.connection", "station.tools", "station.build-info"] {
             let element = app.descendants(matching: .any)[identifier].firstMatch
             if !element.waitForExistence(timeout: 5) { attachTree(of: app, named: "\(name)-\(identifier)") }

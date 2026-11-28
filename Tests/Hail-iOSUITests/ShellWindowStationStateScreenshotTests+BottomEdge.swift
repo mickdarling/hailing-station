@@ -10,12 +10,15 @@ extension ShellWindowStationStateScreenshotTests {
             let window = stationWindow(in: app)
             let tabBar = window.tabBars.containing(.button, identifier: "station.tab.settings").firstMatch
             let dock = element("station.voice-dock", in: window)
-            let scroll = element("station.dock-scroll", in: window)
+            // Measure the native scroll viewport that actually contains Talk.
+            let viewports = window.scrollViews.containing(.button, identifier: "station.talk")
+            let scroll = viewports.element
             let control = element("station.talk", in: window)
             for item in [tabBar, dock, scroll, control] {
                 XCTAssertTrue(item.waitForExistence(timeout: 8))
                 XCTAssertFalse(item.frame.isEmpty)
             }
+            XCTAssertEqual(viewports.count, 1)
             let safeArea = element("fixture.bottom-inset", in: window)
             let value = try XCTUnwrap(safeArea.value as? String)
             let safeBottom = CGFloat(try XCTUnwrap(Double(value)))

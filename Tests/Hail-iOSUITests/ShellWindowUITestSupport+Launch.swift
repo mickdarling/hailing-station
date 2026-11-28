@@ -39,7 +39,10 @@ extension ShellWindowUITestSupport {
         #else
         let app = XCUIApplication()
         let orientation = XCUIDevice.shared.orientation
-        if device == "ipad" { XCUIDevice.shared.orientation = .landscapeLeft }
+        if device == "ipad" {
+            let portrait = ProcessInfo.processInfo.environment["HAIL_UI_IPAD_PORTRAIT"] == "1"
+            XCUIDevice.shared.orientation = portrait ? .portrait : .landscapeLeft
+        }
         #endif
         let reset = baseArguments + ["-reset-station-state"]
         addTeardownBlock { @MainActor in
