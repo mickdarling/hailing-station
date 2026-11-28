@@ -135,7 +135,8 @@ extension ShellWindowTranscriptTests {
         #else
         let app = XCUIApplication()
         let original = XCUIDevice.shared.orientation
-        XCUIDevice.shared.orientation = device == "ipad" ? .landscapeLeft : .portrait
+        let portrait = ProcessInfo.processInfo.environment["HAIL_UI_IPAD_PORTRAIT"] == "1"
+        XCUIDevice.shared.orientation = device == "ipad" && !portrait ? .landscapeLeft : .portrait
         addTeardownBlock { @MainActor in XCUIDevice.shared.orientation = original }
         #endif
         let reset = baseArguments + ["-reset-station-state"]
