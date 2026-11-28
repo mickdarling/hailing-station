@@ -23,12 +23,24 @@ extension TranscriptScrollViewport {
     }
 }
 
+struct TranscriptScrollState {
+    var pinned = true
+    private(set) var userScrolling = false
+
+    /// Reconcile with the reader's final position and report whether to restore the semantic bottom anchor.
+    mutating func updatePhase(_ phase: ScrollPhase, at viewport: TranscriptScrollViewport) -> Bool {
+        let gestureEnded = userScrolling && phase == .idle
+        userScrolling = phase == .interacting || phase == .decelerating
+        if gestureEnded { pinned = viewport.nearBottom }
+        return gestureEnded && pinned
+    }
+}
+
 struct TranscriptScrollView<Content: View>: View {
     @ViewBuilder let content: (@escaping (String) -> Void) -> Content
     @Environment(\.stationPalette) private var palette
     @State private var position = ScrollPosition(idType: String.self, edge: .bottom)
-    @State private var pinned = true
-    @State private var userScrolling = false
+    @State private var scroll = TranscriptScrollState()
 
     var body: some View {
         ScrollView {
@@ -37,22 +49,19 @@ struct TranscriptScrollView<Content: View>: View {
         .scrollBounceBehavior(.basedOnSize)
         .scrollPosition($position)
         .defaultScrollAnchor(.bottom, for: .initialOffset)
-        .defaultScrollAnchor(pinned && !userScrolling ? .bottom : nil, for: .sizeChanges)
+        .defaultScrollAnchor(scroll.pinned && !scroll.userScrolling ? .bottom : nil, for: .sizeChanges)
         .defaultScrollAnchor(.top, for: .alignment)
         .onScrollGeometryChange(for: TranscriptScrollViewport.self, of: TranscriptScrollViewport.init,
                                 action: updatePin)
         .onScrollPhaseChange { _, phase, context in
-            let wasScrolling = userScrolling
-            userScrolling = phase == .interacting || phase == .decelerating
-            if wasScrolling, phase == .idle, TranscriptScrollViewport(context.geometry).nearBottom {
-                pinned = true
+            if scroll.updatePhase(phase, at: TranscriptScrollViewport(context.geometry)) {
                 position.scrollTo(edge: .bottom)
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            if !pinned {
+            if !scroll.pinned {
                 Button("Jump to latest", systemImage: "arrow.down") {
-                    pinned = true
+                    scroll.pinned = true
                     position.scrollTo(edge: .bottom)
                 }
                 .font(.caption.weight(.semibold))
@@ -68,11 +77,12 @@ struct TranscriptScrollView<Content: View>: View {
     }
 
     private func updatePin(_ previous: TranscriptScrollViewport, _ current: TranscriptScrollViewport) {
-        let follow = current.followsLatest(after: previous, wasPinned: pinned, userScrolling: userScrolling)
-        if follow != pinned { pinned = follow }
+        let follow = current.followsLatest(after: previous, wasPinned: scroll.pinned,
+                                           userScrolling: scroll.userScrolling)
+        if follow != scroll.pinned { scroll.pinned = follow }
         // SwiftUI follows the semantic edge as it lays out streamed text. Only request it again
         // if a manual scroll near the bottom cleared it and the scrollable extent then changed.
-        if follow, !userScrolling, current.bottomOffset != previous.bottomOffset, position.edge != .bottom {
+        if follow, !scroll.userScrolling, current.bottomOffset != previous.bottomOffset, position.edge != .bottom {
             position.scrollTo(edge: .bottom)
         }
     }

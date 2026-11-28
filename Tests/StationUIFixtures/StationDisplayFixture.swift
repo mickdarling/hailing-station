@@ -7,6 +7,7 @@ struct StationDisplayFixture: View {
     let state: StationTranscriptSeed
     @State private var navigation = StationNavigationState()
     @State private var entries: [ConversationEntry]
+    @State private var extendDuringDrag = false
     private let session = StationTranscriptSeed.session
     private var device: StationNavigationIdiom { StationRedesignLaunch.idiom }
 
@@ -59,6 +60,12 @@ struct StationDisplayFixture: View {
         ConversationDocument(allEntries: entries, hostName: session.hostName,
                              sessions: [session.targetID: session.targetName],
                              audioProblem: state.audioProblem(replyID:), copy: { _ in })
+            .onScrollPhaseChange { _, phase in
+                if extendDuringDrag, phase == .interacting, let last = entries.indices.last {
+                    extendDuringDrag = false
+                    StationTranscriptSeed.extendReply(&entries[last])
+                }
+            }
     }
 
     @ViewBuilder private var scrollControls: some View {
@@ -70,6 +77,8 @@ struct StationDisplayFixture: View {
                     StationTranscriptSeed.extendReply(&entries[last])
                 }
                 .disabled(entries.last?.speaker != .haili)
+                Button("Extend on drag") { extendDuringDrag = true }
+                    .disabled(entries.last?.speaker != .haili)
             }
         }
     }
