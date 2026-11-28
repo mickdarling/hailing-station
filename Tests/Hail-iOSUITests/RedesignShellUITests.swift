@@ -87,6 +87,7 @@ final class RedesignShellUITests: XCTestCase {
     /// `stationAccessibilityScope()` fails here too.
     @MainActor
     private func assertNoStation(in app: XCUIApplication, named name: String) throws {
+        XCTAssertEqual(app.scrollViews.containing(.any, identifier: "station.voice-dock").count, 0)
         let tree = app.debugDescription
         attachTree(tree, named: name)
         let identifiers = try captures(of: #"identifier: '(station\.[^']*)'"#, in: tree)
@@ -98,10 +99,13 @@ final class RedesignShellUITests: XCTestCase {
         let sensitive = ["microphone", "destination", "talk", "privacy", "private", "listening", "recording"]
         // Exempt only these exact Settings destinations, never other privacy/listening text or station IDs.
         // The full identifier sweep above still runs on the unmodified tree.
-        let withoutSettingsDestinations = tree.split(separator: "\n").filter {
-            let privacy = $0.contains("identifier: 'station.settings.privacy'") && $0.contains("label: 'Privacy'")
-            let listening = $0.contains("identifier: 'settings.listening.entry'")
-                && $0.contains("label: 'Listening and attention'")
+        let withoutSettingsDestinations = tree.split(separator: "\n").filter { line in
+            let privacy = ["station.settings.privacy", "station.settings.privacy.title"].contains { identifier in
+                line.contains("identifier: '\(identifier)'") && line.contains("label: 'Privacy'")
+            }
+            let listening = ["settings.listening.entry", "settings.listening.entry.title"].contains { identifier in
+                line.contains("identifier: '\(identifier)'") && line.contains("label: 'Listening and attention'")
+            }
             return !privacy && !listening
         }.joined(separator: "\n")
         let spoken = try captures(of: #"label: '([^']*)'"#, in: withoutSettingsDestinations).filter { label in
@@ -114,6 +118,7 @@ final class RedesignShellUITests: XCTestCase {
     /// the build footer, which leaves the view tree while the station is hidden.
     @MainActor
     private func assertStationBack(in app: XCUIApplication, named name: String) {
+        XCTAssertEqual(app.scrollViews.containing(.any, identifier: "station.voice-dock").count, 1)
         for identifier in ["station.connection", "station.tools", "station.build-info"] {
             let element = app.descendants(matching: .any)[identifier].firstMatch
             if !element.waitForExistence(timeout: 5) { attachTree(of: app, named: "\(name)-\(identifier)") }

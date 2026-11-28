@@ -30,14 +30,13 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
             .overlayPreferenceValue(StationSlotKey.self) { slot in
                 GeometryReader { proxy in
                     let frame = slot.map { proxy[$0] }
+                    let hidden = frame == nil
                     page(.station)
-                        .environment(\.stationAccessibilityHidden, frame == nil)
+                        .environment(\.stationAccessibilityHidden, hidden)
                         .frame(width: frame?.width ?? 0, height: frame?.height ?? 0)
                         .position(x: frame?.midX ?? 0, y: frame?.midY ?? 0)
-                        .stationCollapsed(frame == nil)
-                        .onChange(of: frame == nil) {
-                            UIAccessibility.post(notification: .layoutChanged, argument: nil)
-                        }
+                        .stationCollapsed(hidden)
+                        .onChange(of: hidden) { UIAccessibility.post(notification: .layoutChanged, argument: nil) }
                 }
                 .allowsHitTesting(slot != nil)
             }
@@ -49,21 +48,9 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
 
     @ViewBuilder private var arrangement: some View {
         switch state.layout(for: idiom) {
-        case .split(let sidebarVisible):
-            split(sidebarVisible: sidebarVisible)
+        case .split(let sidebarVisible): split(sidebarVisible: sidebarVisible)
         #if os(iOS)
-        case .tabs(let tabBarVisible):
-            VStack(spacing: 0) {
-                pages
-                    // The overlaid Station stack is clipped to its slot. Paint behind it up to the status bar.
-                    .background(state.section == .station ? palette[.elevatedSurface] : .clear,
-                                ignoresSafeAreaEdges: .top)
-                if tabBarVisible {
-                    StationTabBar(selection: state.section) { send(.select($0)) }
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .inspector(isPresented: inspectorPresented) { inspector() }
+        case .tabs: pages.inspector(isPresented: inspectorPresented) { inspector() }
         #else
         case .tabs: pages
         #endif
@@ -117,15 +104,15 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
                         .stationAccessibilityScope()
                         .environment(\.stationAccessibilityHidden, hidden)
                         .stationCollapsed(hidden)
-                    if hidden {
-                        NavigationStack(path: $detailPath) {
-                            detail(state.section)
-                                .id(state.section)
-                                .scrollContentBackground(.hidden)
-                                .background(palette[.surface])
+                    // Keep the detail stack mounted so changing sections doesn't remount Station's capture surface.
+                    NavigationStack(path: $detailPath) {
+                        if hidden {
+                            detail(state.section).id(state.section)
+                                .scrollContentBackground(.hidden).background(palette[.surface])
                         }
-                        .environment(\.shellDetailPath, $detailPath)
                     }
+                    .environment(\.shellDetailPath, $detailPath)
+                    .stationCollapsed(!hidden)
                 }
                 .frame(width: viewport.size.width, height: viewport.size.height)
             }
@@ -138,29 +125,43 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     }
     #else
     private var pages: some View {
-        ZStack {
-            if state.section == .station {
-                // The slot starts below the iPad split view's Back and sidebar controls (#1148).
-                Color.clear
-                    .anchorPreference(key: StationSlotKey.self, value: .bounds) { $0 }
-                    .navigationTitle(StationSection.station.title)
-                    .accessibilityHidden(true)
-            } else {
-                page(state.section).id(state.section)
+        VStack(spacing: 0) {
+            ZStack {
+                if state.section == .station {
+                    // The slot starts below the iPad split view's Back and sidebar controls (#1148).
+                    Color.clear
+                        .anchorPreference(key: StationSlotKey.self, value: .bounds) { $0 }
+                        .navigationTitle(StationSection.station.title)
+                        .accessibilityHidden(true)
+                } else {
+                    page(state.section).id(state.section)
+                }
+            }
+            // The overlaid Station stack is clipped to its slot. Paint behind it up to the status bar.
+            .background(idiom == .phone && state.section == .station ? palette[.elevatedSurface] : .clear,
+                        ignoresSafeAreaEdges: .top)
+            if idiom == .phone && !state.fullConversation {
+                StationTabBar(selection: state.section) { send(.select($0)) }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(palette[.elevatedSurface], ignoresSafeAreaEdges: .bottom)
             }
         }
     }
 
-    private func page(_ section: StationSection) -> some View {
-        NavigationStack {
+    @ViewBuilder private func page(_ section: StationSection) -> some View {
+        let stack = NavigationStack {
             if section == .station {
                 detail(section).stationHiddenNavigationBar().stationAccessibilityScope()
             } else {
                 detail(section).scrollContentBackground(.hidden).background(palette[.surface])
             }
         }
-        // SwiftUI hosts the inset separately from the root (#1183).
-        .safeAreaInset(edge: .bottom, spacing: 0) { dock(section).stationAccessibilityScope() }
+        if Dock.self == EmptyView.self {
+            stack
+        } else {
+            // SwiftUI hosts the inset separately from the root (#1183).
+            stack.safeAreaInset(edge: .bottom, spacing: 0) { dock(section).stationAccessibilityScope() }
+        }
     }
     #endif
 }

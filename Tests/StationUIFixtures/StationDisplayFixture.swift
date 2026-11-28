@@ -17,9 +17,40 @@ struct StationDisplayFixture: View {
     }
 
     var body: some View {
-        StationNavigationShell(state: navigation, idiom: device, session: session,
+        #if os(iOS)
+        if ProcessInfo.processInfo.arguments.contains("-measure-station-insets") {
+            GeometryReader { viewport in
+                let width = min(viewport.size.width, 402)
+                let legacy = ProcessInfo.processInfo.arguments.contains("-fixture-empty-dock-inset")
+                Group {
+                    // Measure the phone tab layout at compact width on both simulator families.
+                    if legacy {
+                        shell(idiom: .phone) { Group { EmptyView() } }
+                    } else {
+                        shell(idiom: .phone) { EmptyView() }
+                    }
+                }
+                .environment(\.horizontalSizeClass, .compact)
+                .frame(width: width)
+                .frame(maxWidth: .infinity)
+                .overlay(alignment: .topLeading) {
+                    Color.clear.frame(width: 1, height: 1).accessibilityElement()
+                        .accessibilityLabel("Window bottom safe area")
+                        .accessibilityValue(String(Double(viewport.safeAreaInsets.bottom)))
+                        .accessibilityIdentifier("fixture.bottom-inset")
+                }
+            }
+        } else { shell { EmptyView() } }
+        #else
+        shell { EmptyView() }
+        #endif
+    }
+
+    private func shell<Dock: View>(idiom: StationNavigationIdiom? = nil,
+                                   @ViewBuilder dock: @escaping () -> Dock) -> some View {
+        StationNavigationShell(state: navigation, idiom: idiom ?? device, session: session,
                                send: { navigation.apply($0) }, detail: { _ in screen },
-                               inspector: { EmptyView() }, dock: { _ in EmptyView() })
+                               inspector: { EmptyView() }, dock: { _ in dock() })
             .environment(\.stationTheme, .astra)
     }
 

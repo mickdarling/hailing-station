@@ -42,6 +42,8 @@ struct VoiceDockView: View {
         .padding(.vertical, 8)
         .background(palette[.elevatedSurface])
         .overlay(alignment: .top) { Divider().overlay(palette[.separator]) }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("station.voice-dock")
     }
 
     private var liveCaption: some View {

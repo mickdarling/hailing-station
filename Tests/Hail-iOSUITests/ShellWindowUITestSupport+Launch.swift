@@ -33,13 +33,13 @@ extension ShellWindowUITestSupport {
         return app
     }
 
-    func launchStation(arguments: [String] = []) -> XCUIApplication {
+    func launchStation(arguments: [String] = [], ipadPortrait: Bool = false) -> XCUIApplication {
         #if os(macOS)
         let app = XCUIApplication(bundleIdentifier: "com.mickdarling.Hail-macOS-shell-tests")
         #else
         let app = XCUIApplication()
         let orientation = XCUIDevice.shared.orientation
-        if device == "ipad" { XCUIDevice.shared.orientation = .landscapeLeft }
+        if device == "ipad" { XCUIDevice.shared.orientation = ipadPortrait ? .portrait : .landscapeLeft }
         #endif
         let reset = baseArguments + ["-reset-station-state"]
         addTeardownBlock { @MainActor in

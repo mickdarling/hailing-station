@@ -149,19 +149,19 @@ private struct ShellToolList<Destination: View>: View {
     @ViewBuilder
     private func row(_ tool: ShellTool, _ title: LocalizedStringKey, _ symbol: String, _ identifier: String)
         -> some View {
-        let label = Label(title, systemImage: symbol)
         #if os(macOS)
-        Button { path.wrappedValue.append(tool) } label: {
+        let label = Label(title, systemImage: symbol)
+        let link = Button { path.wrappedValue.append(tool) } label: {
             label.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier(identifier)
-        .listRowBackground(StationRowSurface())
         #else
-        NavigationLink { destination(tool) } label: { label }
-            .accessibilityIdentifier(identifier)
-            .listRowBackground(StationRowSurface())
+        let link = NavigationLink { destination(tool) } label: {
+            // UIKit exposes the title as a separate child of the actionable row.
+            Label { Text(title).accessibilityIdentifier("\(identifier).title") } icon: { Image(systemName: symbol) }
+        }
         #endif
+        link.accessibilityIdentifier(identifier).listRowBackground(StationRowSurface())
     }
 }
 
