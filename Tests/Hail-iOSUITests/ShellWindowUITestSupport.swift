@@ -107,11 +107,26 @@ extension ShellWindowUITestSupport {
         }
     }
 
+    func setScreenshotAppearance(_ appearance: XCUIDevice.Appearance, in app: XCUIApplication) {
+        XCUIDevice.shared.appearance = appearance
+        #if os(iOS) && STATION_UI_FIXTURES && targetEnvironment(simulator)
+        if app.launchEnvironment[StationFixtureStyle.environmentKey] != nil {
+            let style: StationFixtureStyle = appearance == .dark ? .dark : .light
+            let marker = element("fixture.color-scheme", in: app)
+            XCTAssertTrue(marker.waitForExistence(timeout: 5))
+            style.request()
+            let effective = NSPredicate(format: "value == %@", style.rawValue)
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: effective, object: marker)],
+                                          timeout: 5), .completed)
+        }
+        #endif
+    }
+
     func captureBoth(_ state: String, marker: String, in app: XCUIApplication) {
         let previous = XCUIDevice.shared.appearance
         defer { XCUIDevice.shared.appearance = previous }
         for style in [XCUIDevice.Appearance.light, .dark] {
-            XCUIDevice.shared.appearance = style
+            setScreenshotAppearance(style, in: app)
             let appearance = style == .light ? "light" : "dark"
             screen(marker, named: "s2-station-\(state)-\(appearance)", in: app)
         }

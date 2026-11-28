@@ -5,22 +5,27 @@ import XCTest
 /// presentation controls. Never press Talk, Interrupt, the system Paste button or Send.
 final class ShellWindowStationStateScreenshotTests: XCTestCase, ShellWindowUITestSupport {
     @MainActor
-    func testTalkButtonSnapshotsInBothAppearances() {
+    func testTalkButtonSnapshotsInBothAppearances() throws {
         let previous = XCUIDevice.shared.appearance
         defer { XCUIDevice.shared.appearance = previous }
         for appearance in [XCUIDevice.Appearance.light, .dark] {
             XCUIDevice.shared.appearance = appearance
             for state in [StationTranscriptSeed.ready, .awaitingReply, .recording] {
-                let app = launchStation(arguments: ["-seed-navigation-shell", "-seed-station-state", state.rawValue])
+                let app = launchStation(arguments: ["-seed-navigation-shell", "-seed-station-state", state.rawValue],
+                                        fixtureAppearance: appearance)
                 let button = app.buttons["station.talk"]
                 XCTAssertTrue(button.waitForExistence(timeout: 8))
                 XCTAssertEqual(button.isEnabled, state.dock.isEnabled)
                 XCTAssertEqual(button.label, state.dock.label)
-                let snapshot = XCTAttachment(screenshot: button.screenshot())
+                let image = button.screenshot()
+                let snapshot = XCTAttachment(screenshot: image)
                 let scheme = appearance == .dark ? "dark" : "light"
                 snapshot.name = "\(device)-talk-\(state.rawValue)-\(scheme)"
                 snapshot.lifetime = .keepAlways
                 add(snapshot)
+                #if os(iOS)
+                try assertTalkColors(in: image, state: state, appearance: appearance)
+                #endif
                 app.terminate()
             }
         }
@@ -61,8 +66,10 @@ final class ShellWindowStationStateScreenshotTests: XCTestCase, ShellWindowUITes
         activate(element("station.chat-expand", in: app))
         activate(element("station.voice-dock.more", in: app))
         activate(element("station.voice-dock.routes", in: app))
-        XCTAssertTrue(element("settings.audio.overview", in: app).waitForExistence(timeout: 5))
+        let routes = element("settings.audio.overview", in: app)
+        XCTAssertTrue(routes.waitForExistence(timeout: 5))
         activateButton("Done", in: app.buttons)
+        XCTAssertTrue(routes.waitForNonExistence(timeout: 5))
         activate(element("station.voice-dock.more", in: app))
         activate(element("station.voice-dock.listening", in: app))
         XCTAssertTrue(element("station.rail.detail", in: app).waitForExistence(timeout: 5))
@@ -118,7 +125,8 @@ final class ShellWindowStationStateScreenshotTests: XCTestCase, ShellWindowUITes
 @MainActor
 private extension ShellWindowStationStateScreenshotTests {
     func seeded(_ state: String) -> XCUIApplication {
-        launchStation(shellEnabled: true, arguments: ["-seed-station-screen", state, "-seed-conversation", "4"])
+        launchStation(shellEnabled: true, arguments: ["-seed-station-screen", state, "-seed-conversation", "4"],
+                      fixtureAppearance: .light)
     }
 
     func confirmFixtureDestination(in app: XCUIApplication) {

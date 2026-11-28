@@ -9,14 +9,15 @@ extension ShellWindowStationStateScreenshotTests {
     func testIPhoneStationBackgroundReachesTopEdge() throws {
         try XCTSkipUnless(device == "iphone", "The top-edge background belongs to the phone tabs.")
         let app = launchStation(shellEnabled: true, arguments: ["-seed-station-screen", "offline",
-                                                                 "-seed-conversation", "4"])
+                                                                 "-seed-conversation", "4"],
+                                fixtureAppearance: .light)
         XCUIDevice.shared.orientation = .portrait
         let previous = XCUIDevice.shared.appearance
         defer { XCUIDevice.shared.appearance = previous }
 
         let swatch = StationTheme.astra[.elevatedSurface]
         for style in [XCUIDevice.Appearance.light, .dark] {
-            XCUIDevice.shared.appearance = style
+            setScreenshotAppearance(style, in: app)
             // The native navigation bar on the adjacent tab starts at this phone's top safe-area boundary.
             choose("sessions", in: app)
             let bar = app.navigationBars["Sessions"]
