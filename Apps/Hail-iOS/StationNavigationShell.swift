@@ -23,7 +23,6 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     @State private var detailPath: [ShellTool] = []
     private var isCollapsed: Bool { false }
     #endif
-
     var body: some View {
         arrangement
             #if os(iOS)
@@ -101,15 +100,16 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
         }
         .navigationSplitViewStyle(.balanced)
         #if os(macOS)
+        // The window owns this item even when a pushed tool replaces the detail's navigation items.
         .toolbar { toggle }
         .toolbarVisibility(.visible, for: .windowToolbar)
         #endif
     }
-
     #if os(macOS)
     private var pages: some View {
         let hidden = state.section != .station
         return VStack(spacing: 0) {
+            // Size pages from the column. In the old inset layout AX children had frames inside a zero-height viewport.
             GeometryReader { viewport in
                 ZStack {
                     detail(.station)
@@ -139,6 +139,7 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
     private var pages: some View {
         ZStack {
             if state.section == .station {
+                // The slot starts below the iPad split view's Back and sidebar controls (#1148).
                 Color.clear
                     .anchorPreference(key: StationSlotKey.self, value: .bounds) { $0 }
                     .navigationTitle(StationSection.station.title)
@@ -159,6 +160,7 @@ struct StationNavigationShell<Detail: View, Inspector: View, Dock: View>: View {
         if Dock.self == EmptyView.self {
             stack
         } else {
+            // SwiftUI hosts the inset separately from the root (#1183).
             stack.safeAreaInset(edge: .bottom, spacing: 0) { dock(section).stationAccessibilityScope() }
         }
     }
@@ -171,13 +173,11 @@ private extension StationNavigationShell {
             if let next { send(.select(next)) }
         })
     }
-
     var compactColumn: Binding<NavigationSplitViewColumn> {
         Binding(get: { state.compactColumn == .sidebar ? .sidebar : .detail }, set: { column in
             send(.setCompactColumn(column == .sidebar ? .sidebar : .detail))
         })
     }
-
     var inspectorPresented: Binding<Bool> {
         Binding(get: { state.showsInspector }, set: { shown in
             if shown != state.showsInspector { send(.toggleInspector) }
