@@ -4,6 +4,33 @@ import XCTest
 /// Shared by Hail-macOSUITests and Hail-iOSUITests. Select only the in-memory peer's target and exercise
 /// presentation controls. Never press Talk, Interrupt, the system Paste button or Send.
 final class ShellWindowStationStateScreenshotTests: XCTestCase, ShellWindowUITestSupport {
+    @MainActor
+    func testTalkButtonSnapshotsInBothAppearances() throws {
+        let previous = XCUIDevice.shared.appearance
+        defer { XCUIDevice.shared.appearance = previous }
+        for appearance in [XCUIDevice.Appearance.light, .dark] {
+            XCUIDevice.shared.appearance = appearance
+            for state in [StationTranscriptSeed.ready, .awaitingReply, .recording] {
+                let app = launchStation(arguments: ["-seed-navigation-shell", "-seed-station-state", state.rawValue],
+                                        fixtureAppearance: appearance)
+                let button = app.buttons["station.talk"]
+                XCTAssertTrue(button.waitForExistence(timeout: 8))
+                XCTAssertEqual(button.isEnabled, state.dock.isEnabled)
+                XCTAssertEqual(button.label, state.dock.label)
+                let image = button.screenshot()
+                let snapshot = XCTAttachment(screenshot: image)
+                let scheme = appearance == .dark ? "dark" : "light"
+                snapshot.name = "\(device)-talk-\(state.rawValue)-\(scheme)"
+                snapshot.lifetime = .keepAlways
+                add(snapshot)
+                #if os(iOS)
+                try assertTalkColors(in: image, state: state, appearance: appearance)
+                #endif
+                app.terminate()
+            }
+        }
+    }
+
     override func setUpWithError() throws {
         continueAfterFailure = false
         #if os(iOS) && !targetEnvironment(simulator)
@@ -39,10 +66,12 @@ final class ShellWindowStationStateScreenshotTests: XCTestCase, ShellWindowUITes
         activate(element("station.chat-expand", in: app))
         activate(element("station.voice-dock.more", in: app))
         activate(element("station.voice-dock.routes", in: app))
-        XCTAssertTrue(element("settings.audio.overview", in: app).waitForExistence(timeout: 5))
+        let routes = element("settings.audio.overview", in: app)
+        XCTAssertTrue(routes.waitForExistence(timeout: 5))
         activateButton("Done", in: app.buttons)
+        XCTAssertTrue(routes.waitForNonExistence(timeout: 5))
         activate(element("station.voice-dock.more", in: app))
-        activate(element("station.voice-dock.listening", in: app))
+        activateListeningMenuItem(in: app)
         XCTAssertTrue(element("station.rail.detail", in: app).waitForExistence(timeout: 5))
     }
 
@@ -96,7 +125,22 @@ final class ShellWindowStationStateScreenshotTests: XCTestCase, ShellWindowUITes
 @MainActor
 private extension ShellWindowStationStateScreenshotTests {
     func seeded(_ state: String) -> XCUIApplication {
-        launchStation(shellEnabled: true, arguments: ["-seed-station-screen", state, "-seed-conversation", "4"])
+        launchStation(shellEnabled: true, arguments: ["-seed-station-screen", state, "-seed-conversation", "4"],
+                      fixtureAppearance: .light)
+    }
+
+    func activateListeningMenuItem(in app: XCUIApplication) {
+        let item = element("station.voice-dock.listening", in: app)
+        #if os(iOS)
+        if device == "ipad" {
+            XCTAssertTrue(item.waitForExistence(timeout: 5))
+            waitUntilHittable(item)
+            // The popover row overlaps its More button. Tap the leading part clear of the trigger.
+            item.coordinate(withNormalizedOffset: CGVector(dx: 0.12, dy: 0.5)).tap()
+            return
+        }
+        #endif
+        activate(item)
     }
 
     func confirmFixtureDestination(in app: XCUIApplication) {

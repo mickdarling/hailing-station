@@ -15,4 +15,15 @@ enum StationScreenSeed: String {
         self.init(rawValue: arguments[index + 1])
     }
 }
+
+#if os(iOS) && targetEnvironment(simulator)
+import notify
+
+enum StationFixtureStyle: String, CaseIterable {
+    case light, dark
+    static let environmentKey = "HAIL_UI_FIXTURE_STYLE"
+    var notification: String { "com.mickdarling.Hail.ui-fixture.style." + rawValue }
+    func request() { notify_post(notification) }
+}
+#endif
 #endif

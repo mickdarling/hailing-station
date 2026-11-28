@@ -22,22 +22,24 @@ final class MountedTalkProbe {
 extension Button {
     @MainActor
     func buttonStyle(_ style: PlainButtonStyle) -> some View {
-        buttonStyle(MountedTalkButtonStyle(style: style))
+        buttonStyle(MountedTalkButtonStyle(render: style.makeBody(configuration:)))
     }
 
     @MainActor
-    func buttonStyle(_ style: BorderedProminentButtonStyle) -> some View {
-        buttonStyle(MountedTalkButtonStyle(style: style))
+    func buttonStyle(_ style: StationTalkButtonStyle) -> some View {
+        buttonStyle(MountedTalkButtonStyle { configuration in
+            Group { Button<PrimitiveButtonStyleConfiguration.Label>(configuration) }.buttonStyle(style)
+        })
     }
 }
 
-private struct MountedTalkButtonStyle<Style: PrimitiveButtonStyle>: PrimitiveButtonStyle {
-    let style: Style
+private struct MountedTalkButtonStyle<Content: View>: PrimitiveButtonStyle {
+    let render: (Configuration) -> Content
     @Environment(MountedTalkProbe.self) private var probe
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
-        style.makeBody(configuration: configuration)
+        render(configuration)
             .onChange(of: isEnabled, initial: true) { _, enabled in
                 probe.buttonIsEnabled = enabled
                 probe.press = { configuration.trigger() }

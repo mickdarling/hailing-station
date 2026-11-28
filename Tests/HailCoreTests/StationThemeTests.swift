@@ -42,6 +42,7 @@ struct StationThemeTests {
         expectContrast(.onSidebarSelection, on: .sidebarSelection, dark: dark)
         expectContrast(.brandOnBrand, on: .brand, dark: dark)
         expectContrast(.brandOnBrand, on: .accentTalk, dark: dark)
+        expectContrast(.accentTalk, on: .elevatedSurface, dark: dark)
         expectContrast(.brandOnBrand, on: .stateLive, dark: dark)
     }
 

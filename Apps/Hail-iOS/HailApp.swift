@@ -47,6 +47,10 @@ struct HailApp: App {
         #else
         WindowGroup {
             stationWindow.environment(appearance)
+                #if STATION_UI_FIXTURES && targetEnvironment(simulator)
+                .modifier(StationFixtureAppearance(isFixture: Self.displaySeedName != nil
+                                                   || StationScreenSeed.requested != nil))
+                #endif
         }
         .commands { shellCommands }
         #endif

@@ -26,18 +26,27 @@ extension ShellWindowUITestSupport {
         #endif
     }
 
-    func launchStation(shellEnabled: Bool, arguments: [String] = []) -> XCUIApplication {
+    func launchStation(shellEnabled: Bool, arguments: [String] = [],
+                       fixtureAppearance: XCUIDevice.Appearance? = nil) -> XCUIApplication {
         let seed = shellEnabled ? "-seed-navigation-shell" : ClassicStationFixture.seed
-        let app = launchStation(arguments: [seed] + arguments)
+        let app = launchStation(arguments: [seed] + arguments, fixtureAppearance: fixtureAppearance)
         if shellEnabled { XCTAssertTrue(section("station", in: app).waitForExistence(timeout: 10)) }
         return app
     }
 
-    func launchStation(arguments: [String] = []) -> XCUIApplication {
+    func launchStation(arguments: [String] = [],
+                       fixtureAppearance: XCUIDevice.Appearance? = nil) -> XCUIApplication {
         #if os(macOS)
         let app = XCUIApplication(bundleIdentifier: "com.mickdarling.Hail-macOS-shell-tests")
         #else
         let app = XCUIApplication()
+        #if STATION_UI_FIXTURES && targetEnvironment(simulator)
+        if let fixtureAppearance,
+           arguments.contains("-seed-station-state") || arguments.contains("-seed-station-screen") {
+            let style: StationFixtureStyle = fixtureAppearance == .dark ? .dark : .light
+            app.launchEnvironment[StationFixtureStyle.environmentKey] = style.rawValue
+        }
+        #endif
         let orientation = XCUIDevice.shared.orientation
         if device == "ipad" { XCUIDevice.shared.orientation = .landscapeLeft }
         #endif
